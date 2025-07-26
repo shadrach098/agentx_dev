@@ -42,7 +42,7 @@ The agent framework is a lightweight and modular tool for building LLM-powered a
 ### Example Usage
 
 ```python
-import modules
+`import modules`
 from Bruce_Framework.ChatModel import GPT
 from Bruce_Framework.Agents.Agent import AgentType,convert_to_json,AgentPrompt
 from Bruce_Framework.Tools import StandardTool,StructuredTool
