@@ -11,7 +11,7 @@ The agent framework is a lightweight and modular tool for building LLM-powered a
 1.  **`AgentRunner`**: The main engine that orchestrates the agent's execution loop. It connects the LLM, tools, and prompt, managing the agent's state and running the primary "reason-act" cycle.
 2.  **`GPT`**: A wrapper class for interacting with OpenAI's Chat Completions API. It provides a convenient interface for creating chat completions and streamed chat completions.
 3.  **`StandardTool` and `StructuredTool`**: Represent simple and structured tools, respectively, that can be used by the agent.
-4.  **`AgentFormattor` and `AgentPrompt`**: Define the agent's prompt template and provide a way to format it with tools and user input.
+4.  **`AgentFormattor` ,` string of Instruction` and `AgentPrompt`**: Define the agent's prompt template and provide a way to format it with tools and user input.
 
 ### Using the Framework
 
@@ -52,6 +52,9 @@ gpt = GPT(api_key="your_api_key")
 
 # Define tools
 tools = [StandardTool(name="example_tool", func=example_func, description="An example tool")]
+
+# Define the Type of Agent
+my_agent=AgentType.ReAct
 
 # Create an AgentRunner instance
 runner = AgentRunner(model=gpt, Agent=my_agent, tools=tools)
