@@ -1,5 +1,3 @@
-# Bruce_framework
-
 # 🤖 Bruce_framework Agent Framework
 
 A lightweight, modular framework for building LLM-powered agents that can interact with tools, reason through multi-step problems, and return structured outputs — all without relying on heavyweight libraries like LangChain.
@@ -18,15 +16,16 @@ A lightweight, modular framework for building LLM-powered agents that can intera
 ---
 
 ## 🗂️ Project Structure
-agent_framework/
-├── tools.py # StructuredTool, StandardTool, and Pydantic support
-├── agent_run.py # AgentRunner class to manage reasoning and tool use
-├── chat_models.py # OpenAI and Gemini abstraction layers
-├── examples/
-│ ├── weather_tool.py # Example tool using structured Pydantic input
-│ └── run_agent.py # AgentRunner in action with reasoning chain
-├── README.md
-
+```
+   agent_framework/
+   ├── tools.py # StructuredTool, StandardTool, and Pydantic support
+   ├── agent_run.py # AgentRunner class to manage reasoning and tool use
+   ├── chat_models.py # OpenAI and Gemini abstraction layers
+   ├── examples/
+   │ ├── weather_tool.py # Example tool using structured Pydantic input
+   │ └── run_agent.py # AgentRunner in action with reasoning chain
+   ├── README.md
+```
 
 ### Using the Framework
 
