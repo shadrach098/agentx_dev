@@ -1,17 +1,32 @@
 # Bruce_framework
 
-## Documentation for Agent Framework
+# 🤖 Bruce_framework Agent Framework
 
-### Overview
+A lightweight, modular framework for building LLM-powered agents that can interact with tools, reason through multi-step problems, and return structured outputs — all without relying on heavyweight libraries like LangChain.
 
-The agent framework is a lightweight and modular tool for building LLM-powered agents that can use tools. It provides a structured way to define tools, format them for an agent prompt, and execute them within a loop controlled by an `AgentRunner`.
+---
 
-### Key Components
+## ✨ Features
 
-1.  **`AgentRunner`**: The main engine that orchestrates the agent's execution loop. It connects the LLM, tools, and prompt, managing the agent's state and running the primary "reason-act" cycle.
-2.  **`GPT`**: A wrapper class for interacting with OpenAI's Chat Completions API. It provides a convenient interface for creating chat completions and streamed chat completions.
-3.  **`StandardTool` and `StructuredTool`**: Represent simple and structured tools, respectively, that can be used by the agent.
-4.  **`AgentFormattor` ,` string of Instruction` and `AgentPrompt`**: Define the agent's prompt template and provide a way to format it with tools and user input.
+- 🧱 **Modular Architecture** — Separated into tool definition, LLM abstraction, and reasoning loop.
+- 🔍 **Function Calling Support** — Works with OpenAI (Chat Completions) and Gemini (via structured prompting).
+- 📦 **StructuredTool and StandardTool** — Support both unstructured (simple) and structured (Pydantic-validated) tools.
+- ♻️ **AgentRunner** — Manages the loop: planning, executing tools, handling retries, and assembling final output.
+- 🧠 **LLM-Agnostic Design** — Easily swap in OpenAI, Gemini, or your own model wrappers.
+- ✅ **Built-in Logging and Debugging** — Tracks reasoning steps, tool results, and final answers.
+
+---
+
+## 🗂️ Project Structure
+agent_framework/
+├── tools.py # StructuredTool, StandardTool, and Pydantic support
+├── agent_run.py # AgentRunner class to manage reasoning and tool use
+├── chat_models.py # OpenAI and Gemini abstraction layers
+├── examples/
+│ ├── weather_tool.py # Example tool using structured Pydantic input
+│ └── run_agent.py # AgentRunner in action with reasoning chain
+├── README.md
+
 
 ### Using the Framework
 
@@ -20,6 +35,19 @@ The agent framework is a lightweight and modular tool for building LLM-powered a
 3.  **Initialize the Agent**: Call the `Initialize` method on the `AgentRunner` instance, passing in user input.
 
 ### API Documentation
+
+
+---
+
+## 🛠️ Installation
+
+Clone the repository and install dependencies:
+
+```bash
+git clone https://github.com/shadrach098/agent-framework.git
+cd agent-framework
+pip install -r requirements.txt
+```
 
 #### Classes
 
@@ -50,8 +78,24 @@ from Bruce_Framework.Runner.AgentRun import AgentRunner
 # Create a GPT instance
 gpt = GPT(api_key="your_api_key")
 
+
+class WeatherArgs(BaseModel):
+    location: str
+    unit: str = "Celsius"
+
+def get_weather(location: str, unit: str):
+    return f"The weather in {location} is 22° {unit}."
+
+tools=[weather_tool = StructuredTool(
+    name="get_weather",
+    description="Get the current weather for a city",
+    func=get_weather,
+    args_schema=WeatherArgs
+)]
+
 # Define tools
-tools = [StandardTool(name="example_tool", func=example_func, description="An example tool")]
+tools.append(StandardTool(name="example_tool", func=example_func, description="An example tool"))
+
 
 # Define the Type of Agent
 my_agent=AgentType.ReAct
@@ -66,5 +110,23 @@ result = runner.Initialize(user_input="Hello, how are you?")
 print(result)
 ```
 
-This documentation provides a comprehensive overview of the agent framework, its key components, and how to use it. It also includes API documentation for the main classes and methods.
+
+### 🔮 Tech Stack
+- Python 3.10+
+- OpenAI GPT-4 / GPT-3.5
+- Google Gemini Pro
+- Pydantic
+- Requests, Logging
+
+### 📘 Docs
+Full API docs coming soon. For now, browse through the structured codebase:
+
+- tools.py – Tool schema and definitions
+- agent_run.py – Reasoning engine
+- chat_models.py – Model abstraction for OpenAI/Gemini
+
+### 🚀 Author
+Bruce-Arhin Shadrach
+GitHub • LinkedIn
+
 
