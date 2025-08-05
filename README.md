@@ -45,6 +45,12 @@ Clone the repository and install dependencies:
 git clone https://github.com/shadrach098/agent-framework.git
 cd agent-framework
 pip install -r requirements.txt
+
+```
+
+Use pip to install the framework:
+```bash
+pip install AgentX-Dev
 ```
 
 #### Classes
@@ -68,44 +74,46 @@ pip install -r requirements.txt
 ### Example Usage
 
 ```python
-`import modules`
-from Bruce_Framework.ChatModel import GPT
-from Bruce_Framework.Agents.Agent import AgentType,convert_to_json,AgentPrompt
-from Bruce_Framework.Tools import StandardTool,StructuredTool
-from Bruce_Framework.Runner.AgentRun import AgentRunner
-# Create a GPT instance
-gpt = GPT(api_key="your_api_key")
+from AgentXL import AgentRunner, AgentType,ChatModel
+from pydantic import BaseModel
+from AgentXL.Tools import StructuredTool,StandardTool
+# Define a sample Stuctured tool
+class MultiplyTool(BaseModel):
+    a: int
+    b: int
 
+def multiply(a: int, b: int) -> int:
+    return a * b
 
-class WeatherArgs(BaseModel):
-    location: str
-    unit: str = "Celsius"
+# Define a sample Standard tool
+def Weather(weather:str):
+    return f"{weather} is currently at 28 degree with a high of 32 and a low of 18 "
 
-def get_weather(location: str, unit: str):
-    return f"The weather in {location} is 22° {unit}."
-
-tools=[weather_tool = StructuredTool(
-    name="get_weather",
-    description="Get the current weather for a city",
-    func=get_weather,
-    args_schema=WeatherArgs
-)]
-
-# Define tools
-tools.append(StandardTool(name="example_tool", func=example_func, description="An example tool"))
-
-
-# Define the Type of Agent
-my_agent=AgentType.ReAct
-
+# Create chat model and agent
+ReAct=AgentType.ReAct
+chat_model = ChatModel.GPT(model="gpt-4", temperature=0.7)
+tools = [StructuredTool(name="MultiplyTool",
+                        description="useful when you need to add two numbers",
+                        func=multiply,
+                        args_schema=MultiplyTool
+                        ),
+         StandardTool(name="Weather",
+                      description="when you need to check the weather of a location, input should be the str of the location",
+                      func=Weather)]
 # Create an AgentRunner instance
-runner = AgentRunner(model=gpt, Agent=my_agent, tools=tools)
+agent = AgentRunner(model=chat_model,Agent=ReAct, tools=tools)
 
 # Initialize the agent with user input
-result = runner.Initialize(user_input="Hello, how are you?")
+response = agent.Initialize("What is 5 times 8?")
 
 # Print the result
-print(result)
+print(response.content)
+
+
+# output the Agent completion
+agent.Initialize("i need the weather in Barrie")
+
+
 ```
 
 
