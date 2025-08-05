@@ -9,6 +9,7 @@ A lightweight, modular framework for building LLM-powered agents that can intera
 - 🧱 **Modular Architecture** — Separated into tool definition, LLM abstraction, and reasoning loop.
 - 🔍 **Function Calling Support** — Works with OpenAI (Chat Completions) and Gemini (via structured prompting).
 - 📦 **StructuredTool and StandardTool** — Support both unstructured (simple) and structured (Pydantic-validated) tools.
+- 📦 **AgentType,str,AgentPrompt** - Support all the three Agents the AgentsType has pre-builtin prompt use AgentType. to get all the avaliable system prompt.
 - ♻️ **AgentRunner** — Manages the loop: planning, executing tools, handling retries, and assembling final output.
 - 🧠 **LLM-Agnostic Design** — Easily swap in OpenAI, Gemini, or your own model wrappers.
 - ✅ **Built-in Logging and Debugging** — Tracks reasoning steps, tool results, and final answers.
@@ -120,7 +121,6 @@ agent.Initialize("i need the weather in Barrie")
 ### 🔮 Tech Stack
 - Python 3.10+
 - OpenAI GPT-4 / GPT-3.5
-- Google Gemini Pro
 - Pydantic
 - Requests, Logging
 
@@ -129,7 +129,7 @@ Full API docs coming soon. For now, browse through the structured codebase:
 
 - tools.py – Tool schema and definitions
 - agent_run.py – Reasoning engine
-- chat_models.py – Model abstraction for OpenAI/Gemini
+- chat_models.py – Model abstraction for OpenAI
 
 ### 🚀 Author
 Bruce-Arhin Shadrach
