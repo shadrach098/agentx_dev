@@ -200,10 +200,93 @@ This catches transient `ConnectionError`, `TimeoutError`, and other network blip
 
 ---
 
+## Multi-agent orchestration (`Supervisor`)
+
+The supervisor decomposes a complex task, dispatches to specialist sub-agents, and synthesizes the results.
+
+```python
+from agentx_dev import AgentRunner, Supervisor, AgentType, Claude
+from agentx_dev.Tools import StandardTool
+
+model = Claude()
+
+# Build specialist sub-agents
+search_agent = AgentRunner(model=model, Agent=AgentType.ReAct, tools=[search_tool])
+math_agent   = AgentRunner(model=model, Agent=AgentType.ReAct, tools=[calc_tool])
+
+sup = Supervisor(
+    model=model,
+    agents={
+        "search": ("Best for web research and fact-finding.", search_agent),
+        "math":   ("Best for calculations.",                  math_agent),
+    },
+    max_subtasks=4,
+)
+
+result = sup.run("Find facts about Mars, then compute 42 * 1337")
+print(result.content)        # synthesized final answer
+print(result.plan)           # [{"agent": "search", "query": ...}, ...]
+for sr in result.subtasks:
+    print(sr.agent, sr.content)
+```
+
+**Async version (`AsyncSupervisor`)** runs sub-tasks **concurrently** via `asyncio.gather()`:
+
+```python
+from agentx_dev import AsyncSupervisor, AsyncAgentRunner
+
+sup = AsyncSupervisor(model=Claude(), agents={"research": ("...", agent)})
+result = await sup.run("complex multi-agent task")
+```
+
+`AsyncSupervisor` accepts both `AsyncAgentRunner` (awaited) and `AgentRunner` (auto-wrapped in `asyncio.to_thread`).
+
+---
+
+## Planning agent (`PlanningAgent`)
+
+Plan-then-execute pattern: the agent produces a structured plan FIRST, then the underlying runner executes the task with the plan injected as context. Dramatically improves multi-step reliability.
+
+```python
+from agentx_dev import PlanningAgent, AgentType, Claude
+from agentx_dev.Tools import StandardTool, StructuredTool
+
+agent = PlanningAgent(
+    model=Claude(),
+    Agent=AgentType.ReAct,
+    tools=[lookup_tool, calc_tool, summarize_tool],
+    max_iterations=8,
+    max_plan_steps=6,
+)
+
+result = agent.Initialize(
+    "Find the radius of Mars, then compute its surface area."
+)
+
+print(result.plan)           # ["Step 1: Look up Mars radius", "Step 2: ..."]
+print(result.content)        # final answer
+print(result.completion)     # underlying AgentCompletion (history, tool_calls, etc)
+```
+
+Async version:
+
+```python
+from agentx_dev import AsyncPlanningAgent
+
+agent = AsyncPlanningAgent(model=Claude(), Agent=AgentType.ReAct, tools=[...])
+result = await agent.Initialize("multi-step task")
+```
+
+---
+
+## Composition
+
+`PlanningAgent` and `Supervisor` are composable. You can use a `PlanningAgent` as one of the sub-agents in a `Supervisor` registry — each specialist gets the plan-then-execute behavior, and the supervisor coordinates across specialists.
+
+---
+
 ## What's still on the roadmap
 
 - Native OpenAI tool-calling API (replace JSON text parsing)
-- Multi-agent supervisor / orchestrator
 - Semantic memory with vector retrieval
-- Planning agent (plan-then-execute pattern)
 - Streaming responses through the runner (the `Streaming` module exists but isn't wired through `Initialize`)
