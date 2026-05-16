@@ -5,6 +5,7 @@ from openai.types.chat.completion_create_params import (
     FunctionCall, Function, ResponseFormat
 )
 from openai._types import NOT_GIVEN, NotGiven
+import asyncio
 import logging, os
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,14 @@ class BaseChatModel(ABC):
     def Initialize(self, messages) -> str:
         """Send messages to the LLM and return the response string."""
         ...
+
+    async def async_initialize(self, messages) -> str:
+        """
+        Async wrapper around Initialize(). Runs in a thread pool so it
+        does not block the event loop. Override for a native async implementation.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.Initialize, messages)
 
 class GPT(BaseChatModel):
     """

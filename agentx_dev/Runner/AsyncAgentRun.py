@@ -14,7 +14,6 @@ from typing import Dict, Callable, List, Type, Optional, AsyncIterator
 from pydantic import BaseModel, Field
 import asyncio
 import json
-import uuid
 
 
 def _format_tool_for_prompt(tool) -> str:
@@ -85,11 +84,6 @@ class AsyncAgentRunner:
         self.args: Dict[str, Dict] = {}
         self.async_args: Dict[str, Dict] = {}
 
-        # History and intermediate steps
-        self.history: List[Dict[str, str]] = []
-        self.agent_scratchpad = []
-        self.Steps = ''
-
         # Auto-add batch concurrent tool if we have async tools
         self._auto_add_batch_concurrent_tool()
 
@@ -120,26 +114,20 @@ class AsyncAgentRunner:
                     f"but got '{tool_type}'."
                 )
 
-        # Prompt setup
-        self.holder = str(uuid.uuid4())
-        self.tool_info = {
-            'tools': '\n'.join([f"- {t.name} : {_format_tool_for_prompt(t)}" for t in self.tools]),
-            'tool_names': ', '.join([t.name for t in self.tools]),
-            'user_input': self.holder
-        }
+        # Build tool prompt blocks (after batch_concurrent may have been auto-added)
+        self._tool_prompt_block = '\n'.join([f"- {t.name} : {_format_tool_for_prompt(t)}" for t in self.tools])
+        self._tool_names_block = ', '.join([t.name for t in self.tools])
 
+        # Validate Agent prompt template
         if isinstance(Agent, str) and '{tools}' in Agent and '{tool_names}' in Agent and '{user_input}' in Agent:
-            self.format_prompt: str = Agent.format_map(self.tool_info)
             self.Agent = AgentFormattor(prompt=Agent, Agent=StandardParser)
             self.parser = self.Agent.Agent
 
         elif isinstance(Agent, AgentFormattor) and '{tools}' in Agent.prompt and '{tool_names}' in Agent.prompt and '{user_input}' in Agent.prompt:
             logger.debug(f"Formatting prompt from AgentFormattor: {self.Agent.prompt}")
-            self.format_prompt: str = Agent.prompt.format_map(self.tool_info)
             self.parser = self.Agent.Agent
 
         elif isinstance(Agent, AgentPrompt) and '{tools}' in Agent.prompt and '{tool_names}' in Agent.prompt and '{user_input}' in Agent.prompt:
-            self.format_prompt: str = Agent.format(self.tools, user_hold=self.holder)
             self.Agent = AgentFormattor(prompt=Agent.prompt, Agent=StandardParser)
             self.parser = self.Agent.Agent
 
@@ -445,25 +433,30 @@ class AsyncAgentRunner:
 
         self.Query = user_input
 
+        # Build fresh system prompt each call (stateless)
+        tool_info = {
+            'tools': self._tool_prompt_block,
+            'tool_names': self._tool_names_block,
+            'user_input': user_input
+        }
+        system_prompt = self.Agent.prompt.format_map(tool_info)
+
+        working_history = [{"role": "system", "content": system_prompt}]
+
         # Use automatic memory if enabled and no manual history provided
-        if self.auto_memory and self._memory and ChatHistory is None:
-            ChatHistory = self._memory.get_messages()
+        effective_history = ChatHistory
+        if self.auto_memory and self._memory and effective_history is None:
+            effective_history = self._memory.get_messages()
 
-        if self.holder in self.format_prompt:
-            self.format_prompt = self.format_prompt.replace(self.holder, self.Query)
-
-        if not any(entry["role"] == "system" for entry in self.history):
-            self.history.append({"role": "system", "content": self.format_prompt})
-
-        if ChatHistory and isinstance(ChatHistory, list) and all(isinstance(item, dict) for item in ChatHistory):
-            for r in ChatHistory:
+        if effective_history and isinstance(effective_history, list):
+            for r in effective_history:
                 if r.get('role') and r.get('content'):
-                    self.history.append({
-                        'role': r.get('role'),
-                        'content': r.get('content') + r.get('timestamp') if r.get('timestamp') else r.get("content")
-                    })
+                    content = r['content']
+                    if r.get('timestamp'):
+                        content += r['timestamp']
+                    working_history.append({'role': r['role'], 'content': content})
 
-        self.history.append({"role": "user", "content": self.Query})
+        working_history.append({"role": "user", "content": user_input})
 
         logger.info(">>>>> Entering AsyncAgentRunner Mode <<<<<")
         if not isinstance(self.model, BaseChatModel):
@@ -478,20 +471,19 @@ class AsyncAgentRunner:
         final_answer = None
 
         while count <= self.max_iterations:
-            response = self.model.Initialize(messages=self.history)
-            self.history.append({"role": "assistant", "content": response})
+            response = await self.model.async_initialize(messages=working_history)
+            working_history.append({"role": "assistant", "content": response})
 
             model = self.Agent.Agent.from_json(response)
 
             if not isinstance(model, self.Agent.Agent):
-                self.history.append({"role": "assistant", "content": model})
                 final_answer = model
                 break
 
             step_description = f"Step {count}: {model.action} with {model.action_input}"
             steps.append(step_description)
 
-            self.history.append({
+            working_history.append({
                 "role": "assistant",
                 "content": json.dumps({
                     "action": model.action,
@@ -503,21 +495,20 @@ class AsyncAgentRunner:
                 final_answer = model.action_input
                 break
 
-            print(f"Action : {model.action} \n Action_input : {model.action_input}")
-            print(f"\x1B[3;33m🛠️ Invoking tool: '{model.action}' with args: {model.action_input}\x1B[0m")
+            print(f"\x1B[3;33m🛠️  Invoking tool: '{model.action}' with args: {model.action_input}\x1B[0m")
 
             # Use async tool runner
             tool_response = await self.Tool_Runner(model.action, model.action_input)
-            print(f"\x1B[32m🛠️ Tool Response : {str(tool_response)}\x1B[0m")
+            print(f"\x1B[32m🛠️  Tool Response: {str(tool_response)}\x1B[0m")
 
             if str(tool_response).startswith("Error:"):
-                self.history.append({
+                working_history.append({
                     "role": "function",
-                    "name": 'Tool_call_error',
+                    "name": "tool_call_error",
                     "content": str(tool_response)
                 })
             else:
-                self.history.append({
+                working_history.append({
                     "role": "function",
                     "name": model.action,
                     "content": str(tool_response)
@@ -535,7 +526,7 @@ class AsyncAgentRunner:
 
         # Update automatic memory if enabled
         if self.auto_memory and self._memory:
-            self._memory.add_message("user", self.Query)
+            self._memory.add_message("user", user_input)
             self._memory.add_message("assistant", final_answer or "No final answer returned.")
 
         # Complete agent execution tracking
@@ -548,11 +539,11 @@ class AsyncAgentRunner:
 
         return AgentCompletion.from_agent(
             model_name=self.model.__class__.__name__,
-            query=self.Query,
+            query=user_input,
             content=final_answer or "No final answer returned.",
             tool_calls=tool_calls,
             steps=steps,
-            history=None
+            history=working_history
         )
 
     def __repr__(self) -> str:
@@ -562,6 +553,5 @@ class AsyncAgentRunner:
             f"Tools={len(self.tools)}, "
             f"ToolNames={[tool.name for tool in self.tools]}, "
             f"MaxIterations={self.max_iterations}, "
-            f"Model='{self.model}', "
-            f"HistoryLen={len(self.history)})>"
+            f"Model='{self.model}')>"
         )
