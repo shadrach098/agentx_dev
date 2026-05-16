@@ -22,6 +22,7 @@ from .Cache import (
     InMemoryCache, LRUCache, FileCache,
     cached_tool, generate_cache_key, get_global_cache, set_global_cache
 )
+from .Supervisor import Supervisor, AsyncSupervisor, SubtaskResult, SupervisorResult
 
 __all__ = [
     # Core
@@ -80,4 +81,10 @@ __all__ = [
     "generate_cache_key",
     "get_global_cache",
     "set_global_cache",
+
+    # Supervisor / multi-agent orchestration
+    "Supervisor",
+    "AsyncSupervisor",
+    "SubtaskResult",
+    "SupervisorResult",
 ]
