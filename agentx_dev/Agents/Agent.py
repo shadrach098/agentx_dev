@@ -156,7 +156,7 @@ class ChainOfThought(BaseModel):
     """
     Thought: str = Field('The step-by-step reasoning', alias='Thought')
     Action: str = Field("The action to take or Final Answer", alias='Action')
-    Action_Input: str | Dict | List = Field("The input to the action", alias='Action Input')
+    Action_Input: str | Dict | List = Field("The input to the action", alias='Action_Input')
 
     @classmethod
     def from_json(cls, json_str: str):
