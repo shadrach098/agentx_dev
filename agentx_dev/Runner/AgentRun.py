@@ -151,47 +151,33 @@ class AgentRunner:
         if tool_name in self.args:
             schema = self.args[tool_name].get('args_schema')
             func = self.args[tool_name].get('func')
-            if schema and func:
-                try:
-                    # Parse the JSON string from the LLM into a dictionary.
-                    parsed_args = args_str
-                    result=func(**parsed_args)
-                    if isinstance(args_str,str):
-                        parsed_args = json.loads(args_str)
-                    # Validate and structure the arguments using the Pydantic model.
-                    
-                        
-                        validated_args = schema(**parsed_args)
-                        result = func(**validated_args.model_dump())
-                    # Use .model_dump() to get a dictionary to pass to the function.
-                    # # Change: Replaced print with logger.info for tracking agent actions.
-                    logger.info(f"ACTION: {tool_name}, INPUT: {parsed_args}")
-
-                    # Execute the tool's function with the validated arguments.
-                        
-
-                    # # Change: Replaced print with logger.info for tracking tool results.
-                    logger.info(f"RESULT: {result}")
-
-                    # Cache the result if caching is enabled
-                    if self._cache:
-                        from agentx_dev.Cache import generate_cache_key
-                        cache_key = generate_cache_key(tool_name, args_str)
-                        self._cache.set(cache_key, result, ttl=config.cache_ttl)
-
-                    # Complete observability event
-                    if tool_event:
-                        observability.end_event(tool_event, data={"result": str(result)[:100]})
-
-                    return result
-                except Exception as e:
-                    # # Change: Use logger.error to explicitly log exceptions before returning an error message.
-                    logger.error(f"Error executing structured tool '{tool_name}': {e}", exc_info=True)
-                    return f"Error executing structured tool '{tool_name}': {e}"
-            else:
-                # # Change: Log a misconfiguration as an error.
+            if not schema or not func:
                 logger.error(f"Misconfigured structured tool '{tool_name}'.")
                 return f"Error: Misconfigured structured tool '{tool_name}'."
+            try:
+                # Normalize: parse JSON string to dict first if needed
+                if isinstance(args_str, str):
+                    parsed_args = json.loads(args_str)
+                else:
+                    parsed_args = args_str  # already a dict
+
+                # Validate once with Pydantic, then call once
+                validated_args = schema(**parsed_args)
+                result = func(**validated_args.model_dump())
+                logger.info(f"ACTION: {tool_name}, INPUT: {parsed_args}, RESULT: {result}")
+
+                if self._cache:
+                    from agentx_dev.Cache import generate_cache_key
+                    cache_key = generate_cache_key(tool_name, str(args_str))
+                    self._cache.set(cache_key, result, ttl=config.cache_ttl)
+
+                if tool_event:
+                    observability.end_event(tool_event, data={"result": str(result)[:100]})
+
+                return result
+            except Exception as e:
+                logger.error(f"Error executing structured tool '{tool_name}': {e}", exc_info=True)
+                return f"Error executing structured tool '{tool_name}': {e}"
 
         # Fallback to check for a standard tool.
         elif tool_name in self.func:
