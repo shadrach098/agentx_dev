@@ -20,7 +20,7 @@ def test_subclass_without_initialize_cannot_be_instantiated():
 def test_subclass_with_initialize_can_be_instantiated():
     """A properly implemented subclass should work."""
     class MockModel(BaseChatModel):
-        def Initialize(self, messages):
+        def Initialize(self, messages) -> str:
             return "mock response"
 
     m = MockModel()

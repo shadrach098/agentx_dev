@@ -5,7 +5,7 @@ from openai.types.chat.completion_create_params import (
     FunctionCall, Function, ResponseFormat
 )
 from openai._types import NOT_GIVEN, NotGiven
-import logging,os
+import logging, os
 
 logger = logging.getLogger(__name__)
 from abc import ABC, abstractmethod
@@ -156,11 +156,9 @@ class GPT(BaseChatModel):
             timeout (Optional[float]): Override the default timeout.
 
         Returns:
-            ChatCompletion: The OpenAI ChatCompletion response object.
+            str: The content string from the first choice in the response.
         """
         try:
-           
-
             logger.debug(f"Calling OpenAI chat.completions.create ")
 
             return self.extract_content(self.client.chat.completions.create(
@@ -175,20 +173,6 @@ class GPT(BaseChatModel):
             logger.error(f"Error during chat completion: {str(e)}")
             raise
     
-    def create_stream(self, messages: Iterable[ChatCompletionMessageParam], **kwargs):
-        """
-        Create a streamed chat completion.
-
-        Args:
-            messages (Iterable[ChatCompletionMessageParam]): List of chat messages.
-            **kwargs: Additional keyword arguments passed to `create`.
-
-        Returns:
-            ChatCompletion: The streamed completion response.
-        """
-        self.defaults["stream"] = True
-        return self.create(messages=messages, **kwargs)
-
     def update_defaults(self, **kwargs):
         for key, value in kwargs.items():
             if key in self.defaults:
