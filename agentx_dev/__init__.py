@@ -23,6 +23,7 @@ from .Cache import (
     cached_tool, generate_cache_key, get_global_cache, set_global_cache
 )
 from .Supervisor import Supervisor, AsyncSupervisor, SubtaskResult, SupervisorResult
+from .Planner import PlanningAgent, AsyncPlanningAgent, PlannedCompletion
 
 __all__ = [
     # Core
@@ -87,4 +88,9 @@ __all__ = [
     "AsyncSupervisor",
     "SubtaskResult",
     "SupervisorResult",
+
+    # Planner / plan-then-execute
+    "PlanningAgent",
+    "AsyncPlanningAgent",
+    "PlannedCompletion",
 ]
