@@ -1,0 +1,41 @@
+[project]
+
+name = "agentx-dev"
+version = "2.4"
+description = "A lightweight LLM agent framework with standard and structured tool support use, prompt management, and support for OpenAI."
+authors = [{ name = "Bruce-Arhin Shadrach", email = "brucearhin098@gmail.com" }]
+# Best practice: link to the license file
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.8"
+
+
+# CRITICAL FIX: Removed invalid characters and fixed indentation
+dependencies = [
+    "openai>=1.0.0",
+    "pydantic>=2.0",
+    "google-generativeai",
+    "httpx",
+    # It's good practice to pin PyYAML to a version that fixes security issues
+    "PyYAML>=5.3.1",
+    "rich"
+]
+
+[project.urls]
+Homepage = "https://github.com/shadrach098/Bruce_framework"
+"Bug Tracker" = "https://github.com/shadrach098/Bruce_framework/issues"
+Source = "https://github.com/shadrach098/Bruce_framework"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+# In pyproject.toml
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+
+
