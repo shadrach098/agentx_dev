@@ -182,17 +182,99 @@ class GPT(BaseChatModel):
     def extract_content(self, completion: ChatCompletion) -> str:
         """
         Extract content from a chat completion response
-        
+
         Args:
             completion: ChatCompletion object
-            
+
         Returns:
             The content string from the first choice
         """
-        
+
         if completion.choices and len(completion.choices) > 0:
             return completion.choices[0].message.content or ""
         return ""
-    
-    
-    
+
+
+
+
+class Claude(BaseChatModel):
+    """
+    Chat model wrapper for Anthropic's Claude API.
+
+    Usage:
+        model = Claude(model="claude-sonnet-4-6")
+        response = model.Initialize([{"role": "user", "content": "Hello"}])
+    """
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: str = "claude-sonnet-4-6",
+        max_tokens: int = 4096,
+        temperature: float = 1.0,
+        timeout: float = 60.0,
+        max_retries: int = 3,
+    ):
+        import anthropic as _anthropic
+        self._anthropic = _anthropic
+        self.model_name = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self._api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        self._timeout = timeout
+        self._max_retries = max_retries
+        self.client = _anthropic.Anthropic(
+            api_key=self._api_key,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
+
+    def Initialize(self, messages) -> str:
+        """
+        Send messages to Claude and return the text response.
+
+        Converts OpenAI-style message dicts to Anthropic format:
+        - System messages are extracted and passed as the `system` parameter
+        - User and assistant messages form the conversation
+        """
+        system_parts = [m["content"] for m in messages if m.get("role") == "system"]
+        conversation = [
+            {"role": m["role"], "content": m["content"]}
+            for m in messages
+            if m.get("role") in ("user", "assistant")
+        ]
+        system_prompt = "\n\n".join(system_parts) if system_parts else self._anthropic.NOT_GIVEN
+
+        response = self.client.messages.create(
+            model=self.model_name,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            system=system_prompt,
+            messages=conversation,
+        )
+        return response.content[0].text if response.content else ""
+
+    async def async_initialize(self, messages) -> str:
+        """Native async Claude call using the AsyncAnthropic client."""
+        import anthropic as _anthropic
+        async_client = _anthropic.AsyncAnthropic(
+            api_key=self._api_key,
+            timeout=self._timeout,
+        )
+        system_parts = [m["content"] for m in messages if m.get("role") == "system"]
+        conversation = [
+            {"role": m["role"], "content": m["content"]}
+            for m in messages
+            if m.get("role") in ("user", "assistant")
+        ]
+        system_prompt = "\n\n".join(system_parts) if system_parts else _anthropic.NOT_GIVEN
+
+        response = await async_client.messages.create(
+            model=self.model_name,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            system=system_prompt,
+            messages=conversation,
+        )
+        return response.content[0].text if response.content else ""
+
