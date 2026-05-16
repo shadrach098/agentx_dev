@@ -26,6 +26,24 @@ class BaseChatModel(ABC):
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.Initialize, messages)
 
+    def _with_retry(self, fn, max_retries: int = 3, base_delay: float = 0.1):
+        """
+        Call fn() with exponential backoff on failure.
+        base_delay is short by default for test speed; production code passes a larger value.
+        """
+        import time
+        last_exc = None
+        for attempt in range(max_retries):
+            try:
+                return fn()
+            except Exception as e:
+                last_exc = e
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"LLM call attempt {attempt + 1} failed ({e}), retrying in {delay:.2f}s")
+                    time.sleep(delay)
+        raise last_exc
+
 class GPT(BaseChatModel):
     """
     Wrapper class for interacting with OpenAI's Chat Completions API using configurable defaults.
@@ -167,17 +185,22 @@ class GPT(BaseChatModel):
         Returns:
             str: The content string from the first choice in the response.
         """
+        logger.debug(f"Calling OpenAI chat.completions.create ")
         try:
-            logger.debug(f"Calling OpenAI chat.completions.create ")
-
-            return self.extract_content(self.client.chat.completions.create(
-                messages=messages,
-                **self.defaults,
-                extra_headers=extra_headers,
-                extra_query=extra_query,
-                extra_body=extra_body,
-                timeout=timeout or self.timeout,
-            ))
+            return self._with_retry(
+                lambda: self.extract_content(
+                    self.client.chat.completions.create(
+                        messages=messages,
+                        **self.defaults,
+                        extra_headers=extra_headers,
+                        extra_query=extra_query,
+                        extra_body=extra_body,
+                        timeout=timeout or self.timeout,
+                    )
+                ),
+                max_retries=3,
+                base_delay=0.1,
+            )
         except Exception as e:
             logger.error(f"Error during chat completion: {str(e)}")
             raise

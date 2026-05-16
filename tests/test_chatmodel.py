@@ -73,3 +73,34 @@ def test_async_initialize_is_awaitable():
     coro = m.async_initialize([])
     assert inspect.iscoroutine(coro), "async_initialize must return a coroutine"
     _asyncio.run(coro)
+
+
+def test_gpt_retries_on_transient_error(monkeypatch):
+    """_with_retry must retry up to max_retries times on transient errors."""
+    import os
+    os.environ.setdefault("OPENAI_API_KEY", "test-key")
+    from agentx_dev.ChatModel import GPT
+    from unittest.mock import MagicMock
+
+    call_count = 0
+
+    class FakeChoice:
+        message = MagicMock(content="success")
+
+    class FakeCompletion:
+        choices = [FakeChoice()]
+
+    gpt = GPT(model="gpt-4o", max_retries=3)
+
+    def fake_create(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            raise ConnectionError("transient error")
+        return FakeCompletion()
+
+    monkeypatch.setattr(gpt.client.chat.completions, "create", fake_create)
+
+    result = gpt.Initialize([{"role": "user", "content": "hi"}])
+    assert result == "success"
+    assert call_count == 3
