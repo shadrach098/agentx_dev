@@ -6,7 +6,7 @@ and a container class for standard pre-defined agent prompt templates.
 """
 
 import yaml,logging,json,uuid,time,os
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, ConfigDict
 from typing import Dict, Any,Type,Optional,List,Union
 from rich.console import Console
 console=Console()
@@ -28,8 +28,7 @@ class StandardParser(BaseModel):
     action: str = Field("The action to take", alias='action')
     action_input: str | Dict | List = Field("The input to the action", alias='action_input')
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
     @classmethod
     def from_json(cls, json_str: str):
