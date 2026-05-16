@@ -16,6 +16,16 @@ import asyncio
 import json
 import uuid
 
+
+def _format_tool_for_prompt(tool) -> str:
+    """Return a clean, LLM-readable tool description for the system prompt."""
+    from agentx_dev.Tools import StructuredTool as ST
+    if isinstance(tool, ST):
+        param_names = list(tool.args_schema.model_fields.keys())
+        return f"{tool.description} (required params: {', '.join(param_names)})"
+    return tool.description
+
+
 # Auto-initialize enhanced features
 from agentx_dev.AutoSetup import get_auto_setup, ensure_initialized
 from agentx_dev.Config import config
@@ -93,9 +103,6 @@ class AsyncAgentRunner:
                     "func": tool_instance.func,
                     "args_schema": tool_instance.args_schema
                 }
-                tool_instance.description = tool_instance.description + str(
-                    tool_instance.args_schema.__signature__.parameters
-                )
 
             elif isinstance(tool_instance, AsyncStandardTool):
                 self.async_func[tool_instance.name] = tool_instance.func
@@ -105,9 +112,6 @@ class AsyncAgentRunner:
                     "func": tool_instance.func,
                     "args_schema": tool_instance.args_schema
                 }
-                tool_instance.description = tool_instance.description + str(
-                    tool_instance.args_schema.__signature__.parameters
-                )
             else:
                 tool_type = type(tool_instance).__name__
                 raise TypeError(
@@ -119,7 +123,7 @@ class AsyncAgentRunner:
         # Prompt setup
         self.holder = str(uuid.uuid4())
         self.tool_info = {
-            'tools': '\n'.join([f"- {t.name} : {t.description}" for t in self.tools]),
+            'tools': '\n'.join([f"- {t.name} : {_format_tool_for_prompt(t)}" for t in self.tools]),
             'tool_names': ', '.join([t.name for t in self.tools]),
             'user_input': self.holder
         }

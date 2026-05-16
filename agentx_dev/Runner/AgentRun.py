@@ -7,6 +7,16 @@ from pydantic import BaseModel,Field
 
 import json
 
+
+def _format_tool_for_prompt(tool) -> str:
+    """Return a clean, LLM-readable tool description for the system prompt."""
+    from agentx_dev.Tools import StructuredTool as ST
+    if isinstance(tool, ST):
+        param_names = list(tool.args_schema.model_fields.keys())
+        return f"{tool.description} (required params: {', '.join(param_names)})"
+    return tool.description
+
+
 # Auto-initialize enhanced features
 from agentx_dev.AutoSetup import get_auto_setup, ensure_initialized
 from agentx_dev.Config import config
@@ -85,7 +95,6 @@ class AgentRunner:
                     "func": tool_instance.func,
                     "args_schema": tool_instance.args_schema
                 }
-                tool_instance.description = tool_instance.description + str(tool_instance.args_schema.__signature__.parameters)
             else:
                 # If it's neither, raise an error with a helpful message.
                 tool_type = type(tool_instance).__name__
@@ -96,7 +105,7 @@ class AgentRunner:
                 )
 
         # Pre-build the tool blocks used for prompt formatting on every call
-        self._tool_prompt_block = '\n'.join([f"- {t.name} : {t.description}" for t in self.tools])
+        self._tool_prompt_block = '\n'.join([f"- {t.name} : {_format_tool_for_prompt(t)}" for t in self.tools])
         self._tool_names_block = ', '.join([t.name for t in self.tools])
 
         # --- Validate Agent and store the prompt template ---
