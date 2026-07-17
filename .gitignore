@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+
+# Build artifacts
+build/
+dist/
+wheels/
+*.egg
+
+# PyPI credentials (NEVER commit)
+pypirc.ini
+.pypirc
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Runtime state / secrets
+.env
+.env.local
+.agentx/
+workspace/
+data/
+output/
+result.txt
+output.txt
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/

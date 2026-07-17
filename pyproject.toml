@@ -1,0 +1,55 @@
+[project]
+
+name = "agentx-dev"
+version = "3.0"
+description = "A lightweight LLM agent framework with multi-agent orchestration (Supervisor + dynamic specialist spawning), permission-gated default tools, MCP integration, and prompt-template presets."
+authors = [{ name = "Bruce-Arhin Shadrach", email = "brucearhin098@gmail.com" }]
+# Best practice: link to the license file
+license = { file = "LICENSE" }
+readme = "README.md"
+# Codebase uses PEP 604 union types (str | None) which require 3.10+.
+requires-python = ">=3.10"
+
+# Core runtime — every install pulls these. Kept minimal; provider SDKs
+# and MCP are optional extras below so an OpenAI-only user doesn't pull
+# in Anthropic + MCP transitives they'll never use.
+dependencies = [
+    "openai>=1.0.0",       # ChatModel.GPT + native tool-calling API
+    "pydantic>=2.0",       # StructuredTool schemas, output parsing, everywhere
+    "PyYAML>=5.3.1",       # AgentType prompt templates (>=5.3.1 for CVE fixes)
+    "rich>=10.0",          # console output in the Agents module
+]
+
+[project.optional-dependencies]
+# `pip install agentx-dev[anthropic]` — enables agentx_dev.Claude
+anthropic = ["anthropic>=0.20"]
+# `pip install agentx-dev[mcp]` — enables MCPClient (stdio / sse / http)
+mcp = ["mcp>=0.1"]
+# `pip install agentx-dev[otel]` — enables the OTelHook observability adapter
+otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
+# `pip install agentx-dev[all]` — the works
+all = [
+    "anthropic>=0.20",
+    "mcp>=0.1",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+]
+
+[project.urls]
+Homepage = "https://github.com/shadrach098/Bruce_framework"
+"Bug Tracker" = "https://github.com/shadrach098/Bruce_framework/issues"
+Source = "https://github.com/shadrach098/Bruce_framework"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+# In pyproject.toml
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+
+

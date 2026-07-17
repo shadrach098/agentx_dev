@@ -1,0 +1,5 @@
+graft agentx_dev
+include AGENTX.md
+include README.md
+include LICENSE
+prune tests
