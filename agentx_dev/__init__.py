@@ -40,6 +40,11 @@ from .Loader import (
 from .DefaultTools import DefaultTools, Permissions, DEFAULT_PERMISSIONS_PATH, mint_session_dir
 from .Session import Session
 from .WebTools import web_fetch_tool, web_search_tool
+from .Supervisor import (
+    Supervisor, AsyncSupervisor,
+    SpawnConfig, SpawnRequest,
+    SupervisorResult, SubtaskResult,
+)
 
 # MCP is an optional dependency — only re-export the names if the module imports cleanly.
 try:
@@ -145,6 +150,18 @@ __all__ = [
 
     # Session persistence
     "Session",
+
+    # Web tools (optional plug-ins, not in DefaultTools)
+    "web_search_tool",
+    "web_fetch_tool",
+
+    # Multi-agent orchestration
+    "Supervisor",
+    "AsyncSupervisor",
+    "SpawnConfig",
+    "SpawnRequest",
+    "SupervisorResult",
+    "SubtaskResult",
 ]
 
 if _MCP_AVAILABLE:
