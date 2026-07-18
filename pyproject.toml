@@ -1,7 +1,7 @@
 [project]
 
 name = "agentx-dev"
-version = "3.0.3"
+version = "3.0.4"
 description = "A lightweight LLM agent framework with multi-agent orchestration (Supervisor + dynamic specialist spawning), permission-gated default tools, MCP integration, and prompt-template presets."
 authors = [{ name = "Bruce-Arhin Shadrach", email = "brucearhin098@gmail.com" }]
 # Best practice: link to the license file

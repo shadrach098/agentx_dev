@@ -1361,42 +1361,59 @@ class AgentRunner:
                 yield {"type": "final", "content": final_answer}
                 break
 
+            # Normalize BEFORE the known-tools check — OpenAI's FC path
+            # sometimes returns tool names with a "functions." prefix
+            # ("functions.get_my_scores" instead of "get_my_scores").
+            # Without this, a valid tool call falls through to the
+            # implicit-final guardrail, which then leaks the model's
+            # internal Thought into user-visible text. Rewrite `action`
+            # here so the rest of the loop uses the canonical name.
+            normalized_action = self.registry._normalize_tool_name(action)
+            if normalized_action != action:
+                if self.verbose:
+                    print(
+                        f"\x1B[3;33m[loop] normalized action "
+                        f"'{action}' -> '{normalized_action}'\x1B[0m"
+                    )
+                action = normalized_action
+
             # Guardrail: the model emitted an `action` value that is
-            # neither a terminal-answer variant NOR a registered tool.
-            # Two scenarios trigger this:
-            #   1. use_function_calling=True: the parser tool schema
-            #      accepts any string, so the model stuffs its natural-
-            #      language closing text into `action` (e.g. "Provide a
-            #      response to the athlete."). Without this guard, the
-            #      runner would dispatch it as a tool, get "not found",
-            #      and the turn dies.
-            #   2. action="" (empty). Under FC, the model sometimes
-            #      omits `action` entirely; Pydantic falls back to the
-            #      field default. Same failure — empty tool name.
-            # Route both to Final_Answer, built from whatever text the
-            # model actually provided (thought + action + action_input).
+            # neither a terminal-answer variant NOR a registered tool
+            # (even after normalization). Two scenarios trigger this:
+            #   1. use_function_calling=True + missing schema guidance:
+            #      the model stuffs its natural-language response text
+            #      into `action` (e.g. "Provide a response to the
+            #      athlete."). Route to final so the loop terminates.
+            #   2. action="" (missing field, Pydantic default).
+            # NEVER include `Thought` in the user-facing final — the
+            # Thought is internal reasoning ("The user needs their
+            # scores; I'll fetch them") and leaking it to the user
+            # exposes the agent's introspection. Prefer action_input
+            # (that's what the model wanted the user to see). Only fall
+            # back to `action` when action_input is empty AND action
+            # looks like natural-language text (contains a space, not
+            # just an identifier).
             known_tools = set(self.func) | set(self.args)
             if not action or action not in known_tools:
-                parts: List[str] = []
-                if thought:
-                    parts.append(str(thought))
-                # Only include `action` in the reply if it looks like
-                # real response text (not empty, not a suspicious short
-                # sentinel like "answer"). Skip empty.
-                if action and action.strip():
-                    parts.append(str(action))
                 if action_input and str(action_input).strip():
-                    parts.append(str(action_input))
-                final_answer = "\n\n".join(parts) or (
-                    "(agent emitted an unrecognized action and no text)"
-                )
+                    final_answer = str(action_input)
+                elif action and action.strip() and " " in action:
+                    # Looks like the model put a sentence in `action`
+                    # and left action_input empty.
+                    final_answer = str(action)
+                else:
+                    final_answer = (
+                        "(agent emitted an unrecognized action and no "
+                        "answer text — try rephrasing or re-run)"
+                    )
                 if self.verbose:
                     preview = (action or "<empty>")[:60]
                     print(
                         f"\x1B[1;33m[loop] implicit-final: action "
                         f"'{preview}' is not a registered tool and not "
-                        f"a Final_Answer variant; treating turn as "
-                        f"Final_Answer\x1B[0m"
+                        f"a Final_Answer variant; returning "
+                        f"action_input as final (Thought NOT leaked)"
+                        f"\x1B[0m"
                     )
                 yield {"type": "final", "content": final_answer}
                 break

@@ -506,29 +506,43 @@ class AsyncAgentRunner:
             elif thought:
                 logger.info(f"thought: {thought}")
 
-            # Implicit-final guardrail: `action` is empty OR not a
+            # Strip OpenAI's "functions." prefix before the known-tools
+            # check — otherwise a valid tool call falls through to the
+            # implicit-final guardrail and leaks Thought as user text.
+            normalized_action = self.registry._normalize_tool_name(action)
+            if normalized_action != action:
+                if self.verbose:
+                    print(
+                        f"\x1B[3;33m[loop] normalized action "
+                        f"'{action}' -> '{normalized_action}'\x1B[0m"
+                    )
+                action = normalized_action
+
+            # Implicit-final guardrail: action is empty OR not a
             # registered tool AND not a Final_Answer variant. Route to
-            # Final_Answer built from the text the model provided.
+            # Final_Answer using action_input (or action-as-text
+            # fallback). NEVER include the Thought — that's internal
+            # reasoning and leaking it to the user exposes the agent's
+            # introspection.
             known_tools = set(self.registry.sync_std) | set(self.registry.sync_struct) \
                         | set(self.registry.async_std) | set(self.registry.async_struct)
             if not action or action not in known_tools:
-                parts: List[str] = []
-                if thought:
-                    parts.append(str(thought))
-                if action and action.strip():
-                    parts.append(str(action))
                 if action_input and str(action_input).strip():
-                    parts.append(str(action_input))
-                final_answer = "\n\n".join(parts) or (
-                    "(agent emitted an unrecognized action and no text)"
-                )
+                    final_answer = str(action_input)
+                elif action and action.strip() and " " in action:
+                    final_answer = str(action)
+                else:
+                    final_answer = (
+                        "(agent emitted an unrecognized action and no "
+                        "answer text — try rephrasing or re-run)"
+                    )
                 if self.verbose:
                     preview = (action or "<empty>")[:60]
                     print(
                         f"\x1B[1;33m[loop] implicit-final: action "
                         f"'{preview}' is not a registered tool and not "
-                        f"a Final_Answer variant; treating turn as "
-                        f"Final_Answer\x1B[0m"
+                        f"a Final_Answer variant; returning action_input "
+                        f"as final (Thought NOT leaked)\x1B[0m"
                     )
                 break
 
