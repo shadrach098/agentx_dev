@@ -13,7 +13,7 @@ from agentx_dev.ChatModel import BaseChatModel
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
 from agentx_dev.AsyncTools import AsyncStandardTool, AsyncStructuredTool
-from agentx_dev.Runner.AgentRun import ToolRegistry
+from agentx_dev.Runner.AgentRun import ToolRegistry, _is_terminal_action
 from typing import Dict, Callable, List, Type, Optional, Any, AsyncIterator
 from pydantic import BaseModel, Field
 import asyncio
@@ -493,7 +493,10 @@ class AsyncAgentRunner:
             step_description = f"Step {count}: {action} with {action_input}"
             steps.append(step_description)
 
-            if action == "Final_Answer":
+            # Terminal-action check — tolerant of format variants that
+            # LLMs emit under use_function_calling=True where the schema
+            # doesn't constrain `action` to a specific spelling.
+            if _is_terminal_action(action):
                 final_answer = action_input
                 break
 
@@ -502,6 +505,32 @@ class AsyncAgentRunner:
                 print(f"\x1B[36m[thought] {thought}\x1B[0m")
             elif thought:
                 logger.info(f"thought: {thought}")
+
+            # Implicit-final guardrail: `action` is empty OR not a
+            # registered tool AND not a Final_Answer variant. Route to
+            # Final_Answer built from the text the model provided.
+            known_tools = set(self.registry.sync_std) | set(self.registry.sync_struct) \
+                        | set(self.registry.async_std) | set(self.registry.async_struct)
+            if not action or action not in known_tools:
+                parts: List[str] = []
+                if thought:
+                    parts.append(str(thought))
+                if action and action.strip():
+                    parts.append(str(action))
+                if action_input and str(action_input).strip():
+                    parts.append(str(action_input))
+                final_answer = "\n\n".join(parts) or (
+                    "(agent emitted an unrecognized action and no text)"
+                )
+                if self.verbose:
+                    preview = (action or "<empty>")[:60]
+                    print(
+                        f"\x1B[1;33m[loop] implicit-final: action "
+                        f"'{preview}' is not a registered tool and not "
+                        f"a Final_Answer variant; treating turn as "
+                        f"Final_Answer\x1B[0m"
+                    )
+                break
 
             if self.verbose:
                 print(f"\x1B[3;33m[tool] Invoking '{action}' with args: {action_input}\x1B[0m")

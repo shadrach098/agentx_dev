@@ -99,8 +99,28 @@ class StandardParser(_ParserMixin, BaseModel):
     - from_json: Creates an instance from a JSON string.
     - from_function_call: Creates an instance from a tool-call args dict.
     """
-    action: str = Field("The action to take", alias='action')
-    action_input: str | Dict | List = Field("The input to the action", alias='action_input')
+    action: str = Field(
+        default="",
+        description=(
+            "REQUIRED. Must be one of the registered tool names shown "
+            "in the system prompt, OR the exact literal string "
+            "'Final_Answer' (with underscore) when you are ready to "
+            "return the completed answer. Do NOT put natural-language "
+            "response text here — that goes in action_input."
+        ),
+        alias='action',
+    )
+    action_input: str | Dict | List = Field(
+        default="",
+        description=(
+            "REQUIRED. When action is a tool name, this is the JSON "
+            "object matching that tool's argument schema (or the "
+            "single string the tool expects). When action is "
+            "'Final_Answer', this is the actual answer TEXT you want "
+            "the user to see."
+        ),
+        alias='action_input',
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -150,8 +170,27 @@ class Instruction_Tuned_(_ParserMixin, BaseModel):
     - action: str, the action to take or final answer.
     - action_input: str, Dict, or List, the input to the action.
     """
-    action: str = Field("The action to take OR Final Answer", alias="action")
-    action_input: str | Dict | List = Field("The input to the action OR You should put what you want to return to use here and return to user immediately", alias="action_input")
+    action: str = Field(
+        default="",
+        description=(
+            "REQUIRED. Must be one of the registered tool names shown "
+            "in the system prompt, OR the exact literal string "
+            "'Final_Answer' (with underscore) when you are ready to "
+            "return the completed answer. Never put natural-language "
+            "response text here — that goes in action_input."
+        ),
+        alias='action',
+    )
+    action_input: str | Dict | List = Field(
+        default="",
+        description=(
+            "REQUIRED. When action is a tool name, this is the JSON "
+            "object matching that tool's schema (or the single string "
+            "it expects). When action is 'Final_Answer', this is the "
+            "actual answer TEXT you want the user to see."
+        ),
+        alias='action_input',
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -172,9 +211,36 @@ class React_(_ParserMixin, BaseModel):
     - action: str, the action to take or final answer.
     - action_input: str, Dict, or List, the input to the action.
     """
-    Thought: str = Field('The Agent Thoughts', alias='Thought')
-    action: str = Field("The action to take OR Final Answer", alias="action")
-    action_input: str | Dict | List = Field("The input to the action OR You should put what you want to return to use here and return to user immediately", alias="action_input")
+    Thought: str = Field(
+        default="",
+        description=(
+            "REQUIRED. Brief reasoning for THIS turn: what the last "
+            "tool returned + what you'll do differently now. Keep it "
+            "concrete, not generic."
+        ),
+        alias='Thought',
+    )
+    action: str = Field(
+        default="",
+        description=(
+            "REQUIRED. Must be one of the registered tool names shown "
+            "in the system prompt, OR the exact literal string "
+            "'Final_Answer' (with underscore) when you are ready to "
+            "return the completed answer. Never put natural-language "
+            "response text here — that goes in action_input."
+        ),
+        alias='action',
+    )
+    action_input: str | Dict | List = Field(
+        default="",
+        description=(
+            "REQUIRED. When action is a tool name, this is the JSON "
+            "object matching that tool's schema (or the single string "
+            "it expects). When action is 'Final_Answer', this is the "
+            "actual answer TEXT you want the user to see."
+        ),
+        alias='action_input',
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -198,14 +264,35 @@ class ChainOfThought(_ParserMixin, BaseModel):
     ``instance.action`` / ``instance.action_input`` uniformly across every
     AgentType — no more parser-specific field lookups.
     """
-    Thought: str = Field('The step-by-step reasoning', alias='Thought')
+    Thought: str = Field(
+        default="",
+        description=(
+            "REQUIRED. Step-by-step reasoning covering: (a) what the "
+            "user asked; (b) what info is needed; (c) which tool fits; "
+            "(d) the exact argument shape; (e) whether one call finishes."
+        ),
+        alias='Thought',
+    )
     action: str = Field(
-        "The action to take or Final Answer",
+        default="",
+        description=(
+            "REQUIRED. Must be one of the registered tool names shown "
+            "in the system prompt, OR the exact literal string "
+            "'Final_Answer' (with underscore) when you are ready to "
+            "return the completed answer. Never put natural-language "
+            "response text here — that goes in action_input."
+        ),
         validation_alias=AliasChoices("action", "Action"),
         serialization_alias="action",
     )
     action_input: str | Dict | List = Field(
-        "The input to the action",
+        default="",
+        description=(
+            "REQUIRED. When action is a tool name, this is the JSON "
+            "object matching that tool's schema (or the single string "
+            "it expects). When action is 'Final_Answer', this is the "
+            "actual answer TEXT you want the user to see."
+        ),
         validation_alias=AliasChoices("action_input", "Action_Input"),
         serialization_alias="action_input",
     )
@@ -224,8 +311,27 @@ class ZeroShot(_ParserMixin, BaseModel):
     """
     A Pydantic model representing the Zero-Shot prompt template.
     """
-    action: str = Field("The action to take", alias='action')
-    action_input: str | Dict | List = Field("The input to the action", alias='action_input')
+    action: str = Field(
+        default="",
+        description=(
+            "REQUIRED. Must be one of the registered tool names shown "
+            "in the system prompt, OR the exact literal string "
+            "'Final_Answer' (with underscore) when you are ready to "
+            "return the completed answer. Never put natural-language "
+            "response text here — that goes in action_input."
+        ),
+        alias='action',
+    )
+    action_input: str | Dict | List = Field(
+        default="",
+        description=(
+            "REQUIRED. When action is a tool name, this is the JSON "
+            "object matching that tool's schema (or the single string "
+            "it expects). When action is 'Final_Answer', this is the "
+            "actual answer TEXT you want the user to see."
+        ),
+        alias='action_input',
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -241,8 +347,27 @@ class FewShot(_ParserMixin, BaseModel):
     """
     A Pydantic model representing the Few-Shot prompt template.
     """
-    action: str = Field("The action to take", alias='action')
-    action_input: str | Dict | List = Field("The input to the action", alias='action_input')
+    action: str = Field(
+        default="",
+        description=(
+            "REQUIRED. Must be one of the registered tool names shown "
+            "in the system prompt, OR the exact literal string "
+            "'Final_Answer' (with underscore) when you are ready to "
+            "return the completed answer. Never put natural-language "
+            "response text here — that goes in action_input."
+        ),
+        alias='action',
+    )
+    action_input: str | Dict | List = Field(
+        default="",
+        description=(
+            "REQUIRED. When action is a tool name, this is the JSON "
+            "object matching that tool's schema (or the single string "
+            "it expects). When action is 'Final_Answer', this is the "
+            "actual answer TEXT you want the user to see."
+        ),
+        alias='action_input',
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 

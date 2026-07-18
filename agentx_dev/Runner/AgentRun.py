@@ -114,6 +114,34 @@ class CircuitBreaker:
 _NO_ARG = object()
 
 
+# Set of case-insensitive strings that should be treated as the model's
+# "I'm done, return this as the final answer" signal. Exact string
+# "Final_Answer" is the canonical form the prompt template teaches;
+# the tolerant variants exist because under use_function_calling=True
+# the schema doesn't constrain `action` to any specific value, so
+# LLMs (especially gpt-4o-mini) emit "Final Answer" (with space) or
+# "final_answer" (lowercase) or "finalanswer" (no separator). Any of
+# those should end the loop, not get routed to Tool_Runner.
+#
+# Deliberately excludes bare "answer" or "final" — those are too
+# likely to collide with a user-defined tool of the same name.
+_TERMINAL_ACTION_VARIANTS = frozenset({
+    "final_answer", "finalanswer",
+})
+
+
+def _is_terminal_action(action: str) -> bool:
+    """True if ``action`` should end the loop with action_input as the
+    final answer. Accepts Final_Answer, Final Answer, final_answer,
+    FINAL_ANSWER, finalanswer — any capitalization + underscore/space
+    variant. Empty string is not terminal (caller handles that as
+    'unrecognized action' via the implicit-final guardrail)."""
+    if not action or not isinstance(action, str):
+        return False
+    normalized = action.strip().lower().replace(" ", "_").replace("-", "_")
+    return normalized in _TERMINAL_ACTION_VARIANTS
+
+
 def _build_sandbox_hint(perms: Any) -> Optional[str]:
     """Generate a short block describing where the runner is allowed to
     operate on disk. Injected into the system prompt when Permissions
@@ -1323,42 +1351,52 @@ class AgentRunner:
             step_description = f"Step {count}: {action} with {action_input}"
             steps.append(step_description)
 
-            if action == "Final_Answer":
+            # Terminal action check — tolerant matching so the loop ends
+            # for the canonical "Final_Answer" AND for the LLM's common
+            # variants ("Final Answer", "final_answer", "finalanswer").
+            # Under use_function_calling=True the schema doesn't
+            # constrain `action` to any spelling, so we accept them all.
+            if _is_terminal_action(action):
                 final_answer = action_input
                 yield {"type": "final", "content": final_answer}
                 break
 
-            # Guardrail for use_function_calling=True: the model is forced
-            # to call the parser tool (React_ / FewShot / etc.) and fills
-            # in `action` + `action_input`. Nothing in the parser schema
-            # constrains `action` to a real tool name, so the model can
-            # (and does) put its natural-language closing response there
-            # — e.g. action = "Provide a response to the athlete."
-            # Without this guardrail the runner would try to dispatch
-            # a tool with that name, get "not found", and the turn dies.
-            # Detection: action isn't Final_Answer AND isn't in the
-            # registry. Treat the whole turn as an implicit Final_Answer
-            # built from whatever text the model provided (thought +
-            # action + action_input, whichever are present).
+            # Guardrail: the model emitted an `action` value that is
+            # neither a terminal-answer variant NOR a registered tool.
+            # Two scenarios trigger this:
+            #   1. use_function_calling=True: the parser tool schema
+            #      accepts any string, so the model stuffs its natural-
+            #      language closing text into `action` (e.g. "Provide a
+            #      response to the athlete."). Without this guard, the
+            #      runner would dispatch it as a tool, get "not found",
+            #      and the turn dies.
+            #   2. action="" (empty). Under FC, the model sometimes
+            #      omits `action` entirely; Pydantic falls back to the
+            #      field default. Same failure — empty tool name.
+            # Route both to Final_Answer, built from whatever text the
+            # model actually provided (thought + action + action_input).
             known_tools = set(self.func) | set(self.args)
-            if action and action != "Final_Answer" and action not in known_tools:
+            if not action or action not in known_tools:
                 parts: List[str] = []
                 if thought:
                     parts.append(str(thought))
-                # action itself may BE the response text
-                if action:
+                # Only include `action` in the reply if it looks like
+                # real response text (not empty, not a suspicious short
+                # sentinel like "answer"). Skip empty.
+                if action and action.strip():
                     parts.append(str(action))
-                # action_input often carries the actual body
                 if action_input and str(action_input).strip():
                     parts.append(str(action_input))
                 final_answer = "\n\n".join(parts) or (
                     "(agent emitted an unrecognized action and no text)"
                 )
                 if self.verbose:
+                    preview = (action or "<empty>")[:60]
                     print(
                         f"\x1B[1;33m[loop] implicit-final: action "
-                        f"'{action[:60]}' is not a registered tool; "
-                        f"treating turn as Final_Answer\x1B[0m"
+                        f"'{preview}' is not a registered tool and not "
+                        f"a Final_Answer variant; treating turn as "
+                        f"Final_Answer\x1B[0m"
                     )
                 yield {"type": "final", "content": final_answer}
                 break
