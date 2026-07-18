@@ -1047,6 +1047,7 @@ class AgentRunner:
         permissions: Any = None,
         include_denied_tools: bool = False,
         system_addendum: Optional[str] = None,
+        strict_tool_dispatch: bool = False,
     ):
         # PEP 8 alias: prefer lowercase `agent=`. Either argument works; passing
         # both raises so misuse is loud rather than silently ambiguous.
@@ -1131,6 +1132,16 @@ class AgentRunner:
             self.system_addendum = auto_sandbox_hint
         else:
             self.system_addendum = system_addendum
+
+        # When True: on unknown-tool dispatch, feed the model an error
+        # observation ("that tool doesn't exist; use one of [X,Y] or
+        # Final_Answer") and let the loop iterate rather than
+        # immediately falling to implicit-final. Only applies when the
+        # unknown action looks like a tool identifier (no spaces) —
+        # natural-language actions still go straight to implicit-final
+        # since retrying makes no sense there. Default False keeps
+        # the 3.0.4 behavior.
+        self.strict_tool_dispatch = strict_tool_dispatch
 
         self.auto_cache = auto_cache and config.caching_enabled
         self.auto_memory = auto_memory and config.memory_enabled
@@ -1377,54 +1388,12 @@ class AgentRunner:
                     )
                 action = normalized_action
 
-            # Guardrail: the model emitted an `action` value that is
-            # neither a terminal-answer variant NOR a registered tool
-            # (even after normalization). Two scenarios trigger this:
-            #   1. use_function_calling=True + missing schema guidance:
-            #      the model stuffs its natural-language response text
-            #      into `action` (e.g. "Provide a response to the
-            #      athlete."). Route to final so the loop terminates.
-            #   2. action="" (missing field, Pydantic default).
-            # NEVER include `Thought` in the user-facing final — the
-            # Thought is internal reasoning ("The user needs their
-            # scores; I'll fetch them") and leaking it to the user
-            # exposes the agent's introspection. Prefer action_input
-            # (that's what the model wanted the user to see). Only fall
-            # back to `action` when action_input is empty AND action
-            # looks like natural-language text (contains a space, not
-            # just an identifier).
-            known_tools = set(self.func) | set(self.args)
-            if not action or action not in known_tools:
-                if action_input and str(action_input).strip():
-                    final_answer = str(action_input)
-                elif action and action.strip() and " " in action:
-                    # Looks like the model put a sentence in `action`
-                    # and left action_input empty.
-                    final_answer = str(action)
-                else:
-                    final_answer = (
-                        "(agent emitted an unrecognized action and no "
-                        "answer text — try rephrasing or re-run)"
-                    )
-                if self.verbose:
-                    preview = (action or "<empty>")[:60]
-                    print(
-                        f"\x1B[1;33m[loop] implicit-final: action "
-                        f"'{preview}' is not a registered tool and not "
-                        f"a Final_Answer variant; returning "
-                        f"action_input as final (Thought NOT leaked)"
-                        f"\x1B[0m"
-                    )
-                yield {"type": "final", "content": final_answer}
-                break
-
-            # Loop-level spiral check — same (action, args) as the last
-            # turn? Count it. Three in a row and we bail with a synthesized
-            # Final_Answer built from whatever real data was gathered
-            # before the spiral. Catches BOTH the "refused" spiral and
-            # the "tool not found" spiral (gpt-4o-mini did both in
-            # traces). Cheaper than dispatch — we abort before the tool
-            # even runs on the 3rd repeat.
+            # Loop-level spiral check — 3 identical (action, args) in a
+            # row and we bail. Placed BEFORE the known-tools branch so
+            # it catches BOTH kinds of spiral: a valid tool getting
+            # re-dispatched (dup-guard also catches this at the tool
+            # layer), and an unknown tool being retried via strict-mode
+            # (dup-guard would never see those since dispatch skips them).
             try:
                 action_sig = f"{action}::{json.dumps(action_input, sort_keys=True, default=repr)}"
             except Exception:
@@ -1456,6 +1425,102 @@ class AgentRunner:
                         f"'{action}' — aborting before dispatch\x1B[0m"
                     )
                 final_answer = forced
+                yield {"type": "final", "content": final_answer}
+                break
+
+            # Guardrail: the model emitted an `action` value that is
+            # neither a terminal-answer variant NOR a registered tool
+            # (even after normalization). Two scenarios trigger this:
+            #   1. use_function_calling=True + missing schema guidance:
+            #      the model stuffs its natural-language response text
+            #      into `action` (e.g. "Provide a response to the
+            #      athlete."). Route to final so the loop terminates.
+            #   2. action="" (missing field, Pydantic default).
+            # NEVER include `Thought` in the user-facing final — the
+            # Thought is internal reasoning ("The user needs their
+            # scores; I'll fetch them") and leaking it to the user
+            # exposes the agent's introspection. Prefer action_input
+            # (that's what the model wanted the user to see). Only fall
+            # back to `action` when action_input is empty AND action
+            # looks like natural-language text (contains a space, not
+            # just an identifier).
+            known_tools = set(self.func) | set(self.args)
+            if not action or action not in known_tools:
+                # Strict mode: when the unknown `action` looks like a
+                # tool identifier (no spaces, short), assume the model
+                # was TRYING to call a tool and misnamed it. Feed an
+                # error observation back so the model can retry with
+                # a valid name, instead of collapsing to implicit-final
+                # after the very first mistake. The existing dup-guard
+                # + loop-level circuit breaker still bound retries.
+                # Only skipped when: strict mode is off, we've hit
+                # max_iterations, or the action is clearly the model's
+                # response text (contains a space → natural language).
+                looks_like_tool_id = (
+                    bool(action) and " " not in action and len(action) < 80
+                )
+                if (
+                    self.strict_tool_dispatch
+                    and looks_like_tool_id
+                    and count < self.max_iterations
+                ):
+                    available = sorted(known_tools)
+                    error_content = (
+                        f"[framework] error: '{action}' is not a "
+                        f"registered tool. Available tools: {available}. "
+                        f"Options: (1) call one of them with the correct "
+                        f"argument shape; (2) emit action=\"Final_Answer\" "
+                        f"with your final response text in action_input "
+                        f"if you're done."
+                    )
+                    tc_id = getattr(self, "_last_function_call_id", None) if self.use_function_calling else None
+                    err_msg = {
+                        "role": "tool" if tc_id else "function",
+                        "name": "tool_call_error",
+                        "content": error_content,
+                    }
+                    if tc_id:
+                        err_msg["tool_call_id"] = tc_id
+                    working_history.append(err_msg)
+                    yield {
+                        "type": "tool_result",
+                        "name": action,
+                        "result": error_content,
+                        "is_error": True,
+                    }
+                    if self.verbose:
+                        print(
+                            f"\x1B[1;33m[loop] strict-retry: action "
+                            f"'{action[:60]}' unknown; feeding error "
+                            f"back so the model can retry\x1B[0m"
+                        )
+                    self._last_function_call_id = None
+                    count += 1
+                    continue
+
+                # Non-strict OR strict-can't-help path: implicit-final.
+                # Prefer action_input; fall back to action-as-text ONLY
+                # when it's natural language (has spaces). NEVER leak
+                # Thought — it's internal reasoning that shouldn't reach
+                # a user, especially in third-person-persona apps.
+                if action_input and str(action_input).strip():
+                    final_answer = str(action_input)
+                elif action and action.strip() and " " in action:
+                    final_answer = str(action)
+                else:
+                    final_answer = (
+                        "(agent emitted an unrecognized action and no "
+                        "answer text — try rephrasing or re-run)"
+                    )
+                if self.verbose:
+                    preview = (action or "<empty>")[:60]
+                    print(
+                        f"\x1B[1;33m[loop] implicit-final: action "
+                        f"'{preview}' is not a registered tool and not "
+                        f"a Final_Answer variant; returning "
+                        f"action_input as final (Thought NOT leaked)"
+                        f"\x1B[0m"
+                    )
                 yield {"type": "final", "content": final_answer}
                 break
 

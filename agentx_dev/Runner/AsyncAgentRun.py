@@ -86,6 +86,7 @@ class AsyncAgentRunner:
         agent: AgentFormattor | AgentPrompt | str | None = None,
         permissions: Any = None,
         include_denied_tools: bool = False,
+        strict_tool_dispatch: bool = False,
     ):
         if Agent is not None and agent is not None:
             raise TypeError("AsyncAgentRunner received both 'Agent' and 'agent'; pass only one.")
@@ -133,6 +134,8 @@ class AsyncAgentRunner:
                 "are mutually exclusive. Function-calling routes through the "
                 "AgentType parser; native binding skips it. Pick one."
             )
+        # See AgentRunner.__init__ for the strict_tool_dispatch contract.
+        self.strict_tool_dispatch = strict_tool_dispatch
 
         self.auto_cache = auto_cache and config.caching_enabled
         self.auto_memory = auto_memory and config.memory_enabled
@@ -518,15 +521,51 @@ class AsyncAgentRunner:
                     )
                 action = normalized_action
 
-            # Implicit-final guardrail: action is empty OR not a
-            # registered tool AND not a Final_Answer variant. Route to
-            # Final_Answer using action_input (or action-as-text
-            # fallback). NEVER include the Thought — that's internal
-            # reasoning and leaking it to the user exposes the agent's
-            # introspection.
+            # Implicit-final guardrail — see the sync AgentRunner for
+            # the full rationale. If strict_tool_dispatch=True AND the
+            # unknown action looks like a tool identifier (no spaces)
+            # AND we still have iteration budget, feed an error
+            # observation back to the model and let it retry.
             known_tools = set(self.registry.sync_std) | set(self.registry.sync_struct) \
                         | set(self.registry.async_std) | set(self.registry.async_struct)
             if not action or action not in known_tools:
+                looks_like_tool_id = (
+                    bool(action) and " " not in action and len(action) < 80
+                )
+                if (
+                    self.strict_tool_dispatch
+                    and looks_like_tool_id
+                    and count < self.max_iterations
+                ):
+                    available = sorted(known_tools)
+                    error_content = (
+                        f"[framework] error: '{action}' is not a "
+                        f"registered tool. Available tools: {available}. "
+                        f"Options: (1) call one of them with the correct "
+                        f"argument shape; (2) emit action=\"Final_Answer\" "
+                        f"with your final response text in action_input "
+                        f"if you're done."
+                    )
+                    tc_id = getattr(self, "_last_function_call_id", None) if self.use_function_calling else None
+                    err_msg = {
+                        "role": "tool" if tc_id else "function",
+                        "name": "tool_call_error",
+                        "content": error_content,
+                    }
+                    if tc_id:
+                        err_msg["tool_call_id"] = tc_id
+                    working_history.append(err_msg)
+                    if self.verbose:
+                        print(
+                            f"\x1B[1;33m[loop] strict-retry: action "
+                            f"'{action[:60]}' unknown; feeding error "
+                            f"back so the model can retry\x1B[0m"
+                        )
+                    self._last_function_call_id = None
+                    count += 1
+                    continue
+
+                # Non-strict OR strict-can't-help: implicit-final.
                 if action_input and str(action_input).strip():
                     final_answer = str(action_input)
                 elif action and action.strip() and " " in action:
