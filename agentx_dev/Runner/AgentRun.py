@@ -1328,6 +1328,41 @@ class AgentRunner:
                 yield {"type": "final", "content": final_answer}
                 break
 
+            # Guardrail for use_function_calling=True: the model is forced
+            # to call the parser tool (React_ / FewShot / etc.) and fills
+            # in `action` + `action_input`. Nothing in the parser schema
+            # constrains `action` to a real tool name, so the model can
+            # (and does) put its natural-language closing response there
+            # — e.g. action = "Provide a response to the athlete."
+            # Without this guardrail the runner would try to dispatch
+            # a tool with that name, get "not found", and the turn dies.
+            # Detection: action isn't Final_Answer AND isn't in the
+            # registry. Treat the whole turn as an implicit Final_Answer
+            # built from whatever text the model provided (thought +
+            # action + action_input, whichever are present).
+            known_tools = set(self.func) | set(self.args)
+            if action and action != "Final_Answer" and action not in known_tools:
+                parts: List[str] = []
+                if thought:
+                    parts.append(str(thought))
+                # action itself may BE the response text
+                if action:
+                    parts.append(str(action))
+                # action_input often carries the actual body
+                if action_input and str(action_input).strip():
+                    parts.append(str(action_input))
+                final_answer = "\n\n".join(parts) or (
+                    "(agent emitted an unrecognized action and no text)"
+                )
+                if self.verbose:
+                    print(
+                        f"\x1B[1;33m[loop] implicit-final: action "
+                        f"'{action[:60]}' is not a registered tool; "
+                        f"treating turn as Final_Answer\x1B[0m"
+                    )
+                yield {"type": "final", "content": final_answer}
+                break
+
             # Loop-level spiral check — same (action, args) as the last
             # turn? Count it. Three in a row and we bail with a synthesized
             # Final_Answer built from whatever real data was gathered
