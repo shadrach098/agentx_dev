@@ -37,11 +37,15 @@ Task guides:
 Advanced topics:
 - [Memory strategies](advanced/memory.md) — 5 built-in memories + SemanticMemory
 - [RAG with vector_search](advanced/rag.md) — embeddings, VectorStore, retrieval
+- [Vector store adapters](advanced/vector-store-adapters.md) — Chroma / Qdrant / pgvector
 - [Prompt caching](advanced/prompt-caching.md) — Anthropic ephemeral cache
 - [Parallel tool calls](advanced/parallel-tools.md) — bind_tools_natively
-- [Supervisor orchestration](advanced/supervisor.md) — decompose-then-dispatch
-- [Agent-to-agent handoffs](advanced/handoffs.md) — HandoffCoordinator
+- [Supervisor orchestration](advanced/supervisor.md) — decompose-then-dispatch (streaming events)
+- [Agent-to-agent handoffs](advanced/handoffs.md) — HandoffCoordinator (streaming events)
 - [Evals harness](advanced/evals.md) — EvalRunner, assertions, CI
+- [Prompt optimization](advanced/prompt-optimization.md) — `Compiled` wrapper
+- [Batch API](advanced/batch-api.md) — Anthropic 50%-off batch endpoint
+- [Trace viewer](advanced/trace-viewer.md) — self-hosted timeline UI
 - [Production controls](advanced/production-controls.md) — budgets, rate limits, circuit breakers
 
 Reference & recipes:

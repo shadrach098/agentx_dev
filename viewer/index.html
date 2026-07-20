@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgentX Trace Viewer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>AgentX Trace Viewer</h1>
+    <div class="controls">
+      <label class="file-btn">
+        <input type="file" id="file" accept=".jsonl,.json,.log" hidden />
+        Open trace...
+      </label>
+      <label class="file-btn dropzone" id="dropzone">
+        Or drop a .jsonl file here
+      </label>
+      <input id="filter" type="search" placeholder="filter events (e.g. tool, error, calc)..." />
+      <button id="clear">clear</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="summary">
+      <h2>Summary</h2>
+      <div id="summary"></div>
+      <h2>Event types</h2>
+      <div id="type-filter"></div>
+    </aside>
+    <main>
+      <div id="timeline"></div>
+    </main>
+  </div>
+
+  <div id="empty-state">
+    <div>
+      <h2>No trace loaded</h2>
+      <p>Point the viewer at an <code>FileHook</code> JSONL file from a
+        recent agent run.</p>
+      <pre><code>from agentx_dev import observability, FileHook, config
+config.observability_enabled = True
+observability.add_hook(FileHook("./trace.jsonl"))
+
+# ... run your agent ...</code></pre>
+      <p>Then drag <code>trace.jsonl</code> here or use the button above.</p>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -730,48 +730,57 @@ class Supervisor:
 
     # -- public API ----------------------------------------------------------
 
-    def run(self, user_task: str) -> SupervisorResult:
-        """Plan, execute sub-tasks sequentially, and synthesize.
+    def stream(self, user_task: str):
+        """Yield structured events as the supervisor plans, dispatches,
+        and synthesizes.
 
-        When ``verbose=True`` on the supervisor, progress is printed at
-        every stage — plan produced, each spawn request + approval,
-        each sub-task dispatched, each result received, final answer
-        synthesized. Callers don't have to write a print loop over
-        the returned SupervisorResult.
+        Event shapes:
+          - {"type": "plan_start"}
+          - {"type": "plan",           "plan": <list of steps>}
+          - {"type": "spawn",          "name": str, "capabilities": list}
+          - {"type": "dispatch",       "agent": str, "query": str, "step": int}
+          - {"type": "subtask_result", "result": SubtaskResult, "step": int}
+          - {"type": "synthesize_start"}
+          - {"type": "final",          "content": str}
+          - {"type": "completion",     "result": SupervisorResult}   (last)
+
+        The last event is always ``completion`` so ``run()`` can build
+        on top of this and callers who want live UI updates can consume
+        the intermediate events.
         """
         self._spawns_this_run = 0
+
+        yield {"type": "plan_start"}
         plan = self._plan(user_task)
 
         if not plan:
             if self.verbose:
                 _log_no_plan()
-            return SupervisorResult(
+            result = SupervisorResult(
                 query=user_task,
                 content="Supervisor failed to produce a valid plan.",
                 plan=[],
                 subtasks=[],
             )
+            yield {"type": "final", "content": result.content}
+            yield {"type": "completion", "result": result}
+            return
 
+        yield {"type": "plan", "plan": plan}
         if self.verbose:
             _log_plan(plan)
 
         subtask_results: List[SubtaskResult] = []
-        # Rewrite map for spawns that got auto-rerouted to an existing
-        # specialist. Populated by _handle_spawn's second return value.
-        # Any subsequent plan step whose agent name matches a key here
-        # gets its dispatch redirected to the mapped value so the follow-
-        # up work runs on the real specialist instead of failing with
-        # "UNKNOWN AGENT".
         spawn_rewrites: Dict[str, str] = {}
-        for item in plan:
+        for step_idx, item in enumerate(plan):
             agent_name = item.get("agent")
 
-            # Spawn steps: register the new specialist and move on.
             if agent_name == "__spawn__":
                 spawned_name, rewrite_from = self._handle_spawn(item)
+                yield {"type": "spawn", "name": spawned_name or item.get("name", "?"),
+                       "capabilities": item.get("capabilities", []),
+                       "rerouted_from": rewrite_from}
                 if spawned_name and rewrite_from:
-                    # Overlap-refused: the follow-up steps that reference
-                    # `rewrite_from` should dispatch to `spawned_name`.
                     spawn_rewrites[rewrite_from] = spawned_name
                     subtask_results.append(SubtaskResult(
                         agent="__spawn__",
@@ -797,69 +806,74 @@ class Supervisor:
                     ))
                 continue
 
-            # Apply any active spawn rewrite BEFORE the registry check —
-            # a rerouted name maps to a real registered specialist.
             if agent_name in spawn_rewrites:
                 original = agent_name
                 agent_name = spawn_rewrites[agent_name]
                 if self.verbose:
                     print(f"{_C_DISPATCH}[supervisor.dispatch] rewriting "
-                          f"'{original}' → '{agent_name}' (spawn was rerouted)"
+                          f"'{original}' -> '{agent_name}' (spawn was rerouted)"
                           f"{_C_RESET}")
 
-            # Regular dispatch. If the agent isn't in the registry (yet),
-            # error rather than crash — this happens when a later step
-            # references a specialist a spawn step failed to create.
             if agent_name not in self.agents:
                 if self.verbose:
                     print(f"{_C_ERROR}[supervisor.dispatch -> {agent_name}] "
-                          f"UNKNOWN AGENT — skipping{_C_RESET}")
-                subtask_results.append(SubtaskResult(
+                          f"UNKNOWN AGENT -- skipping{_C_RESET}")
+                sub_result = SubtaskResult(
                     agent=agent_name or "<none>",
                     query=item.get("query", ""),
                     content="",
                     error=f"specialist '{agent_name}' not in registry (spawn may have been refused)",
-                ))
+                )
+                subtask_results.append(sub_result)
+                yield {"type": "subtask_result", "result": sub_result, "step": step_idx}
                 continue
 
             sub_query = item["query"]
             _, agent_runner = self.agents[agent_name]
-            # Thread prior findings into the query so the specialist
-            # sees what earlier steps produced. The stored query stays
-            # the plain planned string — auditing/logging shouldn't
-            # include the full context dump.
             dispatched_query = _build_augmented_query(sub_query, subtask_results)
+            yield {"type": "dispatch", "agent": agent_name, "query": sub_query, "step": step_idx}
             if self.verbose:
                 _log_dispatch(agent_name, sub_query)
             try:
                 completion = agent_runner.Initialize(dispatched_query)
                 sub_result = SubtaskResult(
-                    agent=agent_name,
-                    query=sub_query,
-                    content=completion.content,
+                    agent=agent_name, query=sub_query, content=completion.content,
                 )
             except Exception as e:
                 sub_result = SubtaskResult(
-                    agent=agent_name,
-                    query=sub_query,
-                    content="",
-                    error=str(e),
+                    agent=agent_name, query=sub_query, content="", error=str(e),
                 )
             subtask_results.append(sub_result)
+            yield {"type": "subtask_result", "result": sub_result, "step": step_idx}
             if self.verbose:
                 _log_result(sub_result)
 
+        yield {"type": "synthesize_start"}
         final = self._synthesize(user_task, subtask_results)
-
         if self.verbose:
             _log_final(final)
 
-        return SupervisorResult(
-            query=user_task,
-            content=final,
-            subtasks=subtask_results,
-            plan=plan,
+        result = SupervisorResult(
+            query=user_task, content=final,
+            subtasks=subtask_results, plan=plan,
         )
+        yield {"type": "final", "content": final}
+        yield {"type": "completion", "result": result}
+
+    def run(self, user_task: str) -> SupervisorResult:
+        """Plan, execute sub-tasks sequentially, and synthesize.
+
+        Thin wrapper over ``stream()``. Consumes every event and returns
+        the final ``SupervisorResult``. For live UI progress, use
+        ``stream()`` directly.
+        """
+        result: Optional[SupervisorResult] = None
+        for event in self.stream(user_task):
+            if event["type"] == "completion":
+                result = event["result"]
+        assert result is not None, "supervisor.stream() must yield a completion event"
+        return result
+
 
     def __repr__(self) -> str:
         return (
@@ -1010,57 +1024,91 @@ class AsyncSupervisor:
 
     # -- public API ----------------------------------------------------------
 
-    async def run(self, user_task: str) -> SupervisorResult:
-        """Plan, execute sub-tasks concurrently, and synthesize.
+    async def astream(self, user_task: str):
+        """Async event stream. Same event shapes as ``Supervisor.stream``.
 
-        When ``verbose=True`` on the supervisor, progress is printed at
-        every stage. Dispatches interleave freely in verbose output
-        because asyncio.gather runs them concurrently — that ordering
-        matches what actually happened at wall-clock time.
+        Concurrent-dispatch mode (``sequential=False``) yields
+        ``subtask_result`` events as each sub-task finishes -- so the
+        UI sees whichever completes first, not the plan order.
         """
+        yield {"type": "plan_start"}
         plan = await self._plan(user_task)
 
         if not plan:
             if self.verbose:
                 _log_no_plan()
-            return SupervisorResult(
+            result = SupervisorResult(
                 query=user_task,
                 content="Supervisor failed to produce a valid plan.",
-                plan=[],
-                subtasks=[],
+                plan=[], subtasks=[],
             )
+            yield {"type": "final", "content": result.content}
+            yield {"type": "completion", "result": result}
+            return
 
+        yield {"type": "plan", "plan": plan}
         if self.verbose:
             _log_plan(plan)
 
+        # Emit a `dispatch` event for every step up-front so UIs can
+        # render the plan as a "task list" before results start landing.
+        for step_idx, item in enumerate(plan):
+            yield {"type": "dispatch",
+                   "agent": item.get("agent"), "query": item.get("query", ""),
+                   "step": step_idx}
+
+        subtask_results: List[SubtaskResult] = []
         if self.sequential:
-            # Run one at a time so each dispatch can see prior findings.
-            # Loses parallelism — the trade-off for context threading.
-            subtask_results: List[SubtaskResult] = []
-            for item in plan:
+            for step_idx, item in enumerate(plan):
                 r = await self._run_subtask(
                     item["agent"], item["query"],
                     prior_results=subtask_results,
                 )
                 subtask_results.append(r)
+                yield {"type": "subtask_result", "result": r, "step": step_idx}
         else:
             tasks = [
-                self._run_subtask(item["agent"], item["query"])
-                for item in plan
+                (step_idx, asyncio.create_task(
+                    self._run_subtask(item["agent"], item["query"])
+                ))
+                for step_idx, item in enumerate(plan)
             ]
-            subtask_results = list(await asyncio.gather(*tasks))
+            pending = {t: idx for idx, t in tasks}
+            while pending:
+                done, _ = await asyncio.wait(
+                    pending.keys(), return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in done:
+                    idx = pending.pop(t)
+                    r = t.result()
+                    subtask_results.append(r)
+                    yield {"type": "subtask_result", "result": r, "step": idx}
 
+        yield {"type": "synthesize_start"}
         final = await self._synthesize(user_task, list(subtask_results))
-
         if self.verbose:
             _log_final(final)
 
-        return SupervisorResult(
-            query=user_task,
-            content=final,
-            subtasks=list(subtask_results),
-            plan=plan,
+        result = SupervisorResult(
+            query=user_task, content=final,
+            subtasks=list(subtask_results), plan=plan,
         )
+        yield {"type": "final", "content": final}
+        yield {"type": "completion", "result": result}
+
+    async def run(self, user_task: str) -> SupervisorResult:
+        """Plan, execute sub-tasks concurrently, and synthesize.
+
+        Thin wrapper over ``astream()`` -- consumes every event and
+        returns the final ``SupervisorResult``. Use ``astream()``
+        directly if you want to render progress in a UI.
+        """
+        result: Optional[SupervisorResult] = None
+        async for event in self.astream(user_task):
+            if event["type"] == "completion":
+                result = event["result"]
+        assert result is not None, "AsyncSupervisor.astream must yield completion"
+        return result
 
     def __repr__(self) -> str:
         return (

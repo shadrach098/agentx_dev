@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>agentx_dev — documentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" />
+</head>
+<body>
+  <header class="topbar" id="topbar">
+    <div class="brand">
+      <a href="#" class="brand-link"><span class="brand-name">agentx_dev</span><span class="cursor">|</span></a>
+      <span class="brand-version">v3.1</span>
+    </div>
+    <div class="topbar-actions">
+      <div class="search-wrap">
+        <span class="search-key">⌘K</span>
+        <input id="search" type="search" placeholder="search docs" autocomplete="off" spellcheck="false" />
+      </div>
+      <button id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">
+        <span class="theme-dot"></span>
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <nav id="nav">
+        <span class="active-marker" id="active-marker" aria-hidden="true"></span>
+      </nav>
+    </aside>
+
+    <main class="content">
+      <article id="doc"></article>
+      <footer class="doc-footer">
+        <div id="doc-nav-prev-next"></div>
+        <div class="doc-footer-meta">
+          <span class="meta-label">agentx_dev</span>
+          <span class="meta-sep">/</span>
+          <span>MIT licensed</span>
+          <span class="meta-sep">/</span>
+          <a href="https://github.com/shadrach098/Bruce_framework">source</a>
+        </div>
+      </footer>
+    </main>
+
+    <aside class="toc" id="toc" aria-label="On this page"></aside>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-json.min.js"></script>
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1377,3 +1377,154 @@ class Claude(BaseChatModel):
             if getattr(block, "type", None) == "text"
         ]
         return {"type": "text", "text": "".join(text_parts)}
+
+    # ------------------------------------------------------------------
+    # Anthropic Batch API (3.1)
+    # ------------------------------------------------------------------
+
+    def batch(
+        self,
+        requests: List[Any],
+        *,
+        poll_interval_sec: float = 15.0,
+        max_wait_sec: float = 86400.0,   # 24h -- Anthropic's max batch TTL
+    ) -> List[Any]:
+        """Submit many prompts to Anthropic's Batch API and block until
+        all complete. Returns results in the SAME ORDER as ``requests``.
+
+        Anthropic's batch endpoint charges 50% of standard pricing. Best
+        for embarrassingly-parallel workloads (evals, data labeling,
+        bulk extraction) where a few minutes of latency is fine.
+
+        Args:
+            requests: List of one of:
+                - a plain string (wrapped as one user message)
+                - a list of message dicts
+                - a full request dict shaped like the Anthropic Batch
+                  API accepts: ``{"custom_id": str, "params": {...}}``
+                  where ``params`` matches ``messages.create``. If you
+                  pass this shape you own ``custom_id``; otherwise the
+                  framework assigns ``req_0, req_1, ...``.
+            poll_interval_sec: How often to poll the batch status.
+            max_wait_sec: Give up after this long. Raises TimeoutError.
+
+        Returns:
+            List of results, same length + order as ``requests``. Each
+            result is one of:
+              - the assistant text (str)   -- on success
+              - a dict ``{"error": str, "type": str}``  -- on per-request
+                failure (validation, over-limit, canceled).
+
+        Cost recording: input/output tokens land in ``self.usage`` when
+        the batch finishes, so ``model.usage`` remains a source of truth
+        for spend across both sync + batch calls.
+        """
+        import time as _time
+
+        normalized = []
+        for idx, req in enumerate(requests):
+            if isinstance(req, dict) and "params" in req:
+                custom_id = str(req.get("custom_id") or f"req_{idx}")
+                params = dict(req["params"])
+            else:
+                if isinstance(req, str):
+                    messages = [{"role": "user", "content": req}]
+                elif isinstance(req, list):
+                    messages = req
+                elif isinstance(req, dict) and "messages" in req:
+                    messages = list(req["messages"])
+                else:
+                    raise TypeError(
+                        f"batch request #{idx} must be str, message list, "
+                        f"{{messages: [...]}} dict, or {{custom_id, params}} "
+                        f"dict; got {type(req).__name__}"
+                    )
+                system_parts = [m["content"] for m in messages if m.get("role") == "system"]
+                conversation = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in messages
+                    if m.get("role") in ("user", "assistant")
+                ]
+                _sep = chr(10) + chr(10)
+                system_prompt = _sep.join(system_parts) if system_parts else self._anthropic.NOT_GIVEN
+                system_prompt = self._prepare_system_for_cache(system_prompt)
+                custom_id = f"req_{idx}"
+                params = {
+                    "model": self.model_name,
+                    "max_tokens": self.max_tokens,
+                    "temperature": self.temperature,
+                    "messages": conversation,
+                }
+                if system_prompt is not self._anthropic.NOT_GIVEN:
+                    params["system"] = system_prompt
+            normalized.append({"custom_id": custom_id, "params": params})
+
+        batches_api = None
+        for path in ("messages.batches", "beta.messages.batches"):
+            obj = self.client
+            for part in path.split("."):
+                obj = getattr(obj, part, None)
+                if obj is None:
+                    break
+            if obj is not None:
+                batches_api = obj
+                break
+        if batches_api is None:
+            raise RuntimeError(
+                "This anthropic SDK version does not expose the Batch API. "
+                "Upgrade with: pip install -U 'anthropic>=0.36'"
+            )
+
+        submission = batches_api.create(requests=normalized)
+        batch_id = submission.id
+        logger.info(f"Anthropic batch submitted: {batch_id} ({len(normalized)} requests)")
+
+        deadline = _time.monotonic() + max_wait_sec
+        while True:
+            status = batches_api.retrieve(batch_id)
+            proc = getattr(status, "processing_status", None) or getattr(status, "status", None)
+            if proc == "ended":
+                break
+            if _time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Anthropic batch {batch_id} did not finish within "
+                    f"{max_wait_sec}s (last status: {proc})"
+                )
+            _time.sleep(poll_interval_sec)
+
+        by_id: Dict[str, Any] = {}
+        results_iter = batches_api.results(batch_id)
+        for entry in results_iter:
+            cid = entry.custom_id
+            result = entry.result
+            kind = getattr(result, "type", None)
+            if kind == "succeeded":
+                message = result.message
+                text_parts = []
+                for block in message.content:
+                    if getattr(block, "type", None) == "text":
+                        text_parts.append(block.text)
+                usage = getattr(message, "usage", None)
+                if usage is not None:
+                    self._record_usage_counts(
+                        input_tokens=getattr(usage, "input_tokens", 0),
+                        output_tokens=getattr(usage, "output_tokens", 0),
+                        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+                        cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                    )
+                by_id[cid] = "".join(text_parts)
+            elif kind == "errored":
+                by_id[cid] = {
+                    "error": str(getattr(result, "error", "unknown")),
+                    "type": "errored",
+                }
+            elif kind == "canceled":
+                by_id[cid] = {"error": "canceled", "type": "canceled"}
+            elif kind == "expired":
+                by_id[cid] = {"error": "expired (24h TTL)", "type": "expired"}
+            else:
+                by_id[cid] = {"error": f"unknown result type {kind!r}", "type": "unknown"}
+
+        return [by_id.get(r["custom_id"], {"error": "no result", "type": "missing"})
+                for r in normalized]
+

@@ -262,10 +262,19 @@ class HandoffCoordinator:
                     return HandoffRequest(target=target, task=task)
         return None
 
-    def run(self, query: str, chat_history: Optional[List[Dict[str, Any]]] = None) -> HandoffResult:
-        """Invoke the entry agent; follow handoffs until we get a real answer
-        or exceed ``max_hops``. Returns a ``HandoffResult`` bundling the
-        final completion plus every handoff hop taken."""
+    def stream(self, query: str, chat_history: Optional[List[Dict[str, Any]]] = None):
+        """Yield structured events for each hop.
+
+        Event shapes:
+          - {"type": "invoke",     "agent": str, "query": str, "hop": int}
+          - {"type": "completion", "agent": str, "content": str, "hop": int}
+          - {"type": "handoff",    "from": str, "to": str, "task": str, "hop": int}
+          - {"type": "final",      "content": str}
+          - {"type": "result",     "result": HandoffResult}   (last)
+
+        The last event is always ``result``. Use ``run()`` if you just
+        want the aggregate; use ``stream()`` if you want per-hop UI updates.
+        """
         current_name = self.entry
         current_query = query
         history = list(chat_history) if chat_history else None
@@ -278,46 +287,69 @@ class HandoffCoordinator:
                     f"handoff target '{current_name}' not in agents "
                     f"({list(self.agents)})"
                 )
+            yield {"type": "invoke", "agent": current_name,
+                   "query": current_query, "hop": hop}
             completion: AgentCompletion = runner.invoke(
                 current_query, chat_history=history,
             )
+            yield {"type": "completion", "agent": current_name,
+                   "content": completion.content, "hop": hop}
+
             request = self._find_handoff(completion)
             if request is None:
-                return HandoffResult(completion=completion, hops=hops)
+                result = HandoffResult(completion=completion, hops=hops)
+                yield {"type": "final", "content": completion.content}
+                yield {"type": "result", "result": result}
+                return
 
-            hops.append({
-                "from": current_name, "to": request.target,
-                "task": request.task, "hop": hop,
-            })
+            hop_entry = {"from": current_name, "to": request.target,
+                         "task": request.task, "hop": hop}
+            hops.append(hop_entry)
+            yield {"type": "handoff", **hop_entry}
+
             if request.target not in self.agents:
-                # Unknown target -- return the completion as-is so the caller
-                # can surface a useful error without silently continuing.
                 completion.content = (
                     f"(handoff to unknown agent '{request.target}' -- "
                     f"no route; returning last completion)"
                 )
-                return HandoffResult(completion=completion, hops=hops)
+                result = HandoffResult(completion=completion, hops=hops)
+                yield {"type": "final", "content": completion.content}
+                yield {"type": "result", "result": result}
+                return
 
-            # Thread ONLY clean user/assistant text from the previous run so
-            # the target agent sees prose context without inheriting stale
-            # tool_call_ids or system prompts from a chain it wasn't part of.
             history = self._sanitize_history_for_next_agent(
                 completion.history
             ) or history
             current_name = request.target
             current_query = request.task or query
 
-        # Bounded -- synthesize a graceful failure completion.
         completion.content = (
             f"(handoff loop exceeded max_hops={self.max_hops}; last active "
             f"agent was '{current_name}'. Increase max_hops or review the "
             "specialists for a routing cycle.)"
         )
-        return HandoffResult(completion=completion, hops=hops)
+        result = HandoffResult(completion=completion, hops=hops)
+        yield {"type": "final", "content": completion.content}
+        yield {"type": "result", "result": result}
 
-    async def arun(self, query: str, chat_history: Optional[List[Dict[str, Any]]] = None) -> HandoffResult:
-        """Async sibling of ``run``. Uses each runner's ``ainvoke`` when
-        available; falls back to ``invoke`` in an executor if not."""
+    def run(self, query: str, chat_history: Optional[List[Dict[str, Any]]] = None) -> HandoffResult:
+        """Invoke the entry agent; follow handoffs until we get a real answer
+        or exceed ``max_hops``. Thin wrapper over ``stream()`` -- consumes
+        every event and returns the final ``HandoffResult``. Use
+        ``stream()`` directly for live per-hop progress."""
+        result: Optional[HandoffResult] = None
+        for event in self.stream(query, chat_history=chat_history):
+            if event["type"] == "result":
+                result = event["result"]
+        assert result is not None, "HandoffCoordinator.stream must yield result"
+        return result
+
+    async def astream(self, query: str, chat_history: Optional[List[Dict[str, Any]]] = None):
+        """Async event stream. Same event shapes as ``stream()``.
+
+        Uses each runner's ``ainvoke`` when available; falls back to
+        ``invoke`` in an executor if not.
+        """
         import asyncio
         current_name = self.entry
         current_query = query
@@ -328,6 +360,8 @@ class HandoffCoordinator:
             runner = self.agents.get(current_name)
             if runner is None:
                 raise KeyError(f"handoff target '{current_name}' not in agents")
+            yield {"type": "invoke", "agent": current_name,
+                   "query": current_query, "hop": hop}
             if hasattr(runner, "ainvoke"):
                 completion = await runner.ainvoke(
                     current_query, chat_history=history,
@@ -338,19 +372,33 @@ class HandoffCoordinator:
                     None,
                     lambda: runner.invoke(current_query, chat_history=history),
                 )
+            yield {"type": "completion", "agent": current_name,
+                   "content": completion.content, "hop": hop}
+
             request = self._find_handoff(completion)
             if request is None:
-                return HandoffResult(completion=completion, hops=hops)
-            hops.append({
-                "from": current_name, "to": request.target,
-                "task": request.task, "hop": hop,
-            })
+                result = HandoffResult(completion=completion, hops=hops)
+                yield {"type": "final", "content": completion.content}
+                yield {"type": "result", "result": result}
+                return
+
+            hop_entry = {"from": current_name, "to": request.target,
+                         "task": request.task, "hop": hop}
+            hops.append(hop_entry)
+            yield {"type": "handoff", **hop_entry}
+
             if request.target not in self.agents:
                 completion.content = (
                     f"(handoff to unknown agent '{request.target}' -- no route)"
                 )
-                return HandoffResult(completion=completion, hops=hops)
-            history = completion.history or history
+                result = HandoffResult(completion=completion, hops=hops)
+                yield {"type": "final", "content": completion.content}
+                yield {"type": "result", "result": result}
+                return
+
+            history = self._sanitize_history_for_next_agent(
+                completion.history
+            ) or history
             current_name = request.target
             current_query = request.task or query
 
@@ -358,4 +406,15 @@ class HandoffCoordinator:
             f"(handoff loop exceeded max_hops={self.max_hops}; last active "
             f"agent was '{current_name}')"
         )
-        return HandoffResult(completion=completion, hops=hops)
+        result = HandoffResult(completion=completion, hops=hops)
+        yield {"type": "final", "content": completion.content}
+        yield {"type": "result", "result": result}
+
+    async def arun(self, query: str, chat_history: Optional[List[Dict[str, Any]]] = None) -> HandoffResult:
+        """Async sibling of ``run``. Thin wrapper over ``astream()``."""
+        result: Optional[HandoffResult] = None
+        async for event in self.astream(query, chat_history=chat_history):
+            if event["type"] == "result":
+                result = event["result"]
+        assert result is not None, "HandoffCoordinator.astream must yield result"
+        return result

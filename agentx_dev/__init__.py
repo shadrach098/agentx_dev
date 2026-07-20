@@ -43,6 +43,13 @@ from .Evals import (
     called_tool, tool_count, max_iterations, llm_judge,
     load_case_from_dict, load_cases_from_dir,
 )
+from .Compiler import Compiled, CompileResult
+# Vector store adapters -- imported lazily to keep the SDK deps optional.
+try:
+    from . import VectorStores    # exposes ChromaVectorStore etc.
+    _VECTORSTORES_AVAILABLE = True
+except Exception:
+    _VECTORSTORES_AVAILABLE = False
 from .Cache import (
     InMemoryCache, LRUCache, FileCache,
     cached_tool, generate_cache_key, get_global_cache, set_global_cache
@@ -171,6 +178,10 @@ __all__ = [
     "llm_judge",
     "load_case_from_dict",
     "load_cases_from_dir",
+
+    # Prompt optimization (3.1.1)
+    "Compiled",
+    "CompileResult",
 
     # Cache
     "InMemoryCache",
