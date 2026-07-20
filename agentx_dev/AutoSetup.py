@@ -138,8 +138,11 @@ class AutoSetup:
         return self._global_cache
 
 
-# Global auto-setup instance
+import threading as _threading
+
+# Global auto-setup instance + lock guarding initialization.
 _auto_setup = AutoSetup()
+_auto_setup_lock = _threading.Lock()
 
 
 def get_auto_setup() -> AutoSetup:
@@ -148,11 +151,14 @@ def get_auto_setup() -> AutoSetup:
 
 
 def ensure_initialized():
-    """Ensure all auto-setup features are initialized."""
-    _auto_setup.initialize_observability()
-    _auto_setup.initialize_cache()
+    """Idempotently initialize observability + cache subsystems.
 
-
-# Initialize on module import
-if config.observability_enabled or config.caching_enabled:
-    ensure_initialized()
+    Safe to call from multiple threads — the lock guarantees the underlying
+    initializers run at most once. Previously this was invoked at module
+    import time, which made `import agentx_dev` mutate global state before
+    the caller had a handle on anything. Now callers (e.g. AgentRunner)
+    invoke this lazily on first use.
+    """
+    with _auto_setup_lock:
+        _auto_setup.initialize_observability()
+        _auto_setup.initialize_cache()

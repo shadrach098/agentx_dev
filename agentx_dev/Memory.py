@@ -224,7 +224,9 @@ class ImportanceBasedMemory(BaseMemory):
         self,
         max_messages: int = 20,
         importance_threshold: float = 0.3,
-        preserve_system: bool = True
+        preserve_system: bool = True,
+        preserve_head: int = 2,
+        preserve_tail: int = 4,
     ):
         """
         Initialize importance-based memory.
@@ -233,10 +235,16 @@ class ImportanceBasedMemory(BaseMemory):
             max_messages: Maximum number of messages to retain.
             importance_threshold: Minimum importance score to keep (0.0 to 1.0).
             preserve_system: If True, always keep the system message.
+            preserve_head: Always keep the first N non-system messages (the
+                task framing). Default 2.
+            preserve_tail: Always keep the last M non-system messages (recent
+                context the model needs to continue). Default 4.
         """
         self.max_messages = max_messages
         self.importance_threshold = importance_threshold
         self.preserve_system = preserve_system
+        self.preserve_head = max(0, preserve_head)
+        self.preserve_tail = max(0, preserve_tail)
         self.messages: List[Message] = []
         self.system_message: Optional[Message] = None
 
@@ -263,26 +271,59 @@ class ImportanceBasedMemory(BaseMemory):
             self._trim_by_importance()
 
     def _trim_by_importance(self):
-        """Remove least important messages when limit is exceeded."""
-        # Remove messages below importance threshold
-        self.messages = [msg for msg in self.messages if msg.importance >= self.importance_threshold]
+        """Trim while preserving conversation continuity.
 
-        # If still over limit, remove lowest importance messages
-        if len(self.messages) > self.max_messages:
-            # Sort by importance (descending) and keep top N
-            self.messages.sort(key=lambda msg: msg.importance, reverse=True)
-            removed_count = len(self.messages) - self.max_messages
-            self.messages = self.messages[:self.max_messages]
+        Policy (in order):
+          1. Drop anything below ``importance_threshold`` (preserves order).
+          2. If still over ``max_messages``: keep the first ``preserve_head``
+             messages (task framing), the last ``preserve_tail`` messages
+             (recent context), plus top-K-by-importance from the middle.
+             K is whatever budget remains. Result stays in chronological
+             order — the LLM never sees a discontinuity.
 
-            logger.debug(f"Removed {removed_count} low-importance messages")
+        Previous implementation sorted the whole list by importance and
+        truncated, which destroyed chronological order and broke
+        conversation continuity (a later ``sort by timestamp`` in
+        ``get_messages`` couldn't recover messages that had been dropped).
+        """
+        # Step 1: hard threshold prune.
+        self.messages = [m for m in self.messages if m.importance >= self.importance_threshold]
+
+        n = len(self.messages)
+        if n <= self.max_messages:
+            return
+
+        head_n = min(self.preserve_head, n)
+        tail_n = min(self.preserve_tail, n - head_n)
+        middle = self.messages[head_n: n - tail_n] if tail_n else self.messages[head_n:]
+
+        middle_budget = self.max_messages - head_n - tail_n
+        if middle_budget < 0:
+            middle_budget = 0
+
+        if len(middle) > middle_budget:
+            # Pick top-K by importance, but reassemble in original chronological order.
+            ranked = sorted(enumerate(middle), key=lambda kv: kv[1].importance, reverse=True)
+            kept_indices = sorted(idx for idx, _ in ranked[:middle_budget])
+            middle = [middle[i] for i in kept_indices]
+
+        head = self.messages[:head_n]
+        tail = self.messages[n - tail_n:] if tail_n else []
+        removed = n - (len(head) + len(middle) + len(tail))
+        self.messages = head + middle + tail
+
+        if removed:
+            logger.debug(
+                f"Trimmed {removed} middle messages (kept head={len(head)}, "
+                f"middle={len(middle)}, tail={len(tail)})"
+            )
 
     def get_messages(self) -> List[Dict[str, str]]:
-        """Get messages sorted by timestamp."""
+        """Get messages in chronological order. Trim is order-preserving so no
+        re-sort is necessary; the explicit sort stays as a defensive guarantee."""
         result = []
         if self.system_message and self.preserve_system:
             result.append(self.system_message.to_dict())
-
-        # Sort messages by timestamp to maintain conversation flow
         sorted_messages = sorted(self.messages, key=lambda msg: msg.timestamp)
         result.extend([msg.to_dict() for msg in sorted_messages])
         return result
@@ -404,3 +445,30 @@ def create_windowed_memory(window_size: int = 10) -> SlidingWindowMemory:
 def create_token_limited_memory(max_tokens: int = 4000) -> TokenLimitedMemory:
     """Create a token-limited memory."""
     return TokenLimitedMemory(max_tokens=max_tokens)
+
+
+def create_semantic_memory(
+    embeddings: Any = None,
+    *,
+    recent_tail: int = 6,
+    top_k: int = 4,
+):
+    """Convenience factory for a SemanticMemory backed by embeddings.
+
+    When ``embeddings`` is None, falls back to ``HashEmbeddings(256)`` so
+    the call succeeds without any API keys — useful for tests and demos.
+    Pass ``OpenAIEmbeddings()`` for a real semantic backend.
+
+    Lives here (not in Embeddings.py) so the ``create_*_memory`` factory
+    naming is consistent — callers importing from ``agentx_dev`` get
+    all memory constructors from the same surface.
+    """
+    from agentx_dev.Embeddings import (
+        SemanticMemory as _SemanticMemory,
+        HashEmbeddings as _HashEmbeddings,
+    )
+    if embeddings is None:
+        embeddings = _HashEmbeddings(dim=256)
+    return _SemanticMemory(
+        embeddings=embeddings, recent_tail=recent_tail, top_k=top_k,
+    )

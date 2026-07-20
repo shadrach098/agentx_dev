@@ -35,12 +35,12 @@ class AsyncStandardTool:
         """
         self.func = func
 
-        if not name:
-            self.name = self.func.__name__
-        elif not name and not self.func.__name__:
-            raise ValueError("name description needed cant be NONE")
-        else:
+        if name:
             self.name = name
+        elif getattr(func, "__name__", None) and func.__name__ != "<lambda>":
+            self.name = func.__name__
+        else:
+            raise ValueError("Tool name is required (the supplied function has no usable __name__)")
 
         temp = description if description else self.func.__doc__
         if temp:
@@ -86,12 +86,12 @@ class AsyncStructuredTool:
         """
         self.func = func
 
-        if not name:
-            self.name = self.func.__name__
-        elif not name and not self.func.__name__:
-            raise ValueError("name description needed cant be NONE")
-        else:
+        if name:
             self.name = name
+        elif getattr(func, "__name__", None) and func.__name__ != "<lambda>":
+            self.name = func.__name__
+        else:
+            raise ValueError("Tool name is required (the supplied function has no usable __name__)")
 
         temp = description if description else self.func.__doc__
         if temp:
@@ -101,6 +101,20 @@ class AsyncStructuredTool:
 
         self.args_schema = args_schema
         self.__name__ = 'AsyncStructuredTool'
+
+    def to_openai_tool(self, description: str | None = None) -> Dict:
+        """OpenAI tools-API spec built from this tool's args_schema."""
+        from agentx_dev.Agents.Agent import to_openai_tool as _to
+        spec = _to(self.args_schema, description or self.description)
+        spec["function"]["name"] = self.name
+        return spec
+
+    def to_anthropic_tool(self, description: str | None = None) -> Dict:
+        """Anthropic tool spec built from this tool's args_schema."""
+        from agentx_dev.Agents.Agent import to_anthropic_tool as _to
+        spec = _to(self.args_schema, description or self.description)
+        spec["name"] = self.name
+        return spec
 
     async def execute(self, **kwargs):
         """Execute the async tool function with validated arguments."""

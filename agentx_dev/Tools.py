@@ -12,13 +12,6 @@ from pydantic import BaseModel,Field
 
 import logging
 
-# # Change: Added a basic configuration for the logger.
-# # This allows users of the framework to easily control log verbosity and format.
-# # It sets a default to show INFO and higher-level messages.
-logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(message)s')
-
-# # Change: Created a logger instance for this specific module.
-# # This is best practice for making logs traceable to their origin.
 logger = logging.getLogger(__name__)
 
 
@@ -48,21 +41,28 @@ class Model:
 
     @classmethod
     def with_structured_output(cls, model: Type[BaseModel]) -> List[Dict]:
-        """
-        Creates an OpenAI-compatible function specification from a Pydantic model.
+        """Legacy OpenAI `functions` shape — kept for backwards compatibility.
 
-        Args:
-            model (Type[BaseModel]): The Pydantic model class.
-
-        Returns:
-            List[Dict]: A list containing a single dictionary formatted as an
-                        OpenAI function specification.
+        Prefer ``to_openai_tool`` / ``to_anthropic_tool`` for the modern
+        tool-calling APIs.
         """
         return [{
             "name": model.__name__,
-            "description": model.__doc__ or f"Structured output for {model.__name__}",
+            "description": (model.__doc__ or f"Structured output for {model.__name__}").strip(),
             "parameters": model.model_json_schema(),
         }]
+
+    @classmethod
+    def to_openai_tool(cls, model: Type[BaseModel], description: str | None = None) -> Dict:
+        """Modern OpenAI tools-API spec for any Pydantic model."""
+        from agentx_dev.Agents.Agent import to_openai_tool as _to
+        return _to(model, description)
+
+    @classmethod
+    def to_anthropic_tool(cls, model: Type[BaseModel], description: str | None = None) -> Dict:
+        """Anthropic tool spec for any Pydantic model."""
+        from agentx_dev.Agents.Agent import to_anthropic_tool as _to
+        return _to(model, description)
 
 
 # --- Component 2: Tool Definitions ---
@@ -82,18 +82,17 @@ class StandardTool:
             description (str): A description of what the tool does, for the LLM to understand its purpose.
         """
         self.func = func
-        if not name:
-            self.name = self.func.__name__  
-        elif not name and not self.func.__name__:
-            raise ValueError("name description needed cant be NONE")
+        if name:
+            self.name = name
+        elif getattr(func, "__name__", None) and func.__name__ != "<lambda>":
+            self.name = func.__name__
         else:
-            self.name = name        
+            raise ValueError("Tool name is required (the supplied function has no usable __name__)")
         temp = description if description else self.func.__doc__
         if temp:
             self.description = temp
         else:
             raise ValueError("description needed cant be NONE")
-        # Set __name__ for easier type checking in the AgentRunner.
         self.__name__ = 'StandardTool'
 
     def __repr__(self) -> str:
@@ -126,21 +125,33 @@ class StructuredTool:
                                            arguments for the tool.
         """
         self.func = func
-        if not name:
-            self.name = self.func.__name__  
-        elif not name and not self.func.__name__:
-            raise ValueError("name description needed cant be NONE")
+        if name:
+            self.name = name
+        elif getattr(func, "__name__", None) and func.__name__ != "<lambda>":
+            self.name = func.__name__
         else:
-            self.name = name        
+            raise ValueError("Tool name is required (the supplied function has no usable __name__)")
         temp = description if description else self.func.__doc__
         if temp:
             self.description = temp
         else:
             raise ValueError("description needed cant be NONE")
         self.args_schema = args_schema
-       
-        # Set __name__ for easier type checking in the AgentRunner.
         self.__name__ = 'StructuredTool'
+
+    def to_openai_tool(self, description: str | None = None) -> Dict:
+        """OpenAI tools-API spec built from this tool's args_schema."""
+        from agentx_dev.Agents.Agent import to_openai_tool as _to
+        spec = _to(self.args_schema, description or self.description)
+        spec["function"]["name"] = self.name
+        return spec
+
+    def to_anthropic_tool(self, description: str | None = None) -> Dict:
+        """Anthropic tool spec built from this tool's args_schema."""
+        from agentx_dev.Agents.Agent import to_anthropic_tool as _to
+        spec = _to(self.args_schema, description or self.description)
+        spec["name"] = self.name
+        return spec
 
     def __repr__(self) -> str:
         """Provides a developer-friendly representation of the tool."""

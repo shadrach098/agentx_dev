@@ -64,17 +64,34 @@ class AgentXConfig:
         return value.lower() in ('true', '1', 'yes', 'on')
 
     def _load_from_file(self):
-        """Load configuration from file if exists."""
+        """Load configuration from file if exists.
+
+        Failures are logged at WARNING. We don't re-raise so the framework
+        keeps starting with defaults, but we no longer swallow the error
+        silently — a typo in ``config.json`` used to revert to defaults
+        with no signal at all.
+        """
         config_path = Path.home() / ".agentx" / "config.json"
-        if config_path.exists():
-            try:
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                    for key, value in config.items():
-                        if hasattr(self, key):
-                            setattr(self, key, value)
-            except Exception:
-                pass  # Silently fail, use defaults
+        if not config_path.exists():
+            return
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+        except json.JSONDecodeError as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Could not parse {config_path}: {e}. Using defaults."
+            )
+            return
+        except OSError as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Could not read {config_path}: {e}. Using defaults."
+            )
+            return
+        for key, value in config.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
 
     def save_to_file(self):
         """Save current configuration to file."""
@@ -96,7 +113,7 @@ class AgentXConfig:
         }
 
         with open(config_path, 'w') as f:
-            json.dump(config, indent=2, fp=f)
+            json.dump(config, f, indent=2)
 
     def disable_all_enhancements(self):
         """Disable all automatic enhancements (legacy mode)."""

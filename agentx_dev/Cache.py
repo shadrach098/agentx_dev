@@ -15,7 +15,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 import json
 import hashlib
-import pickle
 import logging
 from functools import wraps
 
@@ -88,22 +87,22 @@ class InMemoryCache(BaseCache):
         Args:
             default_ttl: Default time-to-live in seconds (None = no expiration).
         """
+        import threading
         self.default_ttl = default_ttl
         self._cache: Dict[str, CacheEntry] = {}
+        self._lock = threading.RLock()
 
     def get(self, key: str) -> Optional[Any]:
         """Get value from cache if not expired."""
-        entry = self._cache.get(key)
-
-        if entry is None:
-            return None
-
-        if entry.is_expired():
-            self.delete(key)
-            return None
-
-        entry.touch()
-        return entry.value
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return None
+            if entry.is_expired():
+                del self._cache[key]
+                return None
+            entry.touch()
+            return entry.value
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None):
         """Store value in cache with optional TTL."""
@@ -113,30 +112,34 @@ class InMemoryCache(BaseCache):
             value=value,
             created_at=datetime.now(),
             last_accessed=datetime.now(),
-            ttl_seconds=ttl
+            ttl_seconds=ttl,
         )
-        self._cache[key] = entry
+        with self._lock:
+            self._cache[key] = entry
 
     def delete(self, key: str) -> bool:
         """Delete entry from cache."""
-        if key in self._cache:
-            del self._cache[key]
-            return True
-        return False
+        with self._lock:
+            if key in self._cache:
+                del self._cache[key]
+                return True
+            return False
 
     def clear(self):
         """Clear all cache entries."""
-        self._cache.clear()
+        with self._lock:
+            self._cache.clear()
 
     def has(self, key: str) -> bool:
         """Check if key exists and is not expired."""
-        entry = self._cache.get(key)
-        if entry is None:
-            return False
-        if entry.is_expired():
-            self.delete(key)
-            return False
-        return True
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return False
+            if entry.is_expired():
+                del self._cache[key]
+                return False
+            return True
 
     def cleanup_expired(self) -> int:
         """Remove all expired entries. Returns number of removed entries."""
@@ -171,65 +174,59 @@ class LRUCache(BaseCache):
             capacity: Maximum number of entries to store.
             default_ttl: Default time-to-live in seconds.
         """
+        import threading
         self.capacity = capacity
         self.default_ttl = default_ttl
         self._cache: Dict[str, CacheEntry] = {}
+        self._lock = threading.RLock()
 
     def get(self, key: str) -> Optional[Any]:
         """Get value and mark as recently used."""
-        entry = self._cache.get(key)
-
-        if entry is None:
-            return None
-
-        if entry.is_expired():
-            self.delete(key)
-            return None
-
-        entry.touch()
-        # Move to end (most recently used)
-        self._cache[key] = self._cache.pop(key)
-        return entry.value
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return None
+            if entry.is_expired():
+                del self._cache[key]
+                return None
+            entry.touch()
+            self._cache[key] = self._cache.pop(key)
+            return entry.value
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None):
         """Store value, evicting LRU entry if at capacity."""
         ttl = ttl if ttl is not None else self.default_ttl
-
-        # If key exists, update it
-        if key in self._cache:
-            self._cache[key].value = value
-            self._cache[key].created_at = datetime.now()
-            self._cache[key].ttl_seconds = ttl
-            # Move to end
-            self._cache[key] = self._cache.pop(key)
-        else:
-            # Evict LRU if at capacity
+        with self._lock:
+            if key in self._cache:
+                self._cache[key].value = value
+                self._cache[key].created_at = datetime.now()
+                self._cache[key].ttl_seconds = ttl
+                self._cache[key] = self._cache.pop(key)
+                return
             if len(self._cache) >= self.capacity:
-                # First key is least recently used
                 lru_key = next(iter(self._cache))
-                self.delete(lru_key)
+                del self._cache[lru_key]
                 logger.debug(f"Evicted LRU entry: {lru_key}")
-
-            # Add new entry
-            entry = CacheEntry(
+            self._cache[key] = CacheEntry(
                 key=key,
                 value=value,
                 created_at=datetime.now(),
                 last_accessed=datetime.now(),
-                ttl_seconds=ttl
+                ttl_seconds=ttl,
             )
-            self._cache[key] = entry
 
     def delete(self, key: str) -> bool:
         """Delete entry from cache."""
-        if key in self._cache:
-            del self._cache[key]
-            return True
-        return False
+        with self._lock:
+            if key in self._cache:
+                del self._cache[key]
+                return True
+            return False
 
     def clear(self):
         """Clear all entries."""
-        self._cache.clear()
+        with self._lock:
+            self._cache.clear()
 
     def has(self, key: str) -> bool:
         """Check if key exists and is not expired."""
@@ -267,6 +264,28 @@ class FileCache(BaseCache):
         key_hash = hashlib.md5(key.encode()).hexdigest()
         return self.cache_dir / f"{key_hash}.cache"
 
+    @staticmethod
+    def _entry_to_dict(entry: CacheEntry) -> dict:
+        return {
+            "key": entry.key,
+            "value": entry.value,
+            "created_at": entry.created_at.isoformat(),
+            "last_accessed": entry.last_accessed.isoformat(),
+            "access_count": entry.access_count,
+            "ttl_seconds": entry.ttl_seconds,
+        }
+
+    @staticmethod
+    def _entry_from_dict(d: dict) -> CacheEntry:
+        return CacheEntry(
+            key=d["key"],
+            value=d["value"],
+            created_at=datetime.fromisoformat(d["created_at"]),
+            last_accessed=datetime.fromisoformat(d["last_accessed"]),
+            access_count=d.get("access_count", 0),
+            ttl_seconds=d.get("ttl_seconds"),
+        )
+
     def get(self, key: str) -> Optional[Any]:
         """Load value from file cache."""
         filepath = self._get_filepath(key)
@@ -275,17 +294,16 @@ class FileCache(BaseCache):
             return None
 
         try:
-            with open(filepath, 'rb') as f:
-                entry: CacheEntry = pickle.load(f)
+            with open(filepath, 'r', encoding='utf-8') as f:
+                entry = self._entry_from_dict(json.load(f))
 
             if entry.is_expired():
                 self.delete(key)
                 return None
 
             entry.touch()
-            # Update file with new access time
-            with open(filepath, 'wb') as f:
-                pickle.dump(entry, f)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(self._entry_to_dict(entry), f)
 
             return entry.value
 
@@ -294,7 +312,12 @@ class FileCache(BaseCache):
             return None
 
     def set(self, key: str, value: Any, ttl: Optional[int] = None):
-        """Store value in file cache."""
+        """Store value in file cache.
+
+        ``value`` must be JSON-serializable. Pickle was previously used but is
+        an arbitrary-code-execution vector if the cache directory is writable
+        by anything else, so JSON is now the only supported encoding.
+        """
         ttl = ttl if ttl is not None else self.default_ttl
         filepath = self._get_filepath(key)
 
@@ -303,12 +326,17 @@ class FileCache(BaseCache):
             value=value,
             created_at=datetime.now(),
             last_accessed=datetime.now(),
-            ttl_seconds=ttl
+            ttl_seconds=ttl,
         )
 
         try:
-            with open(filepath, 'wb') as f:
-                pickle.dump(entry, f)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(self._entry_to_dict(entry), f)
+        except TypeError as e:
+            logger.error(
+                f"Cache value for key {key!r} is not JSON-serializable: {e}. "
+                "Skipping cache write."
+            )
         except Exception as e:
             logger.error(f"Error saving cache entry: {e}", exc_info=True)
 
@@ -334,7 +362,18 @@ class FileCache(BaseCache):
 
     def has(self, key: str) -> bool:
         """Check if cached value exists and is not expired."""
-        return self.get(key) is not None
+        filepath = self._get_filepath(key)
+        if not filepath.exists():
+            return False
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                entry = self._entry_from_dict(json.load(f))
+        except Exception:
+            return False
+        if entry.is_expired():
+            self.delete(key)
+            return False
+        return True
 
 
 def generate_cache_key(tool_name: str, *args, **kwargs) -> str:
@@ -411,16 +450,22 @@ def cached_tool(cache: BaseCache, ttl: Optional[int] = None, key_func: Optional[
     return decorator
 
 
-# Global cache instance for convenience
+# Global cache instance for convenience. The lock guards swap-in / read-out
+# under concurrent agents; individual cache implementations are responsible
+# for their own internal thread-safety.
+import threading as _threading
+_global_cache_lock = _threading.Lock()
 _global_cache = InMemoryCache(default_ttl=300)  # 5 minutes default
 
 
 def get_global_cache() -> BaseCache:
     """Get the global cache instance."""
-    return _global_cache
+    with _global_cache_lock:
+        return _global_cache
 
 
 def set_global_cache(cache: BaseCache):
     """Set a custom global cache instance."""
     global _global_cache
-    _global_cache = cache
+    with _global_cache_lock:
+        _global_cache = cache

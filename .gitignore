@@ -2,3 +2,26 @@ __pycache__/
 *.pyc
 *.egg-info/
 dist/
+build/
+
+# Secrets -- never commit
+.env
+.env.*
+pypirc.ini
+.pypirc
+*.pem
+*.key
+
+# Local tool + editor state
+.claude/
+.agentx/
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Session / sandbox output produced by demos
+examples/_sandbox/
+examples/_sandbox_mcp/
+sessions/
+.run_python_state.pkl

@@ -19,6 +19,70 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
+import re as _re
+
+# Regex patterns for the most common secret formats. Order matters —
+# longer/more-specific patterns first so they don't get truncated by a
+# greedier match. Each pattern replaces the entire match with [REDACTED]
+# so an attacker reading logs can't reconstruct the secret from partial
+# strings. Add new patterns conservatively; over-redacting noise in logs
+# is its own readability problem.
+_SECRET_PATTERNS: List["_re.Pattern[str]"] = [
+    # Anthropic API keys: sk-ant-… (most common in this framework)
+    _re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}"),
+    # OpenAI API keys: sk-… or sk-proj-…
+    _re.compile(r"sk-(?:proj-)?[A-Za-z0-9_\-]{20,}"),
+    # GitHub fine-grained PATs
+    _re.compile(r"github_pat_[A-Za-z0-9_]{60,}"),
+    # AWS access keys
+    _re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    # Bearer tokens in Authorization headers
+    _re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)([A-Za-z0-9_\-.=]+)"),
+    # Generic api_key / api-key / apikey = …  (long random-looking string)
+    _re.compile(r"(?i)(api[_-]?key\s*[:=]\s*['\"]?)([A-Za-z0-9_\-]{16,})"),
+    # password = …
+    _re.compile(r"(?i)(password\s*[:=]\s*['\"]?)([^\s'\"]{4,})"),
+]
+
+
+def redact_secrets(text: str) -> str:
+    """Replace likely secret strings in ``text`` with ``[REDACTED]``.
+
+    Designed for log output, not for sanitizing user input — the patterns
+    are conservative (they prefer false negatives over false positives so
+    legitimate strings stay readable). Use this before passing args /
+    results / messages into any observability hook that may persist them.
+    """
+    if not text:
+        return text
+    out = text
+    for pattern in _SECRET_PATTERNS:
+        # Patterns with capture groups keep the prefix and redact the value;
+        # patterns without groups replace the whole match.
+        if pattern.groups >= 2:
+            out = pattern.sub(lambda m: m.group(1) + "[REDACTED]", out)
+        else:
+            out = pattern.sub("[REDACTED]", out)
+    return out
+
+
+def redact_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply redact_secrets to every string value in a dict (one level
+    deep). Used by event-builders that pass tool args / results into
+    observability — see _obs_start / _obs_end in ToolRegistry.
+    """
+    out: Dict[str, Any] = {}
+    for k, v in data.items():
+        if isinstance(v, str):
+            out[k] = redact_secrets(v)
+        elif isinstance(v, (list, tuple)):
+            out[k] = [redact_secrets(x) if isinstance(x, str) else x for x in v]
+        elif isinstance(v, dict):
+            out[k] = redact_dict(v)
+        else:
+            out[k] = v
+    return out
+
 
 class EventType(Enum):
     """Types of events that can be tracked in agent execution."""
@@ -182,6 +246,80 @@ class CallbackHook:
             logger.error(f"Error in callback hook: {e}", exc_info=True)
 
 
+class OTelHook:
+    """Bridges the agentx Event stream into OpenTelemetry spans.
+
+    Emit a self-contained span on every ``*.complete`` / ``*.error`` event
+    (i.e. events that already carry ``duration_ms``). The span's ``start_time``
+    is back-computed from ``now() - duration``, so timings are correct in the
+    aggregate — but parent/child nesting between events isn't represented.
+    Doing so would require holding spans open across start/complete pairs,
+    which means tracking event ids; that's deferred to a follow-up.
+
+    Requires ``opentelemetry-api`` to be importable. Configure your SDK
+    (tracer provider, exporter, resource) separately — this hook only emits
+    into whatever provider is active.
+
+    Usage::
+
+        from agentx_dev.Observability import observability, OTelHook
+        observability.add_hook(OTelHook(tracer_name='my-agent'))
+
+    Failure modes:
+        - ``ImportError`` at construction time if opentelemetry-api isn't
+          installed. The exception message names the pip command to fix it.
+        - Per-event failures are caught by ObservabilityManager.emit, so a
+          broken span export never crashes the agent loop.
+    """
+
+    def __init__(self, tracer_name: str = "agentx_dev"):
+        try:
+            from opentelemetry import trace
+            from opentelemetry.trace import Status, StatusCode
+        except ImportError as e:
+            raise ImportError(
+                "OTelHook requires opentelemetry-api. "
+                "Install with: pip install opentelemetry-api opentelemetry-sdk"
+            ) from e
+        self._trace = trace
+        self._Status = Status
+        self._StatusCode = StatusCode
+        self.tracer = trace.get_tracer(tracer_name)
+
+    def on_event(self, event: Event) -> None:
+        # Only emit spans for completion/error events (those carry duration).
+        # Start events are skipped — we'd double-count otherwise.
+        if event.duration_ms is None and not event.type.value.endswith(".error"):
+            return
+
+        end_time_ns = time.time_ns()
+        duration_ns = int((event.duration_ms or 0.0) * 1_000_000)
+        start_time_ns = end_time_ns - duration_ns
+
+        attributes: Dict[str, Any] = {}
+        for k, v in event.data.items():
+            try:
+                # OTel attribute values must be primitives; stringify others
+                # and truncate so a huge tool response can't bloat the span.
+                if isinstance(v, (str, bool, int, float)):
+                    attributes[f"event.{k}"] = v if not isinstance(v, str) else v[:1000]
+                else:
+                    attributes[f"event.{k}"] = str(v)[:1000]
+            except Exception:
+                pass  # Never let attribute serialization kill the span.
+
+        span = self.tracer.start_span(
+            event.type.value,
+            start_time=start_time_ns,
+            attributes=attributes,
+        )
+        try:
+            if event.type.value.endswith(".error"):
+                span.set_status(self._Status(self._StatusCode.ERROR, description=str(event.data.get("error", ""))[:200]))
+        finally:
+            span.end(end_time=end_time_ns)
+
+
 class ObservabilityManager:
     """
     Manages observability hooks and event emission.
@@ -307,7 +445,11 @@ def track_tool_call(func: Callable) -> Callable:
     def wrapper(*args, **kwargs):
         event = observability.start_event(
             EventType.TOOL_CALL_START,
-            {"tool_name": func.__name__, "args": str(args), "kwargs": str(kwargs)}
+            {
+                "tool_name": func.__name__,
+                "args_preview": str(args)[:200],
+                "kwargs_keys": list(kwargs.keys()),
+            }
         )
 
         try:
@@ -334,7 +476,11 @@ def track_async_tool_call(func: Callable) -> Callable:
     async def wrapper(*args, **kwargs):
         event = observability.start_event(
             EventType.TOOL_CALL_START,
-            {"tool_name": func.__name__, "args": str(args), "kwargs": str(kwargs)}
+            {
+                "tool_name": func.__name__,
+                "args_preview": str(args)[:200],
+                "kwargs_keys": list(kwargs.keys()),
+            }
         )
 
         try:

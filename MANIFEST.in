@@ -1,3 +1,11 @@
 graft agentx_dev
+graft examples
+include AGENTX.md
+include README.md
+include LICENSE
 prune tests
-
+prune examples/_sandbox
+prune examples/_sandbox_mcp
+global-exclude __pycache__
+global-exclude *.pyc
+global-exclude *.pyo

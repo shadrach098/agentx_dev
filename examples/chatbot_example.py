@@ -85,8 +85,8 @@ TOOLS = [
 
 def build_chatbot():
     # Swap models freely:
-    model = Claude(model="claude-sonnet-4-6", max_tokens=1024)
-    # model = GPT(model="gpt-4o", temperature=0.4)
+    # model = Claude(model="claude-sonnet-4-6", max_tokens=1024)
+    model = GPT(model="gpt-4o", temperature=0.4)
 
     runner = AgentRunner(
         model=model,
