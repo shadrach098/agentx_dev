@@ -1238,48 +1238,53 @@ async function ask(message) {
 
 ---
 
-## 15. Website monitor chatbot
+## 15. Website uptime monitor + alerter
 
-**Problem** — Watch a set of URLs (competitor pricing, product
-availability, docs pages, status pages, news feeds). Detect meaningful
-changes, alert on specific conditions, and let a human ask "what
-changed on `docs.competitor.com` this week?" via chat.
+**Problem** — Watch N URLs on a schedule. When one goes down, retry
+with backoff to filter out one-off blips; if it stays down, log +
+notify (email / Slack / webhook). When the site comes back up, send
+a **recovery** notification with the outage duration.
 
-Real monitors fail on:
+The hard parts real monitors get wrong:
 
-1. Alert fatigue — every rotating ad triggers a diff.
-2. Missing subtle changes (a price string moved from H1 to H2).
-3. Hammering target sites → getting rate-limited or IP-blocked.
-4. Interpretation — "the pricing page changed" is noise; "the Pro
-   plan dropped $10" is signal.
-5. No history — every check is stateless.
+1. **Flapping** — one 500 doesn't mean "down." Retry with exponential
+   backoff before flipping state.
+2. **Alert storms** — a 30-minute outage that triggers 30 alerts is
+   worse than the outage. One DOWN alert, one UP alert, done.
+3. **Restart amnesia** — if the monitor restarts mid-outage it forgets
+   which sites were down and re-alerts on everything.
+4. **Silent recovery** — sites come back up and nobody knows the
+   incident is over.
+5. **Cost creep** — 100 URLs × 60 checks/hour = 144k requests/day at
+   default settings. Set proper timeouts.
 
-Agentic monitoring solves all five by letting a model interpret the
-diff and decide what's worth alerting on.
-
-**Reach for**:
+**Reach for** — most of this is straight Python (no LLM in the check
+path — that would be wasteful). The framework adds value in three
+places: the alert **wording** (LLM composes context-aware messages),
+the **audit trail** (observability + trace viewer), and the **chat
+interface** for "which sites had outages this week?"
 
 | Piece | Job |
 |---|---|
-| `web_fetch_tool(cache_dir=)` | Fetch URLs, SSRF-guarded |
-| `run_python` (permission-gated) | Compute diffs, extract prices, parse HTML |
-| `VectorStore` keyed by `(url, timestamp)` | Snapshot history |
-| Custom `describe_change` tool | Cheap LLM classifier of "signal vs. noise" |
-| Custom `send_alert` tool | Slack/webhook/email |
-| Scheduled invocation (cron / loop) | Fire the monitor every N minutes |
-| `AgentRunner` in monitor mode + separate chat mode | Same store, two personas |
+| `httpx` (async) | The actual HTTP checks |
+| Retry loop with exponential backoff | Filter one-off blips |
+| Persistent state file (JSON) | Survives restarts, remembers current DOWN sites |
+| `AgentRunner` with an alert-composer persona | Writes the alert body from raw check data |
+| Custom `send_alert` StructuredTool | Slack/email/webhook adapter |
+| Observability + `FileHook` | Full check history dumped to JSONL |
+| Trace viewer | Debug why a specific outage happened |
+| A second `AgentRunner` for chat | "which sites went down this week?" |
 
 ### Full implementation
 
 ```python
 """
-Website monitor + chatbot -- watches URLs, alerts on meaningful
-changes, and lets a human ask 'what changed?' in natural language.
+Website uptime monitor -- retry-tolerant, alerts on down + recovery,
+survives restarts, keeps a full audit trail.
 """
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -1290,313 +1295,732 @@ from pydantic import BaseModel, Field
 
 from agentx_dev import (
     AgentRunner, AgentType, Claude, StructuredTool,
-    OpenAIEmbeddings, VectorStore, vector_search_tool,
-    Permissions,
+    observability, FileHook, config,
 )
 
 
-SNAPSHOTS = Path("./data/monitor_snapshots.json")
+STATE_PATH = Path("./data/uptime_state.json")
+CHECK_LOG = Path("./data/uptime_checks.jsonl")
+ALERT_LOG = Path("./data/alerts.jsonl")
+
+# --------------------------------------------------------------
+# 1. State -- {url: {status, since, last_check, consecutive_fails}}
+# --------------------------------------------------------------
+
+def load_state() -> dict:
+    if STATE_PATH.exists():
+        return json.loads(STATE_PATH.read_text())
+    return {}
+
+def save_state(state: dict) -> None:
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    tmp.replace(STATE_PATH)   # atomic
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-# ---------------------------------------------------------------------
-# 1. Custom tools
-# ---------------------------------------------------------------------
+# --------------------------------------------------------------
+# 2. Check one URL with retry backoff
+# --------------------------------------------------------------
 
-class FetchArgs(BaseModel):
-    url: str = Field(..., description="URL to fetch. Http(s) only.")
+RETRIES = 4                       # 4 attempts before flipping to DOWN
+BACKOFF = [1, 3, 8, 20]           # seconds between attempts
+TIMEOUT = 10                      # per-request seconds
 
 
-async def _fetch(url: str) -> tuple[str, str]:
-    """GET url and return (etag_hash, text). Respects a user-agent so we
-    don't look like a bot; production would also read robots.txt."""
+async def check_url(url: str) -> dict:
+    """Try up to RETRIES times with exponential backoff. Returns a
+    result dict with the terminal status. Never raises -- network
+    errors are captured as 'error'."""
+    attempts = []
     async with httpx.AsyncClient(
-        timeout=15,
-        headers={"User-Agent": "agentx-monitor/1.0 (+contact@example.com)"},
-    ) as c:
-        r = await c.get(url)
-        r.raise_for_status()
-    text = r.text
-    etag = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-    return etag, text
+        timeout=TIMEOUT,
+        follow_redirects=True,
+        headers={"User-Agent": "agentx-uptime/1.0"},
+    ) as client:
+        for i in range(RETRIES):
+            try:
+                r = await client.get(url)
+                attempts.append({"status": r.status_code, "ms": int(r.elapsed.total_seconds() * 1000)})
+                if r.status_code < 500:      # 2xx/3xx/4xx are all "up-ish"
+                    return {"ok": True, "attempts": attempts, "url": url}
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError) as e:
+                attempts.append({"error": type(e).__name__, "detail": str(e)[:100]})
+            if i < RETRIES - 1:
+                await asyncio.sleep(BACKOFF[i])
+    return {"ok": False, "attempts": attempts, "url": url}
 
 
-class DiffArgs(BaseModel):
-    url: str = Field(..., description="URL whose snapshots to diff.")
-
-def diff_last_two(url: str) -> str:
-    """Return a compact human-readable diff of the two most recent
-    snapshots for this URL."""
-    store = VectorStore.load(SNAPSHOTS, embeddings=OpenAIEmbeddings()) if SNAPSHOTS.exists() else None
-    if store is None or len(store) < 2:
-        return f"Not enough snapshots yet for {url} (need 2)."
-    # Find snapshots for this URL sorted by timestamp
-    matches = [(m["ts"], t)
-               for t, m in zip(store._texts, store._metadata)
-               if m.get("url") == url]
-    if len(matches) < 2:
-        return f"Only {len(matches)} snapshots for {url}."
-    matches.sort()
-    old_text = matches[-2][1][:5000]
-    new_text = matches[-1][1][:5000]
-
-    import difflib
-    diff = list(difflib.unified_diff(
-        old_text.splitlines(), new_text.splitlines(),
-        fromfile=f"{url}@{matches[-2][0]}",
-        tofile=f"{url}@{matches[-1][0]}",
-        n=2, lineterm="",
-    ))
-    if not diff:
-        return f"No line-level changes on {url} between the last two snapshots."
-    return "\n".join(diff[:80])  # cap at 80 lines
-
-diff_tool = StructuredTool(
-    func=diff_last_two, args_schema=DiffArgs,
-    name="diff_last_two_snapshots",
-    description=(
-        "Return a unified-diff of the two most recent snapshots for a URL. "
-        "Use to compare 'now' vs. 'previous' for a single URL."
-    ),
-)
-
+# --------------------------------------------------------------
+# 3. Alert composer (LLM) -- turns raw data into a message
+# --------------------------------------------------------------
 
 class AlertArgs(BaseModel):
-    channel: str = Field(..., description="Slack channel like '#pricing-changes'")
-    title: str = Field(..., description="One-line headline (< 80 chars)")
-    body: str = Field(..., description="Multiline detail with the change + link")
-    severity: str = Field("info", description="info / warning / critical")
+    channel: str = Field(..., description="Slack channel / email address / webhook name")
+    subject: str = Field(..., description="Short subject line, < 80 chars")
+    body: str = Field(..., description="Full message body with details + link")
+    severity: str = Field("warning", description="info / warning / critical")
 
-def send_alert(channel: str, title: str, body: str, severity: str = "info") -> str:
-    """Post an alert. This example just writes to a file; production
-    would POST to Slack / PagerDuty / your webhook."""
-    log = Path("./data/alerts.jsonl")
-    log.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "channel": channel, "title": title, "body": body,
-        "severity": severity,
-        "ts": datetime.now(timezone.utc).isoformat(),
-    }
-    with open(log, "a", encoding="utf-8") as f:
-        f.write(json.dumps(payload) + "\n")
-    return f"Alert queued -> {channel} ({severity})"
+def send_alert(channel: str, subject: str, body: str, severity: str = "warning") -> str:
+    """Persist the alert. Production would POST to Slack, send SMTP, etc."""
+    ALERT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(ALERT_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "ts": _now(), "channel": channel,
+            "subject": subject, "body": body, "severity": severity,
+        }) + "\n")
+    print(f"[alert -> {channel}] ({severity}) {subject}")
+    return f"Alert delivered to {channel}"
 
 alert_tool = StructuredTool(
     func=send_alert, args_schema=AlertArgs,
     name="send_alert",
     description=(
-        "Post an alert to a channel. Use ONLY for MEANINGFUL changes -- "
-        "price drops, product launches, outages, breaking news. Do NOT "
-        "use for cosmetic changes (rotating banners, session tokens, "
-        "timestamps in the footer, ad slots)."
+        "Send an alert. severity=critical for confirmed outages, "
+        "warning for recoveries with long downtime, info for brief blips."
     ),
 )
 
 
-# ---------------------------------------------------------------------
-# 2. The snapshot function -- called by cron/loop, not the agent
-# ---------------------------------------------------------------------
-
-async def snapshot_urls(urls: list[str]) -> list[dict]:
-    """Fetch each URL and append it to the snapshot store. Returns
-    the deltas -- URLs whose etag changed since last snapshot."""
-    store = (VectorStore.load(SNAPSHOTS, embeddings=OpenAIEmbeddings())
-             if SNAPSHOTS.exists()
-             else VectorStore(embeddings=OpenAIEmbeddings()))
-
-    deltas = []
-    for url in urls:
-        try:
-            etag, text = await _fetch(url)
-        except Exception as e:
-            print(f"[monitor] fetch failed for {url}: {e}")
-            continue
-
-        # Skip if etag matches the most recent snapshot for this url.
-        recent = [m for m in store._metadata if m.get("url") == url]
-        if recent and recent[-1].get("etag") == etag:
-            continue
-
-        store.add(
-            [text[:20000]],   # cap chunk size
-            ids=[f"{url}#{etag}"],
-            metadata=[{
-                "url": url, "etag": etag,
-                "ts": datetime.now(timezone.utc).isoformat(),
-            }],
-        )
-        deltas.append({"url": url, "etag": etag})
-
-    if deltas:
-        SNAPSHOTS.parent.mkdir(parents=True, exist_ok=True)
-        store.save(SNAPSHOTS)
-    return deltas
-
-
-# ---------------------------------------------------------------------
-# 3. Monitor agent -- runs periodically to interpret deltas
-# ---------------------------------------------------------------------
-
-MONITOR_SYSTEM = """You are a website change monitor.
-
-For each URL whose snapshot changed since last check:
-
-1. Call diff_last_two_snapshots to see WHAT changed.
-2. Classify the change:
-   - MEANINGFUL: price change, product availability, new feature,
-     status/incident, breaking news, policy change
-   - NOISE: rotating ads, timestamps, session tokens, tracking pixels,
-     minor whitespace, session-id-in-URL
-3. If MEANINGFUL: call send_alert with a specific title (mention the
-   actual value, e.g. 'Pro plan dropped from $49 to $39').
-4. If NOISE: say so briefly and move on. Do NOT alert on noise --
-   alert fatigue kills monitors.
-
-Never invent details. Cite the diff verbatim in the alert body."""
-
-
-def build_monitor() -> AgentRunner:
+def build_composer() -> AgentRunner:
+    """LLM that turns raw check results into a human alert."""
     return AgentRunner(
-        model=Claude(enable_prompt_cache=True),
+        model=Claude(model="claude-haiku-4-5", enable_prompt_cache=True),
         agent=AgentType.ReAct,
-        tools=[diff_tool, alert_tool],
-        bind_tools_natively=True,
-        parallel_tool_workers=4,
-        max_iterations=8,
+        tools=[alert_tool],
+        max_iterations=2,
         verbose=False,
-        system_addendum=MONITOR_SYSTEM,
-    )
-
-
-async def monitor_pass(urls: list[str]) -> None:
-    """One full monitor pass: snapshot -> classify -> alert. Call from
-    cron every 5-15 minutes depending on how live the target sites are."""
-    deltas = await snapshot_urls(urls)
-    if not deltas:
-        print("[monitor] no changes")
-        return
-    changed_urls = [d["url"] for d in deltas]
-    print(f"[monitor] {len(changed_urls)} URL(s) changed: {changed_urls}")
-    agent = build_monitor()
-    result = agent.invoke(
-        f"These URLs changed since last check. For each, diff and "
-        f"decide whether to alert:\n\n" + "\n".join(f"- {u}" for u in changed_urls)
-    )
-    print(f"[monitor] {result.content}")
-
-
-# ---------------------------------------------------------------------
-# 4. Chat agent -- answers 'what changed on X.com this week?'
-# ---------------------------------------------------------------------
-
-def build_chat() -> AgentRunner:
-    """Second persona, same snapshot store. The human can ask
-    natural-language questions about the change history."""
-    def _search(query: str, top_k: int = 5, min_score: float = 0.0) -> str:
-        """Retrieve snapshots matching the query. Different tool wrapper
-        than vector_search_tool because we want to expose the ts + url
-        metadata directly in the results."""
-        if not SNAPSHOTS.exists():
-            return "No snapshots yet."
-        store = VectorStore.load(SNAPSHOTS, embeddings=OpenAIEmbeddings())
-        hits = store.search(query, top_k=top_k, min_score=min_score)
-        if not hits:
-            return f"No snapshots matched {query!r}."
-        return "\n\n".join(
-            f"[{h.metadata.get('ts')}] {h.metadata.get('url')}\n"
-            f"score={h.score:.2f}\n---\n{h.text[:800]}..."
-            for h in hits
-        )
-    search_tool = StructuredTool(
-        func=_search,
-        args_schema=type("Args", (BaseModel,), {
-            "query": (str, Field(..., description="Natural-language query.")),
-            "top_k": (int, Field(5)),
-            "min_score": (float, Field(0.0)),
-            "__annotations__": {"query": str, "top_k": int, "min_score": float},
-        }),
-        name="snapshot_search",
-        description=(
-            "Search the historical snapshot store for URL pages matching "
-            "the query. Returns pages with their timestamp + URL so you "
-            "can reason about what changed when."
-        ),
-    )
-    return AgentRunner(
-        model=Claude(enable_prompt_cache=True),
-        agent=AgentType.ReAct,
-        tools=[search_tool, diff_tool],
-        bind_tools_natively=True,
-        max_iterations=6,
         system_addendum=(
-            "You answer natural-language questions about the historical "
-            "snapshots of monitored URLs. Use snapshot_search to find "
-            "relevant pages by content, and diff_last_two_snapshots to "
-            "see specifically what changed. Always cite the URL and "
-            "timestamp of each fact you present."
+            "You compose site-outage alerts. Given raw check data, call "
+            "send_alert exactly ONCE with:\n"
+            "- subject: 'URL <url> is DOWN' or 'URL <url> RECOVERED after Xm'\n"
+            "- body: include the URL, the timestamps, the attempt errors\n"
+            "  verbatim, and (for DOWN) a plain-English guess at the "
+            "  likely cause (timeout -> upstream slow; connection "
+            "  refused -> service crashed; 5xx -> app bug; DNS -> DNS "
+            "  outage).\n"
+            "- severity: 'critical' for DOWN, 'warning' for RECOVERED.\n"
+            "Never invent details not in the input. If you need to speculate, "
+            "prefix with 'Probable cause:'. Do NOT call any other tool."
         ),
     )
 
 
-# ---------------------------------------------------------------------
-# 5. Wiring -- cron loop + chat entry point
-# ---------------------------------------------------------------------
+# --------------------------------------------------------------
+# 4. The monitor loop -- runs forever
+# --------------------------------------------------------------
 
 WATCHED_URLS = [
-    "https://competitor.com/pricing",
-    "https://docs.competitor.com/changelog",
-    "https://status.example.com/",
-    "https://news.ycombinator.com/",
+    "https://example.com/",
+    "https://api.example.com/health",
+    "https://docs.example.com/",
 ]
 
+CHECK_EVERY_SEC = 60      # once per minute
 
-async def cron_loop(period_sec: int = 900):
-    """Run a monitor pass every N seconds. Call from wherever your
-    scheduler lives (systemd timer, cron subprocess, k8s CronJob)."""
+
+async def monitor_loop():
+    composer = build_composer()
+    state = load_state()
+
     while True:
-        try:
-            await monitor_pass(WATCHED_URLS)
-        except Exception as e:
-            print(f"[monitor] pass failed: {e}")
-        await asyncio.sleep(period_sec)
+        results = await asyncio.gather(*(check_url(u) for u in WATCHED_URLS))
+
+        # Append every check to the audit log.
+        CHECK_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(CHECK_LOG, "a", encoding="utf-8") as f:
+            for r in results:
+                f.write(json.dumps({**r, "ts": _now()}) + "\n")
+
+        # Update state + fire alerts on transitions.
+        for r in results:
+            url = r["url"]
+            prev = state.get(url, {"status": "UP", "since": _now()})
+            was_up = prev["status"] == "UP"
+
+            if r["ok"] and not was_up:
+                # RECOVERY: fire an alert with outage duration.
+                down_since = prev["since"]
+                duration = _duration(down_since)
+                composer.invoke(
+                    f"Site RECOVERED. Compose a recovery alert.\n\n"
+                    f"URL: {url}\n"
+                    f"Was down since: {down_since}\n"
+                    f"Duration: {duration}\n"
+                    f"Recovery attempts: {json.dumps(r['attempts'])}"
+                )
+                state[url] = {"status": "UP", "since": _now(), "last_check": _now()}
+
+            elif not r["ok"] and was_up:
+                # DOWN: fire an alert with the failure details.
+                composer.invoke(
+                    f"Site DOWN. Compose a critical alert.\n\n"
+                    f"URL: {url}\n"
+                    f"Failed all {RETRIES} retries with backoff {BACKOFF} sec.\n"
+                    f"Attempt log: {json.dumps(r['attempts'])}"
+                )
+                state[url] = {"status": "DOWN", "since": _now(), "last_check": _now()}
+
+            else:
+                # No transition -- just update last_check.
+                state[url] = {**prev, "last_check": _now()}
+
+        save_state(state)
+        await asyncio.sleep(CHECK_EVERY_SEC)
 
 
-def ask(question: str) -> str:
-    """Human-facing chat entry: 'what changed on the pricing page last week?'"""
-    return build_chat().invoke(question).content
+def _duration(iso_ts: str) -> str:
+    from datetime import datetime
+    then = datetime.fromisoformat(iso_ts)
+    now = datetime.now(timezone.utc)
+    sec = int((now - then).total_seconds())
+    if sec < 60:  return f"{sec}s"
+    if sec < 3600: return f"{sec // 60}m"
+    return f"{sec // 3600}h {(sec % 3600) // 60}m"
 
+
+# --------------------------------------------------------------
+# 5. Chat interface -- 'which sites went down this week?'
+# --------------------------------------------------------------
+
+def build_chat() -> AgentRunner:
+    def _read_checks(limit: int = 500) -> str:
+        """Return the last N lines of the check log as JSON."""
+        if not CHECK_LOG.exists():
+            return "[]"
+        lines = CHECK_LOG.read_text().splitlines()[-limit:]
+        return "\n".join(lines)
+
+    def _read_alerts(limit: int = 100) -> str:
+        if not ALERT_LOG.exists():
+            return "[]"
+        return "\n".join(ALERT_LOG.read_text().splitlines()[-limit:])
+
+    from agentx_dev import StandardTool
+    return AgentRunner(
+        model=Claude(enable_prompt_cache=True),
+        agent=AgentType.ReAct,
+        tools=[
+            StandardTool(
+                func=lambda _: _read_checks(),
+                name="recent_checks",
+                description="Return the last ~500 uptime check events as JSONL.",
+            ),
+            StandardTool(
+                func=lambda _: _read_alerts(),
+                name="recent_alerts",
+                description="Return the last ~100 alerts (DOWN + RECOVERY) as JSONL.",
+            ),
+        ],
+        system_addendum=(
+            "Answer natural-language questions about site uptime history. "
+            "Use recent_checks and recent_alerts to fetch the raw data. "
+            "Cite timestamps + URLs precisely; never fabricate."
+        ),
+    )
+
+
+# --------------------------------------------------------------
+# 6. Entry points
+# --------------------------------------------------------------
 
 if __name__ == "__main__":
     import sys
+    config.observability_enabled = True
+    observability.add_hook(FileHook("./data/uptime_trace.jsonl"))
+
     if sys.argv[1:] == ["monitor"]:
-        asyncio.run(cron_loop(period_sec=900))
+        asyncio.run(monitor_loop())
     elif sys.argv[1:] == ["once"]:
-        asyncio.run(monitor_pass(WATCHED_URLS))
+        async def _once():
+            for url in WATCHED_URLS:
+                r = await check_url(url)
+                print(json.dumps(r, indent=2))
+        asyncio.run(_once())
     else:
-        print(ask(" ".join(sys.argv[1:]) or "what changed today?"))
+        q = " ".join(sys.argv[1:]) or "which sites had outages in the last 24 hours?"
+        print(build_chat().invoke(q).content)
 ```
+
+### Alert-storm prevention
+
+The state file is the key. The monitor only sends an alert on a
+**transition** (UP → DOWN or DOWN → UP), never on repeated same-state
+checks. That's the difference between "one DOWN, one UP" and 30
+alerts during a 30-minute outage.
+
+If the process crashes mid-outage, the state file remembers which URLs
+were DOWN — on restart the loop resumes without re-alerting on
+already-down sites (they're still DOWN, no transition).
+
+### Retry-backoff tradeoffs
+
+Current: 4 attempts at intervals `[1s, 3s, 8s, 20s]` — total ~32s
+before flipping to DOWN. Filters out most transient failures
+(deploy blips, load-balancer swaps, DNS TTL flaps) while catching
+real outages within a minute.
+
+Tune per URL if you need faster or slower reactions:
+
+- **Payment gateway** — 2 attempts, 5s backoff. Every second down =
+  lost revenue.
+- **Marketing site** — 6 attempts, 60s backoff. Doesn't matter if
+  it's briefly slow.
 
 ### Watch for
 
-- **Alert quality is a system prompt problem.** The
-  MEANINGFUL vs. NOISE distinction lives entirely in
-  `MONITOR_SYSTEM`. Refine it after every false positive.
-- **Respect target sites.** Set a real User-Agent that includes your
-  contact. Cap request rate. Cache with an etag (as above) so
-  unchanged pages are cheap.
-- **Robots.txt.** Add a `robots.txt` check before fetch in
-  production; the demo skips it for brevity.
-- **Snapshot store grows fast.** Cap chunk length (as above), and
-  add a nightly job that deletes snapshots older than N days.
-- **Chat freshness.** The chat agent answers from stored snapshots,
-  not from a live fetch. If someone asks "what's on the page RIGHT
-  NOW?", the answer is stale by up to `period_sec` seconds. If that
-  matters, add a `refetch(url)` tool the chat agent can call.
-- **Two personas, one store.** The monitor and chat agents share the
-  same `SNAPSHOTS` VectorStore. Different system prompts, different
-  tool sets, same underlying knowledge. This is a common shape —
-  see [Composing architectures](../concepts/agents.md) §2.5.
+- **Respect the target site.** Set a real User-Agent, cap request
+  rate. If you monitor from 100 nodes × 60/hour, you're the DDoS.
+- **Distinguish `4xx` from `5xx`.** A 404 on a page doesn't mean
+  the site is down (the demo above uses `< 500` as "up-ish").
+  A 401 on a health-check endpoint might mean auth is broken.
+- **Consider TLS separately.** Cert expiry is its own outage class;
+  add a `days_until_expiry` check.
+- **Alert to at least two channels.** If your Slack is down when the
+  site is down, you'll only find out from users.
+- **Store outage history properly.** The JSONL log grows fast. Rotate
+  daily; ship to S3 / persistent storage if you need > 30 days.
 
 ---
+
+## 16. Trading bot (24/7)
+
+**Can this framework do it? Yes — with strict architectural
+constraints. Read the whole section before you deploy anything with
+real capital.**
+
+**Problem** — Run a bot that trades crypto or equities 24/7. Ingest
+market data, generate signals, place orders, manage positions,
+respect risk limits, keep a human notified of unusual activity.
+
+The framework provides the **decision + tool + safety + audit**
+plumbing. You provide the **exchange integration** (there's no
+built-in Binance/Coinbase/IB SDK) and the **strategy** (the LLM
+should NOT invent one).
+
+### Yes / No matrix
+
+| Requirement | Framework provides | You provide |
+|---|---|---|
+| 24/7 loop | asyncio + your scheduler | The `while True` |
+| Market data ingestion | `AsyncStructuredTool` shape | Exchange websocket / `ccxt` / `yfinance` client |
+| Technical indicator math | `run_python` (sandboxed) | The strategy logic (pandas / numpy / TA-Lib) |
+| Signal → action mapping | `AgentRunner` + tools | Whether the LLM decides or a deterministic function does |
+| Order placement | Custom tool shape | The exchange's trading API call |
+| Risk enforcement | `configure_limits` for LLM cost | Position-size + max-loss caps (custom tool that rejects unsafe orders) |
+| Human-in-the-loop | `HandoffCoordinator`, custom approval tool | Your notification channel + approval UI |
+| Backtesting | `EvalRunner` + `run_python` | Historical price data |
+| Audit trail | `observability` + `FileHook` | Nothing — you get it free |
+| Portfolio state | `Session` (JSON persistence) | Reconciliation with the exchange's ledger |
+
+### Serious warnings
+
+- **LLMs are non-deterministic.** Two identical prompts can produce
+  different trades. Do NOT let an LLM be the sole decision-maker
+  for order placement. Use it to **explain** signals, not to
+  **fire** orders unsupervised.
+- **Prompt injection.** If your bot ever reads user-generated text
+  (news headlines, tweets, forum posts), an attacker can inject
+  "sell all your BTC now" and win. Sanitize every external input,
+  or run it through a filter model before the decision agent sees it.
+- **Paper trade for 90+ days.** Your backtest is not your prod.
+- **Hard risk limits go in code, not the prompt.** A system prompt
+  saying "never risk more than 2%" WILL be violated. A Python check
+  that raises `RiskLimitExceeded` before `exchange.place_order()` is
+  called will not.
+
+### Recommended architecture
+
+Three concerns, three components:
+
+```
+                +---------------------+
+                | Signal generator    | <- deterministic Python, no LLM
+                | (indicators, rules) |    (ta-lib, pandas)
+                +---------+-----------+
+                          |  signal
+                          v
+                +---------+-----------+
+                | Explainer agent     | <- LLM: turns signal into a
+                | (LLM, natural lang) |    proposal + risk assessment
+                +---------+-----------+
+                          |  proposal
+                          v
+                +---------+-----------+
+                | Risk gate           | <- deterministic Python check
+                | (limits enforced)   |    before ANY order fires
+                +---------+-----------+
+                          |  approved order
+                          v
+                +---------+-----------+
+                | Executor            | <- tool call to exchange
+                | (exchange SDK)      |    with idempotency key
+                +---------------------+
+```
+
+The LLM sits in the middle where its strengths (explanation,
+edge-case reasoning, natural-language reports) matter — not at the
+edges where determinism matters.
+
+### Sketch implementation
+
+```python
+"""
+Skeleton trading bot. Deterministic signal + LLM explainer +
+hard risk gate + logged execution + human notification.
+
+NOTE: uses ccxt for the exchange API (pip install ccxt). Replace
+with your broker's SDK for equities.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+from agentx_dev import (
+    AgentRunner, AgentType, Claude, StructuredTool,
+    Session, observability, FileHook, config,
+)
+
+
+# --------------------------------------------------------------
+# 1. Deterministic signal generator (no LLM)
+# --------------------------------------------------------------
+
+@dataclass
+class Signal:
+    symbol: str
+    action: str          # "buy" / "sell" / "hold"
+    strength: float      # 0.0 - 1.0
+    reason: str          # "20-day SMA crossed above 50-day"
+    price: float
+    ts: str
+
+
+def compute_signal(symbol: str, candles: list[dict]) -> Signal:
+    """Pure function. No LLM. Runs your backtested strategy.
+
+    Example: SMA crossover. Real strategies would be MUCH more
+    involved (RSI, MACD, order-book depth, volume filters, etc.).
+    """
+    closes = [c["close"] for c in candles[-50:]]
+    if len(closes) < 50:
+        return Signal(symbol, "hold", 0, "insufficient data", closes[-1], _now())
+
+    sma20 = sum(closes[-20:]) / 20
+    sma50 = sum(closes) / 50
+    price = closes[-1]
+
+    if sma20 > sma50 * 1.005:      # bullish cross with 0.5% margin
+        return Signal(symbol, "buy", min(1.0, (sma20 - sma50) / sma50 * 10),
+                      f"SMA-20 ({sma20:.2f}) above SMA-50 ({sma50:.2f})",
+                      price, _now())
+    if sma20 < sma50 * 0.995:
+        return Signal(symbol, "sell", min(1.0, (sma50 - sma20) / sma50 * 10),
+                      f"SMA-20 ({sma20:.2f}) below SMA-50 ({sma50:.2f})",
+                      price, _now())
+    return Signal(symbol, "hold", 0, "SMAs converged", price, _now())
+
+
+# --------------------------------------------------------------
+# 2. Risk gate -- HARD LIMITS IN CODE, NOT PROMPTS
+# --------------------------------------------------------------
+
+MAX_POSITION_USD = 500          # never buy more than $500 in one order
+MAX_TOTAL_EXPOSURE_USD = 2000   # never hold more than $2000 total
+MAX_DAILY_LOSS_USD = 100        # kill switch
+
+
+class RiskLimitExceeded(Exception):
+    pass
+
+
+def enforce_risk(order: dict, portfolio: dict) -> None:
+    """Called BEFORE every exchange order. Raises if the trade would
+    violate any hard limit. Never removable via prompt injection."""
+    notional = order["qty"] * order["price"]
+    if notional > MAX_POSITION_USD:
+        raise RiskLimitExceeded(
+            f"Order ${notional:.2f} exceeds MAX_POSITION_USD ${MAX_POSITION_USD}"
+        )
+    total_exposure = sum(p["qty"] * p["price"] for p in portfolio.get("positions", {}).values())
+    if order["side"] == "buy" and total_exposure + notional > MAX_TOTAL_EXPOSURE_USD:
+        raise RiskLimitExceeded(
+            f"Would exceed MAX_TOTAL_EXPOSURE_USD ${MAX_TOTAL_EXPOSURE_USD}"
+        )
+    if portfolio.get("realized_pnl_today_usd", 0) < -MAX_DAILY_LOSS_USD:
+        raise RiskLimitExceeded(
+            f"Daily loss ${abs(portfolio['realized_pnl_today_usd']):.2f} exceeds "
+            f"MAX_DAILY_LOSS_USD ${MAX_DAILY_LOSS_USD}. Trading halted."
+        )
+
+
+# --------------------------------------------------------------
+# 3. Exchange tool (thin ccxt wrapper)
+# --------------------------------------------------------------
+
+class OrderArgs(BaseModel):
+    symbol: str = Field(..., description="Trading pair, e.g. BTC/USDT")
+    side: str = Field(..., description="'buy' or 'sell'")
+    qty: float = Field(..., description="Quantity in base currency")
+    idempotency_key: str = Field(..., description="Unique key to prevent duplicate submits")
+
+
+def place_order(symbol: str, side: str, qty: float, idempotency_key: str) -> str:
+    """Guarded order placement. RUNS RISK CHECK FIRST. Idempotency key
+    prevents duplicate execution if the agent retries."""
+    # Load portfolio + last price. Real code reads from ccxt.
+    portfolio = json.loads(PORTFOLIO_PATH.read_text()) if PORTFOLIO_PATH.exists() else {"positions": {}, "realized_pnl_today_usd": 0}
+    price = _last_price(symbol)   # your data source
+
+    enforce_risk(
+        {"symbol": symbol, "side": side, "qty": qty, "price": price},
+        portfolio,
+    )
+
+    # Check idempotency
+    seen = portfolio.setdefault("submitted_keys", [])
+    if idempotency_key in seen:
+        return f"Already-submitted order key {idempotency_key} -- no-op"
+    seen.append(idempotency_key)
+
+    # Real order placement:
+    # import ccxt
+    # exchange = ccxt.binance({"apiKey": ..., "secret": ...})
+    # result = exchange.create_market_order(symbol, side, qty)
+    # For the sketch, just log.
+    result = {
+        "status": "filled", "symbol": symbol, "side": side,
+        "qty": qty, "price": price, "ts": _now(),
+    }
+
+    # Update portfolio
+    positions = portfolio.setdefault("positions", {})
+    if side == "buy":
+        pos = positions.setdefault(symbol, {"qty": 0, "avg_price": 0, "price": price})
+        new_qty = pos["qty"] + qty
+        pos["avg_price"] = ((pos["avg_price"] * pos["qty"]) + (price * qty)) / new_qty
+        pos["qty"] = new_qty
+        pos["price"] = price
+    else:
+        pos = positions.get(symbol, {"qty": 0, "avg_price": price})
+        realized = (price - pos["avg_price"]) * qty
+        pos["qty"] -= qty
+        portfolio["realized_pnl_today_usd"] = portfolio.get("realized_pnl_today_usd", 0) + realized
+        if pos["qty"] <= 0:
+            positions.pop(symbol, None)
+
+    PORTFOLIO_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PORTFOLIO_PATH.write_text(json.dumps(portfolio, indent=2))
+
+    return json.dumps(result)
+
+order_tool = StructuredTool(
+    func=place_order, args_schema=OrderArgs,
+    name="place_order",
+    description=(
+        "Place a market order. Automatically risk-checked -- rejects "
+        "orders exceeding position, exposure, or daily-loss limits. "
+        "Requires an idempotency_key to prevent duplicates on retry."
+    ),
+)
+
+
+# --------------------------------------------------------------
+# 4. Human-in-the-loop notification (optional but recommended)
+# --------------------------------------------------------------
+
+class NotifyArgs(BaseModel):
+    subject: str = Field(..., description="One-line trade proposal")
+    body: str = Field(..., description="Full reasoning + risk assessment")
+
+def notify_human(subject: str, body: str) -> str:
+    log = Path("./data/trade_proposals.jsonl")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": _now(), "subject": subject, "body": body}) + "\n")
+    print(f"[proposal] {subject}")
+    return "Notified. Waiting for approval via /admin/approve UI."
+
+notify_tool = StructuredTool(
+    func=notify_human, args_schema=NotifyArgs,
+    name="notify_human",
+    description=(
+        "Send a trade proposal to the human operator for review. Use "
+        "for any unusual signal, low-confidence trade, or when close "
+        "to a risk limit."
+    ),
+)
+
+
+# --------------------------------------------------------------
+# 5. Explainer + executor agent
+# --------------------------------------------------------------
+
+TRADER_SYSTEM = """You are the trading assistant for a small crypto portfolio.
+
+For each signal you receive:
+
+1. Read the signal (symbol, action, strength, reason, current price).
+2. If action is "hold", do nothing and return "no trade".
+3. If action is "buy" or "sell":
+   - Compute a position size = min($200, strength * $500). Round to
+     4 decimals for BTC/ETH-style pairs.
+   - If the trade would use > 50% of MAX_POSITION_USD, call
+     notify_human instead of placing it.
+   - Otherwise, call place_order with a fresh idempotency_key
+     (format: "{symbol}-{ts}-{action}").
+4. If place_order returns a RiskLimitExceeded error, call
+   notify_human with the reason. Never retry a risk-blocked order.
+
+Report exactly ONE tool call per signal. Never fire two orders."""
+
+
+def build_trader() -> AgentRunner:
+    return AgentRunner(
+        model=Claude(enable_prompt_cache=True).configure_limits(
+            budget_usd=1.00,     # per-session LLM cost, NOT trade size
+            input_price_per_1k=0.003,
+            output_price_per_1k=0.015,
+        ),
+        agent=AgentType.ReAct,
+        tools=[order_tool, notify_tool],
+        max_iterations=3,
+        verbose=False,
+        system_addendum=TRADER_SYSTEM,
+    )
+
+
+# --------------------------------------------------------------
+# 6. The 24/7 loop
+# --------------------------------------------------------------
+
+WATCH_SYMBOLS = ["BTC/USDT", "ETH/USDT"]
+PORTFOLIO_PATH = Path("./data/portfolio.json")
+
+
+async def trading_loop():
+    """Poll every 60s. Real prod would use exchange websockets."""
+    trader = build_trader()
+    session = Session.start(trader, metadata={"strategy": "sma_crossover"})
+
+    while True:
+        for symbol in WATCH_SYMBOLS:
+            try:
+                candles = await _fetch_candles(symbol)      # your ccxt call
+                signal = compute_signal(symbol, candles)
+
+                if signal.action == "hold":
+                    continue
+
+                # Hand the signal to the LLM to shape into an order.
+                prompt = (
+                    f"SIGNAL RECEIVED\n"
+                    f"symbol: {signal.symbol}\n"
+                    f"action: {signal.action}\n"
+                    f"strength: {signal.strength:.2f}\n"
+                    f"reason: {signal.reason}\n"
+                    f"price: {signal.price}\n"
+                    f"timestamp: {signal.ts}\n\n"
+                    f"Follow the trading protocol."
+                )
+                result = session.invoke(prompt)
+                print(f"[trader] {symbol}: {result.content}")
+            except Exception as e:
+                print(f"[trader] {symbol} failed: {e}")
+
+        session.save(f"./data/sessions/trader.json")
+        await asyncio.sleep(60)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _fetch_candles(symbol):
+    """STUB. Replace with ccxt: exchange.fetch_ohlcv(symbol, '5m', limit=50)"""
+    raise NotImplementedError("Wire your exchange SDK here.")
+
+
+def _last_price(symbol):
+    """STUB. Replace with ccxt: exchange.fetch_ticker(symbol)['last']"""
+    return 100.0
+
+
+if __name__ == "__main__":
+    config.observability_enabled = True
+    observability.add_hook(FileHook("./data/trader_trace.jsonl"))
+
+    import sys
+    if sys.argv[1:] == ["run"]:
+        asyncio.run(trading_loop())
+    elif sys.argv[1:] == ["dry-run"]:
+        # Backtest / paper mode: same flow, but place_order writes to
+        # a different portfolio.json and never hits the exchange.
+        os.environ["PAPER_TRADING"] = "1"
+        asyncio.run(trading_loop())
+```
+
+### Backtesting via the eval harness
+
+Use `EvalRunner` against historical candles:
+
+```python
+from agentx_dev import EvalCase, EvalRunner, contains
+
+CASES = [
+    # Golden known-good scenarios from real market history.
+    EvalCase(
+        name="bull_cross_2024_04",
+        input="signal: buy BTC/USDT strength 0.7 reason 'SMA cross' price 65000",
+        assertions=[contains("place_order"), contains("buy")],
+    ),
+    EvalCase(
+        name="over_size_rejected",
+        input="signal: buy BTC/USDT strength 0.99 reason 'strong' price 200000",
+        assertions=[contains("notify_human")],   # $500 max, price too high
+    ),
+]
+
+report = EvalRunner(lambda: build_trader()).run(CASES)
+assert report.pass_rate == 1.0, report.summary()
+```
+
+Fail loud on prompt regressions. If a Claude version upgrade changes
+how the agent interprets signals, the eval suite catches it before
+capital moves.
+
+### Watch for
+
+- **Idempotency is not optional.** If the agent loop crashes and
+  restarts mid-order, it must NOT re-submit. The `idempotency_key`
+  + submitted-keys ledger prevents duplicates.
+- **Portfolio reconciliation.** Your local `portfolio.json` is not
+  the source of truth — the exchange's ledger is. Reconcile daily.
+- **Rate limits.** Every exchange has them. Use `TokenBucket`:
+  `bucket = TokenBucket(capacity=10, refill_per_sec=1); bucket.acquire()`
+  before every API call.
+- **Kill switch.** Add a file check every loop: if
+  `./data/HALT_TRADING` exists, break out. Operators need a
+  panic-stop that doesn't require code deploys.
+- **Regulation.** Framework-driven doesn't mean regulation-exempt.
+  Know the rules where you operate.
+- **Cost of the LLM itself.** `budget_usd=1.00` here caps LLM cost
+  per session — not per trade. A busy trading day with many signals
+  can hit that cap. Bump or split sessions per symbol.
+
+The framework does NOT ship exchange adapters, tax reporting, or
+strategy backtests. Everything above assumes you bring those.
 
 ## What we don't ship (deliberately)
 
