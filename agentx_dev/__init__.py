@@ -34,6 +34,7 @@ from .Embeddings import (
     Embeddings, OpenAIEmbeddings, HashEmbeddings,
     VectorStore, VectorHit, SemanticMemory, vector_search_tool,
 )
+from .Splitters import Document, TextSplitter
 from .Handoffs import (
     HandoffRequest, HandoffResult, HandoffCoordinator, handoff_tool,
 )
@@ -157,6 +158,8 @@ __all__ = [
     "VectorHit",
     "SemanticMemory",
     "vector_search_tool",
+    "Document",
+    "TextSplitter",
 
     # Agent-to-agent handoffs (3.1)
     "HandoffRequest",

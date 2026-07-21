@@ -94,20 +94,14 @@ def build_or_load_kb() -> VectorStore:
             "and can be revoked at any time. Bearer-token auth is standard."
         )
 
+    # Recursive splitter: paragraph -> line -> sentence -> word ->
+    # char boundaries. Much better than raw character windows.
+    from agentx_dev import TextSplitter
+    splitter = TextSplitter(chunk_size=1000, chunk_overlap=200)
+    docs = splitter.split_directory(KB_DIR, glob="**/*.md")
+
     store = VectorStore(embeddings=_embeddings())
-    for f in KB_DIR.rglob("*.md"):
-        text = f.read_text(encoding="utf-8")
-        chunks, i = [], 0
-        while i < len(text):
-            chunks.append(text[i: i + 1000])
-            i += 800   # 200-char overlap
-        store.add(
-            chunks,
-            metadata=[
-                {"source": str(f.relative_to(KB_DIR)), "chunk": j}
-                for j in range(len(chunks))
-            ],
-        )
+    store.add_documents(docs)
     KB_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
     store.save(KB_INDEX_PATH)
     print(f"[kb] indexed {len(store)} chunks from {KB_DIR}/")

@@ -21,18 +21,18 @@ folder of PDFs. Standard RAG.
 / `PgVectorStore` for scale) + `vector_search_tool` + any `AgentRunner`.
 
 ```python
-from pathlib import Path
 from agentx_dev import (
     AgentRunner, AgentType, Claude,
     OpenAIEmbeddings, VectorStore, vector_search_tool,
+    TextSplitter,
 )
 
 # Ingest -- once, offline
+splitter = TextSplitter(chunk_size=1000, chunk_overlap=200)
+docs = splitter.split_directory("./docs", glob="**/*.md")
+
 store = VectorStore(embeddings=OpenAIEmbeddings())
-for f in Path("./docs").rglob("*.md"):
-    text = f.read_text(encoding="utf-8")
-    chunks = [text[i:i+1000] for i in range(0, len(text), 800)]  # 200-char overlap
-    store.add(chunks, metadata=[{"source": str(f)}] * len(chunks))
+store.add_documents(docs)
 store.save("./data/kb.json")
 
 # Serve
@@ -46,7 +46,10 @@ answer = runner.invoke("How does the runner handle circuit-breaker trips?")
 ```
 
 **Watch for** — chunk size trades recall vs. precision. Start with
-800-1500 chars + 200 overlap; adjust after you see what queries miss.
+`TextSplitter(chunk_size=1000, chunk_overlap=200)` — recursive on
+paragraph/sentence boundaries, then adjust after you see what queries
+miss. Bump to Chroma/Qdrant/pgvector adapters (same interface) when
+you outgrow the in-memory store.
 
 ---
 
@@ -595,21 +598,12 @@ from agentx_dev import (
 
 def build_kb() -> VectorStore:
     """The public knowledge base (docs, manuals, policies)."""
+    from agentx_dev import TextSplitter
+    splitter = TextSplitter(chunk_size=1000, chunk_overlap=200)
+    docs = splitter.split_directory("./data/kb", glob="**/*.md")
+
     store = VectorStore(embeddings=OpenAIEmbeddings(model="text-embedding-3-small"))
-    for f in Path("./data/kb").rglob("*.md"):
-        text = f.read_text(encoding="utf-8")
-        # Sensible chunking: ~800 chars with 200 overlap.
-        chunks, i = [], 0
-        while i < len(text):
-            chunks.append(text[i: i + 1000])
-            i += 800
-        store.add(
-            chunks,
-            metadata=[
-                {"source": str(f.relative_to("./data/kb")), "chunk": j}
-                for j in range(len(chunks))
-            ],
-        )
+    store.add_documents(docs)
     return store
 
 
@@ -944,19 +938,17 @@ SITE_KB = Path("./data/site_kb.json")
 def index_site(page_texts: dict[str, str]) -> None:
     """Ingest {url: markdown-or-html-text} into the site's VectorStore.
     Real production would crawl the sitemap or read from a CMS."""
+    from agentx_dev import Document, TextSplitter
+    splitter = TextSplitter(chunk_size=1000, chunk_overlap=200)
+
+    raw_docs = [
+        Document(text=text, metadata={"url": url, "kind": "page"})
+        for url, text in page_texts.items()
+    ]
+    chunked = splitter.split_documents(raw_docs)
+
     store = VectorStore(embeddings=OpenAIEmbeddings())
-    for url, text in page_texts.items():
-        chunks, i = [], 0
-        while i < len(text):
-            chunks.append(text[i: i + 1000])
-            i += 800
-        store.add(
-            chunks,
-            metadata=[
-                {"url": url, "chunk": j, "kind": "page"}
-                for j in range(len(chunks))
-            ],
-        )
+    store.add_documents(chunked)
     SITE_KB.parent.mkdir(parents=True, exist_ok=True)
     store.save(SITE_KB)
 

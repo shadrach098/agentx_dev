@@ -275,6 +275,27 @@ class VectorStore:
                     self._metadata.append(dict(meta))
         return list(ids)
 
+    def add_documents(
+        self,
+        docs: Sequence[Any],
+        *,
+        ids: Optional[Sequence[str]] = None,
+    ) -> List[str]:
+        """Ergonomic add for ``Document`` objects (see
+        ``agentx_dev.Splitters.Document``). Unpacks ``doc.text`` and
+        ``doc.metadata`` for you. Complements ``add()`` when your
+        upstream is a ``TextSplitter``.
+
+        Any object with ``.text`` and ``.metadata`` attributes works --
+        no hard dependency on the Document dataclass, so callers can
+        pass their own doc-shaped types.
+        """
+        if not docs:
+            return []
+        texts = [d.text for d in docs]
+        metadata = [dict(getattr(d, "metadata", {}) or {}) for d in docs]
+        return self.add(texts, ids=ids, metadata=metadata)
+
     def delete(self, ids: Sequence[str]) -> int:
         """Remove docs by id. Returns count removed."""
         removed = 0

@@ -144,6 +144,15 @@ class ChromaVectorStore:
             ))
         return hits
 
+    def add_documents(self, docs, *, ids=None):
+        """Same shape as ``VectorStore.add_documents`` -- unpacks
+        ``doc.text`` and ``doc.metadata`` and delegates to ``add()``."""
+        if not docs:
+            return []
+        texts = [d.text for d in docs]
+        metadata = [dict(getattr(d, "metadata", {}) or {}) for d in docs]
+        return self.add(texts, ids=ids, metadata=metadata)
+
     def delete(self, ids: Sequence[str]) -> int:
         ids = list(ids)
         if not ids:

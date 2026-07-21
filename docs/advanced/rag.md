@@ -112,32 +112,59 @@ vector_search_tool(
 )
 ```
 
-## Ingesting a real corpus
+## Ingesting a real corpus — `TextSplitter`
 
-For markdown / PDF / code:
+The framework ships a recursive text splitter so you don't have to
+hand-roll the chunk loop. It walks paragraph → line → sentence → word
+→ char boundaries and picks the best available split point:
 
 ```python
-from pathlib import Path
+from agentx_dev import TextSplitter, Document, VectorStore, OpenAIEmbeddings
 
-def chunks(text: str, size: int = 1000, overlap: int = 200):
-    """Simple character-window chunker. Real apps use tiktoken-based windowers."""
-    for i in range(0, len(text), size - overlap):
-        yield text[i: i + size]
+splitter = TextSplitter(chunk_size=1000, chunk_overlap=200)
 
-texts, metadatas = [], []
-for f in Path("./docs").rglob("*.md"):
-    body = f.read_text(encoding="utf-8")
-    for j, chunk in enumerate(chunks(body)):
-        texts.append(chunk)
-        metadatas.append({"source": str(f), "chunk": j})
+# Simplest: one file
+docs = splitter.split_file("./docs/x.md")
 
+# Walk a directory
+docs = splitter.split_directory("./docs", glob="**/*.md")
+
+# Split arbitrary strings you already have in memory
+docs = splitter.split_documents([
+    Document(text=body, metadata={"url": url})
+    for url, body in page_texts.items()
+])
+
+# Ingest into a store
 store = VectorStore(embeddings=OpenAIEmbeddings())
-store.add(texts, metadata=metadatas)
+store.add_documents(docs)
 store.save("./data/kb.json")
 ```
 
-Now `runner.invoke("...")` can call `vector_search` and see file
-provenance in the results.
+Every emitted `Document` carries the original metadata plus a
+`chunk_index` field, so retrieval hits can be traced back to the
+right piece of the source.
+
+**Splitter parameters:**
+
+| Param | Default | Purpose |
+|---|---|---|
+| `chunk_size` | `1000` | Max characters per chunk |
+| `chunk_overlap` | `min(200, size/5)` | Chars shared between adjacent chunks |
+| `separators` | `["\n\n", "\n", ". ", " ", ""]` | Boundary hierarchy, tried in order |
+| `length_fn` | `len` | Swap for a tokenizer's length function (`tiktoken`) |
+| `keep_separator` | `True` | Keep the delimiter at chunk boundaries so periods survive |
+
+**Custom strategies:**
+
+- **Fixed-char** — pass `separators=[""]` for pure character windowing.
+- **Token-length** — pass `length_fn=lambda s: len(tiktoken_encode(s))`.
+- **Markdown-heading-aware** — pass `separators=["\n## ", "\n### ", "\n\n", ...]`
+  so chunks land at section boundaries.
+
+`Document` is a `@dataclass` (`text`, `metadata`); any dict-like
+object with `.text` + `.metadata` attributes works with
+`store.add_documents()` too, so you can bring your own doc type.
 
 ## Numpy acceleration
 
