@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Full lockup: mark on the left, wordmark on the right, baseline-aligned.
+  This is the primary logo for headers, docs, README, presentations.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 96" role="img"
+     aria-label="agentx_dev">
+  <title>agentx_dev</title>
+  <style>
+    .word {
+      font: 500 68px "JetBrains Mono", ui-monospace, "SFMono-Regular",
+            Menlo, Consolas, monospace;
+      letter-spacing: -0.02em;
+      fill: #EEEEF0;
+    }
+  </style>
+
+  <!-- Mark, scaled from 32 -> 88 units, left-aligned, vertically centered. -->
+  <g transform="translate(0 4) scale(2.75)">
+    <path
+      d="M 6 8 L 16 16 L 6 24"
+      fill="none"
+      stroke="#B8FF3E"
+      stroke-width="3"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <rect x="21" y="8" width="3" height="16" rx="0.5" fill="#B8FF3E" />
+  </g>
+
+  <!-- Wordmark, 20-unit gap from the mark. -->
+  <text x="108" y="66" class="word">agentx_dev</text>
+</svg>

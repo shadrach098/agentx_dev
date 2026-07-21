@@ -1,0 +1,70 @@
+name: tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install package + dev extras + Anthropic (for prompt-cache tests)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,anthropic]"
+
+      - name: Show installed versions
+        run: |
+          python --version
+          pip freeze
+
+      - name: Run pytest
+        run: pytest tests/ -v --tb=short
+        env:
+          # Tests do NOT hit real LLM APIs -- MockModel handles all runner
+          # tests -- but if any test accidentally calls out, these blank
+          # keys make it fail loud instead of silently costing money.
+          OPENAI_API_KEY: ""
+          ANTHROPIC_API_KEY: ""
+
+  docs-syntax:
+    name: docs site syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Node syntax check
+        run: |
+          node --check host/app.js
+          node --check viewer/app.js
+      - name: SVG well-formed
+        run: |
+          python -c "
+          import xml.etree.ElementTree as ET
+          for f in ['brand/logo/mark.svg','brand/logo/mark-mono.svg','brand/logo/wordmark.svg','brand/logo/logo-full.svg','brand/logo/app-icon.svg']:
+              ET.parse(f); print('OK', f)
+          "
+      - name: build_data.py runs clean
+        run: |
+          pip install -e .
+          python host/build_data.py

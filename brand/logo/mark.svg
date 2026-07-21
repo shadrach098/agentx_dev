@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  agentx_dev primary mark. A chevron prompt followed by a cursor bar.
+  Two glyphs, one moment: dispatch meets ready.
+  Viewbox 32x32 keeps geometry crisp at every render size.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="agentx_dev">
+  <title>agentx_dev</title>
+  <!-- Chevron: apex at (16,16), opens left toward (6,8) and (6,24). -->
+  <path
+    d="M 6 8 L 16 16 L 6 24"
+    fill="none"
+    stroke="#B8FF3E"
+    stroke-width="3"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <!-- Cursor bar: 3 units wide, 16 tall, right of the chevron. -->
+  <rect x="21" y="8" width="3" height="16" rx="0.5" fill="#B8FF3E" />
+</svg>

@@ -4,28 +4,40 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>agentx_dev — documentation</title>
+  <link rel="icon" type="image/svg+xml" href="../brand/logo/mark.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=9" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" />
 </head>
 <body>
   <header class="topbar" id="topbar">
     <div class="brand">
-      <a href="#" class="brand-link"><span class="brand-name">agentx_dev</span><span class="cursor">|</span></a>
+      <a href="#" class="brand-link" aria-label="agentx_dev home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+            <path d="M 6 8 L 16 16 L 6 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            <rect x="21" y="8" width="3" height="16" rx="0.5" fill="currentColor"/>
+          </svg>
+        </span>
+        <span class="brand-name">agentx_dev</span>
+      </a>
       <span class="brand-version">v3.1</span>
     </div>
     <div class="topbar-actions">
-      <div class="search-wrap">
-        <span class="search-key">⌘K</span>
-        <input id="search" type="search" placeholder="search docs" autocomplete="off" spellcheck="false" />
-      </div>
+      <button id="palette-trigger" class="palette-trigger" aria-label="Open command palette">
+        <span class="palette-trigger-icon">/</span>
+        <span class="palette-trigger-label">search docs</span>
+        <span class="palette-trigger-key">⌘K</span>
+      </button>
       <button id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">
         <span class="theme-dot"></span>
       </button>
     </div>
   </header>
+
+  <div id="progress-bar" class="progress-bar" aria-hidden="true"></div>
 
   <div class="layout">
     <aside class="sidebar" id="sidebar">
@@ -51,13 +63,30 @@
     <aside class="toc" id="toc" aria-label="On this page"></aside>
   </div>
 
+  <!-- Command palette (Cmd+K). Hidden until opened. -->
+  <div id="palette-backdrop" class="palette-backdrop" role="dialog" aria-hidden="true" aria-modal="true" aria-label="Command palette">
+    <div class="palette" id="palette">
+      <div class="palette-input-row">
+        <span class="palette-input-icon">/</span>
+        <input id="palette-input" type="text" placeholder="type to filter... esc to close" autocomplete="off" spellcheck="false" />
+        <span class="palette-hint">↑↓ navigate · enter select · esc close</span>
+      </div>
+      <div id="palette-list" class="palette-list" role="listbox"></div>
+      <div class="palette-footer">
+        <span class="palette-foot-item"><kbd>↵</kbd> open</span>
+        <span class="palette-foot-item"><kbd>↑</kbd><kbd>↓</kbd> move</span>
+        <span class="palette-foot-item"><kbd>esc</kbd> close</span>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-json.min.js"></script>
-  <script src="data.js"></script>
-  <script src="app.js"></script>
+  <script src="data.js?v=9"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

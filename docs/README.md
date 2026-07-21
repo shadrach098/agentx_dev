@@ -1,7 +1,7 @@
 # AgentX documentation
 
-`agentx_dev` is a small, production-ready Python framework for building
-LLM agents. Think LangChain, minus the sprawl.
+`agentx_dev` is a production-grade Python framework for building
+LLM agents. Nothing sprawls.
 
 This documentation walks you from your first agent to a production
 multi-agent system. Read in order if you're new; jump to the section
@@ -15,6 +15,7 @@ If you're new, work top-to-bottom in these three phases:
 
 **Phase 1 — get running (30 minutes)**
 1. [Getting started](getting-started.md) — install, first agent, mental model
+2. [Use cases](use-cases.md) — see yourself in the framework: 12 concrete scenarios with runnable code
 
 **Phase 2 — build things (1-2 hours)**
 2. [Chat models](concepts/models.md) — GPT, Claude, retries, budgets, streaming

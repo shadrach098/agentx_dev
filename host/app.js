@@ -46,6 +46,67 @@
     });
   }
 
+  /* -------- Breadcrumbs -------- */
+
+  function renderBreadcrumbs(slug) {
+    // Locate the slug in NAV to figure out which group it belongs to.
+    let groupName = null;
+    let itemTitle = null;
+    for (const g of NAV) {
+      for (const it of g.items) {
+        if (it.slug === slug) {
+          groupName = g.name;
+          itemTitle = it.title;
+          break;
+        }
+      }
+      if (groupName) break;
+    }
+    if (!groupName) return "";
+    return `
+      <div class="breadcrumbs">
+        <span class="group">${escapeHtml(groupName)}</span>
+        <span class="sep">/</span>
+        <span>${escapeHtml(itemTitle)}</span>
+      </div>
+    `;
+  }
+
+  /* -------- Header anchor links -------- */
+
+  function addAnchorLinks(container, slug) {
+    container.querySelectorAll("h2, h3").forEach((h) => {
+      if (!h.id) return;
+      const a = document.createElement("a");
+      a.className = "anchor-link";
+      a.href = `#${slug}#${h.id}`;
+      a.textContent = "#";
+      a.setAttribute("aria-label", `Permalink to ${h.textContent}`);
+      h.insertBefore(a, h.firstChild);
+    });
+  }
+
+  /* -------- Reading progress bar -------- */
+
+  function updateProgressBar() {
+    const bar = $("progress-bar");
+    if (!bar) return;
+    const doc = $("doc");
+    if (!doc || currentSlug() === "index") {
+      bar.style.width = "0%";
+      return;
+    }
+    const rect = doc.getBoundingClientRect();
+    const total = doc.offsetHeight - window.innerHeight + 100; // padding buffer
+    if (total <= 0) {
+      bar.style.width = "100%";
+      return;
+    }
+    const scrolled = -rect.top;
+    const pct = Math.max(0, Math.min(100, (scrolled / total) * 100));
+    bar.style.width = pct.toFixed(1) + "%";
+  }
+
   function enhanceCodeBlocks(container) {
     container.querySelectorAll("pre").forEach((pre) => {
       const code = pre.querySelector("code");
@@ -94,25 +155,48 @@
 
   /* ------------------------------------------------------------------ Sidebar */
 
+  function loadCollapsed() {
+    try { return new Set(JSON.parse(localStorage.getItem("agentx-collapsed") || "[]")); }
+    catch { return new Set(); }
+  }
+  function saveCollapsed(set) {
+    try { localStorage.setItem("agentx-collapsed", JSON.stringify(Array.from(set))); }
+    catch {}
+  }
+
   function renderSidebar(activeSlug) {
     const nav = $("nav");
     if (!nav) return;
-    // Keep the active-marker element; rebuild the rest.
     const marker = $("active-marker");
     nav.innerHTML = "";
     if (marker) nav.appendChild(marker);
 
-    NAV.forEach((group, gIdx) => {
+    const collapsed = loadCollapsed();
+    let activeFound = false;
+    NAV.forEach((group) => {
       const wrap = document.createElement("div");
-      wrap.className = "nav-group";
+      wrap.className = "nav-group" + (collapsed.has(group.name) ? " collapsed" : "");
       const title = document.createElement("div");
       title.className = "nav-group-title";
-      title.textContent = group.name;
+      title.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="caret">v</span>`;
+      title.setAttribute("data-group", group.name);
+      title.addEventListener("click", () => {
+        wrap.classList.toggle("collapsed");
+        const isCollapsed = wrap.classList.contains("collapsed");
+        const set = loadCollapsed();
+        if (isCollapsed) set.add(group.name);
+        else set.delete(group.name);
+        saveCollapsed(set);
+        // Marker may need to re-position now that item heights changed.
+        requestAnimationFrame(() => updateActiveMarker());
+      });
       wrap.appendChild(title);
       group.items.forEach((it) => {
         const a = document.createElement("a");
         a.href = "#" + it.slug;
-        a.className = "nav-item" + (it.slug === activeSlug ? " active" : "");
+        const isActive = !activeFound && it.slug === activeSlug;
+        if (isActive) activeFound = true;
+        a.className = "nav-item" + (isActive ? " active" : "");
         a.textContent = it.title;
         a.setAttribute("data-slug", it.slug);
         wrap.appendChild(a);
@@ -120,14 +204,18 @@
       nav.appendChild(wrap);
     });
 
-    // Position the sliding accent marker at the active item.
-    updateActiveMarker();
+    // Double-rAF so getBoundingClientRect reads a settled layout.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => updateActiveMarker());
+    });
   }
 
   function updateActiveMarker() {
     const marker = $("active-marker");
     const nav = $("nav");
     if (!marker || !nav) return;
+    // Only one .active item should exist (guaranteed by renderSidebar).
+    // Query all just in case, and take the first.
     const active = nav.querySelector(".nav-item.active");
     if (!active) {
       marker.classList.remove("visible");
@@ -145,7 +233,12 @@
   function renderToc(container) {
     const toc = $("toc");
     if (!toc) return;
-    const headings = container.querySelectorAll("h2, h3");
+    // Article headings only -- skip headings inside cards / lists / other
+    // UI chrome that shouldn't appear in the "on this page" navigation.
+    const raw = container.querySelectorAll("h2, h3");
+    const headings = Array.from(raw).filter((h) => {
+      return !h.closest(".card, .search-result, .prev-next, .whats-new-list");
+    });
     if (!headings.length) {
       toc.innerHTML = "";
       return;
@@ -201,6 +294,7 @@
       renderLanding(doc);
       renderPrevNext(null);
       renderToc(doc);   // hero has no headings; clears the toc
+      updateProgressBar();
       return;
     }
 
@@ -212,6 +306,7 @@
         <p><a href="#">Return home</a></p>`;
       renderPrevNext(null);
       renderToc(doc);
+      updateProgressBar();
       return;
     }
 
@@ -227,8 +322,11 @@
         `;
       } else {
         const md = rewriteRelativeLinks(entry.markdown, slug);
-        doc.innerHTML = marked.parse(md);
+        const html = marked.parse(md);
+        // Prepend breadcrumbs to orient the reader.
+        doc.innerHTML = renderBreadcrumbs(slug) + html;
         addHeadingIds(doc);
+        addAnchorLinks(doc, slug);
         enhanceCodeBlocks(doc);
       }
 
@@ -239,6 +337,7 @@
       }
 
       renderToc(doc);
+      updateProgressBar();
 
       const anchor = currentAnchor();
       if (anchor) {
@@ -263,6 +362,7 @@
   function renderLanding(doc) {
     const cards = [
       { slug: "getting-started",          title: "getting-started",         desc: "Install, first agent, mental model." },
+      { slug: "use-cases",                title: "use-cases",               desc: "12 concrete scenarios with runnable code." },
       { slug: "concepts/models",          title: "chat-models",             desc: "GPT, Claude, retries, budgets, streaming." },
       { slug: "concepts/tools",           title: "tools",                    desc: "Standard, Structured, async variants." },
       { slug: "concepts/agents",          title: "agents",                   desc: "Types, parsers, runner loop, modes." },
@@ -289,11 +389,28 @@
       .map((c, i) => `<span class="glyph" style="animation-delay:${i * 45}ms">${c}</span>`)
       .join("");
 
+    // Hero code snippet -- the smallest working example, with hand-tinted
+    // syntax coloring so it doesn't need Prism to look right at first
+    // paint. The framework's proposition is "small enough to fit in the
+    // hero" -- proving it here is stronger than describing it.
+    const heroSnippet = `<span class="kw">from</span> <span class="cls">agentx_dev</span> <span class="kw">import</span> AgentRunner, AgentType, Claude
+
+runner = <span class="fn">AgentRunner</span>(model=<span class="fn">Claude</span>(), agent=AgentType.ReAct, tools=[])
+result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"</span>)
+<span class="fn">print</span>(result.content)`;
+
     doc.innerHTML = `
       <section class="hero">
+        <div class="hero-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+            <path d="M 6 8 L 16 16 L 6 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            <rect x="21" y="8" width="3" height="16" rx="0.5" fill="currentColor"/>
+          </svg>
+        </div>
         <h1>${heroTitle}<span class="cursor">|</span></h1>
-        <p class="hero-tagline">A small, production-ready Python framework for building LLM agents.</p>
-        <p class="hero-sub">// think LangChain, minus the sprawl</p>
+        <p class="hero-tagline">A production-grade Python framework for building LLM agents.</p>
+        <p class="hero-sub">// nothing sprawls</p>
+        <div class="hero-code"><pre><code>${heroSnippet}</code></pre></div>
         <div class="hero-cta">
           <a href="#getting-started" class="primary">get started <span class="arrow">→</span></a>
           <a href="#reference/api-summary">api reference</a>
@@ -472,28 +589,159 @@
     window.addEventListener("scroll", onScroll, { passive: true });
   }
 
-  function initSearch() {
-    const box = $("search");
-    if (!box) return;
-    let timer;
-    box.addEventListener("input", () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        const q = box.value;
-        if (q.trim()) renderSearch(q);
-        else route();
-      }, 130);
+  /* -------- Command palette (Cmd+K) -------- */
+
+  let paletteResults = [];
+  let paletteIdx = 0;
+
+  function openPalette() {
+    const bd = $("palette-backdrop");
+    const inp = $("palette-input");
+    if (!bd || !inp) return;
+    bd.classList.add("open");
+    bd.setAttribute("aria-hidden", "false");
+    inp.value = "";
+    renderPalette("");
+    // Focus after the transition starts so the caret lands cleanly.
+    requestAnimationFrame(() => inp.focus());
+  }
+
+  function closePalette() {
+    const bd = $("palette-backdrop");
+    if (!bd) return;
+    bd.classList.remove("open");
+    bd.setAttribute("aria-hidden", "true");
+  }
+
+  function renderPalette(query) {
+    const list = $("palette-list");
+    if (!list) return;
+    const q = query.trim().toLowerCase();
+
+    // Empty state: show ALL pages grouped by section (the palette becomes
+    // a keyboard navigator when you haven't typed anything yet).
+    if (!q) {
+      const items = [];
+      NAV.forEach((g) => {
+        items.push({ groupHeader: g.name });
+        g.items.forEach((it) => {
+          if (it.slug === "index") return;
+          items.push({ slug: it.slug, title: it.title, snippet: "", group: g.name });
+        });
+      });
+      paletteResults = items.filter((x) => !x.groupHeader);
+      paletteIdx = 0;
+      list.innerHTML = items.map((x, i) => {
+        if (x.groupHeader) return `<div class="palette-group">${escapeHtml(x.groupHeader)}</div>`;
+        const idx = paletteResults.indexOf(x);
+        return `<div class="palette-item ${idx === 0 ? "selected" : ""}" data-idx="${idx}" data-slug="${escapeHtml(x.slug)}">
+          <div class="palette-item-title">${escapeHtml(x.title)}</div>
+        </div>`;
+      }).join("");
+      wirePaletteClicks();
+      return;
+    }
+
+    // Search: substring match, ranked by earliest occurrence.
+    const results = [];
+    for (const [slug, entry] of Object.entries(DOCS)) {
+      if (!entry || !entry.markdown) continue;
+      if (slug === "index") continue;
+      const hay = (entry.title + "\n" + entry.markdown).toLowerCase();
+      const idx = hay.indexOf(q);
+      if (idx !== -1) {
+        const start = Math.max(0, idx - 40);
+        const end = Math.min(entry.markdown.length, idx + q.length + 80);
+        const snippet = (start > 0 ? "..." : "") +
+                        entry.markdown.slice(start, end) +
+                        (end < entry.markdown.length ? "..." : "");
+        results.push({ slug, title: entry.title, snippet, score: idx });
+      }
+    }
+    results.sort((a, b) => a.score - b.score);
+    const trimmed = results.slice(0, 30);
+    paletteResults = trimmed;
+    paletteIdx = 0;
+
+    if (trimmed.length === 0) {
+      list.innerHTML = `<div class="palette-empty">no matches for "${escapeHtml(query)}"</div>`;
+      return;
+    }
+
+    const eq = escapeRegex(query);
+    const hi = (s) => escapeHtml(s).replace(new RegExp(eq, "gi"), (m) => `<mark>${m}</mark>`);
+    list.innerHTML = trimmed.map((r, i) => `
+      <div class="palette-item ${i === 0 ? "selected" : ""}" data-idx="${i}" data-slug="${escapeHtml(r.slug)}">
+        <div class="palette-item-title">${hi(r.title)}</div>
+        <div class="palette-item-snippet">${hi(r.snippet.replace(/\n/g, " "))}</div>
+      </div>
+    `).join("");
+    wirePaletteClicks();
+  }
+
+  function wirePaletteClicks() {
+    $("palette-list").querySelectorAll(".palette-item").forEach((el) => {
+      el.addEventListener("click", () => {
+        const slug = el.getAttribute("data-slug");
+        location.hash = "#" + slug;
+        closePalette();
+      });
+      el.addEventListener("mouseenter", () => {
+        const i = parseInt(el.getAttribute("data-idx"), 10);
+        if (!Number.isNaN(i)) selectPaletteItem(i);
+      });
     });
+  }
+
+  function selectPaletteItem(idx) {
+    const list = $("palette-list");
+    if (!list) return;
+    const items = list.querySelectorAll(".palette-item");
+    if (!items.length) return;
+    idx = ((idx % items.length) + items.length) % items.length;
+    paletteIdx = idx;
+    items.forEach((el, i) => el.classList.toggle("selected", i === idx));
+    items[idx].scrollIntoView({ block: "nearest" });
+  }
+
+  function initPalette() {
+    const bd = $("palette-backdrop");
+    const inp = $("palette-input");
+    const trigger = $("palette-trigger");
+    if (!bd || !inp) return;
+
+    if (trigger) trigger.addEventListener("click", openPalette);
+    bd.addEventListener("click", (e) => {
+      if (e.target === bd) closePalette();
+    });
+
+    // Debounced input
+    let timer;
+    inp.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => renderPalette(inp.value), 60);
+    });
+
+    // Keyboard navigation
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { closePalette(); return; }
+      if (e.key === "ArrowDown") { e.preventDefault(); selectPaletteItem(paletteIdx + 1); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); selectPaletteItem(paletteIdx - 1); return; }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const r = paletteResults[paletteIdx];
+        if (r && r.slug) {
+          location.hash = "#" + r.slug;
+          closePalette();
+        }
+      }
+    });
+
+    // Global Cmd/Ctrl+K to open
     document.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        box.focus();
-        box.select();
-      }
-      if (e.key === "Escape" && document.activeElement === box) {
-        box.value = "";
-        box.blur();
-        route();
+        openPalette();
       }
     });
   }
@@ -514,11 +762,22 @@
 
   function init() {
     initTopbarScrollBorder();
-    initSearch();
+    initPalette();
     initTheme();
     route();
-    // Reposition the sidebar marker on window resize (fonts can reflow items).
-    window.addEventListener("resize", () => updateActiveMarker(), { passive: true });
+    // Reposition the sidebar marker when layout can shift under it:
+    //  1. Window resize.
+    //  2. Web fonts finishing load -- Inter/JetBrains Mono lazy-load and
+    //     shift each nav item's height slightly.
+    window.addEventListener("resize", () => {
+      updateActiveMarker();
+      updateProgressBar();
+    }, { passive: true });
+    // Reading progress: cheap enough to update on every scroll frame.
+    window.addEventListener("scroll", updateProgressBar, { passive: true });
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => updateActiveMarker()).catch(() => {});
+    }
   }
 
   if (document.readyState === "loading") {

@@ -30,17 +30,33 @@ python -m http.server -d host 8000
 - **Hash routing** -- links like `#concepts/models` and
   `#advanced/rag#persist` (page + anchor) work directly.
 - **Sidebar nav** with animated active marker that slides between items.
+  Groups are click-to-collapse (state persisted in localStorage).
 - **Right-rail TOC** auto-generated from h2/h3 in the current article
-  with scrollspy that highlights the visible section.
-- **Search** -- `Ctrl+K` or click the search box. Case-insensitive
-  substring match across every doc; results ranked by earliest hit.
+  with scrollspy that highlights the visible section (filters out card
+  and list headings).
+- **Command palette** -- `Cmd/Ctrl+K` opens a modal search with keyboard
+  navigation (↑↓ move, ↵ open, esc close), page grouping when empty,
+  and substring match with highlighted context when populated.
+- **Reading progress bar** -- hairline accent-lime fills across the top
+  as you scroll through an article. Zero on the landing / short pages.
+- **Breadcrumbs** -- every doc shows its group above the title
+  (`ADVANCED / rag`).
+- **Header anchor links** -- hover an h2 or h3 to reveal a `#`
+  permalink glyph.
+- **Hero code snippet** -- the "five-line agent" example rendered with
+  hand-tinted syntax highlighting directly under the tagline, so
+  visitors see what the framework actually looks like.
 - **Dark / light** -- toggle in the top right; persisted to
   `localStorage`.
-- **Syntax highlighting** -- Python / Bash / YAML / JSON via Prism.
+- **Syntax highlighting** -- Python / Bash / YAML / JSON via Prism in
+  article code blocks; hero snippet uses hand-classed spans for
+  first-paint highlighting without waiting for Prism.
 - **Copy-to-clipboard** button appears on code-block hover.
 - **Prev / next** -- footer navigation follows the sidebar order.
 - **Relative-link rewriting** -- markdown `[foo](../guides/x.md)`
   links auto-rewrite to hash routes.
+- **Cache-busted assets** -- `style.css`, `app.js`, `data.js` carry a
+  `?v=N` query so edits land immediately on refresh.
 
 ## Design system
 

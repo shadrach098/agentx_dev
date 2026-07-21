@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Wordmark: "agentx_dev" set in JetBrains Mono 500, followed by the
+  lime cursor bar (matching the mark's cursor). Baseline-aligned so the
+  cursor sits exactly beside the last glyph, not floating.
+
+  The SVG references JetBrains Mono by name; browsers fall back to
+  system monospace if the font isn't installed. For pixel-perfect
+  rendering when embedding, the caller should either:
+    - load the JetBrains Mono webfont before this SVG paints, OR
+    - use the outlined variant `wordmark-outlined.svg` (not shipped by
+      default because it's ~30x larger; generate via any SVG editor
+      if you need it).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 96" role="img"
+     aria-label="agentx_dev">
+  <title>agentx_dev</title>
+  <style>
+    .word {
+      font: 500 68px "JetBrains Mono", ui-monospace, "SFMono-Regular",
+            Menlo, Consolas, monospace;
+      letter-spacing: -0.02em;
+      fill: #EEEEF0;
+    }
+  </style>
+  <text x="8" y="66" class="word">agentx_dev</text>
+  <!-- Cursor: right-aligned to the end of the wordmark. -->
+  <rect x="436" y="18" width="8" height="52" fill="#B8FF3E">
+    <animate attributeName="opacity"
+             values="1;1;0;0" keyTimes="0;0.5;0.51;1"
+             dur="1s" repeatCount="indefinite" />
+  </rect>
+</svg>

@@ -1,7 +1,7 @@
 # agentx_dev
 
-A small, production-ready Python framework for building LLM agents.
-Think LangChain, minus the sprawl.
+A production-grade Python framework for building LLM agents.
+Nothing sprawls.
 
 This README walks you through real usage — start an agent, add tools,
 connect MCP servers, ship to production. Every code block is something

@@ -23,6 +23,7 @@ NAV = [
     ("Home", [
         ("index", None, "Overview"),                # rendered from JS
         ("getting-started", DOCS_DIR / "getting-started.md", None),
+        ("use-cases", DOCS_DIR / "use-cases.md", None),
     ]),
     ("Concepts", [
         ("concepts/models", DOCS_DIR / "concepts" / "models.md", None),

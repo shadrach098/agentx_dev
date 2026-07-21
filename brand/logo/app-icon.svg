@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  App icon: mark centered on a rounded charcoal square. This is the shape
+  that goes to macOS Dock, iOS home screen, PyPI listing, GitHub social
+  preview, favicon fallback for browsers that don't support SVG.
+  1024x1024 canvas so it renders sharp at every OS icon size.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="agentx_dev">
+  <title>agentx_dev</title>
+  <!-- Rounded-square container. iOS uses 22.37% corner radius; we match. -->
+  <rect x="0" y="0" width="1024" height="1024" rx="229" fill="#0A0A0B" />
+  <!-- Subtle inner ring so the icon reads even on dark backgrounds. -->
+  <rect x="0.5" y="0.5" width="1023" height="1023" rx="228.5"
+        fill="none" stroke="#1F1F24" stroke-width="1" />
+  <!-- Mark centered, scaled to ~50% of the container. -->
+  <g transform="translate(256 256) scale(16)">
+    <path
+      d="M 6 8 L 16 16 L 6 24"
+      fill="none"
+      stroke="#B8FF3E"
+      stroke-width="3"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <rect x="21" y="8" width="3" height="16" rx="0.5" fill="#B8FF3E" />
+  </g>
+</svg>

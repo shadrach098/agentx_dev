@@ -1,8 +1,8 @@
 [project]
 
 name = "agentx-dev"
-version = "3.0.6"
-description = "A lightweight LLM agent framework with multi-agent orchestration (Supervisor + dynamic specialist spawning), permission-gated default tools, MCP integration, and prompt-template presets."
+version = "3.1.1"
+description = "A production-grade Python framework for building LLM agents. Multi-provider chat, permission-gated tools, RAG (in-mem + Chroma/Qdrant/pgvector), semantic memory, Supervisor + Handoffs multi-agent orchestration with streaming, evals harness, prompt caching, Batch API, prompt-optimizer, MCP integration."
 authors = [{ name = "Bruce-Arhin Shadrach", email = "brucearhin098@gmail.com" }]
 # Best practice: link to the license file
 license = { file = "LICENSE" }
@@ -22,17 +22,32 @@ dependencies = [
 
 [project.optional-dependencies]
 # `pip install agentx-dev[anthropic]` — enables agentx_dev.Claude
-anthropic = ["anthropic>=0.20"]
+anthropic = ["anthropic>=0.36"]     # 3.1 needs Batch API + prompt cache
 # `pip install agentx-dev[mcp]` — enables MCPClient (stdio / sse / http)
 mcp = ["mcp>=0.1"]
 # `pip install agentx-dev[otel]` — enables the OTelHook observability adapter
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
+# `pip install agentx-dev[chroma]` — ChromaVectorStore adapter
+chroma = ["chromadb>=0.4"]
+# `pip install agentx-dev[qdrant]` — QdrantVectorStore adapter
+qdrant = ["qdrant-client>=1.6"]
+# `pip install agentx-dev[pgvector]` — PgVectorStore adapter (psycopg v3)
+pgvector = ["psycopg[binary]>=3.1"]
+# `pip install agentx-dev[dev]` — everything needed to run the tests
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.23",
+    "numpy>=1.24",
+]
 # `pip install agentx-dev[all]` — the works
 all = [
-    "anthropic>=0.20",
+    "anthropic>=0.36",
     "mcp>=0.1",
     "opentelemetry-api>=1.20",
     "opentelemetry-sdk>=1.20",
+    "chromadb>=0.4",
+    "qdrant-client>=1.6",
+    "psycopg[binary]>=3.1",
 ]
 
 [project.urls]

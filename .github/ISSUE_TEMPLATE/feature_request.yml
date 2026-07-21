@@ -1,0 +1,63 @@
+name: Feature request
+description: Propose an addition or change to the framework.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening a feature request, please check whether the goal can be
+        composed from existing pieces (see `docs/use-cases.md`). The framework
+        aims to stay small — new public API is a bar.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Real use case in one paragraph. Skip the abstract "wouldn't it be nice."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: |
+        Sketch the public API you want. A short `python` block with the
+        signatures + a usage example is worth 500 words of prose.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What did you try first? What did you have to work around?
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - New tool / default tool
+        - New chat model / provider
+        - New vector-store adapter
+        - New AgentType template
+        - New memory strategy
+        - Orchestration change (Supervisor / Handoffs)
+        - Observability / trace viewer
+        - Evals harness
+        - Docs improvement
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched issues + PRs for prior discussion of this.
+          required: true
+        - label: I checked whether existing pieces (§ use-cases doc) can compose this.
+          required: true

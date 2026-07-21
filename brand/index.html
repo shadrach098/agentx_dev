@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>agentx_dev — brand identity</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" />
+  <link rel="icon" type="image/svg+xml" href="logo/app-icon.svg" />
+  <style>
+    :root {
+      --bg: #0A0A0B;
+      --bg-elev: #111114;
+      --bg-elev-2: #16161A;
+      --border: #1F1F24;
+      --border-strong: #2B2B33;
+      --text: #EEEEF0;
+      --text-dim: #8B8B93;
+      --text-mute: #5A5A62;
+      --accent: #B8FF3E;
+      --accent-glow: rgba(184, 255, 62, 0.15);
+      --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-body);
+      font-size: 15px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Outer canvas -- a "deck-on-charcoal" feel. */
+    .canvas {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 60px 40px 100px;
+    }
+
+    header.deck-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 40px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    header.deck-header h1 {
+      font-family: var(--font-mono);
+      font-size: 16px;
+      font-weight: 500;
+      margin: 0;
+      letter-spacing: -0.01em;
+    }
+    header.deck-header .meta {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-mute);
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+    }
+    header.deck-header .meta .accent { color: var(--accent); }
+
+    /* 3x3 grid with strong gutters. */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 20px;
+    }
+
+    .panel {
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 32px;
+      position: relative;
+      overflow: hidden;
+      min-height: 320px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .panel::after {
+      /* Panel number, bottom-right */
+      content: attr(data-num);
+      position: absolute;
+      bottom: 12px;
+      right: 16px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-mute);
+      letter-spacing: 0.08em;
+    }
+    .panel-label {
+      position: absolute;
+      top: 16px;
+      left: 20px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--text-mute);
+    }
+
+    /* ---------- Panel 1: Logo cover ---------- */
+    .panel.cover {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      grid-column: span 2;
+      background: var(--bg);
+    }
+    .cover-mark { width: 40%; max-width: 200px; }
+
+    /* ---------- Panel 2: Tagline ---------- */
+    .panel.tagline {
+      justify-content: flex-end;
+    }
+    .tagline-line {
+      font-family: var(--font-mono);
+      font-size: 32px;
+      font-weight: 500;
+      color: var(--text);
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+    }
+    .tagline-line .cursor {
+      color: var(--accent);
+      animation: blink 1s steps(2, start) infinite;
+    }
+    .tagline-sub {
+      color: var(--text-mute);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      margin-top: 18px;
+    }
+    @keyframes blink { to { visibility: hidden; } }
+
+    /* ---------- Panel 3: Construction ---------- */
+    .panel.construction {
+      justify-content: center;
+      align-items: center;
+    }
+    .construction-svg { width: 100%; max-width: 260px; }
+
+    /* ---------- Panel 4: Digital application (browser) ---------- */
+    .browser {
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      overflow: hidden;
+      width: 100%;
+      max-width: 320px;
+      margin: 0 auto;
+    }
+    .browser-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elev-2);
+    }
+    .browser-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--border-strong);
+    }
+    .browser-url {
+      margin-left: 8px;
+      background: var(--bg);
+      padding: 4px 10px;
+      border-radius: 2px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      flex: 1;
+      border: 1px solid var(--border);
+    }
+    .browser-url .path { color: var(--accent); }
+    .browser-body {
+      padding: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .browser-body svg { width: 24px; height: 24px; }
+    .browser-body .name {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 500;
+    }
+    .browser-body .name .cursor {
+      color: var(--accent);
+      animation: blink 1s steps(2, start) infinite;
+    }
+
+    /* ---------- Panel 5: Terminal ---------- */
+    .terminal {
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 14px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.7;
+      width: 100%;
+    }
+    .terminal .prompt { color: var(--accent); }
+    .terminal .cmd { color: var(--text); }
+    .terminal .cur { color: var(--accent); animation: blink 1s steps(2, start) infinite; }
+
+    /* ---------- Panel 6: Color system ---------- */
+    .swatches {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      width: 100%;
+    }
+    .swatch {
+      padding: 12px;
+      border-radius: 3px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-height: 66px;
+      border: 1px solid var(--border);
+    }
+    .swatch .role {
+      font-size: 9px;
+      color: var(--text-mute);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+    .swatch .hex { font-size: 12px; }
+
+    /* ---------- Panel 7: Typography ---------- */
+    .type-specimen {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      width: 100%;
+    }
+    .type-block {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .type-label {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      color: var(--text-mute);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+    }
+    .type-display {
+      font-family: var(--font-mono);
+      font-size: 38px;
+      font-weight: 500;
+      color: var(--text);
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+    .type-body {
+      font-family: var(--font-body);
+      font-size: 14px;
+      color: var(--text-dim);
+    }
+
+    /* ---------- Panel 8: App icon ---------- */
+    .panel.icons {
+      justify-content: center;
+      align-items: center;
+      gap: 24px;
+      flex-direction: row;
+      flex-wrap: wrap;
+    }
+    .icon-swatch {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .icon-swatch .glyph {
+      width: 84px; height: 84px;
+      border-radius: 20px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .icon-swatch .glyph svg { width: 56%; height: 56%; }
+    .icon-swatch .size {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-mute);
+    }
+    /* Sub-sizes */
+    .icon-swatch.large .glyph { width: 120px; height: 120px; border-radius: 28px; }
+    .icon-swatch.small .glyph { width: 40px; height: 40px; border-radius: 9px; }
+
+    /* ---------- Panel 9: System detail ---------- */
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      width: 100%;
+    }
+    .chip {
+      padding: 6px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .chip.active {
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+
+    footer.deck-footer {
+      margin-top: 50px;
+      padding-top: 24px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-mute);
+    }
+    footer.deck-footer .accent { color: var(--accent); }
+
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+      .panel.cover { grid-column: span 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="canvas">
+
+    <header class="deck-header">
+      <h1>agentx_dev / brand identity</h1>
+      <div class="meta">v1.0 <span class="accent">/</span> internal deck <span class="accent">/</span> 2026</div>
+    </header>
+
+    <div class="grid">
+
+      <!-- 01 · Logo Cover ................................................. -->
+      <section class="panel cover" data-num="01">
+        <span class="panel-label">01 · logo</span>
+        <img class="cover-mark" src="logo/mark.svg" alt="agentx_dev mark" />
+      </section>
+
+      <!-- 02 · Tagline / Essence ........................................... -->
+      <section class="panel tagline" data-num="02">
+        <span class="panel-label">02 · essence</span>
+        <div class="tagline-line">Nothing sprawls<span class="cursor">|</span></div>
+        <div class="tagline-sub">// nothing sprawls</div>
+      </section>
+
+      <!-- 03 · Logo Construction ........................................... -->
+      <section class="panel construction" data-num="03">
+        <span class="panel-label">03 · construction</span>
+        <svg class="construction-svg" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+          <!-- 8-unit grid guides -->
+          <g stroke="#2B2B33" stroke-width="0.15" fill="none">
+            <line x1="0" y1="8"  x2="32" y2="8"  />
+            <line x1="0" y1="16" x2="32" y2="16" />
+            <line x1="0" y1="24" x2="32" y2="24" />
+            <line x1="6"  y1="0" x2="6"  y2="32" />
+            <line x1="16" y1="0" x2="16" y2="32" />
+            <line x1="21" y1="0" x2="21" y2="32" />
+            <line x1="24" y1="0" x2="24" y2="32" />
+          </g>
+          <!-- The mark -->
+          <path d="M 6 8 L 16 16 L 6 24" fill="none" stroke="#B8FF3E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+          <rect x="21" y="8" width="3" height="16" rx="0.5" fill="#B8FF3E" />
+          <!-- Anchor dots -->
+          <g fill="#EEEEF0">
+            <circle cx="6"  cy="8"  r="0.5" />
+            <circle cx="16" cy="16" r="0.5" />
+            <circle cx="6"  cy="24" r="0.5" />
+            <circle cx="21" cy="8"  r="0.5" />
+            <circle cx="24" cy="24" r="0.5" />
+          </g>
+        </svg>
+      </section>
+
+      <!-- 04 · Digital application (browser) .............................. -->
+      <section class="panel" data-num="04" style="justify-content: center; align-items: center;">
+        <span class="panel-label">04 · digital</span>
+        <div class="browser">
+          <div class="browser-bar">
+            <span class="browser-dot"></span>
+            <span class="browser-dot"></span>
+            <span class="browser-dot"></span>
+            <span class="browser-url">pypi.org/project/<span class="path">agentx-dev</span></span>
+          </div>
+          <div class="browser-body">
+            <img src="logo/mark.svg" alt="mark" style="width: 24px; height: 24px;" />
+            <span class="name">agentx_dev<span class="cursor">|</span></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 05 · Terminal application ....................................... -->
+      <section class="panel" data-num="05" style="justify-content: center;">
+        <span class="panel-label">05 · terminal</span>
+        <div class="terminal">
+          <div><span class="prompt">$</span> <span class="cmd">pip install agentx-dev</span></div>
+          <div><span class="prompt">$</span> <span class="cmd">python</span></div>
+          <div><span style="color: var(--text-mute);">&gt;&gt;&gt;</span> <span class="cmd">from agentx_dev import AgentRunner</span></div>
+          <div><span style="color: var(--text-mute);">&gt;&gt;&gt;</span> <span class="cur">|</span></div>
+        </div>
+      </section>
+
+      <!-- 06 · Color system ............................................... -->
+      <section class="panel" data-num="06" style="justify-content: center;">
+        <span class="panel-label">06 · color</span>
+        <div class="swatches">
+          <div class="swatch" style="background: #0A0A0B; color: #EEEEF0;">
+            <span class="role">charcoal</span>
+            <span class="hex">#0A0A0B</span>
+          </div>
+          <div class="swatch" style="background: #111114; color: #EEEEF0;">
+            <span class="role">elevated</span>
+            <span class="hex">#111114</span>
+          </div>
+          <div class="swatch" style="background: #B8FF3E; color: #0A0A0B; border-color: #B8FF3E;">
+            <span class="role">accent</span>
+            <span class="hex">#B8FF3E</span>
+          </div>
+          <div class="swatch" style="background: #1F1F24; color: #EEEEF0;">
+            <span class="role">border</span>
+            <span class="hex">#1F1F24</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 07 · Typography ................................................. -->
+      <section class="panel" data-num="07" style="justify-content: center;">
+        <span class="panel-label">07 · type</span>
+        <div class="type-specimen">
+          <div class="type-block">
+            <span class="type-label">display · JetBrains Mono</span>
+            <div class="type-display">Aa Bb 0123</div>
+          </div>
+          <div class="type-block">
+            <span class="type-label">body · Inter</span>
+            <div class="type-body">A production-grade framework for building LLM agents.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 08 · App icon at scale .......................................... -->
+      <section class="panel icons" data-num="08">
+        <span class="panel-label">08 · icon @ scale</span>
+        <div class="icon-swatch large">
+          <div class="glyph"><img src="logo/mark.svg" alt="" /></div>
+          <div class="size">120px</div>
+        </div>
+        <div class="icon-swatch">
+          <div class="glyph"><img src="logo/mark.svg" alt="" /></div>
+          <div class="size">84px</div>
+        </div>
+        <div class="icon-swatch">
+          <div class="glyph"><img src="logo/mark.svg" alt="" /></div>
+          <div class="size">64px</div>
+        </div>
+        <div class="icon-swatch small">
+          <div class="glyph"><img src="logo/mark.svg" alt="" /></div>
+          <div class="size">40px</div>
+        </div>
+      </section>
+
+      <!-- 09 · System detail (component chips) ............................ -->
+      <section class="panel" data-num="09" style="justify-content: center;">
+        <span class="panel-label">09 · system</span>
+        <div class="chips">
+          <span class="chip active">agent.start</span>
+          <span class="chip">llm.call</span>
+          <span class="chip">tool.dispatch</span>
+          <span class="chip">tool.result</span>
+          <span class="chip">final</span>
+          <span class="chip">handoff</span>
+          <span class="chip">spawn</span>
+        </div>
+      </section>
+
+    </div>
+
+    <footer class="deck-footer">
+      <div>agentx_dev <span class="accent">/</span> MIT <span class="accent">/</span> by Bruce-Arhin Shadrach</div>
+      <div>brand kit v1.0</div>
+    </footer>
+
+  </div>
+</body>
+</html>
