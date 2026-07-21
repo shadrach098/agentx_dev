@@ -180,6 +180,62 @@ Not directly, but conceptually familiar:
 The `|` composition operator on `StructuredOutputRunnable` matches
 LCEL for pipeline construction.
 
+## When should I use `Compiled` vs. hand-tuning the prompt? *(3.1)*
+
+Hand-tune when the trainset is < 5 cases (Compiled needs failure
+signal to work). Reach for `Compiled` when you have a stable
+regression suite of 10+ cases *and* the current pass-rate isn't
+100%. If the addendum it produces exceeds ~500 tokens, that's a
+signal you actually want a custom `AgentType` template — the
+addendum is too tall to fit the "one instruction" shape.
+
+## When should I use `Claude.batch()` vs. `.invoke()` in a loop? *(3.1)*
+
+| Situation | Use |
+|---|---|
+| 1-10 prompts, live user | `.invoke()` |
+| 10-100 prompts, can wait a few minutes | `.batch()` (50% cheaper) |
+| 100-10k prompts, overnight run | `.batch()` (huge cost win) |
+| Interleaved with user input | never batch — kills UX |
+
+## Which vector-store adapter should I start with? *(3.1)*
+
+Start with the in-memory `VectorStore` (zero deps, works everywhere).
+Graduate to a persistent adapter when you outgrow it:
+
+| Situation | Adapter |
+|---|---|
+| < 10k chunks, single process, prototype | `VectorStore` |
+| Persistent local, < 100k chunks | `ChromaVectorStore(persist_directory=)` |
+| Remote / multi-process / horizontal scale | `QdrantVectorStore(url=)` |
+| You already run Postgres | `PgVectorStore(dsn=)` — reuse existing DB |
+| Millions of chunks + hybrid search | Use the underlying SDK directly, adapter is for the base case |
+
+Interface is identical across all four — swap the constructor and
+nothing else changes.
+
+## When should I turn on prompt caching? *(3.1)*
+
+Turn it on for any Claude runner with:
+- A system prompt > 500 tokens
+- Multiple tools registered (schemas add up fast)
+- Long-running sessions (chatbots, batch runs)
+
+Off is fine for:
+- One-shot extraction with a tiny prompt
+- Prompt that changes call-to-call (dynamic context injection)
+
+Break-even after 1 cached call. Expect 70-90% cost cut on subsequent
+input tokens.
+
+## Does streaming through Supervisor / Handoffs cost extra? *(3.1)*
+
+No. Streaming and non-streaming paths make identical LLM calls; the
+only difference is whether events are yielded incrementally or
+absorbed silently. `.run()` and `.arun()` are now thin wrappers over
+`.stream()` / `.astream()`, so there's zero overhead choosing one
+or the other.
+
 ## Where's the source of truth for each feature?
 
 Every feature has its own module under `agentx_dev/`. The docs cross-

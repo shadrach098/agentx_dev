@@ -159,6 +159,83 @@ response length.
 You're in `use_function_calling=True` mode. Text-delta events only
 fire in text mode.
 
+**Supervisor / Handoff `stream()` events don't arrive to my UI *(3.1)***
+The `completion` (Supervisor) and `result` (Handoff) events carry
+non-JSON-serializable dataclasses (`SupervisorResult`,
+`HandoffResult`). Serialize their `.completion.content` and
+`.hops` fields explicitly before yielding to SSE / websockets.
+See patterns §21.
+
+## Prompt caching *(3.1)*
+
+**`cache_hit_ratio` stays at 0.0**
+Prompt caching is Anthropic-only. Set `Claude(enable_prompt_cache=True)`.
+If it's on and still 0.0: (a) first call always misses (creates the
+cache); (b) 5-minute TTL expired between calls; (c) system prompt or
+tool list changed between calls — any drift invalidates the cache.
+
+**Anthropic 400 on `cache_control`**
+Your anthropic SDK is too old. Bump to `>=0.36`:
+`pip install -U 'anthropic>=0.36'`.
+
+## Batch API *(3.1)*
+
+**`RuntimeError: This anthropic SDK version does not expose the Batch API`**
+Same as above — upgrade `anthropic>=0.36`.
+
+**`TimeoutError: batch did not finish within Ns`**
+Bump `max_wait_sec` (Anthropic's TTL is 24h, so up to 86400). For
+huge batches, poll less often (`poll_interval_sec=60`) to reduce
+request overhead.
+
+**Some results come back as `{"error": ..., "type": "errored"}`**
+Per-request failure — the batch itself succeeded. Loop over the
+results and dispatch dicts vs. strings:
+
+```python
+for i, r in enumerate(results):
+    if isinstance(r, dict):
+        print(f"[{i}] {r['type']}: {r['error']}")
+    else:
+        process(r)
+```
+
+## Compiled optimizer *(3.1)*
+
+**`Compiled.compile()` never improves over baseline**
+- Trainset too small (< 5 cases) — teacher can't see enough failure
+  signal. Add more cases.
+- Assertions too permissive — everything passes baseline. Tighten
+  assertions so the baseline actually fails some cases.
+- Teacher model is too weak — pass a stronger `teacher_model=` (Opus
+  or Sonnet, not Haiku) via the constructor.
+
+**Best addendum overfits — helps train, hurts prod**
+Split your suite into `trainset` (fed to `Compiled`) and `holdset`
+(evaluated with `EvalRunner` after compile). Only ship the tuned
+addendum if `holdset` score improves too.
+
+## Vector store adapter errors *(3.1)*
+
+**`ImportError: ChromaVectorStore requires the chromadb package`**
+Install the extra: `pip install agentx-dev[chroma]` (or `[qdrant]` /
+`[pgvector]`).
+
+**`ValueError: Embedding dim mismatch` after switching adapters**
+The adapter shape is identical but the *backend* stores vectors on
+disk / server. Reindex from scratch when moving between adapters or
+between embedding models.
+
+**Qdrant: "collection X vector dim Y != expected Z"**
+The collection was created with a different embedding dim. Delete
+the collection first (`client.delete_collection(name)`) and let the
+adapter recreate it.
+
+**Postgres: `CREATE EXTENSION vector` fails**
+The `pgvector` extension isn't installed on the DB. On managed
+Postgres (RDS / Cloud SQL) you must enable it via console first;
+on self-hosted, `apt install postgresql-16-pgvector` (or equivalent).
+
 ## Debug tooling
 
 **Enable verbose logging:**

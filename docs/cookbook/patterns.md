@@ -258,3 +258,217 @@ def safe_invoke(runner, query):
     result.content = redact_secrets(result.content)
     return result
 ```
+
+## 18. Agentic RAG with parallel retrieval *(3.1)*
+
+Instead of naive "embed query → retrieve top-K → answer," let the model
+decompose the question into sub-queries and dispatch them concurrently:
+
+```python
+from agentx_dev import (
+    AgentRunner, AgentType, Claude,
+    OpenAIEmbeddings, VectorStore, vector_search_tool,
+)
+
+store = VectorStore.load("./data/kb.json", embeddings=OpenAIEmbeddings())
+
+runner = AgentRunner(
+    model=Claude(enable_prompt_cache=True),
+    agent=AgentType.ReAct,
+    tools=[vector_search_tool(store, name="kb_search", default_top_k=4)],
+    bind_tools_natively=True,      # parallel per-turn dispatch
+    parallel_tool_workers=6,
+    system_addendum=(
+        "Decompose the question into 2-5 sub-queries. Call kb_search "
+        "MULTIPLE times in one turn -- one per sub-query. End every "
+        "answer with a Sources line listing the passages you used."
+    ),
+)
+result = runner.invoke("Compare our refund and retention policies.")
+```
+
+See use case §13 for the full agentic RAG chatbot including
+user-notes memory and citation-enforced evals.
+
+## 19. Batch data extraction at 50% off *(3.1)*
+
+For embarrassingly-parallel workloads (labeling, extraction,
+classification) where latency doesn't matter, use the Anthropic batch
+endpoint:
+
+```python
+from pydantic import BaseModel
+from agentx_dev import Claude
+
+class Receipt(BaseModel):
+    merchant: str
+    total: float
+    currency: str
+
+llm = Claude(enable_prompt_cache=True)
+schema = Receipt.model_json_schema()
+
+requests = [
+    f"Extract this into JSON matching {schema}: {raw}"
+    for raw in receipt_texts   # potentially thousands
+]
+
+results = llm.batch(requests, poll_interval_sec=30)
+
+for i, r in enumerate(results):
+    if isinstance(r, dict):        # per-request failure
+        print(f"[{i}] {r['type']}: {r['error']}")
+        continue
+    receipt = Receipt.model_validate_json(r)
+```
+
+50% cheaper than sync `.invoke()`. Prompt caching cuts input cost
+further because every request shares the same schema in the prompt.
+
+## 20. Compiled agent — prompt tuned against evals *(3.1)*
+
+Wrap any runner factory in `Compiled` to iteratively improve its
+`system_addendum` against your test suite:
+
+```python
+from agentx_dev import (
+    AgentRunner, AgentType, Claude,
+    Compiled, EvalCase, contains, called_tool,
+)
+
+def build(system_addendum=None):
+    return AgentRunner(
+        model=Claude(), agent=AgentType.ReAct, tools=[weather_tool],
+        system_addendum=system_addendum,
+    )
+
+trainset = [
+    EvalCase("paris",  "Weather in Paris?",
+             [called_tool("weather_tool"), contains("Paris")]),
+    EvalCase("refuses", "What's my SSN?",
+             [contains("can't")]),
+]
+
+result = Compiled(
+    runner_factory=build,
+    trainset=trainset,
+    iterations=3,
+    candidates_per_iter=3,
+).compile()
+
+# Deploy the tuned runner:
+prod_runner_factory = lambda: build(system_addendum=result.best_addendum)
+```
+
+Pair with pattern §13 (`Evals in CI`) — use the same trainset for both
+optimization and regression checks.
+
+## 21. Streaming Supervisor / Handoffs to a web UI *(3.1)*
+
+Both orchestrators emit structured events. Route them to Server-Sent
+Events for a real-time UI:
+
+```python
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+import json
+
+app = FastAPI()
+
+@app.post("/supervisor")
+async def stream_supervisor(request: dict):
+    supervisor = build_supervisor()
+
+    async def event_stream():
+        for event in supervisor.stream(request["query"]):
+            # Filter out the terminal completion -- it duplicates final
+            if event["type"] == "completion":
+                continue
+            # SubtaskResult is a dataclass; serialize its shape
+            if event["type"] == "subtask_result":
+                event = {
+                    "type": event["type"], "step": event["step"],
+                    "result": {"agent": event["result"].agent,
+                               "content": event["result"].content,
+                               "error": event["result"].error},
+                }
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+```
+
+Client-side: `EventSource("/supervisor")` and route each event.type to
+a matching UI update. `plan` populates a task list; `dispatch` shows a
+spinner on that task; `subtask_result` fills it in; `final` sets the
+answer.
+
+## 22. Chroma / Qdrant / pgvector — same code, different scale *(3.1)*
+
+The vector-store adapters share the in-memory `VectorStore`'s public
+shape, so you can start local and swap to a production DB with only
+the store constructor:
+
+```python
+from agentx_dev import (
+    HashEmbeddings, OpenAIEmbeddings, vector_search_tool,
+)
+
+# Dev / prototype (in-memory)
+from agentx_dev import VectorStore
+store = VectorStore(embeddings=HashEmbeddings())
+
+# Small production (Chroma, persistent disk)
+from agentx_dev.VectorStores import ChromaVectorStore
+store = ChromaVectorStore(
+    embeddings=OpenAIEmbeddings(),
+    collection_name="prod_docs",
+    persist_directory="./.chroma",
+)
+
+# Medium production (Qdrant, remote)
+from agentx_dev.VectorStores import QdrantVectorStore
+store = QdrantVectorStore(
+    embeddings=OpenAIEmbeddings(),
+    collection_name="prod_docs",
+    url="https://<region>.qdrant.io:6333",
+    api_key=os.environ["QDRANT_API_KEY"],
+)
+
+# Already-have-Postgres production (pgvector)
+from agentx_dev.VectorStores import PgVectorStore
+store = PgVectorStore(
+    embeddings=OpenAIEmbeddings(),
+    dsn=os.environ["DATABASE_URL"],
+    table="prod_docs",
+)
+
+# Same tool call regardless of backend:
+tool = vector_search_tool(store, name="docs_search")
+```
+
+The rest of the code — `SemanticMemory`, `vector_search_tool`,
+`runner.invoke` — never changes.
+
+## 23. Self-hosted trace viewer during dev *(3.1)*
+
+Turn on observability during dev, write to JSONL, and drop the file on
+`viewer/index.html` to see the timeline:
+
+```python
+from agentx_dev import (
+    AgentRunner, AgentType, Claude, Permissions,
+    observability, FileHook, ConsoleHook, config,
+)
+
+config.observability_enabled = True
+observability.add_hook(FileHook("./trace.jsonl"))   # for viewer/
+observability.add_hook(ConsoleHook(verbose=False))  # optional stdout
+
+runner = AgentRunner(model=Claude(), agent=AgentType.ReAct, tools=[...])
+runner.invoke("...")
+
+# Then: double-click viewer/index.html, drop trace.jsonl on it.
+```
+
+Wins over LangSmith when you need self-hosted, `file://`-friendly,
+plain-text-JSONL-archivable debugging.
