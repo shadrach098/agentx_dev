@@ -251,7 +251,8 @@ a:hover { color: var(--text); }
   padding: 56px 60px 100px;
   display: flex;
   flex-direction: column;
-  min-width: 0;   /* let article shrink with viewport */
+  align-items: center;   /* horizontally center article in the middle column */
+  min-width: 0;
   animation: content-in var(--dur-slow) var(--ease-out);
 }
 @keyframes content-in {
@@ -315,7 +316,9 @@ a:hover { color: var(--text); }
   text-transform: uppercase;
   letter-spacing: 0.12em;
   margin-bottom: 8px;
-  padding: 0 10px;
+  padding: 6px 10px;
+  border-radius: 3px;
+  transition: background var(--dur) var(--ease-out), color var(--dur) var(--ease-out);
 }
 
 .nav-item {
@@ -950,6 +953,69 @@ a:hover { color: var(--text); }
    Responsive
    ------------------------------------------------------------------------- */
 
+/* =========================================================================
+   Light-theme code readability
+   Prism ships prism-tomorrow (a dark theme), which produces washed-out
+   tokens on our light background. Override the token colors + code
+   text color for [data-theme="light"] so code stays readable in both
+   modes without needing to swap stylesheets at runtime.
+   ========================================================================= */
+
+[data-theme="light"] #doc pre,
+[data-theme="light"] #doc pre[class*="language-"] {
+  color: var(--text) !important;
+  background: var(--bg-elev) !important;
+}
+[data-theme="light"] #doc pre code {
+  color: var(--text);
+  text-shadow: none;
+}
+[data-theme="light"] .token.comment,
+[data-theme="light"] .token.prolog,
+[data-theme="light"] .token.cdata          { color: #6B7075; font-style: italic; }
+[data-theme="light"] .token.punctuation    { color: #4A4F5A; }
+[data-theme="light"] .token.namespace      { opacity: 0.7; }
+[data-theme="light"] .token.string,
+[data-theme="light"] .token.attr-value,
+[data-theme="light"] .token.char           { color: #B25C00; }         /* burnt amber -- readable */
+[data-theme="light"] .token.number,
+[data-theme="light"] .token.boolean,
+[data-theme="light"] .token.constant,
+[data-theme="light"] .token.symbol         { color: #7A3E9E; }         /* deep violet */
+[data-theme="light"] .token.property,
+[data-theme="light"] .token.tag,
+[data-theme="light"] .token.deleted,
+[data-theme="light"] .token.selector       { color: #B01455; }         /* magenta */
+[data-theme="light"] .token.keyword,
+[data-theme="light"] .token.rule,
+[data-theme="light"] .token.important,
+[data-theme="light"] .token.atrule         { color: #7A3E9E; font-weight: 500; }
+[data-theme="light"] .token.function,
+[data-theme="light"] .token.class-name     { color: #1F5CB8; }         /* deep blue */
+[data-theme="light"] .token.builtin        { color: #B01455; }
+[data-theme="light"] .token.operator,
+[data-theme="light"] .token.entity,
+[data-theme="light"] .token.url            { color: #2E4B6B; background: transparent; }
+[data-theme="light"] .token.regex          { color: #B25C00; }
+[data-theme="light"] .token.variable       { color: #1F5CB8; }
+[data-theme="light"] .token.inserted       { color: #2C7A2C; }
+
+/* Inline `code` too */
+[data-theme="light"] #doc code {
+  color: var(--text);
+  background: var(--bg-elev-2);
+  border-color: var(--border);
+}
+
+/* Hero code snippet uses hand-classed spans; give them light-theme colors */
+[data-theme="light"] .hero-code    { color: var(--text); }
+[data-theme="light"] .hero-code .kw  { color: #7A3E9E; font-weight: 500; }
+[data-theme="light"] .hero-code .fn  { color: var(--accent-dim); font-weight: 500; }
+[data-theme="light"] .hero-code .cls { color: #1F5CB8; }
+[data-theme="light"] .hero-code .str { color: #B25C00; }
+[data-theme="light"] .hero-code .cm  { color: #6B7075; font-style: italic; }
+[data-theme="light"] .hero-code .op  { color: #4A4F5A; }
+
 @media (max-width: 1200px) {
   .layout { grid-template-columns: var(--sidebar-w) minmax(0, 1fr); }
   .toc { display: none; }
@@ -1095,19 +1161,36 @@ a:hover { color: var(--text); }
    Click a nav-group-title to fold that group. State stored in localStorage.
    ========================================================================= */
 
+/* Collapsible group titles: whole row clickable, hover reveals a
+   subtle bg tint + slightly brighter text, caret rotates 90deg when
+   collapsed. The caret is a proper chevron drawn in SVG so the glyph
+   is crisp at every size. */
 .nav-group-title {
   cursor: pointer;
   user-select: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  transition: color var(--dur) var(--ease-out);
+  gap: 8px;
 }
-.nav-group-title:hover { color: var(--text-dim); }
+.nav-group-title:hover {
+  background: var(--bg-elev-2);
+  color: var(--text-dim);
+}
+.nav-group-title:hover .caret { color: var(--text-dim); }
 .nav-group-title .caret {
-  font-size: 8px;
   color: var(--text-mute);
-  transition: transform var(--dur) var(--ease-out);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  transition: transform var(--dur) var(--ease-out), color var(--dur) var(--ease-out);
+}
+.nav-group-title .caret svg {
+  width: 10px;
+  height: 10px;
+  display: block;
 }
 .nav-group.collapsed .nav-group-title .caret { transform: rotate(-90deg); }
 .nav-group.collapsed .nav-item { display: none; }

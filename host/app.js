@@ -178,7 +178,17 @@
       wrap.className = "nav-group" + (collapsed.has(group.name) ? " collapsed" : "");
       const title = document.createElement("div");
       title.className = "nav-group-title";
-      title.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="caret">v</span>`;
+      // SVG chevron (down when expanded, rotated -90deg when collapsed
+      // via CSS). Crisper than a Unicode arrow at 10px.
+      title.innerHTML =
+        `<span>${escapeHtml(group.name)}</span>` +
+        `<span class="caret" aria-hidden="true">` +
+          `<svg viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg">` +
+            `<path d="M 2 3.5 L 5 6.5 L 8 3.5" fill="none" ` +
+              `stroke="currentColor" stroke-width="1.5" ` +
+              `stroke-linecap="round" stroke-linejoin="round"/>` +
+          `</svg>` +
+        `</span>`;
       title.setAttribute("data-group", group.name);
       title.addEventListener("click", () => {
         wrap.classList.toggle("collapsed");
