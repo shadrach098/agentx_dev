@@ -25,3 +25,4 @@ examples/_sandbox/
 examples/_sandbox_mcp/
 sessions/
 .run_python_state.pkl
+data/
