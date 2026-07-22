@@ -4,6 +4,32 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.1.3] — 2026-07-22
+
+Docs-only patch. No code changes since 3.1.2. Users on 3.1.2 don't
+need to upgrade for functionality; upgrade to pick up the improved
+onboarding docs bundled in the sdist.
+
+### Documentation
+
+- **Tools doc rewritten to answer "how do I actually use these?"**
+  Added §0 `How each built-in tool is registered` as the entry
+  section. Two registration paths — auto vs manual — laid out in a
+  table on the first screen. Six runnable subsections covering every
+  combination:
+    - §0.1 DefaultTools via `Permissions(...)` (auto)
+    - §0.2 WebTools via `tools=[web_search_tool(), web_fetch_tool()]`
+    - §0.3 RAG via `TextSplitter` -> `VectorStore.add_documents` ->
+      `vector_search_tool(store)`
+    - §0.4 Handoffs via `handoff_tool` + `HandoffCoordinator`
+    - §0.5 Custom `StructuredTool` from scratch
+    - §0.6 Fully-loaded runner combining all of the above
+    - §0.7 Rules on name collisions, invisible-denied-capabilities,
+      async-tool behavior
+  The existing inventory + wrapper / controls / cheat-sheet sections
+  are unchanged; they now sit after the "how to use them" primer
+  instead of before it.
+
 ## [3.1.2] — 2026-07-22
 
 Patch release. Two independent fixes.
