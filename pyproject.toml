@@ -1,7 +1,7 @@
 [project]
 
 name = "agentx-dev"
-version = "3.1.1"
+version = "3.1.2"
 description = "A production-grade Python framework for building LLM agents. Multi-provider chat, permission-gated tools, RAG (in-mem + Chroma/Qdrant/pgvector), semantic memory, Supervisor + Handoffs multi-agent orchestration with streaming, evals harness, prompt caching, Batch API, prompt-optimizer, MCP integration."
 authors = [{ name = "Bruce-Arhin Shadrach", email = "brucearhin098@gmail.com" }]
 # Best practice: link to the license file

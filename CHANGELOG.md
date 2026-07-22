@@ -4,6 +4,45 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.1.2] — 2026-07-22
+
+Patch release. Two independent fixes.
+
+### Fixed
+
+- **`llm_judge` correctly parses YES/NO across providers.** The judge
+  parser was comparing the reply's first word to the literal string
+  `"YES"`. GPT-4o answers `"YES,"` (comma-suffixed), which failed the
+  equality check and marked every genuine PASS as FAIL. Claude replies
+  `"YES"` without punctuation so the bug hid during local development.
+  Fixed by matching `\b(YES|NO)\b` (word-boundary regex, case-
+  insensitive) at the start of the reply. Handles every real shape:
+  `YES`, `YES.`, `YES!`, `YES, exactly right`, `Yes.`, `yes -- reason`.
+  Ambiguous replies (`Maybe`, empty string) still fail closed.
+- Regression test `test_llm_judge_parses_various_verdict_shapes`
+  covers 8 YES shapes, 5 NO shapes, and 4 ambiguous replies.
+
+### Added
+
+- **`agentx_dev.Tools` is a one-stop tools namespace.** Users no
+  longer need to remember which module each tool lives in:
+
+  ```python
+  from agentx_dev.Tools import (
+      StandardTool, StructuredTool,
+      AsyncStandardTool, AsyncStructuredTool,
+      web_search_tool, web_fetch_tool,
+      vector_search_tool, handoff_tool,
+      DefaultTools, Permissions,
+  )
+  ```
+
+  Both this form and the pre-existing `from agentx_dev import X`
+  form coexist. Implementation uses PEP 562 module `__getattr__`
+  and `__dir__` so re-exports are lazy (no import cost for modules
+  the caller doesn't touch) and show up in IDE autocomplete +
+  `dir(agentx_dev.Tools)`.
+
 ## [3.1.1] — 2026-07-21
 
 Second batch of 3.1 features + a full docs + brand pass.
