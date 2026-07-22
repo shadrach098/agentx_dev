@@ -167,6 +167,60 @@ from typing import List, Dict, Any
 # # Suggestion: Placing local application imports after standard library imports is a common convention.
 
 
+# ---------------------------------------------------------------------------
+# Convenience re-exports so `agentx_dev.Tools` is a one-stop namespace
+#
+# Users can now import any tool from this module:
+#
+#     from agentx_dev.Tools import (
+#         StandardTool, StructuredTool,          # wrappers (defined above)
+#         web_search_tool, web_fetch_tool,       # web
+#         vector_search_tool,                    # RAG
+#         handoff_tool,                          # multi-agent
+#         DefaultTools, Permissions,             # sandboxed filesystem tools
+#     )
+#
+# The top-level imports (from agentx_dev import ...) still work; this is
+# purely additive so callers who prefer the namespaced form get it too.
+# Lazy-import-inside-getattr keeps import time low and avoids circular
+# imports with modules that already import from Tools.py.
+# ---------------------------------------------------------------------------
+
+_TOOL_EXPORTS = {
+    # Web tools
+    "web_search_tool":  ("agentx_dev.WebTools",     "web_search_tool"),
+    "web_fetch_tool":   ("agentx_dev.WebTools",     "web_fetch_tool"),
+    # RAG
+    "vector_search_tool": ("agentx_dev.Embeddings", "vector_search_tool"),
+    # Multi-agent handoffs
+    "handoff_tool":     ("agentx_dev.Handoffs",     "handoff_tool"),
+    # Async tool wrappers (siblings to Standard/Structured)
+    "AsyncStandardTool":   ("agentx_dev.AsyncTools", "AsyncStandardTool"),
+    "AsyncStructuredTool": ("agentx_dev.AsyncTools", "AsyncStructuredTool"),
+    # Filesystem / permissions
+    "DefaultTools": ("agentx_dev.DefaultTools", "DefaultTools"),
+    "Permissions":  ("agentx_dev.DefaultTools", "Permissions"),
+}
+
+
+def __getattr__(name):
+    """PEP 562 module __getattr__: lazy-load re-exports on first access."""
+    if name in _TOOL_EXPORTS:
+        import importlib
+        mod_name, attr_name = _TOOL_EXPORTS[name]
+        mod = importlib.import_module(mod_name)
+        obj = getattr(mod, attr_name)
+        # Cache on the module so subsequent lookups skip the importlib call.
+        globals()[name] = obj
+        return obj
+    raise AttributeError(f"module 'agentx_dev.Tools' has no attribute {name!r}")
+
+
+def __dir__():
+    """Expose the re-exports to `dir(agentx_dev.Tools)` and IDE autocomplete."""
+    return sorted(list(globals().keys()) + list(_TOOL_EXPORTS.keys()))
+
+
 
 
 
