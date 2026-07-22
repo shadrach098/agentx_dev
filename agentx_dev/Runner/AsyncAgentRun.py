@@ -66,9 +66,27 @@ def _read_action_input(parser_instance: BaseModel):
 
 
 class AsyncAgentRunner:
-    """
-    Async version of AgentRunner with support for concurrent tool execution
-    and native function calling.
+    """Async agent runner. Same reason-act loop as :class:`AgentRunner`
+    but every I/O path is awaitable.
+
+    Typical use::
+
+        import asyncio
+        from agentx_dev import AsyncAgentRunner, AgentType, Claude
+
+        runner = AsyncAgentRunner(
+            model=Claude(),
+            agent=AgentType.ReAct,
+            tools=[my_async_tool],
+        )
+        result = asyncio.run(runner.ainvoke("..."))
+
+    Accepts a mix of sync and async tools transparently. When at least
+    one async tool is registered, a ``batch_concurrent`` meta-tool is
+    auto-added so the LLM can dispatch several async calls in one turn
+    via ``asyncio.gather``. Combine with ``bind_tools_natively=True``
+    for the modern "parallel tool calls per turn" pattern where every
+    tool_use block in one assistant response is dispatched concurrently.
     """
 
     def __init__(
@@ -88,6 +106,53 @@ class AsyncAgentRunner:
         include_denied_tools: bool = False,
         strict_tool_dispatch: bool = False,
     ):
+        """Construct an ``AsyncAgentRunner``. Parameters mirror
+        :class:`AgentRunner` -- see that docstring for the full details;
+        the differences are noted here.
+
+        Args:
+            model: A ``BaseChatModel`` subclass. Both providers ship
+                sync + async paths, so ``Claude()`` and ``GPT()``
+                work here without changes.
+            Agent: The prompt template + parser pair. Same accepted
+                shapes as ``AgentRunner`` (``AgentType`` member,
+                custom ``AgentFormatter``, or raw string).
+            tools: Any mix of ``StandardTool`` / ``StructuredTool``
+                (sync) and ``AsyncStandardTool`` /
+                ``AsyncStructuredTool`` (async). Async tools use
+                ``asyncio.wait_for`` for cancellable timeouts; sync
+                tools run on the thread pool. When at least one async
+                tool is present, ``batch_concurrent`` is auto-added
+                so the LLM can batch calls via ``asyncio.gather``.
+            max_iterations: Loop cap per ``ainvoke``. Default 4.
+            auto_cache: Same as ``AgentRunner``: cache tool results
+                by ``(name, args)``. Default True.
+            auto_memory: Same as ``AgentRunner``. Default False.
+            use_function_calling: Route the AgentType parser through
+                native ``async_call_with_tools``. Mutually exclusive
+                with ``bind_tools_natively``.
+            verbose: Print step trace to stdout during ``ainvoke``.
+            bind_tools_natively: Bind user tools directly as native
+                FC tools; skip the AgentType parser. Multiple
+                ``tool_use`` blocks per turn dispatch concurrently
+                via ``asyncio.gather`` (no thread pool needed because
+                async tools are cancellable natively).
+            agent: PEP-8 lowercase alias for ``Agent``.
+            permissions: A ``Permissions`` instance -- auto-registers
+                the sandboxed ``DefaultTools`` and injects the
+                filesystem hint into the system prompt.
+            include_denied_tools: Surface denied capabilities as no-op
+                tools. Default False.
+            strict_tool_dispatch: Feed unknown-tool errors back into
+                the loop so the model can retry with a valid name.
+                Default False.
+
+        Raises:
+            TypeError: On missing / duplicate ``Agent``/``agent`` or
+                on a bad ``permissions`` type.
+            ValueError: On the mutually-exclusive combination of
+                ``use_function_calling`` and ``bind_tools_natively``.
+        """
         if Agent is not None and agent is not None:
             raise TypeError("AsyncAgentRunner received both 'Agent' and 'agent'; pass only one.")
         if agent is not None:
