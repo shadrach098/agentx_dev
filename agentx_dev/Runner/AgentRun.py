@@ -1095,18 +1095,38 @@ def _read_action_input(parser_instance: BaseModel):
 
 
 class AgentRunner:
-    """
-        The main engine that orchestrates the agent's execution loop.
+    """Sync agent runner. Connects a chat model, a prompt template, and a
+    set of tools into a reason-act loop.
 
-        This class connects all the components of the framework: the LLM, the tools,
-        and the prompt. It manages the agent's state, including its conversational
-        history and internal scratchpad, and runs the primary "reason-act" cycle.
+    Typical use::
 
-        Set ``use_function_calling=True`` to route the AgentType parser through
-        the model's native tool-calling API (when supported) instead of parsing
-        JSON out of the assistant text. The parser model itself (e.g.
-        ``React_``) is forwarded as the forced tool, so the model returns
-        ``Thought``/``action``/``action_input`` as structured arguments.
+        from agentx_dev import AgentRunner, AgentType, Claude, Permissions
+
+        runner = AgentRunner(
+            model=Claude(),                             # or GPT()
+            agent=AgentType.ReAct,
+            tools=[weather_tool],                       # your tools
+            permissions=Permissions.full_access(["./workspace"]),
+        )
+        result = runner.invoke("What's the weather in Paris?")
+        print(result.content)
+
+    The runner supports three execution modes, all set via constructor
+    flags:
+
+    - **Text mode** (default) -- the model emits JSON matching the
+      AgentType parser; the runner parses out the action and dispatches
+      the tool. Works with any chat model.
+    - **Function-calling mode** (``use_function_calling=True``) -- the
+      AgentType parser itself is forwarded as the native FC tool.
+      Requires the model to implement ``call_with_tools``.
+    - **Native binding mode** (``bind_tools_natively=True``, 3.1) --
+      your tools are bound directly as native FC tools; the AgentType
+      parser is skipped. Multiple tool_use blocks in one turn dispatch
+      concurrently on a bounded thread pool. Mutually exclusive with
+      ``use_function_calling``.
+
+    For the async equivalent, see :class:`AsyncAgentRunner`.
     """
 
     def __init__(
@@ -1128,6 +1148,123 @@ class AgentRunner:
         system_addendum: Optional[str] = None,
         strict_tool_dispatch: bool = False,
     ):
+        """Construct an ``AgentRunner``.
+
+        Args:
+            model: The chat model backing every LLM call. Any
+                ``BaseChatModel`` subclass -- ``Claude()``, ``GPT()``,
+                or your own provider adapter.
+            Agent: The prompt template + parser pair the runner uses.
+                Accepts an ``AgentType`` member
+                (``AgentType.ReAct`` / ``AgentType.Chain_of_Thought``
+                / ``AgentType.Zero_Shot`` / ``AgentType.Few_Shot`` /
+                ``AgentType.Instruction_Tuned``), a custom
+                ``AgentFormatter`` instance you built, or a raw
+                prompt-template string containing ``{tools}``,
+                ``{tool_names}``, and ``{user_input}`` placeholders.
+                Aliased as ``agent=`` (lowercase, PEP-8-friendly).
+                Passing both ``Agent=`` and ``agent=`` raises
+                ``TypeError`` -- pick one.
+            tools: Tool instances the LLM can call. Each must be a
+                ``StandardTool`` / ``StructuredTool`` /
+                ``AsyncStandardTool`` / ``AsyncStructuredTool``.
+                Defaults to an empty list. Framework guards apply
+                automatically (duplicate-call, timeout, circuit
+                breaker, cache, observability). Merged with any
+                ``DefaultTools`` produced from ``permissions=`` below;
+                collisions raise ``TypeError``.
+            max_iterations: Cap on tool-calling cycles per invoke.
+                Default 4. Bump for complex multi-step tasks. If the
+                loop reaches the cap without a Final_Answer, the
+                runner synthesizes a summary of what actually
+                happened (last successful tool result + step list)
+                so callers never get a bare "No final answer".
+            auto_cache: When True (default), tool results are cached
+                by ``(name, args)`` signature via
+                ``get_global_cache()``. Second identical dispatch is
+                a cache hit -- observability emits ``CACHE_HIT``.
+                Disable when your tools have side effects
+                (``send_email`` / ``write_file``) or time-varying
+                outputs (``current_time`` / ``stock_price``).
+            auto_memory: When True, the runner instantiates a default
+                ``ConversationMemory`` and threads it as chat history
+                automatically between invokes. Off by default; most
+                real apps prefer explicit ``Session`` + custom
+                ``BaseMemory`` (see the memory strategies guide).
+            use_function_calling: When True, route the AgentType
+                parser through the model's native tool-calling API
+                (``call_with_tools``) instead of parsing JSON out of
+                assistant text. Slightly higher accuracy on tool-call
+                correctness. Requires the model to implement
+                ``call_with_tools`` (GPT and Claude both do). Mutually
+                exclusive with ``bind_tools_natively``.
+            verbose: Print the running Thought / Action / Observation
+                trace to stdout while the loop executes. Convenient
+                during development; usually off in production.
+                Independent of ``observability_enabled`` (which
+                controls structured events, not stdout).
+            bind_tools_natively: When True (3.1), the AgentType parser
+                is bypassed and your tools are bound directly as
+                native function-calling tools. The framework
+                auto-registers a synthetic ``respond`` tool the model
+                calls to end the loop. Multiple ``tool_use`` blocks
+                per turn are dispatched concurrently on a bounded
+                ``ThreadPoolExecutor``. Best latency for multi-tool
+                turns. Mutually exclusive with
+                ``use_function_calling``. Uses a minimal system
+                prompt (not the AgentType template) so the parser
+                scaffolding doesn't fight the native interface.
+            parallel_tool_workers: Max concurrent dispatches per turn
+                when ``bind_tools_natively=True``. Default 8. Actual
+                worker count is ``min(this, number_of_tool_calls)``.
+                Ignored when native binding is off. Only affects
+                per-turn parallelism -- separate calls to
+                ``runner.invoke`` remain sequential.
+            agent: Lowercase PEP-8 alias for ``Agent``. Prefer this
+                spelling in new code.
+            permissions: A ``Permissions`` instance. When supplied,
+                the framework calls ``DefaultTools.build(permissions)``
+                and merges the resulting tools into ``tools=``. This
+                is how you enable the sandboxed filesystem tools
+                (``read_path`` / ``write_file`` / ``run_python``
+                etc.) -- denied capabilities aren't registered, so
+                the LLM literally cannot call them. Also injects a
+                filesystem-sandbox description into the system
+                prompt automatically. Name collisions with
+                ``tools=`` raise ``TypeError`` at construction.
+            include_denied_tools: When True, denied capabilities
+                surface as no-op tools that return an error message
+                ("this capability is disabled"). Useful for testing
+                model behavior against a wider tool surface. Default
+                False -- denied tools don't exist to the model.
+            system_addendum: A role-specific instruction block
+                appended to the AgentType template's system prompt.
+                Use to encode a specialist contract
+                (e.g. "you MUST call ``write_file`` at the end;
+                never just describe the content"). When
+                ``permissions=`` is also set, the auto-generated
+                sandbox hint is prepended so the role text can
+                reference paths. Set this to a lightweight cache
+                miss beat -- Anthropic prompt caching kicks in when
+                the addendum stays stable across calls.
+            strict_tool_dispatch: When True, an unknown ``action``
+                that looks like a tool identifier feeds an error
+                observation back into the loop
+                ("that tool doesn't exist; use one of X or
+                Final_Answer") so the model can retry. Default
+                False, which routes unknown actions to
+                implicit-final. Turn on for models prone to
+                misnaming tools (gpt-4o-mini).
+
+        Raises:
+            TypeError: If both ``Agent`` and ``agent`` are passed, if
+                ``Agent``/``agent`` is missing, if any item in
+                ``tools`` is not a supported tool subclass, or if
+                ``permissions`` isn't a ``Permissions`` instance.
+            ValueError: If ``use_function_calling`` and
+                ``bind_tools_natively`` are both True (mutually
+                exclusive modes).
+        """
         # PEP 8 alias: prefer lowercase `agent=`. Either argument works; passing
         # both raises so misuse is loud rather than silently ambiguous.
         if Agent is not None and agent is not None:
@@ -1173,23 +1310,7 @@ class AgentRunner:
                 )
             tools = list(default_tools) + list(tools)
             auto_sandbox_hint = _build_sandbox_hint(permissions)
-        """
-        Initializes the AgentRunner.
 
-        Args:
-            model (BaseChatModel): The LLM model.
-            Agent: The agent's prompt template (string, AgentFormattor, or AgentPrompt).
-            tools (List): A list of tool instances available to the agent.
-            max_iterations (Optional[int]): Maximum tool-calling cycles.
-            auto_cache (bool): Enable automatic tool result caching (default: True).
-            auto_memory (bool): Enable automatic memory management (default: False).
-            use_function_calling (bool): Route the AgentType parser through the
-                model's native tool-calling API. Requires the chat model to
-                implement ``call_with_tools`` (GPT and Claude do).
-
-        Raises:
-            TypeError: If any item in ``tools`` is not a StandardTool/StructuredTool.
-        """
         self.Query = ""
         self.Agent = Agent
         self.tools = tools
