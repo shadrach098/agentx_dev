@@ -2,6 +2,13 @@
 
 Reusable shapes for common problems.
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](../concepts/models.md) for adding other providers.
+
 ## 1. Single tool-using agent
 
 Just build a runner with your tools.
@@ -305,7 +312,7 @@ class Receipt(BaseModel):
     total: float
     currency: str
 
-llm = Claude(enable_prompt_cache=True)
+llm = Claude(enable_prompt_cache=True)   # or GPT() -- same API
 schema = Receipt.model_json_schema()
 
 requests = [

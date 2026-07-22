@@ -3,6 +3,13 @@
 Goal: an agent that reads a file, improves the writing, saves the
 improved version, and reports what changed.
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](../concepts/models.md) for adding other providers.
+
 ## Minimum viable
 
 ```python

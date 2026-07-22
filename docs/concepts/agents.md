@@ -6,6 +6,13 @@ covers *how you compose them* — Supervisor decomposes tasks top-down,
 HandoffCoordinator routes between peers, Compiled optimizes any of the
 above. This doc covers all of them.
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](models.md) for adding other providers.
+
 1. **Agent types** — every prompt-template flavor for solo agents,
    with "when to use / when not to use."
 2. **Agent architectures** — solo / Supervisor / Handoffs / Compiled,
@@ -273,8 +280,7 @@ from agentx_dev import (
     AgentRunner, AgentType, Claude, Permissions, Supervisor,
 )
 
-llm = Claude()
-
+llm = Claude()   # or GPT() -- same API
 file_agent = AgentRunner(
     model=llm, agent=AgentType.ReAct,
     permissions=Permissions(

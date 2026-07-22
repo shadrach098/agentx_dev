@@ -4,6 +4,13 @@ MCP (Model Context Protocol) lets you plug in tool servers without
 writing tool code yourself. The framework's `MCPClient` supports stdio
 (local subprocess), Server-Sent Events, and plain HTTP transports.
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](../concepts/models.md) for adding other providers.
+
 ## Install
 
 MCP is an optional extra:

@@ -4,6 +4,13 @@ Two flavors: `StandardTool` (one string arg) and `StructuredTool`
 (typed multi-arg via Pydantic). Async variants exist for I/O-bound
 tools.
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](../concepts/models.md) for adding other providers.
+
 ## Boilerplate
 
 ```python

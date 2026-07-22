@@ -2,6 +2,13 @@
 
 A tool is a Python function the LLM can call. This doc covers:
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](models.md) for adding other providers.
+
 0. **How to actually plug tools into an agent** — auto vs manual, complete runnable code for each path.
 1. The **four tool wrapper classes** (`StandardTool`, `StructuredTool`,
    `AsyncStandardTool`, `AsyncStructuredTool`) — how to author your own.

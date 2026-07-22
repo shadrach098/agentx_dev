@@ -2,6 +2,13 @@
 
 Concrete scenarios the framework was built for. Each one lists:
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](concepts/models.md) for adding other providers.
+
 - **The problem** you're trying to solve.
 - **Which pieces** to reach for.
 - **Minimal complete code** — no placeholders.
@@ -161,8 +168,7 @@ class Receipt(BaseModel):
     currency: str
     date: str
 
-llm = Claude(enable_prompt_cache=True)
-
+llm = Claude(enable_prompt_cache=True)   # or GPT() -- same API
 # Build the batch: same system prompt for all -> caches perfectly.
 schema_hint = Receipt.model_json_schema()
 requests = [
