@@ -168,8 +168,14 @@ def llm_judge(
         except Exception as e:
             return False, f"llm_judge({criterion!r}): ERROR calling judge -- {e}"
         first_line = reply.splitlines()[0] if reply else ""
-        first_word = first_line.split(None, 1)[0].upper() if first_line else ""
-        ok = first_word == "YES"
+        # Match YES or NO at the start of the reply, respecting word
+        # boundaries. Different providers punctuate the verdict
+        # differently ("YES", "Yes.", "YES,", "yes -- ") -- all of
+        # these should register as YES.
+        import re as _re
+        m = _re.match(r"\s*(YES|NO)\b", first_line, _re.IGNORECASE)
+        verdict = m.group(1).upper() if m else ""
+        ok = verdict == "YES"
         return ok, f"llm_judge({criterion!r}): {'PASS' if ok else 'FAIL'} -- {first_line[:120]}"
     return _check
 

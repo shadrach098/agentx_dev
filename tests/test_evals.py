@@ -90,6 +90,49 @@ class TestAssertions:
         assert max_iterations(3)(c)[0]
         assert not max_iterations(1)(c)[0]
 
+    def test_llm_judge_parses_various_verdict_shapes(self):
+        """Bug regression: different providers punctuate the YES/NO
+        verdict differently. All valid YES shapes must pass."""
+        from agentx_dev import llm_judge
+
+        class ScriptedJudge:
+            def __init__(self, reply):
+                self.reply = reply
+            def invoke(self, _prompt):
+                return self.reply
+
+        c = _completion("some answer")
+
+        yes_shapes = [
+            "YES",
+            "YES.",
+            "YES!",
+            "YES, the answer is accurate.",
+            "YES -- exactly what was asked.",
+            "Yes.",
+            "yes, it does.",
+            "  YES\nfollow-up sentence.",
+        ]
+        for reply in yes_shapes:
+            ok, msg = llm_judge(ScriptedJudge(reply), "criterion")(c)
+            assert ok, f"expected YES verdict from reply {reply!r}, got FAIL: {msg}"
+
+        no_shapes = [
+            "NO",
+            "NO.",
+            "NO, it doesn't.",
+            "no -- the answer is wrong.",
+            "  no\nreason",
+        ]
+        for reply in no_shapes:
+            ok, msg = llm_judge(ScriptedJudge(reply), "criterion")(c)
+            assert not ok, f"expected NO verdict from reply {reply!r}, got PASS: {msg}"
+
+        # Ambiguous replies should default to NO (fail closed).
+        for ambiguous in ["Maybe", "It depends", "I'm not sure", ""]:
+            ok, _ = llm_judge(ScriptedJudge(ambiguous), "criterion")(c)
+            assert not ok, f"ambiguous reply {ambiguous!r} should fail closed"
+
 
 class TestEvalRunner:
 
