@@ -3,6 +3,13 @@
 The `Supervisor` pattern decomposes a task into a plan of sub-tasks and
 dispatches each to a named specialist agent. Use when:
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](../concepts/models.md) for adding other providers.
+
 - The task naturally splits into pieces (research + writing +
   formatting).
 - Different sub-tasks need different tool sets or permissions.
@@ -20,8 +27,7 @@ from agentx_dev import (
     Supervisor,
 )
 
-llm = Claude(model="claude-sonnet-4-6")
-
+llm = Claude(model="claude-sonnet-4-6")   # or GPT() -- same API
 file_agent = AgentRunner(
     model=llm, agent=AgentType.ReAct,
     permissions=Permissions(

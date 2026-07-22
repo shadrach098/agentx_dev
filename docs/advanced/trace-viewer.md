@@ -5,6 +5,13 @@ is a self-hosted single-page app that reads that file and renders a
 timeline -- summary sidebar, filterable events, per-event JSON
 drill-down.
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](../concepts/models.md) for adding other providers.
+
 ## Produce a trace
 
 ```python

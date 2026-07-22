@@ -2,6 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](concepts/models.md) for adding other providers.
+
 **Goal:** Fix 13 confirmed bugs and architectural flaws in AgentX, then add true async LLM support and Anthropic/Claude model integration.
 
 **Architecture:** The runner is refactored to be stateless-per-call (history lives in the call, not the instance), the tool-arg parsing bug is eliminated by validating before executing, and the async runner gets a real async LLM interface. A `Claude` chat model is added alongside `GPT`.
@@ -859,7 +866,7 @@ def test_claude_is_a_valid_base_chat_model():
     from agentx_dev.ChatModel import Claude
     import os
     os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
-    claude = Claude(model="claude-haiku-4-5-20251001")
+    claude = Claude(model="claude-haiku-4-5-20251001")   # or GPT() -- same API
     assert isinstance(claude, BaseChatModel)
 
 

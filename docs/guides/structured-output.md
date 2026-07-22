@@ -2,6 +2,13 @@
 
 Two patterns:
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](../concepts/models.md) for adding other providers.
+
 1. **`with_structured_output`** — one-shot extraction from a model,
    no agent loop.
 2. **`output_schema=`** — run the full agent loop, but validate the

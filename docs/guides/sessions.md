@@ -4,6 +4,13 @@ Without persistence, every process restart loses conversation state.
 `Session` serializes the full history to disk so an agent picks up
 exactly where it left off.
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](../concepts/models.md) for adding other providers.
+
 ## What gets saved
 
 - Full message history (with provider-native tool_use IDs preserved)

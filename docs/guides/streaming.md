@@ -2,6 +2,13 @@
 
 Two kinds of streaming:
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](../concepts/models.md) for adding other providers.
+
 1. **Text token deltas** — the LLM's raw output, chunk by chunk.
 2. **Agent step events** — thoughts, tool calls, tool results, final.
 
@@ -15,8 +22,7 @@ Every `BaseChatModel` implements `stream_text` (sync) and `astream_text`
 ```python
 from agentx_dev import Claude
 
-llm = Claude()
-
+llm = Claude()   # or GPT() -- same API
 for chunk in llm.stream_text([{"role": "user", "content": "Explain MVCC"}]):
     print(chunk, end="", flush=True)
 ```

@@ -6,6 +6,13 @@ is allowed to do; the framework registers only the matching tools. A
 denied capability isn't just refused at call time — the tool doesn't
 appear as an option to the model.
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](models.md) for adding other providers.
+
 ## Permissions
 
 ```python

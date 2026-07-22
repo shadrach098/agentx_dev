@@ -2,6 +2,13 @@
 
 Six memory implementations ship. Pick based on your conversation shape:
 
+
+> **Both providers work.** Every `Claude()` in this page also works
+> with `GPT()`. Same tools, same agent code, same runner APIs. Set
+> whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
+> `OPENAI_API_KEY` for GPT) and swap the constructor. See
+> [chat models](../concepts/models.md) for adding other providers.
+
 | Class | Strategy | Good for |
 |---|---|---|
 | `ConversationMemory` | Keep everything verbatim | Short conversations |
@@ -95,8 +102,7 @@ into an LLM-generated summary:
 ```python
 from agentx_dev import SummaryMemory, Claude
 
-llm = Claude()
-
+llm = Claude()   # or GPT() -- same API
 def summarize(messages):
     text = "\n".join(f"[{m.role}] {m.content}" for m in messages)
     return llm.invoke(
