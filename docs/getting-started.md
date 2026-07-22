@@ -8,14 +8,20 @@ Python, and answer questions.
 Requires Python 3.10+.
 
 ```bash
-pip install agentx-dev            # OpenAI provider + core features
-pip install agentx-dev[anthropic] # adds Claude
+pip install agentx-dev            # OpenAI provider ships in the base install
+pip install agentx-dev[anthropic] # adds Claude support
 pip install agentx-dev[mcp]       # adds MCP client (stdio / sse / http)
 pip install agentx-dev[otel]      # OpenTelemetry adapter
 pip install agentx-dev[all]       # everything above
 ```
 
-Set your provider key in the environment:
+## Providers — you get both
+
+The framework is provider-agnostic. Two chat-model classes ship
+in-tree: `GPT` (OpenAI) and `Claude` (Anthropic). Same agent code,
+same tool code, either provider — pick per runner or per use case.
+
+Set whichever key you have in the environment (or both):
 
 ```bash
 # macOS / Linux
@@ -27,7 +33,14 @@ $env:OPENAI_API_KEY = "sk-..."
 $env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
+Everywhere the docs use `Claude()`, you can swap in `GPT()` and the
+code still works. Any subclass of `BaseChatModel` drops in the same
+way — see [chat models](concepts/models.md) for adding your own
+provider (Ollama, Bedrock, Together, etc.).
+
 ## Your first agent — 5 lines
+
+**With Claude:**
 
 ```python
 from agentx_dev import AgentRunner, AgentType, Claude
@@ -37,8 +50,19 @@ result = runner.invoke("What is 12 * 47? Reason step by step.")
 print(result.content)
 ```
 
-No tools yet — the model just thinks and answers. Let's give it something
-to do.
+**With GPT:**
+
+```python
+from agentx_dev import AgentRunner, AgentType, GPT
+
+runner = AgentRunner(model=GPT(), agent=AgentType.ReAct, tools=[])
+result = runner.invoke("What is 12 * 47? Reason step by step.")
+print(result.content)
+```
+
+Only line 1 and line 3 change — everything else about the framework
+is identical. No tools yet; the model just thinks and answers. Let's
+give it something to do.
 
 ## Add a tool
 
@@ -47,6 +71,7 @@ A tool is a Python function the agent can call. The simplest form is
 
 ```python
 from agentx_dev import AgentRunner, AgentType, Claude, StandardTool
+# Or: from agentx_dev import AgentRunner, AgentType, GPT, StandardTool
 
 def get_weather(city: str) -> str:
     return f"It's 22C and sunny in {city}."
@@ -58,6 +83,7 @@ weather = StandardTool(
 )
 
 runner = AgentRunner(model=Claude(), agent=AgentType.ReAct, tools=[weather])
+# Swap Claude() for GPT() -- everything else stays the same.
 result = runner.invoke("What's the weather in Paris?")
 print(result.content)
 ```
@@ -72,9 +98,10 @@ under a permission system:
 
 ```python
 from agentx_dev import AgentRunner, AgentType, Claude, Permissions
+# Or: from agentx_dev import AgentRunner, AgentType, GPT, Permissions
 
 runner = AgentRunner(
-    model=Claude(),
+    model=Claude(),                # or GPT() -- same everything else
     agent=AgentType.ReAct,
     permissions=Permissions(
         read_files=True,

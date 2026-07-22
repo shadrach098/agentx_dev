@@ -2,6 +2,8 @@ graft agentx_dev
 graft examples
 include AGENTX.md
 include README.md
+include CHANGELOG.md
+include CONTRIBUTING.md
 include LICENSE
 prune tests
 prune examples/_sandbox

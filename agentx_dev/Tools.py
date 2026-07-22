@@ -1,10 +1,26 @@
 """
-A lightweight framework for building LLM-powered agents that can use tools.
+Tool primitives + one-stop tools namespace for `agentx_dev`.
 
-This module provides the necessary components to define tools, format them for
-an agent prompt, and execute them within a loop controlled by an AgentRunner.
-It leverages Pydantic for structured data validation and generating schemas
-for function-calling APIs like OpenAI's.
+This module ships two things:
+
+1. The `StandardTool` and `StructuredTool` wrappers that adapt a
+   Python callable into something an LLM can call, with Pydantic-
+   validated arguments for the structured variant.
+2. A curated re-export surface (see the section at the bottom) so
+   users can import any built-in tool from a single namespace:
+
+     from agentx_dev.Tools import (
+         StandardTool, StructuredTool,
+         AsyncStandardTool, AsyncStructuredTool,
+         web_search_tool, web_fetch_tool,
+         vector_search_tool, handoff_tool,
+         DefaultTools, Permissions,
+     )
+
+The tool wrappers are the foundation of the framework's function-
+calling story -- every dispatched call, whether it's a filesystem
+tool, a RAG search, or a user-supplied Slack notifier, flows through
+these two classes.
 """
 
 from typing import Dict, Callable, List, Type
@@ -168,12 +184,13 @@ from typing import List, Dict, Any
 
 
 # ---------------------------------------------------------------------------
-# Convenience re-exports so `agentx_dev.Tools` is a one-stop namespace
+# Convenience re-exports so `agentx_dev.Tools` is a one-stop namespace.
 #
 # Users can now import any tool from this module:
 #
 #     from agentx_dev.Tools import (
 #         StandardTool, StructuredTool,          # wrappers (defined above)
+#         AsyncStandardTool, AsyncStructuredTool,# async wrappers
 #         web_search_tool, web_fetch_tool,       # web
 #         vector_search_tool,                    # RAG
 #         handoff_tool,                          # multi-agent
@@ -182,43 +199,45 @@ from typing import List, Dict, Any
 #
 # The top-level imports (from agentx_dev import ...) still work; this is
 # purely additive so callers who prefer the namespaced form get it too.
-# Lazy-import-inside-getattr keeps import time low and avoids circular
-# imports with modules that already import from Tools.py.
+#
+# Design note: previously this used a PEP 562 __getattr__ for lazy
+# loading. That saved microseconds at import time but broke IDE
+# autocomplete + syntax highlighting -- static analyzers can't see
+# names that only exist inside a __getattr__ fallback. Since
+# `agentx_dev/__init__.py` already eager-loads all these modules at
+# top-level import anyway, the lazy-load was a false economy.
+# Eager imports here just re-export symbols that are already in memory.
 # ---------------------------------------------------------------------------
 
-_TOOL_EXPORTS = {
-    # Web tools
-    "web_search_tool":  ("agentx_dev.WebTools",     "web_search_tool"),
-    "web_fetch_tool":   ("agentx_dev.WebTools",     "web_fetch_tool"),
+# Web
+from agentx_dev.WebTools import web_search_tool, web_fetch_tool
+
+# RAG
+from agentx_dev.Embeddings import vector_search_tool
+
+# Multi-agent handoffs
+from agentx_dev.Handoffs import handoff_tool
+
+# Async tool wrappers (siblings to Standard/Structured)
+from agentx_dev.AsyncTools import AsyncStandardTool, AsyncStructuredTool
+
+# Filesystem / permissions
+from agentx_dev.DefaultTools import DefaultTools, Permissions
+
+
+__all__ = [
+    # Wrappers defined in this module
+    "StandardTool", "StructuredTool",
+    "AsyncStandardTool", "AsyncStructuredTool",
+    # Web
+    "web_search_tool", "web_fetch_tool",
     # RAG
-    "vector_search_tool": ("agentx_dev.Embeddings", "vector_search_tool"),
-    # Multi-agent handoffs
-    "handoff_tool":     ("agentx_dev.Handoffs",     "handoff_tool"),
-    # Async tool wrappers (siblings to Standard/Structured)
-    "AsyncStandardTool":   ("agentx_dev.AsyncTools", "AsyncStandardTool"),
-    "AsyncStructuredTool": ("agentx_dev.AsyncTools", "AsyncStructuredTool"),
-    # Filesystem / permissions
-    "DefaultTools": ("agentx_dev.DefaultTools", "DefaultTools"),
-    "Permissions":  ("agentx_dev.DefaultTools", "Permissions"),
-}
-
-
-def __getattr__(name):
-    """PEP 562 module __getattr__: lazy-load re-exports on first access."""
-    if name in _TOOL_EXPORTS:
-        import importlib
-        mod_name, attr_name = _TOOL_EXPORTS[name]
-        mod = importlib.import_module(mod_name)
-        obj = getattr(mod, attr_name)
-        # Cache on the module so subsequent lookups skip the importlib call.
-        globals()[name] = obj
-        return obj
-    raise AttributeError(f"module 'agentx_dev.Tools' has no attribute {name!r}")
-
-
-def __dir__():
-    """Expose the re-exports to `dir(agentx_dev.Tools)` and IDE autocomplete."""
-    return sorted(list(globals().keys()) + list(_TOOL_EXPORTS.keys()))
+    "vector_search_tool",
+    # Multi-agent
+    "handoff_tool",
+    # Sandbox
+    "DefaultTools", "Permissions",
+]
 
 
 
