@@ -443,6 +443,23 @@ def _build_augmented_query(
     )
 
 
+def _augment_query_with_error(base_query: str, error: str, attempt: int) -> str:
+    """Append a failed sub-task's error to its query so the specialist
+    knows what to fix on the next attempt.
+
+    The repair loop is INFORMED, not blind: a bare re-dispatch would very
+    likely reproduce the same failure. Naming the error — and hinting at
+    the usual culprits (malformed tool call, bad escaping) — gives the
+    specialist's own reasoning loop something to correct against."""
+    return (
+        f"{base_query}\n\n===\n\n[supervisor] Your PREVIOUS attempt (#{attempt}) "
+        f"FAILED with this error:\n{error}\n\nDiagnose the cause and try again. "
+        f"If it was a malformed tool call or an unescaped backslash in a code "
+        f"string / file path, fix the formatting and resend. Do not repeat the "
+        f"same mistake."
+    )
+
+
 # ANSI colors match the AgentRunner's verbose output so a mixed
 # supervisor + inner-runner trace reads consistently.
 _C_PLAN     = "\x1B[1;34m"   # blue bold  — plan header + steps
@@ -504,6 +521,7 @@ class Supervisor:
         max_subtasks: int = 5,
         verbose: bool = True,
         spawn_config: Optional[SpawnConfig] = None,
+        max_subtask_retries: int = 1,
     ):
         """
         Args:
@@ -519,6 +537,17 @@ class Supervisor:
                 spawning is disabled and the planner can only use the
                 specialists passed in ``agents``. See SpawnConfig for the
                 auto_spawn / approver knobs.
+            max_subtask_retries: How many times a sub-task that RAISES is
+                re-dispatched before the Supervisor gives up on it.
+                Default 1 (so a specialist that hits a transient or
+                self-correctable failure — a malformed tool call, a bad
+                escape — gets a second chance instead of the whole
+                sub-task being abandoned on the first error). Each retry
+                appends the prior error to the query so the specialist
+                knows what to fix. Set to 0 to restore the old
+                quit-on-first-failure behavior. Only errors trigger a
+                retry; a sub-task that returns content (even thin content)
+                is accepted as-is.
         """
         self.model = model
         # Copy so run-time spawns don't mutate the caller's dict.
@@ -527,6 +556,7 @@ class Supervisor:
         self.verbose = verbose
         self.spawn_config = spawn_config or SpawnConfig(enabled=False)
         self._spawns_this_run = 0
+        self.max_subtask_retries = max(0, int(max_subtask_retries))
 
     # -- internal helpers ----------------------------------------------------
 
@@ -719,6 +749,49 @@ class Supervisor:
         self._spawns_this_run += 1
         return req.name, None
 
+    def _dispatch_with_retry(
+        self,
+        agent_runner: AgentRunner,
+        agent_name: str,
+        sub_query: str,
+        dispatched_query: str,
+    ) -> SubtaskResult:
+        """Run one sub-task, retrying on raised exceptions up to
+        ``max_subtask_retries`` times with the error fed back into the
+        query. Returns the first successful result, or a SubtaskResult
+        carrying the last error if every attempt failed.
+
+        Note the boundary: only a RAISED exception is retried (that's the
+        hard-failure signal — a crash, a malformed tool call that even
+        the runner's own recovery couldn't resolve). A sub-task that
+        returns normally is accepted, even if its content is thin — the
+        Supervisor can't reliably tell "correct but terse" from "wrong",
+        so retrying on content would risk looping on fine answers."""
+        attempts = self.max_subtask_retries + 1
+        query = dispatched_query
+        last_error = ""
+        for attempt in range(1, attempts + 1):
+            try:
+                completion = agent_runner.Initialize(query)
+                return SubtaskResult(
+                    agent=agent_name, query=sub_query, content=completion.content,
+                )
+            except Exception as e:
+                last_error = str(e)
+                if self.verbose:
+                    print(
+                        f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
+                        f"attempt {attempt}/{attempts} failed: {last_error}"
+                        f"{_C_RESET}"
+                    )
+                if attempt < attempts:
+                    query = _augment_query_with_error(
+                        dispatched_query, last_error, attempt,
+                    )
+        return SubtaskResult(
+            agent=agent_name, query=sub_query, content="", error=last_error,
+        )
+
     def _synthesize(self, user_task: str, subtask_results: List[SubtaskResult]) -> str:
         results_block = _format_results_block(subtask_results)
         prompt = SUPERVISOR_SYNTHESIZE_PROMPT.format(
@@ -834,15 +907,9 @@ class Supervisor:
             yield {"type": "dispatch", "agent": agent_name, "query": sub_query, "step": step_idx}
             if self.verbose:
                 _log_dispatch(agent_name, sub_query)
-            try:
-                completion = agent_runner.Initialize(dispatched_query)
-                sub_result = SubtaskResult(
-                    agent=agent_name, query=sub_query, content=completion.content,
-                )
-            except Exception as e:
-                sub_result = SubtaskResult(
-                    agent=agent_name, query=sub_query, content="", error=str(e),
-                )
+            sub_result = self._dispatch_with_retry(
+                agent_runner, agent_name, sub_query, dispatched_query,
+            )
             subtask_results.append(sub_result)
             yield {"type": "subtask_result", "result": sub_result, "step": step_idx}
             if self.verbose:
@@ -903,6 +970,7 @@ class AsyncSupervisor:
         max_subtasks: int = 5,
         verbose: bool = True,
         sequential: bool = False,
+        max_subtask_retries: int = 1,
     ):
         """
         Args:
@@ -917,12 +985,19 @@ class AsyncSupervisor:
                 False keeps the classic concurrent behavior via
                 asyncio.gather — faster but each specialist runs in
                 isolation and can't see other specialists' results.
+            max_subtask_retries: How many times a sub-task that RAISES is
+                re-dispatched (with the prior error appended) before the
+                Supervisor gives up on it. Default 1. See
+                :class:`Supervisor` for the full rationale. Applies in
+                both sequential and concurrent modes — each sub-task
+                retries independently.
         """
         self.model = model
         self.agents = agents
         self.max_subtasks = max_subtasks
         self.verbose = verbose
         self.sequential = sequential
+        self.max_subtask_retries = max(0, int(max_subtask_retries))
 
     # -- internal helpers ----------------------------------------------------
 
@@ -994,29 +1069,47 @@ class AsyncSupervisor:
         )
         if self.verbose:
             _log_dispatch(agent_name, sub_query)
-        try:
-            initialize = getattr(runner, "Initialize", None)
-            if initialize is None:
-                raise AttributeError(
-                    f"Registered agent '{agent_name}' has no 'Initialize' method."
-                )
 
-            if asyncio.iscoroutinefunction(initialize):
-                completion = await initialize(dispatched_query)
-            else:
-                completion = await asyncio.to_thread(initialize, dispatched_query)
-
+        initialize = getattr(runner, "Initialize", None)
+        if initialize is None:
+            # Config error, not a transient failure — don't burn retries.
             result = SubtaskResult(
-                agent=agent_name,
-                query=sub_query,
-                content=completion.content,
+                agent=agent_name, query=sub_query, content="",
+                error=f"Registered agent '{agent_name}' has no 'Initialize' method.",
             )
-        except Exception as e:
+            if self.verbose:
+                _log_result(result)
+            return result
+
+        attempts = self.max_subtask_retries + 1
+        query = dispatched_query
+        last_error = ""
+        result: Optional[SubtaskResult] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                if asyncio.iscoroutinefunction(initialize):
+                    completion = await initialize(query)
+                else:
+                    completion = await asyncio.to_thread(initialize, query)
+                result = SubtaskResult(
+                    agent=agent_name, query=sub_query, content=completion.content,
+                )
+                break
+            except Exception as e:
+                last_error = str(e)
+                if self.verbose:
+                    print(
+                        f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
+                        f"attempt {attempt}/{attempts} failed: {last_error}"
+                        f"{_C_RESET}"
+                    )
+                if attempt < attempts:
+                    query = _augment_query_with_error(
+                        dispatched_query, last_error, attempt,
+                    )
+        if result is None:
             result = SubtaskResult(
-                agent=agent_name,
-                query=sub_query,
-                content="",
-                error=str(e),
+                agent=agent_name, query=sub_query, content="", error=last_error,
             )
         if self.verbose:
             _log_result(result)
