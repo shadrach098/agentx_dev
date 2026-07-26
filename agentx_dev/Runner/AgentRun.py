@@ -235,6 +235,40 @@ _ACT_DONT_ANNOUNCE = (
 )
 
 
+def _tool_observation_message(
+    content: str,
+    *,
+    tool_call_id: Optional[str],
+    name: str,
+) -> Dict[str, Any]:
+    """Build the history message that feeds a tool result back to the model.
+
+    Two shapes, chosen by whether a native tool-call handshake exists:
+
+    - **Function-calling mode** (``tool_call_id`` present): the assistant
+      turn carried a real ``tool_calls`` block, so we reply with the
+      provider-native ``role="tool"`` message that correlates via
+      ``tool_call_id``. This is what modern OpenAI requires.
+
+    - **Text mode** (``tool_call_id`` is None): the model emitted plain
+      JSON, not a native tool call — there is no id to correlate. The old
+      code used ``role="function"`` here, but newer OpenAI models reject
+      that role outright ("does not support 'function' with this model")
+      and Anthropic never accepted it. Feed the result back as a plain
+      ``role="user"`` turn framed as an ``Observation:`` — accepted by
+      every provider and model generation, and matching the ReAct
+      template's own few-shot convention (``Observation: ...``).
+    """
+    if tool_call_id:
+        return {
+            "role": "tool",
+            "name": name,
+            "content": content,
+            "tool_call_id": tool_call_id,
+        }
+    return {"role": "user", "content": f"Observation: {content}"}
+
+
 def _text_turn_nudge_message(native: bool, tool_names: str) -> str:
     """The correction fed back when a turn ends with prose and no action.
 
@@ -2032,14 +2066,9 @@ class AgentRunner:
                         f"if you're done."
                     )
                     tc_id = getattr(self, "_last_function_call_id", None) if self.use_function_calling else None
-                    err_msg = {
-                        "role": "tool" if tc_id else "function",
-                        "name": "tool_call_error",
-                        "content": error_content,
-                    }
-                    if tc_id:
-                        err_msg["tool_call_id"] = tc_id
-                    working_history.append(err_msg)
+                    working_history.append(_tool_observation_message(
+                        error_content, tool_call_id=tc_id, name="tool_call_error",
+                    ))
                     yield {
                         "type": "tool_result",
                         "name": action,
@@ -2098,27 +2127,19 @@ class AgentRunner:
 
             # #15: when use_function_calling=True we have a matching
             # tool_call_id from the assistant turn above; carry it through
-            # so the provider can correlate. Plain text-mode keeps the
-            # legacy role="function" shape unchanged.
+            # so the provider can correlate (role="tool"). Text mode has no
+            # id, so the observation goes back as a role="user" turn — see
+            # _tool_observation_message.
             tool_call_id = getattr(self, "_last_function_call_id", None) if self.use_function_calling else None
             if is_error:
-                err_msg = {
-                    "role": "tool" if tool_call_id else "function",
-                    "name": "tool_call_error",
-                    "content": f"Error: {tool_response}",
-                }
-                if tool_call_id:
-                    err_msg["tool_call_id"] = tool_call_id
-                working_history.append(err_msg)
+                working_history.append(_tool_observation_message(
+                    f"Error: {tool_response}",
+                    tool_call_id=tool_call_id, name="tool_call_error",
+                ))
             else:
-                ok_msg = {
-                    "role": "tool" if tool_call_id else "function",
-                    "name": action,
-                    "content": str(tool_response),
-                }
-                if tool_call_id:
-                    ok_msg["tool_call_id"] = tool_call_id
-                working_history.append(ok_msg)
+                working_history.append(_tool_observation_message(
+                    str(tool_response), tool_call_id=tool_call_id, name=action,
+                ))
                 tool_calls.append(ToolCall(
                     name=action,
                     args={"Input": action_input},
