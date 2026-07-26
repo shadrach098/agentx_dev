@@ -4,6 +4,36 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A tool-call preamble is no longer returned as the final answer.**
+  Models routinely end a turn with an announcement instead of an action
+  — "I'll look up your recent scores to get a clear view of your
+  communication skills. Just a second!" — and every "no tool call
+  found" branch in both runners was coded as *this text is the answer,
+  break*. The loop terminated on iteration 1 and the caller got a
+  promise instead of a result. Three sites per runner were affected:
+  the native-binding path (`type != "tool_use"`), the
+  `use_function_calling` path (parser unresolved), and the JSON-text
+  path (response didn't parse). `max_iterations` never helped, because
+  the break happened before any iteration was spent.
+
+  The runner now feeds the model one corrective nudge — "your last turn
+  had no action, so nothing happened; do it, don't announce it" — and
+  continues the loop. Verified against both `AgentRunner` and
+  `AsyncAgentRunner` in all three modes.
+
+### Added
+
+- **`text_turn_nudges` on `AgentRunner` / `AsyncAgentRunner`** (default
+  `1`). Caps the re-prompts described above at one extra LLM call per
+  run; after the budget is spent the model's text stands as the answer.
+  Set to `0` for the previous behavior. Automatically skipped when no
+  tools are registered, since a runner with no tools is a plain chat
+  call and prose genuinely is the answer there.
+
 ## [3.1.3] — 2026-07-22
 
 Docs-only patch. No code changes since 3.1.2. Users on 3.1.2 don't

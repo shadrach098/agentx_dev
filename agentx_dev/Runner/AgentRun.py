@@ -219,6 +219,35 @@ def _is_terminal_action(action: str) -> bool:
     return normalized in _TERMINAL_ACTION_VARIANTS
 
 
+def _text_turn_nudge_message(native: bool, tool_names: str) -> str:
+    """The correction fed back when a turn ends with prose and no action.
+
+    Models trained on conversational preambles routinely announce an
+    intention instead of acting — "I'll look up your recent scores. Just
+    a second!" — and then end the turn. Without this nudge every "no
+    action found" branch of the loop promotes that preamble to the final
+    answer, so the user gets a promise instead of a result.
+
+    Phrased as a framework message rather than a user turn's worth of
+    persona text so it reads as machine feedback and doesn't bleed into
+    the model's voice.
+    """
+    if native:
+        return (
+            "[framework] Your last turn was plain text with no tool call, so "
+            "nothing happened and the user saw nothing. Do not announce what "
+            "you are about to do — do it. Call one of these tools now: "
+            f"{tool_names}. If you already have everything you need, call "
+            "'respond' with the complete final answer."
+        )
+    return (
+        "[framework] Your last turn had no valid action, so nothing happened "
+        "and the user saw nothing. Do not announce what you are about to do — "
+        f"do it. Set action to one of [{tool_names}] to call a tool, or set "
+        'action to "Final_Answer" with your complete reply in action_input.'
+    )
+
+
 def _build_sandbox_hint(perms: Any) -> Optional[str]:
     """Generate a short block describing where the runner is allowed to
     operate on disk. Injected into the system prompt when Permissions
@@ -1147,6 +1176,7 @@ class AgentRunner:
         include_denied_tools: bool = False,
         system_addendum: Optional[str] = None,
         strict_tool_dispatch: bool = False,
+        text_turn_nudges: int = 1,
     ):
         """Construct an ``AgentRunner``.
 
@@ -1255,6 +1285,19 @@ class AgentRunner:
                 False, which routes unknown actions to
                 implicit-final. Turn on for models prone to
                 misnaming tools (gpt-4o-mini).
+            text_turn_nudges: How many times per run the loop may
+                re-prompt a model that ended its turn with plain text
+                and no tool call. Default 1. Models routinely emit a
+                conversational preamble ("I'll look up your scores —
+                just a second!") and stop; without a nudge that
+                preamble becomes the final answer and the user gets a
+                promise instead of a result. Each nudge costs one
+                extra LLM call and one iteration, so the budget is
+                deliberately small: after it's spent, the text stands
+                as the answer. Set to 0 to restore the pre-3.1.4
+                behavior (first text turn always terminates the loop).
+                Ignored when no tools are registered — there, prose
+                genuinely is the answer.
 
         Raises:
             TypeError: If both ``Agent`` and ``agent`` are passed, if
@@ -1358,6 +1401,10 @@ class AgentRunner:
         # the 3.0.4 behavior.
         self.strict_tool_dispatch = strict_tool_dispatch
 
+        # Budget for re-prompting a model that ends a turn with prose and
+        # no tool call. See _nudge_text_only_turn.
+        self.text_turn_nudges = max(0, int(text_turn_nudges))
+
         self.auto_cache = auto_cache and config.caching_enabled
         self.auto_memory = auto_memory and config.memory_enabled
         _setup = _ensure_auto_setup() if (self.auto_cache or self.auto_memory) else None
@@ -1414,6 +1461,49 @@ class AgentRunner:
         if isinstance(parsed, self.parser):
             return parsed
         return None  # convert_to_json returned None — text final answer
+
+    def _nudge_text_only_turn(
+        self,
+        working_history: List[Dict[str, Any]],
+        *,
+        native: bool,
+        budget: int,
+        count: int,
+        assistant_text: Optional[str] = None,
+    ) -> bool:
+        """Decide what to do with a turn that produced no tool call.
+
+        Returns True when the caller should append a nudge and ``continue``
+        the loop, False when the model's text should stand as the final
+        answer. When True, the nudge has already been appended to
+        ``working_history``.
+
+        The text stands (returns False) when any of these hold:
+          - the nudge budget for this run is spent,
+          - one more iteration would blow ``max_iterations`` anyway,
+          - no tools are registered — a runner with no tools is a plain
+            chat call, and prose IS the answer there; nudging would burn
+            a call to be told the same thing again.
+
+        ``assistant_text`` is appended as the assistant turn first. Pass
+        None when the caller already recorded it (the JSON-text path does).
+        """
+        if assistant_text is not None:
+            working_history.append({"role": "assistant", "content": assistant_text})
+        if budget <= 0 or count >= self.max_iterations or not self.registry.names:
+            return False
+        working_history.append({
+            "role": "user",
+            "content": _text_turn_nudge_message(native, self._tool_names_block),
+        })
+        if self.verbose:
+            print(
+                "\x1B[1;33m[loop] text-only turn with no tool call; "
+                "nudging the model to act instead of announcing\x1B[0m"
+            )
+        else:
+            logger.info("text-only turn with no tool call; nudging")
+        return True
 
     def _iter_run(
         self,
@@ -1542,6 +1632,9 @@ class AgentRunner:
         consecutive_identical_actions = 0
         LOOP_FORCE_STOP = 3   # 3 identical calls in a row → abort
 
+        # Remaining re-prompts for turns that produce prose but no action.
+        nudge_budget = self.text_turn_nudges
+
         while count <= self.max_iterations:
             if self.bind_tools_natively:
                 # Native mode: LLM picks from the user's tools directly.
@@ -1554,8 +1647,15 @@ class AgentRunner:
                 )
 
                 if call_result.get("type") != "tool_use":
-                    final_answer = call_result.get("text", "")
-                    working_history.append({"role": "assistant", "content": final_answer})
+                    text = call_result.get("text", "")
+                    if self._nudge_text_only_turn(
+                        working_history, native=True, budget=nudge_budget,
+                        count=count, assistant_text=text,
+                    ):
+                        nudge_budget -= 1
+                        count += 1
+                        continue
+                    final_answer = text
                     yield {"type": "final", "content": final_answer}
                     break
 
@@ -1669,8 +1769,15 @@ class AgentRunner:
                 parser_instance = self._resolve_parser_step(call_result)
 
                 if parser_instance is None:
-                    final_answer = call_result.get("text", "")
-                    working_history.append({"role": "assistant", "content": final_answer})
+                    text = call_result.get("text", "")
+                    if self._nudge_text_only_turn(
+                        working_history, native=False, budget=nudge_budget,
+                        count=count, assistant_text=text,
+                    ):
+                        nudge_budget -= 1
+                        count += 1
+                        continue
+                    final_answer = text
                     yield {"type": "final", "content": final_answer}
                     break
 
@@ -1713,6 +1820,15 @@ class AgentRunner:
                 parser_instance = self._resolve_parser_step(response)
 
                 if parser_instance is None:
+                    # The assistant turn was already recorded above, so
+                    # pass assistant_text=None to avoid duplicating it.
+                    if self._nudge_text_only_turn(
+                        working_history, native=False, budget=nudge_budget,
+                        count=count,
+                    ):
+                        nudge_budget -= 1
+                        count += 1
+                        continue
                     final_answer = response
                     yield {"type": "final", "content": final_answer}
                     break
