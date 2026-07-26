@@ -219,6 +219,22 @@ def _is_terminal_action(action: str) -> bool:
     return normalized in _TERMINAL_ACTION_VARIANTS
 
 
+# Proactive counterpart to the text-turn nudge. The nudge REACTS after a
+# model narrates instead of acting; this clause is injected into the
+# system prompt up front so a tool-using agent is told, before its first
+# turn, not to narrate in the first place. Only added when the agent
+# actually has tools — a tool-less chat agent SHOULD answer in prose, and
+# telling it to "call a tool instead" would be nonsense.
+_ACT_DONT_ANNOUNCE = (
+    "ACT, DON'T ANNOUNCE: when a tool can do what the user asked, CALL THE "
+    "TOOL — do not reply \"I'll do X\", \"Let me do X\", or \"just a second\" "
+    "and stop, because that ends your turn with the work still undone. Perform "
+    "the action through the tool first, then report what you DID, in past "
+    "tense (\"I've set your goal to ...\"). Reply in plain prose only when no "
+    "tool applies or the task is already complete."
+)
+
+
 def _text_turn_nudge_message(native: bool, tool_names: str) -> str:
     """The correction fed back when a turn ends with prose and no action.
 
@@ -1607,6 +1623,11 @@ class AgentRunner:
             )
         else:
             system_prompt = self.Agent.prompt.format_map(tool_info)
+        # Proactively discourage narrate-instead-of-act, but only for
+        # agents that actually have tools. Placed before system_addendum
+        # so a caller's role instructions still get the final word.
+        if self.registry.names:
+            system_prompt = system_prompt + "\n\n" + _ACT_DONT_ANNOUNCE
         if self.system_addendum:
             # Append after the template's own instructions so the
             # role-specific rules read as an override / final word.

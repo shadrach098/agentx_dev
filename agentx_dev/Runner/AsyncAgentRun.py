@@ -18,6 +18,7 @@ from agentx_dev.Runner.AgentRun import (
     _is_terminal_action,
     _coerce_runner_input,
     _text_turn_nudge_message,
+    _ACT_DONT_ANNOUNCE,
 )
 from typing import Dict, Callable, List, Type, Optional, Any, AsyncIterator
 from pydantic import BaseModel, Field
@@ -437,6 +438,10 @@ class AsyncAgentRunner:
             'user_input': user_input,
         }
         system_prompt = self.Agent.prompt.format_map(tool_info)
+        # Proactively discourage narrate-instead-of-act for tool-using
+        # agents (a tool-less chat agent should answer in prose).
+        if self.registry.names:
+            system_prompt = system_prompt + "\n\n" + _ACT_DONT_ANNOUNCE
 
         working_history = [{"role": "system", "content": system_prompt}]
 
