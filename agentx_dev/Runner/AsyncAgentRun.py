@@ -13,7 +13,12 @@ from agentx_dev.ChatModel import BaseChatModel
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
 from agentx_dev.AsyncTools import AsyncStandardTool, AsyncStructuredTool
-from agentx_dev.Runner.AgentRun import ToolRegistry, _is_terminal_action, _coerce_runner_input
+from agentx_dev.Runner.AgentRun import (
+    ToolRegistry,
+    _is_terminal_action,
+    _coerce_runner_input,
+    _text_turn_nudge_message,
+)
 from typing import Dict, Callable, List, Type, Optional, Any, AsyncIterator
 from pydantic import BaseModel, Field
 import asyncio
@@ -105,6 +110,7 @@ class AsyncAgentRunner:
         permissions: Any = None,
         include_denied_tools: bool = False,
         strict_tool_dispatch: bool = False,
+        text_turn_nudges: int = 1,
     ):
         """Construct an ``AsyncAgentRunner``. Parameters mirror
         :class:`AgentRunner` -- see that docstring for the full details;
@@ -146,6 +152,9 @@ class AsyncAgentRunner:
             strict_tool_dispatch: Feed unknown-tool errors back into
                 the loop so the model can retry with a valid name.
                 Default False.
+            text_turn_nudges: Re-prompts allowed per run when the model
+                ends a turn with plain text and no tool call. Default
+                1. See ``AgentRunner`` for the full rationale.
 
         Raises:
             TypeError: On missing / duplicate ``Agent``/``agent`` or
@@ -201,6 +210,10 @@ class AsyncAgentRunner:
             )
         # See AgentRunner.__init__ for the strict_tool_dispatch contract.
         self.strict_tool_dispatch = strict_tool_dispatch
+
+        # Budget for re-prompting turns that produce prose but no action.
+        # See AgentRunner._nudge_text_only_turn.
+        self.text_turn_nudges = max(0, int(text_turn_nudges))
 
         self.auto_cache = auto_cache and config.caching_enabled
         self.auto_memory = auto_memory and config.memory_enabled
@@ -337,6 +350,34 @@ class AsyncAgentRunner:
             return parsed
         return None
 
+    def _nudge_text_only_turn(
+        self,
+        working_history: List[Dict[str, Any]],
+        *,
+        native: bool,
+        budget: int,
+        count: int,
+        assistant_text: Optional[str] = None,
+    ) -> bool:
+        """Async twin of ``AgentRunner._nudge_text_only_turn`` — see that
+        method for the contract and the reasoning behind each bail-out."""
+        if assistant_text is not None:
+            working_history.append({"role": "assistant", "content": assistant_text})
+        if budget <= 0 or count >= self.max_iterations or not self.registry.names:
+            return False
+        working_history.append({
+            "role": "user",
+            "content": _text_turn_nudge_message(native, self._tool_names_block),
+        })
+        if self.verbose:
+            print(
+                "\x1B[1;33m[loop] text-only turn with no tool call; "
+                "nudging the model to act instead of announcing\x1B[0m"
+            )
+        else:
+            logger.info("text-only turn with no tool call; nudging")
+        return True
+
     async def Initialize(
         self,
         user_input: str,
@@ -415,6 +456,9 @@ class AsyncAgentRunner:
         steps: List[str] = []
         final_answer: Optional[str] = None
 
+        # Remaining re-prompts for turns that produce prose but no action.
+        nudge_budget = self.text_turn_nudges
+
         while count <= self.max_iterations:
             if self.bind_tools_natively:
                 # Native mode: LLM picks from user tools directly. Multiple
@@ -427,9 +471,17 @@ class AsyncAgentRunner:
                 )
 
                 if call_result.get("type") != "tool_use":
-                    # Model emitted text instead of a tool call — treat as final.
-                    final_answer = call_result.get("text", "")
-                    working_history.append({"role": "assistant", "content": final_answer})
+                    # Model emitted text instead of a tool call. Nudge it to
+                    # act once before accepting the text as the answer.
+                    text = call_result.get("text", "")
+                    if self._nudge_text_only_turn(
+                        working_history, native=True, budget=nudge_budget,
+                        count=count, assistant_text=text,
+                    ):
+                        nudge_budget -= 1
+                        count += 1
+                        continue
+                    final_answer = text
                     break
 
                 turn_calls = call_result.get("tool_calls") or [{
@@ -538,8 +590,15 @@ class AsyncAgentRunner:
                 parser_instance = self._resolve_parser_step(call_result)
 
                 if parser_instance is None:
-                    final_answer = call_result.get("text", "")
-                    working_history.append({"role": "assistant", "content": final_answer})
+                    text = call_result.get("text", "")
+                    if self._nudge_text_only_turn(
+                        working_history, native=False, budget=nudge_budget,
+                        count=count, assistant_text=text,
+                    ):
+                        nudge_budget -= 1
+                        count += 1
+                        continue
+                    final_answer = text
                     break
 
                 working_history.append({
@@ -552,6 +611,14 @@ class AsyncAgentRunner:
                 parser_instance = self._resolve_parser_step(response)
 
                 if parser_instance is None:
+                    # Assistant turn already recorded above — don't duplicate.
+                    if self._nudge_text_only_turn(
+                        working_history, native=False, budget=nudge_budget,
+                        count=count,
+                    ):
+                        nudge_budget -= 1
+                        count += 1
+                        continue
                     final_answer = response
                     break
 
