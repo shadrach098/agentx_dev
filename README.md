@@ -9,6 +9,19 @@ you can paste and run.
 
 ---
 
+## What's new in 3.1.4 — reliability hardening
+
+Four fixes for the "the agent said it would do the thing but didn't"
+class of failure. All additive; existing code keeps working, and the new
+recovery defaults are strictly safer.
+
+| Fix | What changed |
+|---|---|
+| **Tool-call preamble no longer becomes the answer** | When the model ends a turn with plain text and no tool call (*"I'll look up your scores. Just a second!"*), the runner re-prompts it to act instead of freezing the preamble as the final answer. Bounded by `text_turn_nudges` (default 1; `0` disables). Skipped when no tools are registered — there, prose is the answer. |
+| **Proactive "act, don't announce" clause** | Tool-using agents now get a system-prompt clause telling them to call the tool and report what they DID, rather than narrate what they're about to do. Heads off the preamble at the source. |
+| **Malformed-JSON tool arguments recover instead of crashing** | A code snippet or Windows path in a tool argument (`re.findall(r'\d+')`, `C:\Users`) is invalid JSON. The framework now repairs the common escape mistakes, and otherwise feeds the error back so the model resends — instead of unwinding the whole run (which surfaced under a Supervisor as `ERROR: Invalid \escape`). `Claude()` was already immune. |
+| **Supervisor retries a failed sub-task** | `Supervisor` / `AsyncSupervisor` gained `max_subtask_retries` (default 1). A sub-task that raises is re-dispatched with the prior error appended, instead of quit-on-first-failure. Bounded and informed; set `0` for the old behavior. |
+
 ## What's new in 3.1 — power features
 
 Six force-multipliers land in one release. All additive; existing code
@@ -617,6 +630,7 @@ supervisor = Supervisor(
         "python_agent": ("Python code execution", python_agent),
     },
     max_subtasks=5,
+    max_subtask_retries=1,   # retry a failed sub-task once, error fed back
     verbose=True,   # framework prints plan / dispatch / result / final
 )
 

@@ -530,6 +530,18 @@ Framework guards fire automatically:
 - **Implicit-final** — when `action` is neither a known tool nor a
   Final_Answer variant, the framework treats `action_input` as the
   final answer.
+- **Act-don't-announce nudge** — when the model ends a turn with plain
+  text and no tool call *while tools are available*, the framework
+  re-prompts it once ("do it, don't announce it") instead of returning
+  the preamble as the answer. Bounded by `text_turn_nudges` (default 1;
+  set 0 to disable). Skipped when no tools are registered — there, prose
+  is the answer. A matching *"act, don't announce"* clause is also
+  injected into the system prompt up front for tool-using agents.
+- **Malformed tool-args recovery** — when the model emits tool arguments
+  that aren't valid JSON (an unescaped `\d` / `\U` / `C:\…` in a code
+  string or path), the framework first repairs the common escape
+  mistakes, and if that fails feeds the error back so the model resends
+  — instead of crashing the whole run.
 
 ---
 
