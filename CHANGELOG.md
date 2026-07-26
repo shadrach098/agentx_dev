@@ -48,6 +48,19 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **`max_subtask_retries` on `Supervisor` / `AsyncSupervisor`** (default
+  `1`). A sub-task that raised used to be recorded as an error and the
+  Supervisor moved straight to synthesis — no second attempt. Now a
+  failed sub-task is re-dispatched up to this many times, with the prior
+  error appended to the query so the specialist knows what to fix
+  ("your previous attempt failed with X — diagnose and try again").
+  Bounded and informed: only raised exceptions trigger a retry (a
+  sub-task that returns content is accepted as-is, since the Supervisor
+  can't tell "terse but correct" from "wrong"), and the error text is
+  fed back rather than blindly re-running. Set to `0` for the old
+  quit-on-first-failure behavior. Applies in both sequential and
+  concurrent async modes.
+
 - **`text_turn_nudges` on `AgentRunner` / `AsyncAgentRunner`** (default
   `1`). Caps the re-prompts described above at one extra LLM call per
   run; after the budget is spent the model's text stands as the answer.
