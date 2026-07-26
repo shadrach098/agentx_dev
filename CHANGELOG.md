@@ -22,6 +22,23 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   `tool_call_id`). The async runner was additionally emitting `function`
   unconditionally (even in FC mode); it now uses the same shared helper.
 
+### Added
+
+- **`subtask_success_check` on `Supervisor` / `AsyncSupervisor`.** Opt-in
+  predicate `(SubtaskResult) -> bool | str` that decides whether a
+  *returned* (non-raised) sub-task result is actually acceptable — the
+  "ran fine but produced nothing useful" case a plain retry can't catch
+  (a scraper that saved 0 links, an extractor that found nothing). Return
+  `True` to accept, or `False`/a `str` reason to reject; a rejected
+  result is retried like a raised error, with the reason fed back into the
+  query, bounded by `max_subtask_retries`. After retries are exhausted the
+  last result is returned with its `error` set (content preserved). A
+  check that itself raises is treated as "accept" so a buggy predicate
+  can't wedge the run. Default `None` keeps the exceptions-only behavior.
+  New example `examples/robust_link_scraper.py` wires it together with a
+  scraping `system_addendum` (parse relative+absolute hrefs, fall back to
+  `sitemap.xml` on JS-rendered sites).
+
 ## [3.1.4] — 2026-07-26
 
 ### Fixed

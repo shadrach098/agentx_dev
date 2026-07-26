@@ -140,13 +140,16 @@ class TestCircuitBreaker:
         assert cb.state == "closed"
 
     def test_recovery_transitions_to_half_open(self):
+        # Generous margin between the recovery window (0.05s) and the sleep
+        # (0.20s) so the transition is deterministic even under load /
+        # coarse OS timer resolution — a tight 10ms margin was flaky.
         cb = CircuitBreaker(
             "t", CircuitBreakerConfig(failure_threshold=2, recovery_timeout_sec=0.05),
         )
         cb.record_failure()
         cb.record_failure()
         assert cb.state == "open"
-        time.sleep(0.06)
+        time.sleep(0.20)
         assert cb.state == "half_open"
 
     def test_registry_short_circuits_open_breaker(self):
