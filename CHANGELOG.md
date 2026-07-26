@@ -6,6 +6,22 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+### Fixed
+
+- **Text-mode tool results no longer use `role: "function"`.** In text
+  mode (the default — no `use_function_calling`) the runner fed each tool
+  observation back to the model as a `role: "function"` message. Newer
+  OpenAI models reject that role outright (`400 … 'messages[N].role' does
+  not support 'function' with this model`, e.g. gpt-5.x), and Anthropic
+  never accepted it — text-mode multi-tool runs on Claude were latently
+  broken too; older GPT models simply still tolerated the legacy role.
+  Tool observations now go back as a plain `role: "user"` turn framed as
+  `Observation: …`, which every provider and model generation accepts and
+  which matches the ReAct template's own few-shot convention.
+  Function-calling mode is unchanged (native `role: "tool"` +
+  `tool_call_id`). The async runner was additionally emitting `function`
+  unconditionally (even in FC mode); it now uses the same shared helper.
+
 ### Added
 
 - **`subtask_success_check` on `Supervisor` / `AsyncSupervisor`.** Opt-in
