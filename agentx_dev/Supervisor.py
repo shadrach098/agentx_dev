@@ -30,6 +30,7 @@ from agentx_dev.ChatModel import BaseChatModel
 from agentx_dev.Runner.AgentRun import AgentRunner
 from agentx_dev.Runner.AsyncAgentRun import AsyncAgentRunner
 from agentx_dev.Agents.Agent import AgentType
+from agentx_dev.Tools import logger
 
 
 # ----------------------------------------------------------------------------
@@ -460,6 +461,45 @@ def _augment_query_with_error(base_query: str, error: str, attempt: int) -> str:
     )
 
 
+def _augment_query_with_unmet_criteria(
+    base_query: str, reason: str, attempt: int,
+) -> str:
+    """Append a success-check rejection to a sub-task's query so the
+    specialist knows its previous output was unacceptable and WHY.
+
+    Distinct from the raised-exception path: here nothing crashed, the
+    result just didn't meet the caller's bar. The emphasis is on
+    *changing approach* — repeating the same method that produced an
+    empty/insufficient result would produce it again."""
+    return (
+        f"{base_query}\n\n===\n\n[supervisor] Your PREVIOUS attempt (#{attempt}) "
+        f"ran without error but did NOT satisfy the task's success criteria: "
+        f"{reason}\n\nThe same approach will fail the same way — change your "
+        f"METHOD (a different tool, endpoint, parse strategy, or fallback) and "
+        f"produce output that meets the criteria."
+    )
+
+
+def _evaluate_success_verdict(verdict) -> tuple:
+    """Normalize a ``subtask_success_check`` return value into
+    ``(ok: bool, reason: str)``.
+
+    Contract for the caller's predicate:
+      - ``True``        → satisfactory.
+      - ``False``       → unsatisfactory, generic reason.
+      - non-empty str   → unsatisfactory, the string is the reason shown
+                          to the specialist on retry.
+      - any other value → truthiness decides ok; generic reason if not.
+    """
+    if verdict is True:
+        return True, ""
+    if isinstance(verdict, str):
+        reason = verdict.strip()
+        return (False, reason) if reason else (True, "")
+    generic = "the sub-task output did not meet the required success criteria"
+    return (True, "") if verdict else (False, generic)
+
+
 # ANSI colors match the AgentRunner's verbose output so a mixed
 # supervisor + inner-runner trace reads consistently.
 _C_PLAN     = "\x1B[1;34m"   # blue bold  — plan header + steps
@@ -522,6 +562,7 @@ class Supervisor:
         verbose: bool = True,
         spawn_config: Optional[SpawnConfig] = None,
         max_subtask_retries: int = 1,
+        subtask_success_check: Optional[Callable[[SubtaskResult], Any]] = None,
     ):
         """
         Args:
@@ -547,7 +588,21 @@ class Supervisor:
                 knows what to fix. Set to 0 to restore the old
                 quit-on-first-failure behavior. Only errors trigger a
                 retry; a sub-task that returns content (even thin content)
-                is accepted as-is.
+                is accepted as-is — unless you also pass
+                ``subtask_success_check`` (below).
+            subtask_success_check: Optional predicate
+                ``(SubtaskResult) -> bool | str`` deciding whether a
+                *returned* (non-raised) result is acceptable. Catches the
+                "ran fine but produced nothing useful" case — a scraper
+                that saved 0 links, an extractor that found no data.
+                Return ``True`` to accept; ``False`` or a ``str`` reason
+                to reject. A rejected result is retried like a raised
+                error (the reason is fed back into the query), bounded by
+                ``max_subtask_retries``; once exhausted the last result is
+                returned with its ``error`` set to the reason (content
+                preserved). A predicate that itself raises is treated as
+                "accept" so a buggy check can't wedge the run. Default
+                ``None`` keeps the exceptions-only behavior.
         """
         self.model = model
         # Copy so run-time spawns don't mutate the caller's dict.
@@ -557,8 +612,23 @@ class Supervisor:
         self.spawn_config = spawn_config or SpawnConfig(enabled=False)
         self._spawns_this_run = 0
         self.max_subtask_retries = max(0, int(max_subtask_retries))
+        self.subtask_success_check = subtask_success_check
 
     # -- internal helpers ----------------------------------------------------
+
+    def _evaluate_success(self, result: SubtaskResult) -> tuple:
+        """Run ``subtask_success_check`` against a returned result.
+        Returns ``(ok, reason)``. No check configured → always ``(True, "")``.
+        A check that raises is swallowed (treated as pass) so a broken
+        predicate can't wedge the run."""
+        if self.subtask_success_check is None:
+            return True, ""
+        try:
+            verdict = self.subtask_success_check(result)
+        except Exception as e:
+            logger.warning(f"subtask_success_check raised; treating as pass: {e}")
+            return True, ""
+        return _evaluate_success_verdict(verdict)
 
     def _build_agent_catalog(self) -> str:
         lines = []
@@ -756,28 +826,33 @@ class Supervisor:
         sub_query: str,
         dispatched_query: str,
     ) -> SubtaskResult:
-        """Run one sub-task, retrying on raised exceptions up to
-        ``max_subtask_retries`` times with the error fed back into the
-        query. Returns the first successful result, or a SubtaskResult
-        carrying the last error if every attempt failed.
+        """Run one sub-task, retrying up to ``max_subtask_retries`` times.
 
-        Note the boundary: only a RAISED exception is retried (that's the
-        hard-failure signal — a crash, a malformed tool call that even
-        the runner's own recovery couldn't resolve). A sub-task that
-        returns normally is accepted, even if its content is thin — the
-        Supervisor can't reliably tell "correct but terse" from "wrong",
-        so retrying on content would risk looping on fine answers."""
+        Two kinds of failure are retried, each feeding context back into
+        the query:
+          - a RAISED exception (crash, unrecoverable tool error), and
+          - a returned result that ``subtask_success_check`` rejects
+            (ran fine but produced nothing useful).
+
+        Without a success check, only raised exceptions retry — a
+        sub-task that returns is accepted even if thin, since the
+        Supervisor can't tell "terse but correct" from "wrong" on its own.
+
+        On exhaustion: returns the last result with ``error`` set (content
+        preserved) if we got one, else an empty errored SubtaskResult."""
         attempts = self.max_subtask_retries + 1
         query = dispatched_query
         last_error = ""
+        last_result: Optional[SubtaskResult] = None
         for attempt in range(1, attempts + 1):
             try:
                 completion = agent_runner.Initialize(query)
-                return SubtaskResult(
+                result = SubtaskResult(
                     agent=agent_name, query=sub_query, content=completion.content,
                 )
             except Exception as e:
                 last_error = str(e)
+                last_result = None
                 if self.verbose:
                     print(
                         f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
@@ -788,6 +863,29 @@ class Supervisor:
                     query = _augment_query_with_error(
                         dispatched_query, last_error, attempt,
                     )
+                continue
+
+            # No exception — now apply the caller's success criteria.
+            ok, reason = self._evaluate_success(result)
+            if ok:
+                return result
+            last_result = result
+            last_error = f"did not meet success criteria: {reason}"
+            if self.verbose:
+                print(
+                    f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
+                    f"attempt {attempt}/{attempts} rejected: {reason}"
+                    f"{_C_RESET}"
+                )
+            if attempt < attempts:
+                query = _augment_query_with_unmet_criteria(
+                    dispatched_query, reason, attempt,
+                )
+
+        if last_result is not None:
+            # Keep the content the specialist produced, but flag it failed.
+            last_result.error = last_error
+            return last_result
         return SubtaskResult(
             agent=agent_name, query=sub_query, content="", error=last_error,
         )
@@ -971,6 +1069,7 @@ class AsyncSupervisor:
         verbose: bool = True,
         sequential: bool = False,
         max_subtask_retries: int = 1,
+        subtask_success_check: Optional[Callable[[SubtaskResult], Any]] = None,
     ):
         """
         Args:
@@ -991,6 +1090,11 @@ class AsyncSupervisor:
                 :class:`Supervisor` for the full rationale. Applies in
                 both sequential and concurrent modes — each sub-task
                 retries independently.
+            subtask_success_check: Optional ``(SubtaskResult) -> bool | str``
+                predicate that also retries a *returned* result the check
+                rejects (ran fine but produced nothing useful). See
+                :class:`Supervisor` for the contract. Applies per sub-task
+                in both sequential and concurrent modes.
         """
         self.model = model
         self.agents = agents
@@ -998,6 +1102,18 @@ class AsyncSupervisor:
         self.verbose = verbose
         self.sequential = sequential
         self.max_subtask_retries = max(0, int(max_subtask_retries))
+        self.subtask_success_check = subtask_success_check
+
+    def _evaluate_success(self, result: SubtaskResult) -> tuple:
+        """See ``Supervisor._evaluate_success``."""
+        if self.subtask_success_check is None:
+            return True, ""
+        try:
+            verdict = self.subtask_success_check(result)
+        except Exception as e:
+            logger.warning(f"subtask_success_check raised; treating as pass: {e}")
+            return True, ""
+        return _evaluate_success_verdict(verdict)
 
     # -- internal helpers ----------------------------------------------------
 
@@ -1085,18 +1201,19 @@ class AsyncSupervisor:
         query = dispatched_query
         last_error = ""
         result: Optional[SubtaskResult] = None
+        last_result: Optional[SubtaskResult] = None
         for attempt in range(1, attempts + 1):
             try:
                 if asyncio.iscoroutinefunction(initialize):
                     completion = await initialize(query)
                 else:
                     completion = await asyncio.to_thread(initialize, query)
-                result = SubtaskResult(
+                candidate = SubtaskResult(
                     agent=agent_name, query=sub_query, content=completion.content,
                 )
-                break
             except Exception as e:
                 last_error = str(e)
+                last_result = None
                 if self.verbose:
                     print(
                         f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
@@ -1107,10 +1224,32 @@ class AsyncSupervisor:
                     query = _augment_query_with_error(
                         dispatched_query, last_error, attempt,
                     )
+                continue
+
+            ok, reason = self._evaluate_success(candidate)
+            if ok:
+                result = candidate
+                break
+            last_result = candidate
+            last_error = f"did not meet success criteria: {reason}"
+            if self.verbose:
+                print(
+                    f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
+                    f"attempt {attempt}/{attempts} rejected: {reason}"
+                    f"{_C_RESET}"
+                )
+            if attempt < attempts:
+                query = _augment_query_with_unmet_criteria(
+                    dispatched_query, reason, attempt,
+                )
         if result is None:
-            result = SubtaskResult(
-                agent=agent_name, query=sub_query, content="", error=last_error,
-            )
+            if last_result is not None:
+                last_result.error = last_error
+                result = last_result
+            else:
+                result = SubtaskResult(
+                    agent=agent_name, query=sub_query, content="", error=last_error,
+                )
         if self.verbose:
             _log_result(result)
         return result
