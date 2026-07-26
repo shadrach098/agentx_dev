@@ -8,9 +8,49 @@ from openai._types import NOT_GIVEN, NotGiven
 from pydantic import BaseModel
 import asyncio
 import json
+import re
 import logging, os
 
 logger = logging.getLogger(__name__)
+
+# Matches a backslash that does NOT begin a valid JSON escape sequence
+# (", \, /, b, f, n, r, t, or u). Used to repair the single most common
+# way an LLM breaks tool-argument JSON: emitting a code string or file
+# path with a raw backslash — ``re.findall(r'\d+')``, ``C:\Users`` — that
+# is legal Python/text but illegal JSON.
+_INVALID_JSON_ESCAPE = re.compile(r'\\(?!["\\/bfnrtu])')
+
+
+def _parse_tool_arguments(raw):
+    """Parse an LLM tool call's ``arguments`` string into a dict.
+
+    Returns ``(parsed, error)``:
+      - ``(dict, None)``  on success (including the empty/None case,
+        which yields ``({}, None)``).
+      - ``(None, str)``   when the string can't be parsed even after a
+        repair attempt; ``str`` is the original JSON error message.
+
+    Repair step: models routinely emit a Python snippet or a Windows
+    path as an argument value, producing invalid JSON escapes (``\\d``,
+    ``\\U``, ``C:\\Users``). Before giving up we double every backslash
+    that isn't already part of a valid JSON escape, which turns ``\\d``
+    into ``\\\\d`` (decodes back to a literal ``\\d``) while leaving
+    ``\\n`` / ``\\t`` / ``\\uXXXX`` untouched. This recovers the common
+    case with zero extra round-trips; genuinely broken JSON (unbalanced
+    braces, truncation) still falls through to the error return so the
+    loop can ask the model to resend.
+    """
+    if not raw:
+        return {}, None
+    try:
+        return json.loads(raw), None
+    except json.JSONDecodeError as e:
+        try:
+            return json.loads(_INVALID_JSON_ESCAPE.sub(r'\\\\', raw)), None
+        except json.JSONDecodeError:
+            return None, str(e)
+
+
 from abc import ABC, abstractmethod
 import time as _time
 import threading as _threading
@@ -968,11 +1008,24 @@ class GPT(BaseChatModel):
         if getattr(msg, "tool_calls", None):
             tool_calls = []
             for call in msg.tool_calls:
-                try:
-                    args = json.loads(call.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    logger.error(f"Model returned non-JSON tool arguments: {call.function.arguments!r}")
-                    raise
+                args, arg_error = _parse_tool_arguments(call.function.arguments)
+                if arg_error is not None:
+                    # Unparseable even after escape repair. Don't raise —
+                    # that would unwind the whole agent run (and surface to
+                    # a Supervisor as a bare "Invalid \escape" error).
+                    # Hand the loop a dedicated result so it can feed the
+                    # error back and let the model resend with valid JSON.
+                    logger.error(
+                        f"Model returned non-JSON tool arguments for "
+                        f"'{call.function.name}': {call.function.arguments!r}"
+                    )
+                    return {
+                        "type": "invalid_tool_args",
+                        "name": call.function.name,
+                        "id": call.id,
+                        "raw": call.function.arguments,
+                        "error": arg_error,
+                    }
                 tool_calls.append({"name": call.function.name, "input": args, "id": call.id})
             # Backward-compatible: callers reading .name/.input get the first;
             # callers wanting concurrency iterate `tool_calls`.
