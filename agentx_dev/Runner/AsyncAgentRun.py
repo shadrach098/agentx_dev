@@ -13,7 +13,13 @@ from agentx_dev.ChatModel import BaseChatModel
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
 from agentx_dev.AsyncTools import AsyncStandardTool, AsyncStructuredTool
-from agentx_dev.Runner.AgentRun import ToolRegistry, _is_terminal_action, _coerce_runner_input
+from agentx_dev.Runner.AgentRun import (
+    ToolRegistry,
+    _is_terminal_action,
+    _coerce_runner_input,
+    _text_turn_nudge_message,
+    _ACT_DONT_ANNOUNCE,
+)
 from typing import Dict, Callable, List, Type, Optional, Any, AsyncIterator
 from pydantic import BaseModel, Field
 import asyncio
@@ -105,6 +111,7 @@ class AsyncAgentRunner:
         permissions: Any = None,
         include_denied_tools: bool = False,
         strict_tool_dispatch: bool = False,
+        text_turn_nudges: int = 1,
     ):
         """Construct an ``AsyncAgentRunner``. Parameters mirror
         :class:`AgentRunner` -- see that docstring for the full details;
@@ -146,6 +153,9 @@ class AsyncAgentRunner:
             strict_tool_dispatch: Feed unknown-tool errors back into
                 the loop so the model can retry with a valid name.
                 Default False.
+            text_turn_nudges: Re-prompts allowed per run when the model
+                ends a turn with plain text and no tool call. Default
+                1. See ``AgentRunner`` for the full rationale.
 
         Raises:
             TypeError: On missing / duplicate ``Agent``/``agent`` or
@@ -201,6 +211,10 @@ class AsyncAgentRunner:
             )
         # See AgentRunner.__init__ for the strict_tool_dispatch contract.
         self.strict_tool_dispatch = strict_tool_dispatch
+
+        # Budget for re-prompting turns that produce prose but no action.
+        # See AgentRunner._nudge_text_only_turn.
+        self.text_turn_nudges = max(0, int(text_turn_nudges))
 
         self.auto_cache = auto_cache and config.caching_enabled
         self.auto_memory = auto_memory and config.memory_enabled
@@ -337,6 +351,66 @@ class AsyncAgentRunner:
             return parsed
         return None
 
+    def _nudge_text_only_turn(
+        self,
+        working_history: List[Dict[str, Any]],
+        *,
+        native: bool,
+        budget: int,
+        count: int,
+        assistant_text: Optional[str] = None,
+    ) -> bool:
+        """Async twin of ``AgentRunner._nudge_text_only_turn`` — see that
+        method for the contract and the reasoning behind each bail-out."""
+        if assistant_text is not None:
+            working_history.append({"role": "assistant", "content": assistant_text})
+        if budget <= 0 or count >= self.max_iterations or not self.registry.names:
+            return False
+        working_history.append({
+            "role": "user",
+            "content": _text_turn_nudge_message(native, self._tool_names_block),
+        })
+        if self.verbose:
+            print(
+                "\x1B[1;33m[loop] text-only turn with no tool call; "
+                "nudging the model to act instead of announcing\x1B[0m"
+            )
+        else:
+            logger.info("text-only turn with no tool call; nudging")
+        return True
+
+    def _feed_back_invalid_tool_args(
+        self,
+        working_history: List[Dict[str, Any]],
+        call_result: Dict[str, Any],
+    ) -> None:
+        """Async twin of ``AgentRunner._feed_back_invalid_tool_args`` —
+        see that method for the contract and the alternation rationale."""
+        name = call_result.get("name", "?")
+        error = call_result.get("error", "arguments were not valid JSON")
+        working_history.append({
+            "role": "assistant",
+            "content": f"(my previous call to '{name}' had malformed JSON arguments)",
+        })
+        working_history.append({
+            "role": "user",
+            "content": (
+                f"[framework] Your previous tool call to '{name}' had arguments "
+                f"that were not valid JSON ({error}). This almost always means a "
+                f"backslash inside a code string or file path wasn't escaped for "
+                f"JSON — write \\\\ for a literal backslash and \\n for a newline "
+                f"(e.g. a regex like \\d+ must be sent as \\\\d+). Resend the same "
+                f"tool call with valid JSON arguments."
+            ),
+        })
+        if self.verbose:
+            print(
+                f"\x1B[1;33m[loop] tool args for '{name}' were malformed JSON; "
+                f"feeding the error back so the model can resend\x1B[0m"
+            )
+        else:
+            logger.info(f"malformed tool args for '{name}'; feeding error back")
+
     async def Initialize(
         self,
         user_input: str,
@@ -364,6 +438,10 @@ class AsyncAgentRunner:
             'user_input': user_input,
         }
         system_prompt = self.Agent.prompt.format_map(tool_info)
+        # Proactively discourage narrate-instead-of-act for tool-using
+        # agents (a tool-less chat agent should answer in prose).
+        if self.registry.names:
+            system_prompt = system_prompt + "\n\n" + _ACT_DONT_ANNOUNCE
 
         working_history = [{"role": "system", "content": system_prompt}]
 
@@ -415,6 +493,9 @@ class AsyncAgentRunner:
         steps: List[str] = []
         final_answer: Optional[str] = None
 
+        # Remaining re-prompts for turns that produce prose but no action.
+        nudge_budget = self.text_turn_nudges
+
         while count <= self.max_iterations:
             if self.bind_tools_natively:
                 # Native mode: LLM picks from user tools directly. Multiple
@@ -426,10 +507,23 @@ class AsyncAgentRunner:
                     force_tool=None,
                 )
 
+                if call_result.get("type") == "invalid_tool_args":
+                    self._feed_back_invalid_tool_args(working_history, call_result)
+                    count += 1
+                    continue
+
                 if call_result.get("type") != "tool_use":
-                    # Model emitted text instead of a tool call — treat as final.
-                    final_answer = call_result.get("text", "")
-                    working_history.append({"role": "assistant", "content": final_answer})
+                    # Model emitted text instead of a tool call. Nudge it to
+                    # act once before accepting the text as the answer.
+                    text = call_result.get("text", "")
+                    if self._nudge_text_only_turn(
+                        working_history, native=True, budget=nudge_budget,
+                        count=count, assistant_text=text,
+                    ):
+                        nudge_budget -= 1
+                        count += 1
+                        continue
+                    final_answer = text
                     break
 
                 turn_calls = call_result.get("tool_calls") or [{
@@ -530,6 +624,11 @@ class AsyncAgentRunner:
                     force_tool=parser_tool_name,
                 )
 
+                if call_result.get("type") == "invalid_tool_args":
+                    self._feed_back_invalid_tool_args(working_history, call_result)
+                    count += 1
+                    continue
+
                 # The parser path forces a single tool (the AgentType), so
                 # tool_calls always has length 1 here. The runner-level
                 # concurrency on parallel user-tool calls happens BELOW, in
@@ -538,8 +637,15 @@ class AsyncAgentRunner:
                 parser_instance = self._resolve_parser_step(call_result)
 
                 if parser_instance is None:
-                    final_answer = call_result.get("text", "")
-                    working_history.append({"role": "assistant", "content": final_answer})
+                    text = call_result.get("text", "")
+                    if self._nudge_text_only_turn(
+                        working_history, native=False, budget=nudge_budget,
+                        count=count, assistant_text=text,
+                    ):
+                        nudge_budget -= 1
+                        count += 1
+                        continue
+                    final_answer = text
                     break
 
                 working_history.append({
@@ -552,6 +658,14 @@ class AsyncAgentRunner:
                 parser_instance = self._resolve_parser_step(response)
 
                 if parser_instance is None:
+                    # Assistant turn already recorded above — don't duplicate.
+                    if self._nudge_text_only_turn(
+                        working_history, native=False, budget=nudge_budget,
+                        count=count,
+                    ):
+                        nudge_budget -= 1
+                        count += 1
+                        continue
                     final_answer = response
                     break
 
