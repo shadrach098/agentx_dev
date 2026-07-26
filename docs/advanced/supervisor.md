@@ -84,11 +84,52 @@ to fix:
 > `[supervisor] Your PREVIOUS attempt (#1) FAILED with this error: … Diagnose the cause and try again.`
 
 The retry is **bounded** (capped attempts) and **informed** (the error is
-fed back, not a blind re-run). Only raised exceptions retry — a sub-task
-that *returns* content is accepted as-is, since the supervisor can't tell
-"terse but correct" from "wrong". Set `max_subtask_retries=0` to restore
-quit-on-first-failure. Applies in both sequential and concurrent async
-modes (each sub-task retries independently).
+fed back, not a blind re-run). By default only raised exceptions retry — a
+sub-task that *returns* content is accepted as-is, since the supervisor
+can't tell "terse but correct" from "wrong" on its own. Set
+`max_subtask_retries=0` to restore quit-on-first-failure. Applies in both
+sequential and concurrent async modes (each sub-task retries
+independently).
+
+#### Success criteria (`subtask_success_check`)
+
+Sometimes a sub-task *runs fine* but produces nothing useful — a scraper
+that saves 0 links, an extractor that finds no data. The retry above
+won't fire (nothing raised). Pass a predicate to catch that case:
+
+```python
+from pathlib import Path
+
+def links_saved(result):
+    p = Path("./workspace/links.txt")
+    if p.exists() and p.read_text().strip():
+        return True
+    # Reject with a reason — it gets fed back into the retry query.
+    return "links.txt is empty; the site is likely JS-rendered — try sitemap.xml"
+
+supervisor = Supervisor(
+    model=llm,
+    agents={...},
+    max_subtask_retries=2,
+    subtask_success_check=links_saved,
+)
+```
+
+The predicate returns `True` (accept), `False` (reject, generic reason),
+or a `str` reason (reject, shown to the specialist on retry). A rejected
+result is retried like a raised error — bounded by `max_subtask_retries`,
+with the reason appended to the query and an explicit nudge to *change
+approach* rather than repeat the same method. After retries are exhausted
+the last result is returned with its `error` field set (its content is
+preserved). A check that itself raises is treated as "accept" so a buggy
+predicate can't wedge the run.
+
+> **It reports failure honestly; it can't create success.** If a task is
+> genuinely unsatisfiable with the specialist's approach (e.g. raw-HTTP
+> scraping a JavaScript-rendered site), the check makes the failure
+> *loud and retried*, not magically solved. Pair it with a capable
+> `system_addendum` — see `examples/robust_link_scraper.py`, which adds
+> sitemap-fallback scraping so the retry actually succeeds.
 
 The result is a `SupervisorResult`:
 
