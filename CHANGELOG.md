@@ -48,6 +48,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **Proactive "act, don't announce" system-prompt clause.** The reactive
+  `text_turn_nudges` fix corrects an agent *after* it narrates instead of
+  acting; this clause heads it off. When (and only when) an agent has
+  tools, its system prompt now tells it to call the tool rather than
+  reply "I'll do X / just a second" and stop — and to report what it DID
+  in past tense. Injected in all three modes across both runners; skipped
+  for tool-less chat agents, where prose is the correct answer. Sits
+  before any `system_addendum` so a caller's role instructions still win.
+
 - **`max_subtask_retries` on `Supervisor` / `AsyncSupervisor`** (default
   `1`). A sub-task that raised used to be recorded as an error and the
   Supervisor moved straight to synthesis — no second attempt. Now a
