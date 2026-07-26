@@ -18,6 +18,7 @@ from agentx_dev.Runner.AgentRun import (
     _is_terminal_action,
     _coerce_runner_input,
     _text_turn_nudge_message,
+    _tool_observation_message,
     _ACT_DONT_ANNOUNCE,
 )
 from typing import Dict, Callable, List, Type, Optional, Any, AsyncIterator
@@ -726,14 +727,9 @@ class AsyncAgentRunner:
                         f"if you're done."
                     )
                     tc_id = getattr(self, "_last_function_call_id", None) if self.use_function_calling else None
-                    err_msg = {
-                        "role": "tool" if tc_id else "function",
-                        "name": "tool_call_error",
-                        "content": error_content,
-                    }
-                    if tc_id:
-                        err_msg["tool_call_id"] = tc_id
-                    working_history.append(err_msg)
+                    working_history.append(_tool_observation_message(
+                        error_content, tool_call_id=tc_id, name="tool_call_error",
+                    ))
                     if self.verbose:
                         print(
                             f"\x1B[1;33m[loop] strict-retry: action "
@@ -775,18 +771,16 @@ class AsyncAgentRunner:
             else:
                 logger.info(f"tool response: {str(tool_response)[:300]}")
 
+            tool_call_id = getattr(self, "_last_function_call_id", None) if self.use_function_calling else None
             if isinstance(tool_response, ToolError):
-                working_history.append({
-                    "role": "function",
-                    "name": "tool_call_error",
-                    "content": f"Error: {tool_response}",
-                })
+                working_history.append(_tool_observation_message(
+                    f"Error: {tool_response}",
+                    tool_call_id=tool_call_id, name="tool_call_error",
+                ))
             else:
-                working_history.append({
-                    "role": "function",
-                    "name": action,
-                    "content": str(tool_response),
-                })
+                working_history.append(_tool_observation_message(
+                    str(tool_response), tool_call_id=tool_call_id, name=action,
+                ))
 
                 tool_calls.append(ToolCall(
                     name=action,
