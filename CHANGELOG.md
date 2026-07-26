@@ -8,6 +8,27 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **A malformed-JSON tool argument no longer crashes the whole agent
+  run.** When a model emitted a Python snippet or a Windows path as a
+  tool-call argument — `re.findall(r'\d+')`, `C:\Users` — the `\d` / `\U`
+  are illegal JSON escapes, and the OpenAI adapter's eager
+  `json.loads(call.function.arguments)` raised `JSONDecodeError` and
+  `raise`d it, unwinding the entire ReAct loop before the agent's own
+  retry machinery could act. Under a Supervisor this surfaced as a bare
+  `ERROR: Invalid \escape: line 1 column 598` and the sub-task was
+  abandoned. Now:
+    - `_parse_tool_arguments` repairs the common case (backslashes that
+      don't begin a valid JSON escape are doubled), recovering `\d`,
+      `\w`, `\s`, etc. with zero extra round-trips. A backslash before a
+      valid-escape letter (`\b`, `\n`, …) remains ambiguous and is left
+      as the escape — a documented limit.
+    - When repair fails, `call_with_tools` returns a dedicated
+      `invalid_tool_args` result and the loop feeds the error back as a
+      retryable observation ("your arguments weren't valid JSON — escape
+      backslashes and resend"), bounded by `max_iterations`, in all
+      three modes across both `AgentRunner` and `AsyncAgentRunner`.
+    `Claude` was already immune (its tool inputs arrive pre-parsed).
+
 - **A tool-call preamble is no longer returned as the final answer.**
   Models routinely end a turn with an announcement instead of an action
   — "I'll look up your recent scores to get a clear view of your

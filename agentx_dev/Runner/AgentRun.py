@@ -1505,6 +1505,47 @@ class AgentRunner:
             logger.info("text-only turn with no tool call; nudging")
         return True
 
+    def _feed_back_invalid_tool_args(
+        self,
+        working_history: List[Dict[str, Any]],
+        call_result: Dict[str, Any],
+    ) -> None:
+        """Handle a ``call_with_tools`` result whose tool arguments were
+        malformed JSON (see ``_parse_tool_arguments``). Appends a
+        retryable observation so the model can resend the SAME call with
+        valid JSON, instead of the run crashing on the unparsed string.
+
+        Records a short assistant placeholder before the framework
+        message so the conversation keeps its user/assistant alternation
+        — Anthropic rejects two consecutive user turns, and we can't
+        reconstruct a valid assistant tool_call from arguments that
+        didn't parse.
+        """
+        name = call_result.get("name", "?")
+        error = call_result.get("error", "arguments were not valid JSON")
+        working_history.append({
+            "role": "assistant",
+            "content": f"(my previous call to '{name}' had malformed JSON arguments)",
+        })
+        working_history.append({
+            "role": "user",
+            "content": (
+                f"[framework] Your previous tool call to '{name}' had arguments "
+                f"that were not valid JSON ({error}). This almost always means a "
+                f"backslash inside a code string or file path wasn't escaped for "
+                f"JSON — write \\\\ for a literal backslash and \\n for a newline "
+                f"(e.g. a regex like \\d+ must be sent as \\\\d+). Resend the same "
+                f"tool call with valid JSON arguments."
+            ),
+        })
+        if self.verbose:
+            print(
+                f"\x1B[1;33m[loop] tool args for '{name}' were malformed JSON; "
+                f"feeding the error back so the model can resend\x1B[0m"
+            )
+        else:
+            logger.info(f"malformed tool args for '{name}'; feeding error back")
+
     def _iter_run(
         self,
         user_input: str,
@@ -1646,6 +1687,11 @@ class AgentRunner:
                     force_tool=None,
                 )
 
+                if call_result.get("type") == "invalid_tool_args":
+                    self._feed_back_invalid_tool_args(working_history, call_result)
+                    count += 1
+                    continue
+
                 if call_result.get("type") != "tool_use":
                     text = call_result.get("text", "")
                     if self._nudge_text_only_turn(
@@ -1766,6 +1812,12 @@ class AgentRunner:
                     tools=[parser_tool_spec],
                     force_tool=parser_tool_name,
                 )
+
+                if call_result.get("type") == "invalid_tool_args":
+                    self._feed_back_invalid_tool_args(working_history, call_result)
+                    count += 1
+                    continue
+
                 parser_instance = self._resolve_parser_step(call_result)
 
                 if parser_instance is None:
