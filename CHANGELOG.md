@@ -4,6 +4,79 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.1.4] — 2026-07-26
+
+### Fixed
+
+- **A malformed-JSON tool argument no longer crashes the whole agent
+  run.** When a model emitted a Python snippet or a Windows path as a
+  tool-call argument — `re.findall(r'\d+')`, `C:\Users` — the `\d` / `\U`
+  are illegal JSON escapes, and the OpenAI adapter's eager
+  `json.loads(call.function.arguments)` raised `JSONDecodeError` and
+  `raise`d it, unwinding the entire ReAct loop before the agent's own
+  retry machinery could act. Under a Supervisor this surfaced as a bare
+  `ERROR: Invalid \escape: line 1 column 598` and the sub-task was
+  abandoned. Now:
+    - `_parse_tool_arguments` repairs the common case (backslashes that
+      don't begin a valid JSON escape are doubled), recovering `\d`,
+      `\w`, `\s`, etc. with zero extra round-trips. A backslash before a
+      valid-escape letter (`\b`, `\n`, …) remains ambiguous and is left
+      as the escape — a documented limit.
+    - When repair fails, `call_with_tools` returns a dedicated
+      `invalid_tool_args` result and the loop feeds the error back as a
+      retryable observation ("your arguments weren't valid JSON — escape
+      backslashes and resend"), bounded by `max_iterations`, in all
+      three modes across both `AgentRunner` and `AsyncAgentRunner`.
+    `Claude` was already immune (its tool inputs arrive pre-parsed).
+
+- **A tool-call preamble is no longer returned as the final answer.**
+  Models routinely end a turn with an announcement instead of an action
+  — "I'll look up your recent scores to get a clear view of your
+  communication skills. Just a second!" — and every "no tool call
+  found" branch in both runners was coded as *this text is the answer,
+  break*. The loop terminated on iteration 1 and the caller got a
+  promise instead of a result. Three sites per runner were affected:
+  the native-binding path (`type != "tool_use"`), the
+  `use_function_calling` path (parser unresolved), and the JSON-text
+  path (response didn't parse). `max_iterations` never helped, because
+  the break happened before any iteration was spent.
+
+  The runner now feeds the model one corrective nudge — "your last turn
+  had no action, so nothing happened; do it, don't announce it" — and
+  continues the loop. Verified against both `AgentRunner` and
+  `AsyncAgentRunner` in all three modes.
+
+### Added
+
+- **Proactive "act, don't announce" system-prompt clause.** The reactive
+  `text_turn_nudges` fix corrects an agent *after* it narrates instead of
+  acting; this clause heads it off. When (and only when) an agent has
+  tools, its system prompt now tells it to call the tool rather than
+  reply "I'll do X / just a second" and stop — and to report what it DID
+  in past tense. Injected in all three modes across both runners; skipped
+  for tool-less chat agents, where prose is the correct answer. Sits
+  before any `system_addendum` so a caller's role instructions still win.
+
+- **`max_subtask_retries` on `Supervisor` / `AsyncSupervisor`** (default
+  `1`). A sub-task that raised used to be recorded as an error and the
+  Supervisor moved straight to synthesis — no second attempt. Now a
+  failed sub-task is re-dispatched up to this many times, with the prior
+  error appended to the query so the specialist knows what to fix
+  ("your previous attempt failed with X — diagnose and try again").
+  Bounded and informed: only raised exceptions trigger a retry (a
+  sub-task that returns content is accepted as-is, since the Supervisor
+  can't tell "terse but correct" from "wrong"), and the error text is
+  fed back rather than blindly re-running. Set to `0` for the old
+  quit-on-first-failure behavior. Applies in both sequential and
+  concurrent async modes.
+
+- **`text_turn_nudges` on `AgentRunner` / `AsyncAgentRunner`** (default
+  `1`). Caps the re-prompts described above at one extra LLM call per
+  run; after the budget is spent the model's text stands as the answer.
+  Set to `0` for the previous behavior. Automatically skipped when no
+  tools are registered, since a runner with no tools is a plain chat
+  call and prose genuinely is the answer there.
+
 ## [3.1.3] — 2026-07-22
 
 Docs-only patch. No code changes since 3.1.2. Users on 3.1.2 don't
