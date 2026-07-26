@@ -205,6 +205,46 @@ Synthesizes a final answer from the last successful tool result.
 Both guards fire independently — belt + suspenders against sticky
 model behavior.
 
+## Narrate-instead-of-act recovery
+
+Models often end a turn by *announcing* an action instead of taking it
+— "I'll look up your scores. Just a second!" — and stop. Left alone,
+that preamble becomes the final answer and the work never happens.
+
+Two mechanisms, both on by default:
+
+```python
+runner = AgentRunner(
+    model=llm, agent=AgentType.ReAct, tools=[get_scores],
+    text_turn_nudges=1,   # re-prompts allowed per run (default 1; 0 = off)
+)
+```
+
+- **Proactive** — when the agent has tools, an *"act, don't announce"*
+  clause is added to its system prompt (call the tool, then report what
+  you DID in past tense). Not added for tool-less chat agents, where
+  prose is the correct answer.
+- **Reactive** — if the model still ends a turn with text and no tool
+  call, the loop feeds a nudge back and continues, bounded by
+  `text_turn_nudges` and by `max_iterations`. After the budget is spent,
+  the text stands as the answer.
+
+## Malformed tool-argument recovery
+
+When a model passes a code snippet or a path as a tool argument, the
+result is often invalid JSON — `re.findall(r'\d+')`, `C:\Users` — since
+`\d` / `\U` aren't legal JSON escapes. Instead of crashing the run:
+
+- The framework repairs the common case (backslashes that don't begin a
+  valid JSON escape are doubled), recovering `\d` / `\w` / `\s` with no
+  extra round-trip.
+- If repair fails, it feeds the error back as a retryable observation
+  ("your arguments weren't valid JSON — escape backslashes and resend"),
+  bounded by `max_iterations`.
+
+Applies in all three runner modes; `Claude()` was already immune (its
+tool inputs arrive pre-parsed).
+
 ## Combining everything
 
 ```python

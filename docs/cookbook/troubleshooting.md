@@ -47,6 +47,21 @@ skips it.
 Your custom template is missing one of those placeholders. All three
 are required.
 
+**The agent returns "I'll do X. Just a second!" instead of doing X**
+The model announced an action and ended its turn without calling a tool.
+The framework re-prompts it once by default (`text_turn_nudges=1`) — if
+you still see the preamble as the answer, the model ignored the nudge on
+a hard task: bump `max_iterations`, or add a specialist `system_addendum`
+spelling out which tool to call. Note the nudge only fires when the
+runner has tools; a tool-less chat agent correctly returns prose.
+
+**`ERROR: Invalid \escape: line 1 column …` from a tool call**
+The model put a code snippet or a Windows path in a tool argument, which
+isn't valid JSON (`\d`, `\U`, `C:\…`). The framework repairs the common
+cases and otherwise feeds the error back for the model to resend — it no
+longer crashes the run. If you still hit it, you're on a build older than
+3.1.4; upgrade.
+
 ## Tool errors
 
 **Model calls the wrong tool**
@@ -91,6 +106,17 @@ Add the missing agent or fix the handoff tool's `target=`.
 **`(handoff loop exceeded max_hops=N)`**
 Two agents ping-pong. Increase `max_hops`, or reshape the specialists
 to break the cycle.
+
+## Supervisor errors
+
+**A sub-task fails and the supervisor gives up immediately**
+By default the supervisor retries a *raised* sub-task once
+(`max_subtask_retries=1`), feeding the error back so the specialist can
+fix it. If a sub-task still fails after retries, its error shows in
+`result.subtasks[i].error` and synthesis reports the data as missing.
+Raise `max_subtask_retries` for flaky specialists; set it to `0` to
+restore quit-on-first-failure. Note only sub-tasks that *raise* are
+retried — one that returns thin/empty content is accepted as-is.
 
 **OpenAI 400: "messages with role 'function' must have a 'name'"**
 Fixed in 3.1's `_sanitize_history_for_next_agent`. If you see it, you

@@ -52,6 +52,7 @@ supervisor = Supervisor(
         "python_agent": ("Python code execution", python_agent),
     },
     max_subtasks=5,
+    max_subtask_retries=1,   # retry a failed sub-task once (default)
     verbose=True,
 )
 
@@ -71,6 +72,23 @@ print(result.content)
    later sub-task queries as `PRIOR FINDINGS`.
 3. **Synthesize** — the supervisor's model receives every specialist's
    final reply + the original task and emits the final answer.
+
+### Sub-task failure handling
+
+When a dispatched sub-task *raises* (a crash, a tool call the specialist
+couldn't recover from), the supervisor doesn't give up on the first try.
+It re-dispatches the sub-task up to `max_subtask_retries` times (default
+1), appending the prior error to the query so the specialist knows what
+to fix:
+
+> `[supervisor] Your PREVIOUS attempt (#1) FAILED with this error: … Diagnose the cause and try again.`
+
+The retry is **bounded** (capped attempts) and **informed** (the error is
+fed back, not a blind re-run). Only raised exceptions retry — a sub-task
+that *returns* content is accepted as-is, since the supervisor can't tell
+"terse but correct" from "wrong". Set `max_subtask_retries=0` to restore
+quit-on-first-failure. Applies in both sequential and concurrent async
+modes (each sub-task retries independently).
 
 The result is a `SupervisorResult`:
 
@@ -96,6 +114,7 @@ supervisor = AsyncSupervisor(
     agents={...},
     sequential=False,   # concurrent (default). sequential=True threads findings.
     max_subtasks=5,
+    max_subtask_retries=1,   # retry a failed sub-task once (default)
 )
 result = await supervisor.run("...")
 ```
