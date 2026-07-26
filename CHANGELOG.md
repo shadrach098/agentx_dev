@@ -4,7 +4,7 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
-## [Unreleased]
+## [3.1.5] — 2026-07-26
 
 ### Fixed
 
