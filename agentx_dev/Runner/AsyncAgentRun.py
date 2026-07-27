@@ -789,8 +789,16 @@ class AsyncAgentRunner:
             # unknown action looks like a tool identifier (no spaces)
             # AND we still have iteration budget, feed an error
             # observation back to the model and let it retry.
+            # `multi_tool_use.parallel` is OpenAI's synthetic meta-tool
+            # for batching several tool calls into one turn. ToolRegistry
+            # ._adispatch_multi_parallel already handles it via
+            # asyncio.gather -- but only if this guardrail lets it
+            # through. Add it to the recognized set so a legitimate
+            # batching call doesn't fall to implicit-final. See sync
+            # AgentRunner for the full rationale.
             known_tools = set(self.registry.sync_std) | set(self.registry.sync_struct) \
-                        | set(self.registry.async_std) | set(self.registry.async_struct)
+                        | set(self.registry.async_std) | set(self.registry.async_struct) \
+                        | {"multi_tool_use.parallel"}
             if not action or action not in known_tools:
                 looks_like_tool_id = (
                     bool(action) and " " not in action and len(action) < 80

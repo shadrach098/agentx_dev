@@ -2249,7 +2249,16 @@ class AgentRunner:
             # back to `action` when action_input is empty AND action
             # looks like natural-language text (contains a space, not
             # just an identifier).
-            known_tools = set(self.func) | set(self.args)
+            # `multi_tool_use.parallel` is OpenAI's synthetic meta-tool
+            # for batching several tool calls into one turn (the model
+            # emits it when it wants to fetch N URLs concurrently, run
+            # M searches at once, etc.). ToolRegistry.dispatch already
+            # unpacks it into the underlying tool calls -- but only if
+            # this guardrail lets it through. Add it to the recognized
+            # set so a legitimate batching call doesn't fall through to
+            # implicit-final and dump its `action_input` (a list of
+            # nested tool_use dicts) into the user-visible answer.
+            known_tools = set(self.func) | set(self.args) | {"multi_tool_use.parallel"}
             if not action or action not in known_tools:
                 # Strict mode: when the unknown `action` looks like a
                 # tool identifier (no spaces, short), assume the model

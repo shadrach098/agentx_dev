@@ -54,6 +54,21 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   format text-mode and function-calling mode use. Mirrored to the
   async runner.
 
+- **`multi_tool_use.parallel` now reaches its dispatch path.**
+  When GPT wanted to batch several tool calls into one turn (fetch N
+  URLs concurrently, run M searches at once), it emitted OpenAI's
+  synthetic `multi_tool_use.parallel` meta-tool. The registry's
+  `_dispatch_multi_parallel` / `_adispatch_multi_parallel` handlers
+  already knew how to unpack it, but the runner loop's known-tools
+  guardrail rejected the name FIRST as unregistered — dumping the
+  raw `{"tool_uses": [...]}` payload into the user-facing "final
+  answer" and never invoking any of the nested calls. Added
+  `multi_tool_use.parallel` to the recognized action set in both
+  sync and async runners so the meta-tool flows through to dispatch
+  and the existing unpackers run. Nested calls with the `functions.`
+  prefix are normalized before dispatch (same as top-level FC
+  calls), so the model can emit either shape.
+
 - **`Permissions.full_access` now accepts (and auto-infers)
   `workspace`.** The classmethod set `allowed_paths` but not
   `workspace`, so short paths like `write_file(path="report.md")`
