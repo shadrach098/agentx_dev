@@ -43,6 +43,17 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   "action" out of an unrelated `"key":"value"` pair inside malformed
   JSON.
 
+- **Verbose trace in `bind_tools_natively` mode now prints tool
+  name + args + response.** Previously native runs showed blank
+  `[tool.call.start]` / `[tool.call.complete]` pairs (the
+  observability layer fires them without the trace context), so you
+  couldn't tell which tool the model actually invoked or what came
+  back. The runner now prints `[tool] Invoking '<name>' with args:
+  <input>` and `[tool] Response: <preview>` (or `[tool] Error: ...`
+  when the dispatch raised) in the post-dispatch loop, matching the
+  format text-mode and function-calling mode use. Mirrored to the
+  async runner.
+
 ## [3.1.5] — 2026-07-26
 
 ### Fixed

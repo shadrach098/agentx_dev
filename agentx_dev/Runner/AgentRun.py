@@ -1994,11 +1994,33 @@ class AgentRunner:
 
                 for call, result in zip(non_respond, results):
                     is_error = isinstance(result, ToolError)
+                    # Verbose trace parity with text/FC mode: the
+                    # bind_tools_natively branch used to print blank
+                    # [tool.call.start]/[tool.call.complete] pairs
+                    # from the observability layer without the name +
+                    # args + response context, making it hard to
+                    # debug which tool the model actually invoked in
+                    # native mode. Match the [tool] Invoking / [tool]
+                    # Response format used by the text and FC paths
+                    # (see AgentRun.py `Invoking` prints below the FC
+                    # branch) so a single verbose run reads uniformly
+                    # regardless of dispatch mode.
+                    if self.verbose:
+                        print(
+                            f"\x1B[3;33m[tool] Invoking '{call['name']}' "
+                            f"with args: {call['input']}\x1B[0m"
+                        )
                     step_description = f"Step {count}: {call['name']} with {call['input']}"
                     steps.append(step_description)
                     yield {"type": "tool_call", "name": call["name"], "args": call["input"]}
                     yield {"type": "tool_result", "name": call["name"],
                            "result": str(result), "is_error": is_error}
+                    if self.verbose:
+                        result_str = str(result)
+                        preview = result_str[:300] + ("..." if len(result_str) > 300 else "")
+                        color = "\x1B[31m" if is_error else "\x1B[32m"
+                        label = "Error" if is_error else "Response"
+                        print(f"{color}[tool] {label}: {preview}\x1B[0m")
                     if not is_error:
                         tool_calls.append(ToolCall(
                             name=call["name"],

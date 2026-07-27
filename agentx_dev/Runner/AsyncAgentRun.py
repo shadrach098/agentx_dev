@@ -634,6 +634,22 @@ class AsyncAgentRunner:
                             cause=result,
                         )
                     is_error = isinstance(result, ToolError)
+                    # Verbose trace parity with text/FC mode — see sync
+                    # AgentRunner for the rationale. Without these
+                    # prints, bind_tools_natively runs show blank
+                    # [tool.call.start]/[tool.call.complete] pairs and
+                    # you can't tell which tool the model actually
+                    # invoked in native mode.
+                    if self.verbose:
+                        print(
+                            f"\x1B[3;33m[tool] Invoking '{call['name']}' "
+                            f"with args: {call['input']}\x1B[0m"
+                        )
+                        result_str = str(result)
+                        preview = result_str[:300] + ("..." if len(result_str) > 300 else "")
+                        color = "\x1B[31m" if is_error else "\x1B[32m"
+                        label = "Error" if is_error else "Response"
+                        print(f"{color}[tool] {label}: {preview}\x1B[0m")
                     step_description = f"Step {count}: {call['name']} with {call['input']}"
                     steps.append(step_description)
                     if not is_error:
