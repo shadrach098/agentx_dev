@@ -415,7 +415,7 @@ project with **deny-all** defaults:
 ```json
 {
   "_comment": "Edit this file to control which capabilities the agent has...",
-  "_docs": "https://github.com/shadrach098/Bruce_framework",
+  "_docs": "https://github.com/shadrach098/agentx_dev",
   "read_files": false,
   "list_directories": false,
   "write_files": false,
@@ -1059,5 +1059,5 @@ print(f"Spent: ${llm.usage.estimate_cost(0.003, 0.015):.4f}")
 
 ## Links
 
-- Repo: https://github.com/shadrach098/Bruce_framework
-- Issues: https://github.com/shadrach098/Bruce_framework/issues
+- Repo: https://github.com/shadrach098/agentx_dev
+- Issues: https://github.com/shadrach098/agentx_dev/issues

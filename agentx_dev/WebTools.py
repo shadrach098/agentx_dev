@@ -54,7 +54,7 @@ from pydantic import BaseModel, Field
 from agentx_dev.Tools import StructuredTool
 
 
-_UA = "Mozilla/5.0 (compatible; agentx_dev/1.0; +https://github.com/shadrach098/Bruce_framework)"
+_UA = "Mozilla/5.0 (compatible; agentx_dev/1.0; +https://github.com/shadrach098/agentx_dev)"
 
 # Max hops we will follow before giving up. Every hop is re-validated
 # against _assert_public_url, so a chain of redirects can't smuggle us

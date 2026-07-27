@@ -458,7 +458,7 @@ class Permissions:
                 "filesystem subtrees; ../ traversal is blocked). Resource "
                 "caps protect against runaway tools."
             ),
-            "_docs": "https://github.com/shadrach098/Bruce_framework",
+            "_docs": "https://github.com/shadrach098/agentx_dev",
             **body,
         }
         _write_json_secure(path, out)

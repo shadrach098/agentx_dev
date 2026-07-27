@@ -7,8 +7,8 @@ small and the codebase readable.
 ## Getting set up
 
 ```bash
-git clone https://github.com/shadrach098/Bruce_framework.git
-cd Bruce_framework
+git clone https://github.com/shadrach098/agentx_dev.git
+cd agentx_dev
 python -m venv .venv && source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -e ".[dev,anthropic]"
 ```

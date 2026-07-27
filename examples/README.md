@@ -275,5 +275,5 @@ After running these examples:
 ## Questions?
 
 - **Documentation**: See `ENHANCEMENTS.md`
-- **Issues**: https://github.com/shadrach098/Bruce_framework/issues
-- **Source**: https://github.com/shadrach098/Bruce_framework
+- **Issues**: https://github.com/shadrach098/agentx_dev/issues
+- **Source**: https://github.com/shadrach098/agentx_dev

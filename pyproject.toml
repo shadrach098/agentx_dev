@@ -51,9 +51,9 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/shadrach098/Bruce_framework"
-"Bug Tracker" = "https://github.com/shadrach098/Bruce_framework/issues"
-Source = "https://github.com/shadrach098/Bruce_framework"
+Homepage = "https://github.com/shadrach098/agentx_dev"
+"Bug Tracker" = "https://github.com/shadrach098/agentx_dev/issues"
+Source = "https://github.com/shadrach098/agentx_dev"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

@@ -424,7 +424,7 @@ result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"
         <div class="hero-cta">
           <a href="#getting-started" class="primary">get started <span class="arrow">→</span></a>
           <a href="#reference/api-summary">api reference</a>
-          <a href="https://github.com/shadrach098/Bruce_framework">source</a>
+          <a href="https://github.com/shadrach098/agentx_dev">source</a>
         </div>
       </section>
 
