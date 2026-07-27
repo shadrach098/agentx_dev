@@ -54,6 +54,40 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   format text-mode and function-calling mode use. Mirrored to the
   async runner.
 
+- **`web_fetch_tool(vector_store=...)` auto-ingests fetched pages into
+  a vector store** instead of dumping raw HTML into the model's
+  context. Fixes the TPM-limit trap: when a research agent fetches
+  four articles in parallel (via ``multi_tool_use.parallel`` or
+  native binding), the combined bodies can easily exceed 40k tokens
+  and blow past a 30k TPM ceiling on the very next model call.
+  New parameters on ``web_fetch_tool``:
+
+  | Kwarg | Default | Effect |
+  |---|---|---|
+  | ``vector_store`` | ``None`` | When set, each fetch is HTML-stripped, chunked with ``TextSplitter``, embedded via the store's embeddings, and added with ``{src: url, chunk_index, total_chunks}`` metadata. The tool response becomes a compact summary (URL, byte count, chunk count, 240-char preview) — NOT the raw body. The model then calls ``vector_search`` / ``Rag`` to pull only the passages it needs. |
+  | ``chunk_size`` | ``1500`` | Characters per chunk when ``vector_store`` is set. Ignored otherwise. |
+  | ``chunk_overlap`` | ``200`` | Overlap between adjacent chunks so a fact spanning a boundary is still retrievable. Ignored otherwise. |
+
+  Backwards-compatible: the positional ``cache_dir`` signature keeps
+  working; `web_fetch_tool()` with no ``vector_store`` returns raw
+  body as before. Ingest and cache_dir compose — enable both and get
+  disk-cached full bodies AND searchable chunks. HTML stripping is
+  minimal and dependency-free (regex-based: script/style blocks
+  dropped whole, then tags stripped, whitespace collapsed) so the
+  ingest path adds no new install dependency. On JSON/plain-text
+  responses the stripper is a near no-op.
+
+  The observation returned to the model shows topical coverage --
+  first, middle, and last chunk previews (up to 3 samples,
+  deduplicated for short pages) -- so the model can tell what
+  topics the page actually covers, not just the intro paragraph.
+  Without this the model would only see the page's opening and
+  wouldn't know to query for topics discussed later in the same
+  page. Explicit instruction in the observation ("query with
+  SPECIFIC keywords from the topics above; do NOT re-fetch; do
+  NOT ask for the full body") steers the model toward the RAG path
+  on follow-up turns.
+
 - **`multi_tool_use.parallel` now reaches its dispatch path.**
   When GPT wanted to batch several tool calls into one turn (fetch N
   URLs concurrently, run M searches at once), it emitted OpenAI's

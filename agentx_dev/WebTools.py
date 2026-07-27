@@ -47,7 +47,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -300,7 +300,38 @@ def _web_search(query: str, num_results: int = 5) -> str:
     return "\n".join(lines)
 
 
-def web_fetch_tool(cache_dir: Optional[str] = None) -> StructuredTool:
+# Minimal HTML -> text stripper. Removes script/style blocks whole,
+# then strips remaining tags, collapses whitespace. Not a full parser
+# (that'd need BeautifulSoup, an optional dep); good enough that the
+# vector store sees prose instead of raw markup for the common
+# article / docs / wiki page case.
+_HTML_SCRIPT_STYLE_RE = re.compile(
+    r"<(script|style)\b[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE
+)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_MULTI_WS_RE = re.compile(r"[ \t]+")
+_MULTI_NL_RE = re.compile(r"\n{3,}")
+
+
+def _html_to_text(body: str) -> str:
+    """Best-effort HTML -> plain text. Cheap enough to run on every
+    fetch; keep it dependency-free so `pip install agentx-dev` doesn't
+    pull in BeautifulSoup. When the body isn't HTML (JSON, plain text)
+    the stripping is a near no-op."""
+    body = _HTML_SCRIPT_STYLE_RE.sub("", body)
+    body = _HTML_TAG_RE.sub("", body)
+    body = _MULTI_WS_RE.sub(" ", body)
+    body = _MULTI_NL_RE.sub("\n\n", body)
+    return body.strip()
+
+
+def web_fetch_tool(
+    cache_dir: Optional[str] = None,
+    *,
+    vector_store: Optional[Any] = None,
+    chunk_size: int = 1500,
+    chunk_overlap: int = 200,
+) -> StructuredTool:
     """Build a web_fetch tool.
 
     Args:
@@ -311,36 +342,146 @@ def web_fetch_tool(cache_dir: Optional[str] = None) -> StructuredTool:
             agent has run_python — it prevents the "paste HTML into
             code" failure mode. Leave None for a lightweight tool that
             only returns text to the model's context.
+        vector_store: When set, every successful fetch is chunked +
+            embedded + added to this ``VectorStore``. The tool response
+            becomes a COMPACT summary (URL, byte count, chunk count,
+            top-chunk preview) instead of the raw body. This is the fix
+            for TPM blowups when the model fetches several long pages in
+            one turn: the raw HTML never enters the model's context;
+            the model calls ``vector_search`` / ``Rag`` afterward to
+            pull only the passages it actually needs. Recommended for
+            any research agent that fetches more than one URL per run.
+            Compatible with ``cache_dir`` — you can enable both and get
+            disk-cached full bodies AND searchable chunks.
+        chunk_size: Characters per chunk when ``vector_store`` is set.
+            Default 1500 — big enough for coherent passages, small
+            enough that top-k retrieval fits comfortably in context.
+            Ignored when ``vector_store`` is None.
+        chunk_overlap: Character overlap between adjacent chunks so a
+            fact spanning a chunk boundary is still retrievable.
+            Default 200. Ignored when ``vector_store`` is None.
     """
     resolved_dir = Path(cache_dir).resolve() if cache_dir else None
 
-    def _fetch(url: str, max_chars: int = 50_000) -> str:
-        return _do_fetch(url, cache_dir=resolved_dir, max_chars=max_chars)
+    # Build the splitter once per tool instance so we don't pay the
+    # setup cost per fetch. Only used when vector_store is set; keeping
+    # the object around regardless is a few bytes.
+    splitter = None
+    if vector_store is not None:
+        from agentx_dev.Splitters import TextSplitter
+        splitter = TextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
-    if resolved_dir is not None:
-        description = (
-            "Fetch a URL over HTTP/HTTPS. Returns a preview of the body "
-            f"AND saves the FULL body to a file under {resolved_dir}. "
-            "The response includes the exact cache path plus a snippet "
-            "showing how to open it. IMPORTANT: when you need to parse "
-            "or scrape the fetched content in run_python, ALWAYS load "
-            "it from the cache path — do NOT paste HTML into your "
-            "Python code as a string literal. Pasting is what makes "
-            "the model use '...' placeholders that produce empty "
-            "output. Errors return an 'ERROR:' string; no exception."
+    def _fetch(url: str, max_chars: int = 50_000) -> str:
+        raw_response = _do_fetch(url, cache_dir=resolved_dir, max_chars=max_chars)
+        # Errors from _do_fetch return an "ERROR:" string; propagate
+        # verbatim so the agent loop sees it as a normal tool failure.
+        if raw_response.startswith("ERROR:"):
+            return raw_response
+
+        # No vector-store ingest requested? Return the response the
+        # caller expects (raw body + optional cache note).
+        if vector_store is None:
+            return raw_response
+
+        # Vector-store ingest path: strip HTML, chunk, add to store,
+        # return a COMPACT observation. The raw body never reaches the
+        # model — that's the whole point (TPM protection).
+        try:
+            # Body is everything before the cache_note (if present).
+            body_only = raw_response.split("\n\n[cached full body")[0]
+            text = _html_to_text(body_only)
+            if not text:
+                return (
+                    f"Fetched {url} but stripped body was empty (likely "
+                    f"JS-rendered page or non-HTML content). Nothing "
+                    f"ingested."
+                )
+            chunks = splitter.split_text(text)
+            if not chunks:
+                return f"Fetched {url} but no chunks produced. Nothing ingested."
+            metadata = [
+                {"src": url, "chunk_index": i, "total_chunks": len(chunks)}
+                for i in range(len(chunks))
+            ]
+            vector_store.add(chunks, metadata=metadata)
+
+            # Topical coverage sample: instead of just showing the first
+            # chunk, take a few evenly-spaced chunks so the model can
+            # tell what topics the page actually covers. Without this
+            # the model only knows the page's intro paragraph and won't
+            # think to search for topics discussed later. Pick up to 3
+            # samples: first, middle, last (deduplicated for pages that
+            # are short enough to fit in <=3 chunks).
+            def _preview(chunk: str, cap: int = 180) -> str:
+                p = chunk[:cap].replace("\n", " ").strip()
+                if len(chunk) > cap:
+                    p += "..."
+                return p
+
+            n = len(chunks)
+            sample_indices = sorted({0, n // 2, n - 1})   # dedupe when n<=2
+            samples = [(i, _preview(chunks[i])) for i in sample_indices]
+            sample_block = "\n".join(
+                f"  [chunk {i+1}/{n}] {preview!r}"
+                for i, preview in samples
+            )
+            note = (
+                f"Fetched {url} — ingested {n} chunk(s) into vector store "
+                f"(total {sum(len(c) for c in chunks)} chars of prose "
+                f"after HTML stripping). "
+                f"\n\nTopical coverage sample "
+                f"({'first, middle, last chunks' if len(samples) == 3 else f'{len(samples)} chunk(s)'}):"
+                f"\n{sample_block}"
+                f"\n\nAll {n} chunks are now searchable via vector_search "
+                f"/ Rag. Query the store with SPECIFIC keywords from the "
+                f"topics above to pull the relevant passages — do NOT "
+                f"re-fetch this URL, and do NOT ask for the full body."
+            )
+            return note
+        except Exception as e:
+            # Ingest failed — return an ERROR so the agent can retry a
+            # different URL. Don't fall back to dumping raw HTML; that
+            # would defeat the TPM protection.
+            return (
+                f"ERROR: fetched {url} but ingest failed "
+                f"({type(e).__name__}: {e}). Try a different URL or a "
+                f"more specific vector_search query."
+            )
+
+    # Description text varies by mode so the LLM knows what to expect.
+    parts: List[str] = ["Fetch a URL over HTTP/HTTPS."]
+    if vector_store is not None:
+        parts.append(
+            "Fetched pages are AUTO-INGESTED into a vector store: the "
+            "raw body is chunked, embedded, and stored. The response "
+            "you receive is a COMPACT summary (URL + chunk count + "
+            "sample), NOT the raw HTML. After fetching, call "
+            "vector_search / Rag with a specific query to retrieve the "
+            "relevant passages. This is how you scale to fetching "
+            "multiple long pages in one turn without blowing your "
+            "token budget. Do NOT re-fetch a URL you've already fetched."
+        )
+    elif resolved_dir is not None:
+        parts.append(
+            f"Returns a preview of the body AND saves the FULL body to "
+            f"a file under {resolved_dir}. The response includes the "
+            f"exact cache path plus a snippet showing how to open it. "
+            f"IMPORTANT: when you need to parse the fetched content in "
+            f"run_python, ALWAYS load it from the cache path — do NOT "
+            f"paste HTML into your Python code as a string literal."
         )
     else:
-        description = (
-            "Fetch a URL over HTTP/HTTPS and return the response body "
-            "as text. Automatically truncated at max_chars (default "
-            "50k). Errors return an 'ERROR:' string; no exception."
+        parts.append(
+            "Returns the response body as text, truncated at max_chars "
+            "(default 50k)."
         )
+    parts.append("Errors return an 'ERROR:' string; no exception.")
 
     return StructuredTool(
         func=_fetch,
         args_schema=_WebFetchArgs,
         name="web_fetch",
-        description=description,
+        description=" ".join(parts),
     )
 
 
