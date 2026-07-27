@@ -1,6 +1,6 @@
 """Qdrant-backed VectorStore adapter.
 
-Usage (local):
+Usage (in-memory):
 
     from agentx_dev import OpenAIEmbeddings
     from agentx_dev.VectorStores import QdrantVectorStore
@@ -8,7 +8,15 @@ Usage (local):
     store = QdrantVectorStore(
         embeddings=OpenAIEmbeddings(),
         collection_name="my_docs",
-        location=":memory:",       # or "http://localhost:6333"
+        location=":memory:",       # default; vectors gone on process exit
+    )
+
+Usage (local file-backed persistence):
+
+    store = QdrantVectorStore(
+        embeddings=OpenAIEmbeddings(),
+        collection_name="my_docs",
+        path="./.qdrant",          # survives process restarts
     )
 
 Usage (remote):
@@ -38,6 +46,7 @@ class QdrantVectorStore:
         *,
         collection_name: str = "agentx",
         location: Optional[str] = None,
+        path: Optional[str] = None,
         url: Optional[str] = None,
         api_key: Optional[str] = None,
         client: Any = None,
@@ -47,14 +56,28 @@ class QdrantVectorStore:
         Args:
             embeddings: Any ``Embeddings`` instance.
             collection_name: Qdrant collection to read/write.
-            location: Local qdrant location. ``":memory:"`` for in-process,
-                or a path like ``"./.qdrant"`` for a local file-backed instance.
-                Ignored when ``url`` or ``client`` is provided.
-            url: Remote Qdrant HTTP URL.
+            location: In-process location. Accepts ``":memory:"`` (default)
+                or a URL host:port string. Do NOT pass a filesystem path
+                here — qdrant-client would try to resolve it as a hostname
+                and fail with an IDNA UnicodeError. For file-backed local
+                persistence, use ``path=`` instead.
+            path: Directory for file-backed local persistence — e.g.
+                ``"./.qdrant"``. Vectors survive process restarts. Cannot
+                be combined with ``location``, ``url``, or ``client``.
+            url: Remote Qdrant HTTP URL. Mutually exclusive with ``path``
+                and ``location``.
             api_key: API key for the remote endpoint.
-            client: Pre-configured ``qdrant_client.QdrantClient``.
+            client: Pre-configured ``qdrant_client.QdrantClient``. When
+                given, ``location`` / ``path`` / ``url`` are ignored.
             distance: One of ``Cosine``, ``Dot``, ``Euclid``, ``Manhattan``.
                 Cosine matches the default ``VectorStore`` semantics.
+
+        Precedence when ``client`` is None: ``url`` > ``path`` > ``location``
+        > default ``":memory:"``.
+
+        Raises:
+            ValueError: If more than one of ``location`` / ``path`` / ``url``
+                is set — they name mutually-exclusive backends.
         """
         try:
             from qdrant_client import QdrantClient
@@ -65,12 +88,30 @@ class QdrantVectorStore:
                 "Install with: pip install qdrant-client"
             ) from e
 
+        # Reject mutually-exclusive backend selectors up front so the user
+        # gets a clear error instead of a confusing IDNA / connection
+        # failure deep inside qdrant-client.
+        conflicts = [
+            (name, val) for name, val in
+            (("location", location), ("path", path), ("url", url))
+            if val
+        ]
+        if len(conflicts) > 1:
+            names = ", ".join(n for n, _ in conflicts)
+            raise ValueError(
+                f"QdrantVectorStore: pass at most one of location/path/url; "
+                f"got {names}. Use `path=` for file-backed local storage, "
+                f"`location=':memory:'` for in-process, or `url=` for remote."
+            )
+
         self._embeddings = embeddings
         self._collection = collection_name
         self._qm = qm
         if client is None:
             if url:
                 client = QdrantClient(url=url, api_key=api_key)
+            elif path:
+                client = QdrantClient(path=path)
             else:
                 client = QdrantClient(location=location or ":memory:")
         self._client = client

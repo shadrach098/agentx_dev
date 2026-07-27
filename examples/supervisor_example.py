@@ -12,12 +12,12 @@ Run:
     python examples/supervisor_example.py
 """
 
-import asyncio
+import asyncio,os
 from pydantic import BaseModel
 from agentx_dev import (
     AgentRunner, AsyncAgentRunner, AgentType,
     Supervisor, AsyncSupervisor,
-    Claude,
+    Claude,GPT
 )
 from agentx_dev.Tools import StandardTool, StructuredTool
 from agentx_dev.AsyncTools import AsyncStandardTool
@@ -47,7 +47,8 @@ search_tool = StandardTool(func=fake_search, name="search", description="Search 
 # --- Sync supervisor ---
 
 def run_sync():
-    model = Claude(model="claude-sonnet-4-6")
+    model = GPT if not os.environ.get("ANTHROPIC_API_KEY",'')  else  Claude(model="claude-sonnet-4-6") 
+
 
     search_agent = AgentRunner(model=model, Agent=AgentType.ReAct, tools=[search_tool])
     math_agent   = AgentRunner(model=model, Agent=AgentType.ReAct, tools=[calc_tool])
@@ -77,7 +78,7 @@ async def search_async(q: str) -> str:
 
 
 async def run_async():
-    model = Claude(model="claude-sonnet-4-6")
+    model = GPT if not os.environ.get("ANTHROPIC_API_KEY",'')  else  Claude(model="claude-sonnet-4-6") 
 
     search_tool_a = AsyncStandardTool(func=search_async, name="search", description="Async web search.")
     research_agent = AsyncAgentRunner(model=model, Agent=AgentType.ReAct, tools=[search_tool_a])
@@ -94,4 +95,4 @@ async def run_async():
 if __name__ == "__main__":
     run_sync()
     print("\n--- Async ---\n")
-    asyncio.run(run_async())
+    run_async()
