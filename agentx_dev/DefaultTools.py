@@ -315,16 +315,45 @@ class Permissions:
         )
 
     @classmethod
-    def full_access(cls, allowed_paths: List[str]) -> "Permissions":
+    def full_access(
+        cls,
+        allowed_paths: List[str],
+        *,
+        workspace: Optional[str] = None,
+    ) -> "Permissions":
         """Read/write/edit/delete + Python exec, all constrained to the
         listed paths. Suitable for an agent working inside a project
         directory.
+
+        Args:
+            allowed_paths: Filesystem subtrees the agent may touch.
+                ``../`` traversal is blocked because ``Path.resolve()``
+                flattens the target before the sandbox check.
+            workspace: Primary workspace root — when set, tools accept
+                SHORT relative paths (``write_file(path="report.md")``
+                lands at ``<workspace>/report.md``) instead of resolving
+                them to CWD. If not passed AND ``allowed_paths`` has
+                exactly one entry, that path is auto-set as the
+                workspace. This is the common case (project-scoped
+                agent whose one allowed subtree IS its workspace) and
+                closes the trap where callers pass
+                ``full_access(["./workspace"])``, hand the agent a
+                ``write_file`` tool, then hit a PermissionError because
+                bare filenames resolve outside ``./workspace``. Pass
+                ``workspace=""`` or a specific string to override.
 
         Named ``full_access`` (not ``workspace``) because ``workspace`` is
         a dataclass field on this class — a classmethod with the same
         name would shadow the field's default value at class-body
         evaluation time and every instance would come out with a bound-
-        method value in place of the string path. Yes, that bit us once."""
+        method value in place of the string path. Yes, that bit us once.
+        """
+        paths = list(allowed_paths)
+        # Auto-infer workspace from a single allowed path when the
+        # caller didn't specify one explicitly. Two-plus paths stay
+        # ambiguous (no obvious "primary") — caller must be explicit.
+        if workspace is None and len(paths) == 1:
+            workspace = paths[0]
         return cls(
             read_files=True,
             list_directories=True,
@@ -333,7 +362,8 @@ class Permissions:
             delete_files=True,
             move_files=True,
             execute_python=True,
-            allowed_paths=list(allowed_paths),
+            allowed_paths=paths,
+            workspace=workspace,
         )
 
     @classmethod

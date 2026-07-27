@@ -54,6 +54,22 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   format text-mode and function-calling mode use. Mirrored to the
   async runner.
 
+- **`Permissions.full_access` now accepts (and auto-infers)
+  `workspace`.** The classmethod set `allowed_paths` but not
+  `workspace`, so short paths like `write_file(path="report.md")`
+  resolved to CWD (outside the sandbox) and raised
+  `PermissionError: access denied` — a landmine that every caller of
+  `Permissions.full_access(["./workspace"])` hit sooner or later.
+  New signature: `full_access(allowed_paths, *, workspace=None)`.
+  When `workspace` isn't passed AND `allowed_paths` has exactly one
+  entry, that path is auto-set as the workspace (the "project-scoped
+  agent whose one allowed subtree IS its workspace" case, which is
+  99% of use). Two or more paths stay ambiguous and require an
+  explicit `workspace=` if short-path resolution is wanted. Pass an
+  explicit `workspace=` string to override the auto-choice.
+  Backwards-compatible on the positional signature; adds a keyword
+  argument that existing callers didn't use.
+
 ## [3.1.5] — 2026-07-26
 
 ### Fixed
