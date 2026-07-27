@@ -85,6 +85,39 @@ python complete_example.py
 
 ---
 
+### 5. `mcp_github_triage_demo.py` - MCP + Human-in-the-Loop
+**What it demonstrates:**
+- Connecting to the official MCP GitHub server (subprocess via `npx`)
+- Whitelisting a subset of MCP tools before handing them to the model
+- Scrubbing the child process env so only the GitHub token is exposed
+- A ReAct workflow that classifies issues into a fixed taxonomy
+  (bug / feature / docs / question / duplicate / needs-info + P0/P1/P2)
+- HITL approval gate — the operator sees the full plan and approves
+  before any labels are written back to the repo
+- Fail-closed behaviour when no TTY is available (safe in CI / cron)
+
+**Prereqs:**
+```bash
+pip install agentx-dev[mcp]
+export GITHUB_PERSONAL_ACCESS_TOKEN=ghp_...   # `repo` scope
+# and one of:
+export ANTHROPIC_API_KEY=...
+export OPENAI_API_KEY=...
+```
+
+**Run it:**
+```bash
+python mcp_github_triage_demo.py
+```
+
+**Key takeaways:**
+- MCP tools are just `AsyncStructuredTool`s — mix them with your own
+- Tool whitelisting shrinks blast radius on prompt injection
+- Approval prompts open `/dev/tty` (or `CONIN$` on Windows) directly
+  so they work from IDE run panels and through wrapper subprocesses
+
+---
+
 ## Quick Start
 
 ### Basic Example (No API Key Needed)

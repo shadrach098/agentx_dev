@@ -158,6 +158,51 @@ observability.add_hook(ConsoleHook(verbose=True))
 - **Timeouts** — MCP tool calls default to no timeout. Set
   `tool.timeout_sec` on each tool if needed.
 
-## Runnable example
+## Runnable examples
 
-See `examples/mcp_demo.py` for a full stdio server integration.
+Two end-to-end demos ship in `examples/`:
+
+| File | What it shows |
+|---|---|
+| `examples/mcp_demo.py` | Minimal stdio server integration — the shortest path from `pip install` to a working MCP-backed agent. |
+| `examples/mcp_github_triage_demo.py` | Production-shaped example — connects to the official MCP GitHub server, whitelists 3 of the ~26 advertised tools (`list_issues` / `get_issue` / `add_issue_labels`), scrubs the subprocess env down to the GitHub token, has the model classify open issues into a fixed taxonomy (bug/feature/docs/question/duplicate/needs-info + P0/P1/P2), then pauses at a HITL approval gate before writing labels back. |
+
+### GitHub triage demo — key ideas worth stealing
+
+Whether or not you copy the file, three patterns from it apply to any
+MCP-backed agent that touches a real system:
+
+1. **Whitelist tools before handing them to the model.** The MCP
+   GitHub server exposes ~26 tools including `delete_file`,
+   `create_pull_request`, `fork_repository`. Fewer tools = tighter
+   ReAct planning AND smaller blast radius on a prompt injection
+   that talked the model into reaching for something destructive:
+
+   ```python
+   allowed = {"list_issues", "get_issue", "add_issue_labels"}
+   picked = [t for t in await mcp.list_tools() if t.name in allowed]
+   ```
+
+2. **Scrub the subprocess env.** Don't hand the child MCP server
+   every `*_API_KEY` in your shell — pass only what it needs.
+   Mirrors the framework's own 3.0.6 `_build_child_env` defence
+   for `run_python` / `run_shell`:
+
+   ```python
+   subprocess_env = {"GITHUB_PERSONAL_ACCESS_TOKEN": os.environ["GITHUB_PERSONAL_ACCESS_TOKEN"]}
+   for k in ("PATH", "SystemRoot", "HOME"):
+       if k in os.environ:
+           subprocess_env[k] = os.environ[k]
+   await MCPClient.connect_stdio("npx", "-y", "@modelcontextprotocol/server-github", env=subprocess_env)
+   ```
+
+3. **HITL gate the side-effectful step.** For anything that writes
+   to a real system (labels, comments, PRs, files), have the model
+   assemble the full plan first, then call an `ask_human` tool that
+   returns the operator's approval. Reject → agent returns the plan
+   as its final answer without writing anything. Fails closed when
+   there's no TTY.
+
+Prereqs for the triage demo: Node/`npx`, `GITHUB_PERSONAL_ACCESS_TOKEN`
+with `repo` scope, `pip install agentx-dev[mcp]`, and either
+`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.
