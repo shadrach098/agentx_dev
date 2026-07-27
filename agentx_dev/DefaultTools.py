@@ -306,8 +306,18 @@ class Permissions:
         return cls()
 
     @classmethod
-    def read_only(cls, allowed_paths: Optional[List[str]] = None) -> "Permissions":
-        """Agent can read files + list directories. No writes, no exec."""
+    def read_only(cls, allowed_paths=None) -> "Permissions":
+        """Agent can read files + list directories. No writes, no exec.
+
+        ``allowed_paths`` accepts either a list of strings OR a bare
+        string (auto-wrapped in a list). Passing a bare string used to
+        iterate its characters into 11 single-char subtrees and
+        silently break every path check; now it's treated as
+        ``[allowed_paths]`` with a note that lists are the intended
+        shape.
+        """
+        if isinstance(allowed_paths, str):
+            allowed_paths = [allowed_paths]
         return cls(
             read_files=True,
             list_directories=True,
@@ -317,7 +327,7 @@ class Permissions:
     @classmethod
     def full_access(
         cls,
-        allowed_paths: List[str],
+        allowed_paths,
         *,
         workspace: Optional[str] = None,
     ) -> "Permissions":
@@ -348,6 +358,14 @@ class Permissions:
         evaluation time and every instance would come out with a bound-
         method value in place of the string path. Yes, that bit us once.
         """
+        # Accept a bare string as a shortcut for a one-element list.
+        # Without this, Python's list("./workspace") iterates the string
+        # into 11 single-character "subtrees" — every subsequent path
+        # check silently rejects and the model gets confused
+        # PermissionErrors. Auto-wrap so full_access("./workspace") does
+        # the intuitive thing.
+        if isinstance(allowed_paths, str):
+            allowed_paths = [allowed_paths]
         paths = list(allowed_paths)
         # Auto-infer workspace from a single allowed path when the
         # caller didn't specify one explicitly. Two-plus paths stay

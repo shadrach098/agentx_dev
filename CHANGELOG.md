@@ -103,6 +103,16 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   prefix are normalized before dispatch (same as top-level FC
   calls), so the model can emit either shape.
 
+- **`Permissions.full_access` / `read_only` auto-wrap a bare string.**
+  Passing `full_access("./workspace")` used to iterate the string
+  into 11 single-character "subtrees" (Python's `list("./workspace")`)
+  — every path check silently rejected because no real path could
+  ever match a `"."` or `"/"` "allowed subtree". The classmethod
+  now detects a bare string and treats it as `[allowed_paths]`, so
+  `full_access("./workspace")` does the intuitive thing (equivalent
+  to `full_access(["./workspace"])` and auto-infers the workspace).
+  Same fix on `read_only`. List inputs are unchanged.
+
 - **`Permissions.full_access` now accepts (and auto-infers)
   `workspace`.** The classmethod set `allowed_paths` but not
   `workspace`, so short paths like `write_file(path="report.md")`
