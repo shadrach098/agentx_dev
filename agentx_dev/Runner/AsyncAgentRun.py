@@ -20,6 +20,8 @@ from agentx_dev.Runner.AgentRun import (
     _text_turn_nudge_message,
     _tool_observation_message,
     _ACT_DONT_ANNOUNCE,
+    _ParserRecoverableError,
+    _salvage_react_json,
 )
 from typing import Dict, Callable, List, Type, Optional, Any, AsyncIterator
 from pydantic import BaseModel, Field
@@ -104,7 +106,7 @@ class AsyncAgentRunner:
         max_iterations: int | None = None,
         auto_cache: bool = True,
         auto_memory: bool = False,
-        use_function_calling: bool = False,
+        use_function_calling: Optional[bool] = None,
         verbose: bool = True,
         bind_tools_natively: bool = False,
         *,
@@ -137,8 +139,14 @@ class AsyncAgentRunner:
                 by ``(name, args)``. Default True.
             auto_memory: Same as ``AgentRunner``. Default False.
             use_function_calling: Route the AgentType parser through
-                native ``async_call_with_tools``. Mutually exclusive
-                with ``bind_tools_natively``.
+                native ``async_call_with_tools``. Default (3.1.7+) is
+                ``None`` -> auto-detect: ``True`` if the model class
+                overrides ``call_with_tools`` (both ``GPT`` and
+                ``Claude`` do), ``False`` if it's the ``BaseChatModel``
+                stub or if ``bind_tools_natively=True``. Higher
+                accuracy AND avoids ``json.loads`` crashes on long
+                ``action_input`` strings. Mutually exclusive with
+                ``bind_tools_natively``.
             verbose: Print step trace to stdout during ``ainvoke``.
             bind_tools_natively: Bind user tools directly as native
                 FC tools; skip the AgentType parser. Multiple
@@ -201,6 +209,17 @@ class AsyncAgentRunner:
         self.tools = tools
         self.max_iterations = max_iterations if max_iterations else 4
         self.model = model
+        # Resolve use_function_calling (mirrors sync AgentRunner — see
+        # that constructor for the full rationale).
+        if use_function_calling is None:
+            if bind_tools_natively:
+                use_function_calling = False
+            else:
+                base_cwt = getattr(BaseChatModel, "call_with_tools", None)
+                model_cwt = getattr(type(model), "call_with_tools", None)
+                use_function_calling = (
+                    model_cwt is not None and model_cwt is not base_cwt
+                )
         self.use_function_calling = use_function_calling
         self.verbose = verbose
         self.bind_tools_natively = bind_tools_natively
@@ -343,11 +362,26 @@ class AsyncAgentRunner:
         return await self.registry.adispatch(tool_name, args_str)
 
     def _resolve_parser_step(self, response_or_call) -> Optional[BaseModel]:
+        """Mirror of ``AgentRunner._resolve_parser_step`` — see that
+        method for the JSON-recovery contract. Raises
+        ``_ParserRecoverableError`` when text-mode JSON is malformed
+        and regex salvage fails; the ``Initialize`` loop catches it and
+        reprompts the model with a fix hint."""
         if isinstance(response_or_call, dict) and "type" in response_or_call:
             if response_or_call["type"] == "tool_use":
                 return self.parser.from_function_call(response_or_call["input"])
             return None
-        parsed = self.parser.from_json(response_or_call)
+        try:
+            parsed = self.parser.from_json(response_or_call)
+        except json.JSONDecodeError as e:
+            salvaged = _salvage_react_json(response_or_call) \
+                if isinstance(response_or_call, str) else None
+            if salvaged is not None:
+                try:
+                    return self.parser(**salvaged)
+                except Exception:
+                    pass
+            raise _ParserRecoverableError(str(e), str(response_or_call)) from e
         if isinstance(parsed, self.parser):
             return parsed
         return None
@@ -656,7 +690,40 @@ class AsyncAgentRunner:
             else:
                 response = await self.model.async_initialize(messages=working_history)
                 working_history.append({"role": "assistant", "content": response})
-                parser_instance = self._resolve_parser_step(response)
+                try:
+                    parser_instance = self._resolve_parser_step(response)
+                except _ParserRecoverableError as parse_err:
+                    # Text-mode envelope was malformed JSON AND regex
+                    # salvage failed. Feed the model a fix hint and let
+                    # the loop retry. See sync AgentRunner for the full
+                    # rationale — this is the mirror of that recovery
+                    # so async runs get the same protection against a
+                    # long action_input string breaking json.loads.
+                    err_msg = (
+                        f"[framework] error: your last response was not "
+                        f"valid JSON ({parse_err.reason}). Emit a valid "
+                        f"envelope: "
+                        f'{{"Thought": "...", "action": "<tool_or_Final_Answer>", '
+                        f'"action_input": ...}}. For long text in '
+                        f"action_input, escape newlines as \\n, quotes "
+                        f'as \\", backslashes as \\\\. Or set '
+                        f'"action": "Final_Answer" if you are done.'
+                    )
+                    working_history.append({"role": "user", "content": err_msg})
+                    if self.verbose:
+                        logger.info(
+                            f"[loop] parser JSON malformed at iter {count}; "
+                            f"retrying with fix hint ({parse_err.reason})"
+                        )
+                    count += 1
+                    if count > self.max_iterations:
+                        final_answer = (
+                            "(framework: exhausted max_iterations after "
+                            "repeated malformed-JSON responses; last raw "
+                            f"text: {parse_err.raw_text[:400]!r})"
+                        )
+                        break
+                    continue
 
                 if parser_instance is None:
                     # Assistant turn already recorded above — don't duplicate.

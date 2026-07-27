@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 import asyncio
 import json
+import re
 import time as _time
 import threading as _threading
 from dataclasses import dataclass
@@ -128,6 +129,100 @@ _NO_ARG = object()
 _TERMINAL_ACTION_VARIANTS = frozenset({
     "final_answer", "finalanswer",
 })
+
+
+class _ParserRecoverableError(Exception):
+    """Raised by ``AgentRunner._resolve_parser_step`` when the model's
+    text response is not valid JSON AND the regex salvager could not
+    extract an action from it.
+
+    The main loop catches this, appends a targeted error observation
+    (telling the model exactly how to fix the JSON), and continues the
+    loop up to ``max_iterations``. The alternative -- letting
+    ``json.JSONDecodeError`` propagate -- crashed the run whenever a
+    large ``action_input`` string (a 1200-word markdown draft, an
+    escaped code blob) broke the outer envelope's escaping.
+
+    Attributes:
+        reason: The ``JSONDecodeError`` message.
+        raw_text: The raw assistant text that failed to parse. Kept for
+            logging + so callers can debug what the model actually
+            emitted.
+    """
+
+    def __init__(self, reason: str, raw_text: str):
+        self.reason = reason
+        self.raw_text = raw_text
+        super().__init__(reason)
+
+
+# Regexes used by _salvage_react_json. Compiled once at import time.
+# Action names must look like real tool identifiers -- letters, digits,
+# underscore, dot, hyphen only. This rejects the case where malformed
+# JSON contains a "value" that could accidentally match as the "action"
+# (e.g. an action_input string that happens to start with a quote).
+_SALVAGE_ACTION_RE = re.compile(r'"action"\s*:\s*"([A-Za-z_][A-Za-z0-9_.\- ]{0,79})"')
+_SALVAGE_THOUGHT_RE = re.compile(r'"Thought"\s*:\s*"([^"]{0,4000})"')
+_SALVAGE_ACTION_INPUT_DICT_RE = re.compile(
+    r'"action_input"\s*:\s*(\{.*?\})\s*[,}\s]', re.DOTALL
+)
+
+
+def _salvage_react_json(text: str) -> Optional[Dict[str, Any]]:
+    """Best-effort extraction of ``{Thought, action, action_input}`` from
+    an assistant response whose outer JSON envelope failed to parse.
+
+    Handles the common failure mode: the outer envelope is well-formed
+    at the ``action`` key level, but a very long ``action_input`` string
+    contains unescaped newlines / quotes / backticks (typical when the
+    model produced a large markdown draft embedded as a JSON string).
+
+    Strategy — regex the two fixed-shape fields (``action`` is always a
+    short token, ``Thought`` is short-to-medium) and try both container
+    shapes for ``action_input`` (dict form first, then string form).
+
+    Returns ``None`` when even the ``action`` key cannot be found -- at
+    that point the response is beyond salvage and the caller should
+    feed the raw parse error back to the model.
+    """
+    action_m = _SALVAGE_ACTION_RE.search(text)
+    if not action_m:
+        return None
+    action = action_m.group(1)
+
+    thought_m = _SALVAGE_THOUGHT_RE.search(text)
+    thought = thought_m.group(1) if thought_m else ""
+
+    # action_input can be a JSON dict or a string. Try dict first.
+    dict_m = _SALVAGE_ACTION_INPUT_DICT_RE.search(text)
+    action_input: Any = None
+    if dict_m:
+        try:
+            action_input = json.loads(dict_m.group(1))
+        except json.JSONDecodeError:
+            # Nested dict failed -- fall through to string handling.
+            action_input = None
+    if action_input is None:
+        # String form: take everything between the FIRST quote after
+        # "action_input": and the last quote before the closing brace
+        # of the envelope. Not perfect but recovers the common case.
+        start = text.find('"action_input"')
+        if start == -1:
+            return {"Thought": thought, "action": action, "action_input": ""}
+        colon = text.find(":", start)
+        # Find the first quote after the colon
+        q1 = text.find('"', colon + 1)
+        if q1 == -1:
+            return {"Thought": thought, "action": action, "action_input": ""}
+        # Find the last quote in the string that likely closes the value.
+        # Use the last quote before the closing } of the outer envelope.
+        end_brace = text.rfind("}")
+        if end_brace == -1 or end_brace <= q1:
+            end_brace = len(text)
+        q2 = text.rfind('"', q1 + 1, end_brace)
+        action_input = text[q1 + 1:q2] if q2 > q1 else ""
+
+    return {"Thought": thought, "action": action, "action_input": action_input}
 
 
 def _coerce_runner_input(
@@ -1216,7 +1311,7 @@ class AgentRunner:
         max_iterations: int | None = None,
         auto_cache: bool = True,
         auto_memory: bool = False,
-        use_function_calling: bool = False,
+        use_function_calling: Optional[bool] = None,
         verbose: bool = True,
         bind_tools_natively: bool = False,
         parallel_tool_workers: int = 8,
@@ -1271,13 +1366,24 @@ class AgentRunner:
                 automatically between invokes. Off by default; most
                 real apps prefer explicit ``Session`` + custom
                 ``BaseMemory`` (see the memory strategies guide).
-            use_function_calling: When True, route the AgentType
-                parser through the model's native tool-calling API
-                (``call_with_tools``) instead of parsing JSON out of
-                assistant text. Slightly higher accuracy on tool-call
-                correctness. Requires the model to implement
-                ``call_with_tools`` (GPT and Claude both do). Mutually
-                exclusive with ``bind_tools_natively``.
+            use_function_calling: Route the AgentType parser through
+                the model's native tool-calling API (``call_with_tools``)
+                instead of parsing JSON out of assistant text. Higher
+                accuracy on tool-call correctness AND eliminates a class
+                of crashes where a long ``action_input`` string (large
+                markdown draft, code blob) breaks ``json.loads`` on the
+                response envelope. Mutually exclusive with
+                ``bind_tools_natively``.
+
+                Default (3.1.7+): ``None`` -> auto-detect. Set to
+                ``True`` if the model class overrides
+                ``call_with_tools`` (both ``GPT`` and ``Claude`` do);
+                ``False`` if it's still the ``BaseChatModel`` stub, or
+                if ``bind_tools_natively=True`` was passed. Pass
+                ``True``/``False`` explicitly to override the
+                auto-choice. Pre-3.1.7 code that passed nothing
+                defaulted to ``False`` (text-mode ReAct); the new
+                default matches what most users actually want.
             verbose: Print the running Thought / Action / Observation
                 trace to stdout while the loop executes. Convenient
                 during development; usually off in production.
@@ -1409,6 +1515,28 @@ class AgentRunner:
         self.tools = tools
         self.max_iterations = max_iterations if max_iterations else 4
         self.model = model
+        # Resolve use_function_calling. Historical default was False, but
+        # text-mode ReAct is fragile: any tool call whose action_input
+        # includes a long string with unescaped newlines / quotes / code
+        # fences (a 1200-word markdown draft, for example) breaks
+        # json.loads on the response envelope and the loop dies. Native
+        # function-calling lets the SDK handle escaping and eliminates
+        # that class of failure.
+        #
+        # New default (3.1.7+): None -> auto-detect. Prefer FC when the
+        # model actually implements call_with_tools; fall back to text
+        # mode otherwise. Callers who explicitly pass True/False keep
+        # that value. bind_tools_natively forces FC off (they're
+        # mutually exclusive by design).
+        if use_function_calling is None:
+            if bind_tools_natively:
+                use_function_calling = False
+            else:
+                base_cwt = getattr(BaseChatModel, "call_with_tools", None)
+                model_cwt = getattr(type(model), "call_with_tools", None)
+                use_function_calling = (
+                    model_cwt is not None and model_cwt is not base_cwt
+                )
         self.use_function_calling = use_function_calling
         self.verbose = verbose
         # Native-binding mode: expose the user's tools directly as
@@ -1497,8 +1625,14 @@ class AgentRunner:
     def _resolve_parser_step(self, response_or_call) -> Optional[BaseModel]:
         """
         Convert either a text response or a tool-call dict into a parser
-        instance. Returns ``None`` if the response should be treated as a
-        final text answer (caller is responsible for surfacing it).
+        instance. Returns ``None`` if the response should be treated as
+        a final text answer (caller is responsible for surfacing it).
+
+        Raises ``_ParserRecoverableError`` when the text-mode response
+        was not valid JSON AND regex salvage failed. The main loop
+        catches this and reprompts the model with a targeted fix hint
+        instead of crashing the run -- see the try/except block around
+        the call site in ``_iter_run``.
         """
         # Function-calling path: dict from call_with_tools
         if isinstance(response_or_call, dict) and "type" in response_or_call:
@@ -1506,8 +1640,27 @@ class AgentRunner:
                 return self.parser.from_function_call(response_or_call["input"])
             return None  # plain text — treat as final answer
 
-        # JSON-text path
-        parsed = self.parser.from_json(response_or_call)
+        # JSON-text path with recovery. json.JSONDecodeError used to
+        # bubble up and crash the whole run whenever a big action_input
+        # string (like a 1200-word markdown draft) broke the outer
+        # envelope's escaping. Now we (1) try a regex salvage of the
+        # {Thought, action, action_input} fields, and (2) if that
+        # fails too, hand a _ParserRecoverableError to the caller so
+        # the loop can feed the JSON error back to the model as an
+        # observation and iterate.
+        try:
+            parsed = self.parser.from_json(response_or_call)
+        except json.JSONDecodeError as e:
+            salvaged = _salvage_react_json(response_or_call) \
+                if isinstance(response_or_call, str) else None
+            if salvaged is not None:
+                try:
+                    return self.parser(**salvaged)
+                except Exception:
+                    # Salvage produced fields that don't fit the parser
+                    # schema either. Fall through to the retry path.
+                    pass
+            raise _ParserRecoverableError(str(e), str(response_or_call)) from e
         if isinstance(parsed, self.parser):
             return parsed
         return None  # convert_to_json returned None — text final answer
@@ -1924,7 +2077,45 @@ class AgentRunner:
                 else:
                     response = self.model.Initialize(messages=working_history)
                 working_history.append({"role": "assistant", "content": response})
-                parser_instance = self._resolve_parser_step(response)
+                try:
+                    parser_instance = self._resolve_parser_step(response)
+                except _ParserRecoverableError as parse_err:
+                    # Text-mode envelope was malformed JSON AND regex
+                    # salvage failed. Feed the model a targeted fix
+                    # hint and let the loop retry (bounded by
+                    # max_iterations). Alternative — letting the
+                    # JSONDecodeError propagate — killed the run
+                    # whenever a long action_input string had
+                    # unescaped newlines / quotes / code fences.
+                    err_msg = (
+                        f"[framework] error: your last response was not "
+                        f"valid JSON ({parse_err.reason}). Emit a valid "
+                        f"envelope: "
+                        f'{{"Thought": "...", "action": "<tool_or_Final_Answer>", '
+                        f'"action_input": ...}}. For long text in '
+                        f"action_input, escape newlines as \\n, quotes "
+                        f'as \\", backslashes as \\\\. Or set '
+                        f'"action": "Final_Answer" if you are done.'
+                    )
+                    working_history.append({"role": "user", "content": err_msg})
+                    yield {"type": "tool_result", "name": "_parser",
+                           "result": err_msg, "is_error": True}
+                    if self.verbose:
+                        print(
+                            f"\x1B[1;33m[loop] parser JSON malformed at "
+                            f"iter {count}; retrying with fix hint "
+                            f"({parse_err.reason})\x1B[0m"
+                        )
+                    count += 1
+                    if count > self.max_iterations:
+                        final_answer = (
+                            "(framework: exhausted max_iterations after "
+                            "repeated malformed-JSON responses; last raw "
+                            f"text: {parse_err.raw_text[:400]!r})"
+                        )
+                        yield {"type": "final", "content": final_answer}
+                        break
+                    continue
 
                 if parser_instance is None:
                     # The assistant turn was already recorded above, so

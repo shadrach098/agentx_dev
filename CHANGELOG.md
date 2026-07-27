@@ -4,6 +4,45 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.1.7] — 2026-07-27
+
+### Changed
+
+- **`use_function_calling` default flipped to auto-detect** on
+  `AgentRunner` / `AsyncAgentRunner`. The parameter's default type is
+  now `Optional[bool] = None`; `None` resolves to `True` when the
+  model class overrides `BaseChatModel.call_with_tools` (both `GPT`
+  and `Claude` do) and to `False` when it doesn't (or when
+  `bind_tools_natively=True`). Callers passing `True`/`False`
+  explicitly are unaffected. Rationale: text-mode ReAct requires the
+  model to emit strict JSON with any long `action_input` string
+  properly escaped — a 1200-word markdown draft with unescaped
+  newlines or quotes reliably breaks `json.loads` and killed the run.
+  Function-calling mode routes the parser through the SDK's typed
+  channel so escaping is handled automatically. The historical
+  default (`False`) was the fragile option; the new default matches
+  what most users actually want.
+
+### Fixed
+
+- **Malformed parser JSON no longer crashes the run.** When the
+  text-mode assistant response failed `json.loads` (typically because
+  a long `action_input` string had unescaped `"`, `\n`, or backticks),
+  the framework used to raise `JSONDecodeError` and unwind the whole
+  invocation. The runner now (1) tries a regex-based salvage that
+  extracts `{Thought, action, action_input}` from the raw text
+  covering the common "outer envelope valid, inner string broke
+  escaping" failure, and (2) if salvage fails, feeds a targeted fix
+  hint back to the model (`"your last response was not valid JSON;
+  emit …, escape newlines as \n"`) and continues the loop bounded
+  by `max_iterations`. Exhaustion returns a clear framework message
+  rather than an uncaught exception. Applied to both sync and async
+  runners via a shared `_salvage_react_json` helper.
+  The salvager's action-name regex is intentionally strict
+  (`[A-Za-z_][A-Za-z0-9_.\- ]{0,79}`) so it can't hallucinate an
+  "action" out of an unrelated `"key":"value"` pair inside malformed
+  JSON.
+
 ## [3.1.5] — 2026-07-26
 
 ### Fixed
