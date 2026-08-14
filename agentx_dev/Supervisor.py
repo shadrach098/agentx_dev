@@ -212,12 +212,23 @@ def _build_spawned_agent(
 # ----------------------------------------------------------------------------
 
 class SubtaskResult(BaseModel):
-    """Result from a single specialist sub-agent invocation."""
+    """Result from a single specialist sub-agent invocation.
+
+    ``content`` is the human-readable answer text (always present).
+    ``output`` carries the specialist's validated Pydantic instance when
+    the underlying runner declared an ``output_schema`` — machine-readable
+    structured data that downstream steps can consume without re-parsing
+    prose. Stays ``None`` for schema-less specialists, so existing
+    consumers of ``content`` are unaffected.
+    """
 
     agent: str
     query: str
     content: str
     error: Optional[str] = None
+    output: Optional[Any] = None
+
+    model_config = {"arbitrary_types_allowed": True}
 
 
 class SupervisorResult(BaseModel):
@@ -325,10 +336,10 @@ Rules for writing the plan (read these carefully — the shape of your plan matt
 
 2. MERGE SEQUENTIAL WORK FOR THE SAME SPECIALIST. If two adjacent steps would both go to the same agent, they should almost always be ONE step. Bad: "write inspect.py" + "run inspect.py" + "report the output" (three python_agent calls). Good: "write inspect.py that scrapes X, run it, and report the title / link count / contacts it prints" (one python_agent call). The specialist's own reasoning loop handles the sequencing.
 
-3. EACH STEP IS SELF-CONTAINED. Sub-agents do NOT see previous steps' output — they run in isolation. If step B needs something step A produced, either:
-   - Combine A and B into ONE step (strongly preferred), OR
-   - Include enough context in B's query that it can proceed without seeing A's actual output (e.g. "assuming ./workspace/inspect.py exists, run it and print the results" — the specialist can check for existence itself).
-   Never write a sub-task query that literally says "report the previous step's findings" — the sub-agent has NO access to the previous step.
+3. SEQUENTIAL STEPS SEE PRIOR RESULTS. Each dispatched step automatically receives the findings of every earlier completed step as "PRIOR SUB-TASK FINDINGS" context (structured JSON when the earlier specialist emits typed output, otherwise its answer text). So dependency CHAINS ARE FINE and often the right design: an intent-analysis step feeding a retrieval step feeding a reranking step is a good plan, because each later specialist reads the earlier one's output directly.
+   Two rules still apply:
+   - Steps that would go to the SAME specialist back-to-back should still be merged into one (rule 2) — the chain is for handing work BETWEEN different specialists, not for splitting one specialist's work.
+   - Write each step's query as an instruction about what to DO with the prior findings ("using the intent analysis above, retrieve the top 10 candidate passages"), not a request to re-state them ("report what the previous step found" is a wasted step — the synthesis phase already does that).
 
 4. SKIP SPECULATIVE HOUSEKEEPING. Don't add a "list files first to see what's there" step just because it feels safer. Specialists handle their own preconditions internally. Bad plan: (a) list ./workspace, (b) delete files in ./workspace, (c) write inspect.py. Good plan: (a) clear ./workspace and write inspect.py.
 
@@ -429,7 +440,27 @@ def _build_augmented_query(
     per_entry_cap = max(400, max_context_chars // max(1, len(useful)))
     blocks: List[str] = []
     for r in useful:
-        content = r.content
+        # Structured output beats prose. When the prior specialist declared
+        # an output_schema, hand the NEXT specialist the validated JSON
+        # instead of (or in addition to) the display text — downstream
+        # steps then parse fields, not sentences. The schema name is
+        # included so the specialist knows what shape it is looking at.
+        if r.output is not None:
+            try:
+                if hasattr(r.output, "model_dump_json"):
+                    structured = r.output.model_dump_json(indent=2)
+                    schema_name = type(r.output).__name__
+                else:
+                    structured = json.dumps(r.output, indent=2, default=repr)
+                    schema_name = "data"
+                content = (
+                    f"STRUCTURED OUTPUT ({schema_name}):\n{structured}\n\n"
+                    f"Summary text:\n{r.content}"
+                )
+            except Exception:
+                content = r.content
+        else:
+            content = r.content
         if len(content) > per_entry_cap:
             content = content[:per_entry_cap] + f"\n... (truncated at {per_entry_cap} chars)"
         blocks.append(
@@ -849,6 +880,9 @@ class Supervisor:
                 completion = agent_runner.Initialize(query)
                 result = SubtaskResult(
                     agent=agent_name, query=sub_query, content=completion.content,
+                    # Preserve the runner's validated Pydantic instance so
+                    # downstream steps get typed data, not just prose.
+                    output=getattr(completion, "output", None),
                 )
             except Exception as e:
                 last_error = str(e)
@@ -1210,6 +1244,7 @@ class AsyncSupervisor:
                     completion = await asyncio.to_thread(initialize, query)
                 candidate = SubtaskResult(
                     agent=agent_name, query=sub_query, content=completion.content,
+                    output=getattr(completion, "output", None),
                 )
             except Exception as e:
                 last_error = str(e)

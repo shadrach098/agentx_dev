@@ -14,6 +14,7 @@ from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
 from agentx_dev.AsyncTools import AsyncStandardTool, AsyncStructuredTool
 from agentx_dev.Runner.AgentRun import (
+    AgentRunner,
     ToolRegistry,
     _is_terminal_action,
     _coerce_runner_input,
@@ -115,6 +116,7 @@ class AsyncAgentRunner:
         include_denied_tools: bool = False,
         strict_tool_dispatch: bool = False,
         text_turn_nudges: int = 1,
+        output_schema: Optional[Type[BaseModel]] = None,
     ):
         """Construct an ``AsyncAgentRunner``. Parameters mirror
         :class:`AgentRunner` -- see that docstring for the full details;
@@ -231,6 +233,8 @@ class AsyncAgentRunner:
             )
         # See AgentRunner.__init__ for the strict_tool_dispatch contract.
         self.strict_tool_dispatch = strict_tool_dispatch
+        # Declared-once structured output. See AgentRunner.__init__.
+        self.output_schema = output_schema
 
         # Budget for re-prompting turns that produce prose but no action.
         # See AgentRunner._nudge_text_only_turn.
@@ -453,11 +457,14 @@ class AsyncAgentRunner:
         stream: bool = False,
         *,
         chat_history: Optional[List[Dict[str, str]]] = None,
+        output_schema: Optional[Type[BaseModel]] = None,
     ) -> AgentCompletion:
         if ChatHistory is not None and chat_history is not None:
             raise TypeError("Pass either 'ChatHistory' or 'chat_history', not both.")
         if chat_history is not None:
             ChatHistory = chat_history
+        # Resolve now; the coercion itself happens after the loop returns.
+        _schema = output_schema if output_schema is not None else self.output_schema
         agent_event = None
         if config.observability_enabled:
             agent_event = observability.start_event(
@@ -897,7 +904,7 @@ class AsyncAgentRunner:
                 "tool_calls": len(tool_calls),
             })
 
-        return AgentCompletion.from_agent(
+        completion = AgentCompletion.from_agent(
             model_name=self.model.__class__.__name__,
             query=user_input,
             content=final_answer or "No final answer returned.",
@@ -905,6 +912,18 @@ class AsyncAgentRunner:
             steps=steps,
             history=working_history,
         )
+        if _schema is not None:
+            # Reuse the sync coercer: strategy resolution (native FC vs
+            # JSON-parse fallback) is identical; the single blocking model
+            # call runs on the default executor so the event loop stays
+            # responsive.
+            loop = asyncio.get_event_loop()
+            completion.output = await loop.run_in_executor(
+                None,
+                AgentRunner._coerce_to_schema,
+                self, completion.content, _schema, user_input,
+            )
+        return completion
 
     async def ainvoke(
         self,
@@ -913,6 +932,7 @@ class AsyncAgentRunner:
         stream: bool = False,
         *,
         chat_history: Optional[List[Dict[str, str]]] = None,
+        output_schema: Optional[Type[BaseModel]] = None,
     ) -> AgentCompletion:
         """Canonical async entry point. Alias for ``Initialize`` with the
         same shape normalization as ``AgentRunner.invoke`` — accepts a
@@ -922,7 +942,9 @@ class AsyncAgentRunner:
             raise TypeError("Pass either 'ChatHistory' or 'chat_history', not both.")
         base_history = chat_history if chat_history is not None else ChatHistory
         query, hist = _coerce_runner_input(user_input, base_history)
-        return await self.Initialize(query, None, stream, chat_history=hist)
+        return await self.Initialize(
+            query, None, stream, chat_history=hist, output_schema=output_schema,
+        )
 
     async def astream(
         self,

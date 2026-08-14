@@ -4,6 +4,62 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.2.0] - 2026-08-13
+
+Typed multi-agent pipelines. Specialists can now declare a Pydantic
+output schema once and pass validated instances to each other through
+the Supervisor, instead of downstream agents re-parsing prose.
+
+### Added
+
+- **`output_schema` on the `AgentRunner` / `AsyncAgentRunner`
+  constructor.** Declare the runner's output shape once
+  (`AgentRunner(..., output_schema=QueryIntent)`) instead of passing it
+  on every call or describing JSON in the prompt. A per-call
+  `output_schema=` still wins when both are set. `None` keeps the exact
+  pre-3.2 behaviour: no coercion, `completion.output` stays `None`.
+
+- **Schema coercion via forced native function calling.** When a schema
+  is in play, the final answer is converted by forcing a provider-native
+  tool call against the schema (constrained decoding), not by regexing
+  JSON out of prose. The ReAct loop itself is untouched: tool selection
+  and intermediate reasoning run exactly as before, and the coercion
+  happens once, after the loop finishes. Models without a
+  `call_with_tools` implementation fall back to the previous text-JSON
+  parsing, so custom `BaseChatModel` subclasses keep working.
+  `completion.content` keeps the human-readable answer alongside
+  `completion.output` in every case.
+
+- **`SubtaskResult.output`.** The Supervisor now preserves each
+  specialist's validated Pydantic instance next to its `content` text.
+  Consumers that only read `content` are unaffected.
+
+- **Structured specialist-to-specialist handoff.** When an earlier step
+  produced typed output, `_build_augmented_query` serializes it into the
+  next specialist's context as a labelled JSON block
+  (`STRUCTURED OUTPUT (QueryIntent): {...}`) followed by the summary
+  text, so downstream steps parse fields rather than interpreting
+  sentences like `INTENT: ... SEARCH_QUERY: ...`.
+
+- **`vector_search_tool` pipeline options.** New kwargs:
+  `max_text_chars` (default 500; pass `0` for full untruncated passages,
+  which a reranker judging evidence actually needs) and
+  `structured_output` (default False; when True the tool returns a JSON
+  array of `{id, text, vector_score, metadata}` instead of the
+  human-formatted list). Defaults preserve existing behaviour byte-for-
+  byte.
+
+### Fixed
+
+- **Supervisor planning prompt contradicted the execution engine.** The
+  planner rule said sub-agents "do NOT see previous steps' output" and
+  discouraged dependency chains, but the dispatcher has threaded prior
+  findings into every step since `_build_augmented_query` shipped.
+  The rule now tells the planner that sequential steps receive earlier
+  results (structured when available) and that chains like
+  intent -> retrieval -> reranking are a good plan shape, while still
+  requiring same-specialist steps to merge and banning report-only steps.
+
 ## [3.1.7] — 2026-07-27
 
 ### Changed

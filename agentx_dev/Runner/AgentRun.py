@@ -1322,6 +1322,7 @@ class AgentRunner:
         system_addendum: Optional[str] = None,
         strict_tool_dispatch: bool = False,
         text_turn_nudges: int = 1,
+        output_schema: Optional[Type[BaseModel]] = None,
     ):
         """Construct an ``AgentRunner``.
 
@@ -1577,6 +1578,13 @@ class AgentRunner:
         # natural-language actions still go straight to implicit-final
         # since retrying makes no sense there. Default False keeps
         # the 3.0.4 behavior.
+        # Declared once at construction instead of on every call. When set,
+        # every invoke on this runner coerces its final answer into the
+        # schema and puts the validated instance on completion.output.
+        # A per-call output_schema= still wins, so one-off shapes stay
+        # possible. None keeps the historical behaviour exactly: no
+        # coercion, completion.output stays None.
+        self.output_schema = output_schema
         self.strict_tool_dispatch = strict_tool_dispatch
 
         # Budget for re-prompting a model that ends a turn with prose and
@@ -2438,12 +2446,18 @@ class AgentRunner:
         Accepts either ``ChatHistory=`` (legacy) or ``chat_history=`` (PEP 8).
         For step-by-step event streaming, use ``stream()`` instead.
 
-        When ``output_schema`` is provided, the final answer text is parsed
-        as JSON and validated against the schema; the resulting Pydantic
-        instance is placed on ``completion.output``. If the text can't be
-        parsed / doesn't fit the schema, a ``ValueError`` is raised
-        wrapping the underlying parse / validation error — no silent
-        misclassification of malformed output as a valid response.
+        Structured output. ``output_schema`` may be passed here for a
+        one-off shape, or declared once on the constructor
+        (``AgentRunner(..., output_schema=QueryIntent)``) so every call on
+        this runner returns that shape. The per-call value wins when both
+        are set.
+
+        When a schema is in play, the validated Pydantic instance lands on
+        ``completion.output`` while ``completion.content`` keeps the
+        human-readable answer, so callers get both a machine-readable and a
+        display value from one run. The coercion happens AFTER the ReAct
+        loop finishes and does not touch tool selection or intermediate
+        reasoning — see ``_coerce_to_schema``.
         """
         if ChatHistory is not None and chat_history is not None:
             raise TypeError("Pass either 'ChatHistory' or 'chat_history', not both.")
@@ -2456,9 +2470,97 @@ class AgentRunner:
                 completion = event["completion"]
         assert completion is not None, "Loop exited without yielding completion"
 
-        if output_schema is not None:
-            completion.output = self._parse_to_schema(completion.content, output_schema)
+        # Per-call schema beats the constructor default; None on both means
+        # no coercion at all and completion.output stays None (unchanged
+        # pre-3.2 behaviour).
+        schema = output_schema if output_schema is not None else self.output_schema
+        if schema is not None:
+            completion.output = self._coerce_to_schema(
+                completion.content, schema, user_input
+            )
         return completion
+
+    def _coerce_to_schema(
+        self,
+        text: str,
+        schema: Type[BaseModel],
+        user_input: str = "",
+    ) -> BaseModel:
+        """Turn the agent's final answer into a validated ``schema`` instance.
+
+        Two strategies, in order:
+
+        1. **Native function calling** (preferred). The schema is sent to
+           the model as a forced tool call, so the provider's own
+           constrained decoding produces the fields. Nothing is parsed out
+           of prose, which removes the whole class of "the model wrote a
+           nice paragraph instead of JSON" and "the JSON broke because a
+           quote was not escaped" failures.
+        2. **Text JSON parsing** (fallback). Used when the model has no
+           ``call_with_tools`` implementation, or when the forced call
+           itself fails. This is the pre-3.2 behaviour, kept so custom
+           models without an FC backend still work.
+
+        This runs AFTER the ReAct loop has already produced its answer. It
+        deliberately does not participate in tool selection or intermediate
+        reasoning: forcing a schema onto the loop itself makes the model
+        try to satisfy the output shape while it is still deciding which
+        tool to call, which degrades both.
+        """
+        from agentx_dev.Agents.Agent import to_tool_spec
+
+        base_cwt = getattr(BaseChatModel, "call_with_tools", None)
+        model_cwt = getattr(type(self.model), "call_with_tools", None)
+        can_fc = model_cwt is not None and model_cwt is not base_cwt
+
+        if can_fc:
+            try:
+                spec = to_tool_spec(schema)
+                messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Convert the assistant's answer into the "
+                            f"{schema.__name__} structure by calling the tool. "
+                            "Use only information present in the answer. Do "
+                            "not invent field values; if the answer does not "
+                            "supply a field, use the most conservative "
+                            "permitted value."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            (f"Original request:\n{user_input}\n\n" if user_input else "")
+                            + f"Answer to structure:\n{text}"
+                        ),
+                    },
+                ]
+                result = self.model.call_with_tools(
+                    messages=messages,
+                    tools=[spec],
+                    force_tool=schema.__name__,
+                )
+                if isinstance(result, dict) and result.get("type") == "tool_use":
+                    return schema(**result["input"])
+                if self.verbose:
+                    print(
+                        f"\x1B[1;33m[schema] model returned text instead of a "
+                        f"{schema.__name__} call; falling back to JSON "
+                        f"parsing\x1B[0m"
+                    )
+            except Exception as e:
+                if self.verbose:
+                    print(
+                        f"\x1B[1;33m[schema] forced {schema.__name__} call "
+                        f"failed ({type(e).__name__}: {e}); falling back to "
+                        f"JSON parsing\x1B[0m"
+                    )
+
+        # Referenced on the class (not self) because AsyncAgentRunner
+        # borrows _coerce_to_schema unbound; the staticmethod resolves
+        # regardless of which runner type `self` actually is.
+        return AgentRunner._parse_to_schema(text, schema)
 
     @staticmethod
     def _parse_to_schema(text: str, schema: Type[BaseModel]) -> BaseModel:

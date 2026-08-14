@@ -567,6 +567,8 @@ def vector_search_tool(
     name: str = "vector_search",
     default_top_k: int = 5,
     max_top_k: int = 20,
+    max_text_chars: int = 500,
+    structured_output: bool = False,
     description: Optional[str] = None,
 ):
     """Build a StructuredTool that queries ``store`` for the top-K matches.
@@ -597,6 +599,16 @@ def vector_search_tool(
         default_top_k: Fallback ``top_k`` when the LLM doesn't specify one.
         max_top_k: Hard cap the LLM can't exceed (protects the prompt from
             "give me 500 docs" runaway queries).
+        max_text_chars: Per-hit text budget in the observation. Default
+            500 keeps casual RAG cheap; raise it (or pass 0 for NO
+            truncation) when a downstream step needs the actual evidence —
+            a reranker judging relevance from a 500-char preview will
+            miss the passage's substance. Applies to both output modes.
+        structured_output: When True the tool returns a JSON array —
+            ``[{"id", "text", "vector_score", "metadata"}, ...]`` —
+            instead of the human-formatted list. Meant for pipeline
+            specialists (rerankers, dedupers, scorers) that parse fields
+            programmatically. Default False keeps the readable format.
         description: Override the default description if you want to hint
             the model at what's in the store (e.g. "Search internal docs
             for policy questions").
@@ -618,16 +630,36 @@ def vector_search_tool(
             ),
         )
 
+    def _clip(text: str) -> str:
+        cleaned = text.strip()
+        if max_text_chars and len(cleaned) > max_text_chars:
+            return cleaned[:max_text_chars] + "..."
+        return cleaned
+
     def _search(query: str, top_k: int = default_top_k, min_score: float = 0.0) -> str:
         capped = max(1, min(int(top_k), max_top_k))
         hits = store.search(query, top_k=capped, min_score=min_score)
         if not hits:
+            if structured_output:
+                return "[]"
             return f"No results matching {query!r}."
+
+        if structured_output:
+            import json as _json
+            payload = [
+                {
+                    "id": hit.id,
+                    "text": _clip(hit.text),
+                    "vector_score": round(float(hit.score), 4),
+                    "metadata": hit.metadata or {},
+                }
+                for hit in hits
+            ]
+            return _json.dumps(payload, ensure_ascii=False, default=repr)
+
         lines = [f"Top {len(hits)} results for {query!r}:"]
         for i, hit in enumerate(hits, 1):
-            preview = hit.text.strip().replace("\n", " ")
-            if len(preview) > 500:
-                preview = preview[:500] + "..."
+            preview = _clip(hit.text).replace("\n", " ")
             meta = ""
             if hit.metadata:
                 meta = f" | metadata: {hit.metadata}"
