@@ -479,3 +479,82 @@ runner.invoke("...")
 
 Wins over LangSmith when you need self-hosted, `file://`-friendly,
 plain-text-JSONL-archivable debugging.
+
+## 24. Typed RAG pipeline: intent → retrieve → rerank *(3.2)*
+
+Specialists declare Pydantic output schemas once; the Supervisor passes
+validated instances between them instead of prose. Downstream steps
+parse fields, not sentences.
+
+```python
+from pydantic import BaseModel, Field
+from agentx_dev import AgentRunner, AgentType, Claude, Supervisor
+from agentx_dev.Tools import vector_search_tool
+
+class QueryIntent(BaseModel):
+    intent: str
+    entity: str = ""
+    search_query: str = Field(..., description="Optimized semantic search query.")
+    needs_rag: bool
+    confidence: float
+
+class RerankResult(BaseModel):
+    ranked_ids: list[str]
+    scores: dict[str, float]
+    reasons: dict[str, str]
+
+intent_agent = AgentRunner(
+    model=Claude(), agent=AgentType.ReAct, tools=[],
+    output_schema=QueryIntent,                       # declared once (3.2)
+    system_addendum=(
+        "Classify the user's information need. Produce an optimized "
+        "semantic search query. Keep natural-language context; do not "
+        "strip the question down to bare keywords."
+    ),
+)
+
+retriever = AgentRunner(
+    model=Claude(), agent=AgentType.ReAct,
+    tools=[vector_search_tool(
+        store,
+        max_text_chars=0,          # full passages — the reranker needs evidence
+        structured_output=True,    # JSON array of {id, text, vector_score, metadata}
+        default_top_k=15, max_top_k=20,
+    )],
+    system_addendum=(
+        "Use the QueryIntent from PRIOR SUB-TASK FINDINGS: call "
+        "vector_search with its search_query and return the candidates."
+    ),
+)
+
+reranker = AgentRunner(
+    model=Claude(), agent=AgentType.ReAct, tools=[],
+    output_schema=RerankResult,
+    system_addendum=(
+        "Score each retrieved candidate against the user's ORIGINAL "
+        "question (not the rewritten search query). Return ranked ids "
+        "with a score and a one-line reason each."
+    ),
+)
+
+sup = Supervisor(model=Claude(), agents={
+    "intent":    ("Classifies the question, emits QueryIntent.", intent_agent),
+    "retriever": ("Retrieves 15 candidates as structured JSON.", retriever),
+    "reranker":  ("Judges relevance, emits RerankResult.", reranker),
+})
+
+result = sup.run("What is VelteHub's project-management module capable of?")
+
+# Typed access after the run:
+for sub in result.subtasks:
+    if isinstance(sub.output, RerankResult):
+        top = sub.output.ranked_ids[:3]     # deterministic Python from here on
+```
+
+Three 3.2 pieces make this work: constructor `output_schema` (schemas
+declared once, coerced via native function calling AFTER the ReAct
+loop), `SubtaskResult.output` (typed objects survive the Supervisor),
+and structured findings threading (the retriever literally sees
+`STRUCTURED OUTPUT (QueryIntent): {...}` in its context). Weighted
+blending of vector vs. semantic scores belongs in YOUR Python, not in a
+prompt — the LLM judges meaning, arithmetic stays deterministic.

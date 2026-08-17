@@ -63,10 +63,12 @@ pipeline = prompt | Claude().with_structured_output(Receipt)
 receipt = pipeline.invoke({"ocr_text": "Joe's Diner, $12.50"})
 ```
 
-## `output_schema=` — agent loop then validate
+## `output_schema=` — agent loop then coerce
 
 When you want the model to actually THINK (use tools, reason) before
-producing the structured output:
+producing the structured output. Since 3.2 the schema can be declared
+ONCE on the constructor, and the coercion uses native function calling
+instead of parsing JSON out of the answer text:
 
 ```python
 from pydantic import BaseModel
@@ -77,20 +79,41 @@ class WeatherReport(BaseModel):
     temperature_c: float
     conditions: str
 
-runner = AgentRunner(model=Claude(), agent=AgentType.ReAct, tools=[weather_tool])
-result = runner.invoke(
-    "What's the weather in Paris? Return your final answer as JSON matching "
-    'the schema: {"city": str, "temperature_c": float, "conditions": str}.',
-    output_schema=WeatherReport,
+runner = AgentRunner(
+    model=Claude(), agent=AgentType.ReAct, tools=[weather_tool],
+    output_schema=WeatherReport,           # declared once (3.2)
 )
+result = runner.invoke("What's the weather in Paris?")
 
-print(result.content)   # str  — the model's JSON text
-print(result.output)    # WeatherReport(city='Paris', ...)
+print(result.content)   # str            — the human-readable answer
+print(result.output)    # WeatherReport  — validated instance
 ```
 
-The runner parses `result.content` as JSON (tolerant of ```json fences),
-validates against `WeatherReport`, and puts the parsed instance on
-`result.output`. If parsing or validation fails, a `ValueError` is
+No JSON instructions in the prompt, no schema on every call. Every
+invoke on this runner produces both a readable `content` and a typed
+`output`. A per-call `output_schema=` still works and wins over the
+constructor value when both are set; passing neither keeps the old
+behaviour exactly (`output` stays `None`).
+
+### How the coercion works (3.2)
+
+After the ReAct loop finishes, the runner makes ONE extra model call
+that forces a native tool call against your schema — the provider's own
+constrained decoding fills the fields. Nothing is regexed out of prose,
+which removes the "model wrote a nice paragraph instead of JSON" and
+"the JSON broke on an unescaped quote" failure classes.
+
+Two properties worth knowing:
+
+- **The agent loop is untouched.** Tool selection and intermediate
+  reasoning run exactly as without a schema; the coercion is a
+  post-processing step. Forcing a schema onto the loop itself degrades
+  both the reasoning and the shape.
+- **Fallback for custom models.** If your `BaseChatModel` subclass has
+  no `call_with_tools`, the runner falls back to the pre-3.2 text-JSON
+  parsing, so schema-less providers keep working.
+
+If parsing or validation fails on the fallback path, a `ValueError` is
 raised wrapping the underlying error — the framework never silently
 returns malformed data.
 
@@ -100,9 +123,30 @@ returns malformed data.
 |---|---|---|
 | Agent loop | No | Yes |
 | Tools | No | Yes (any tools) |
-| Method | Native function-calling | Prompt + JSON parse |
+| Method | Native function-calling | Native function-calling after the loop (3.2); JSON-parse fallback for non-FC models |
+| Declared | Per extractor | Once on the constructor, or per call |
 | Best for | Extraction from raw text | Multi-step reasoning that must return structured data |
-| Failure mode | Model didn't call the tool | JSON parse or Pydantic validation error |
+| Failure mode | Model didn't call the tool | Coercion call failed AND JSON fallback failed |
+
+## Typed specialists in a Supervisor (3.2)
+
+The payoff of constructor-level schemas is multi-agent pipelines. When
+a specialist declares an `output_schema`, the Supervisor preserves the
+validated instance on `SubtaskResult.output` and serializes it into the
+NEXT specialist's context as labelled JSON:
+
+```
+STRUCTURED OUTPUT (QueryIntent):
+{
+  "intent": "product_info",
+  "search_query": "VelteHub features overview",
+  "needs_rag": true
+}
+```
+
+Downstream specialists parse fields, not sentences. See the
+[Supervisor guide](../advanced/supervisor.md#structured-findings-threading-32)
+and cookbook pattern 24 for a full intent → retrieve → rerank pipeline.
 
 ## Include raw response
 

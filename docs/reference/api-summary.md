@@ -23,8 +23,8 @@ from agentx_dev import X
 
 | Symbol | Kind | Doc |
 |---|---|---|
-| `AgentRunner` | class | Sync runner (3.1: `bind_tools_natively`, `parallel_tool_workers`) |
-| `AsyncAgentRunner` | class | Async runner with concurrent tool dispatch |
+| `AgentRunner` | class | Sync runner (3.1: `bind_tools_natively`, `parallel_tool_workers`; 3.2: constructor `output_schema=` — typed output coerced via native FC after the loop, on `completion.output`) |
+| `AsyncAgentRunner` | class | Async runner with concurrent tool dispatch (3.2: constructor `output_schema=` too) |
 | `AgentType` | enum | `ReAct` / `Chain_of_Thought` / `Zero_Shot` / `Few_Shot` / `Instruction_Tuned` |
 | `AgentFormatter` | class | Custom prompt template + parser pair |
 | `AgentFormattor` | class | Legacy alias (typo kept for BC) |
@@ -90,7 +90,7 @@ Tools registered by `DefaultTools`: `read_path`, `list_directory`,
 | `HashEmbeddings` | class | Zero-dep fallback |
 | `VectorStore` | class | In-memory cosine store |
 | `VectorHit` | dataclass | One search result |
-| `vector_search_tool` | factory | RAG tool for the agent |
+| `vector_search_tool` | factory | RAG tool for the agent. *(3.2)* kwargs: `max_text_chars` (0 = full passages), `structured_output` (JSON `{id, text, vector_score, metadata}` array) |
 
 ## Handoffs *(3.1)*
 
@@ -124,7 +124,7 @@ CLI: `python -m agentx_dev.Evals run <dir> --config <yaml>`
 | `Supervisor` | class | Sync decompose + dispatch + synthesize |
 | `AsyncSupervisor` | class | Async concurrent dispatch |
 | `SupervisorResult` | dataclass | Plan + subtask results + final |
-| `SubtaskResult` | dataclass | One specialist's contribution |
+| `SubtaskResult` | dataclass | One specialist's contribution. *(3.2)* `.output` carries the validated Pydantic instance when the runner declared an `output_schema` |
 | `SpawnConfig` | dataclass | Dynamic specialist spawning settings |
 | `SpawnRequest` | dataclass | One planner-issued spawn ask |
 

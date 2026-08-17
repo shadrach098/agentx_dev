@@ -251,6 +251,49 @@ their predecessors produced without you writing glue code:
       TASK: draft an email introducing us to the competitors
 ```
 
+## Structured findings threading (3.2)
+
+When a specialist's runner declares an `output_schema`, threading gets
+typed. The Supervisor:
+
+1. Preserves the validated Pydantic instance on `SubtaskResult.output`
+   (alongside the usual `content` text), and
+2. Serializes it into the next specialist's context as a labelled JSON
+   block instead of prose:
+
+```
+[retriever] receives:
+  PRIOR SUB-TASK FINDINGS:
+  [intent] answered: analyze the question
+  ---
+  STRUCTURED OUTPUT (QueryIntent):
+  {
+    "intent": "product_info",
+    "search_query": "VelteHub features overview",
+    "needs_rag": true
+  }
+
+  Summary text:
+  The user wants product information...
+```
+
+The downstream specialist parses `search_query` as a field, not by
+interpreting a sentence like `INTENT: product info SEARCH: ...`. Your
+Python code gets the same benefit after the run:
+
+```python
+result = supervisor.run("What can VelteHub do?")
+for sub in result.subtasks:
+    if sub.output is not None:          # typed specialists only
+        print(type(sub.output).__name__, sub.output)
+```
+
+Schema-less specialists behave exactly as before — `output` is `None`
+and their `content` threads as prose. The planner prompt also knows
+(since 3.2) that sequential steps receive prior results, so dependency
+chains like intent → retrieval → reranking are planned deliberately
+rather than avoided. See cookbook pattern 24 for the full pipeline.
+
 ## When NOT to use Supervisor
 
 - **Single-tool tasks** — use `AgentRunner` directly.
