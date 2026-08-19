@@ -220,6 +220,13 @@ class SubtaskResult(BaseModel):
     structured data that downstream steps can consume without re-parsing
     prose. Stays ``None`` for schema-less specialists, so existing
     consumers of ``content`` are unaffected.
+
+    3.3 additions (all optional; absent in legacy plans):
+    ``step_id`` is the plan step's id, ``depends_on`` the ids it consumed,
+    and ``skipped`` marks steps that never dispatched — either because a
+    dependency failed (``error`` explains the cascade) or because a
+    ``skip_when`` condition matched (``error`` is None; the reason is in
+    ``content``).
     """
 
     agent: str
@@ -227,8 +234,61 @@ class SubtaskResult(BaseModel):
     content: str
     error: Optional[str] = None
     output: Optional[Any] = None
+    step_id: Optional[str] = None
+    depends_on: List[str] = Field(default_factory=list)
+    skipped: bool = False
 
     model_config = {"arbitrary_types_allowed": True}
+
+
+@dataclass
+class Specialist:
+    """Registry entry for one specialist (3.3).
+
+    ``agents={}`` accepts either the classic ``(description, runner)``
+    tuple or a ``Specialist``. Tuples are wrapped internally, so nothing
+    breaks; ``Specialist`` adds planner-facing metadata:
+
+    - ``depends_on``: names of specialists this one TYPICALLY follows.
+      A hint rendered into the planning catalog — never an execution
+      constraint (the same specialist can appear twice in one plan, so
+      name-level deps are ambiguous at runtime; step-ids are not).
+    - ``output_schema``: shown in the catalog so the planner can write
+      ``skip_when`` conditions against real field names. Defaults from
+      ``runner.output_schema`` when unset.
+    - ``when_to_use``: extra routing guidance for the planner.
+
+    Iterating a Specialist yields ``(description, runner)`` so existing
+    tuple-unpacking call sites keep working unchanged.
+    """
+
+    description: str
+    runner: Any
+    depends_on: List[str] = field(default_factory=list)
+    output_schema: Optional[type] = None
+    when_to_use: str = ""
+
+    def __post_init__(self):
+        if self.output_schema is None:
+            self.output_schema = getattr(self.runner, "output_schema", None)
+
+    def __iter__(self):
+        # Tuple-compat: `desc, runner = specialist` and
+        # `for name, (desc, _) in agents.items()` both keep working.
+        return iter((self.description, self.runner))
+
+
+def _normalize_agents(agents: Dict[str, Any]) -> Dict[str, Specialist]:
+    """Wrap classic ``(description, runner)`` tuples as ``Specialist``.
+    Existing Specialist values pass through untouched."""
+    out: Dict[str, Specialist] = {}
+    for name, entry in (agents or {}).items():
+        if isinstance(entry, Specialist):
+            out[name] = entry
+        else:
+            desc, runner = entry
+            out[name] = Specialist(description=desc, runner=runner)
+    return out
 
 
 class SupervisorResult(BaseModel):
@@ -336,10 +396,13 @@ Rules for writing the plan (read these carefully — the shape of your plan matt
 
 2. MERGE SEQUENTIAL WORK FOR THE SAME SPECIALIST. If two adjacent steps would both go to the same agent, they should almost always be ONE step. Bad: "write inspect.py" + "run inspect.py" + "report the output" (three python_agent calls). Good: "write inspect.py that scrapes X, run it, and report the title / link count / contacts it prints" (one python_agent call). The specialist's own reasoning loop handles the sequencing.
 
-3. SEQUENTIAL STEPS SEE PRIOR RESULTS. Each dispatched step automatically receives the findings of every earlier completed step as "PRIOR SUB-TASK FINDINGS" context (structured JSON when the earlier specialist emits typed output, otherwise its answer text). So dependency CHAINS ARE FINE and often the right design: an intent-analysis step feeding a retrieval step feeding a reranking step is a good plan, because each later specialist reads the earlier one's output directly.
-   Two rules still apply:
-   - Steps that would go to the SAME specialist back-to-back should still be merged into one (rule 2) — the chain is for handing work BETWEEN different specialists, not for splitting one specialist's work.
-   - Write each step's query as an instruction about what to DO with the prior findings ("using the intent analysis above, retrieve the top 10 candidate passages"), not a request to re-state them ("report what the previous step found" is a wasted step — the synthesis phase already does that).
+3. DECLARE DEPENDENCIES WITH depends_on. Give every step an "id" (a short snake_case name). When a step CONSUMES an earlier step's output, list that step's id in its "depends_on". The dispatched step then receives exactly those steps' findings as "PRIOR SUB-TASK FINDINGS" context (structured JSON when the earlier specialist emits typed output, otherwise its answer text). Dependency CHAINS ARE GOOD design: intent-analysis feeding retrieval feeding reranking is a strong plan.
+   Rules:
+   - depends_on lists DIRECT dependencies only, but ALL of them: if a step reads BOTH the intent analysis AND the retrieval output, it depends on both ids — transitive context is NOT forwarded automatically.
+   - Do NOT chain independent steps. Steps with no dependency between them run IN PARALLEL — missing edges are what makes the plan fast. "Summarize topic A" and "summarize topic B" share no data: no depends_on between them.
+   - Steps that would go to the SAME specialist back-to-back should still be merged into one (rule 2) — chains hand work BETWEEN different specialists, they don't split one specialist's work.
+   - Write each dependent step's query as an instruction about what to DO with the prior findings ("using the intent analysis, retrieve the top 10 candidate passages"), never a request to re-state them.
+   - A step may be skipped conditionally with "skip_when": {{"step": "<direct dep id>", "field": "<field on that step's typed output>", "is": <value>}}. Use it to short-circuit unnecessary work (e.g. skip retrieval when the intent step returns needs_rag=false). Only reference a DIRECT dependency and only fields its specialist actually returns (the catalog lists them).
 
 4. SKIP SPECULATIVE HOUSEKEEPING. Don't add a "list files first to see what's there" step just because it feels safer. Specialists handle their own preconditions internally. Bad plan: (a) list ./workspace, (b) delete files in ./workspace, (c) write inspect.py. Good plan: (a) clear ./workspace and write inspect.py.
 
@@ -353,10 +416,13 @@ Respond ONLY with valid JSON in this exact format (no code fences, no extra text
 
 {{
   "plan": [
-    {{"agent": "<agent_name>", "query": "<specific, self-contained sub-task>"}},
+    {{"id": "<short_snake_case_id>", "agent": "<agent_name>", "query": "<specific sub-task>"}},
+    {{"id": "<id2>", "agent": "<agent_name>", "query": "<sub-task consuming id1's output>", "depends_on": ["<short_snake_case_id>"]}},
     ...
   ]
 }}
+
+"id" is required on every step; "depends_on" and "skip_when" only where rule 3 calls for them. Steps without depends_on are independent roots and may run in parallel.
 """
 
 SUPERVISOR_SYNTHESIZE_PROMPT = """You are answering the user's question directly, using ONLY the facts the specialists explicitly reported.
@@ -531,6 +597,233 @@ def _evaluate_success_verdict(verdict) -> tuple:
     return (True, "") if verdict else (False, generic)
 
 
+# ----------------------------------------------------------------------------
+# 3.3: plan-graph helpers (pure functions — unit-testable without a model)
+# ----------------------------------------------------------------------------
+
+def _render_agent_catalog(agents: Dict[str, Any]) -> str:
+    """Render the planner-facing catalog. Specialist entries (3.3) get
+    their extra metadata lines; classic tuples render as before."""
+    lines: List[str] = []
+    for name, entry in agents.items():
+        if isinstance(entry, Specialist):
+            lines.append(f"- {name}: {entry.description}")
+            if entry.depends_on:
+                lines.append(f"    typically after: {', '.join(entry.depends_on)}")
+            if entry.output_schema is not None:
+                try:
+                    fields = ", ".join(entry.output_schema.model_fields.keys())
+                    lines.append(f"    returns: {entry.output_schema.__name__}({fields})")
+                except Exception:
+                    lines.append(f"    returns: {getattr(entry.output_schema, '__name__', 'typed output')}")
+            if entry.when_to_use:
+                lines.append(f"    use when: {entry.when_to_use}")
+        else:
+            desc, _ = entry
+            lines.append(f"- {name}: {desc}")
+    return "\n".join(lines)
+
+
+def _plan_repair_note(repairs: List[str]) -> str:
+    """Feedback block appended to the planning prompt on a replan after
+    sanitization had to fix the previous attempt's graph."""
+    bullet = "\n".join(f"- {r}" for r in repairs)
+    return (
+        "\n\nYOUR PREVIOUS PLAN HAD DEPENDENCY ERRORS that were auto-repaired:\n"
+        f"{bullet}\n"
+        "Write the plan again with a valid dependency graph: every "
+        "depends_on entry must name an existing step id, no step may "
+        "depend on itself or on a __spawn__ step, and the graph must "
+        "contain no cycles."
+    )
+
+
+def _plan_uses_deps(plan: List[dict]) -> bool:
+    """True when ANY step declares ``depends_on`` — the DAG-mode switch.
+    A dep-free plan keeps byte-identical legacy semantics."""
+    return any(
+        isinstance(step, dict) and step.get("depends_on")
+        for step in plan
+    )
+
+
+def _sanitize_plan(plan: List[dict], verbose: bool = False) -> Tuple[List[dict], List[str]]:
+    """Normalize a planner-emitted plan into a valid DAG. Deterministic;
+    never raises. Returns ``(plan, repairs)`` where ``repairs`` lists
+    every fix made (empty = the plan was already clean). The list feeds
+    the optional plan-repair replan loop.
+
+    Rules, in order (see docs/design/3.3-depends-on-dag.md §3.1):
+      1. auto-assign missing/duplicate ids as ``step_N`` (1-based position)
+      2. drop depends_on entries naming unknown step ids
+      3. drop self-dependencies
+      4. break cycles by dropping the back-edge in plan order
+      5. spawn steps cannot be depended on (such deps are dropped)
+    """
+    repairs: List[str] = []
+    plan = [dict(step) for step in plan if isinstance(step, dict)]
+
+    # -- 1. ids ------------------------------------------------------------
+    seen: set = set()
+    for i, step in enumerate(plan, 1):
+        sid = step.get("id")
+        if not isinstance(sid, str) or not sid.strip() or sid in seen:
+            new_id = f"step_{i}"
+            # Extremely defensive: if the auto-name itself collides with a
+            # planner-chosen id, suffix until unique.
+            while new_id in seen:
+                new_id += "_"
+            if sid in seen:
+                repairs.append(f"duplicate id {sid!r} at position {i} renamed to {new_id!r}")
+            step["id"] = new_id
+        seen.add(step["id"])
+
+    ids = [s["id"] for s in plan]
+    id_pos = {sid: i for i, sid in enumerate(ids)}
+    spawn_ids = {s["id"] for s in plan if s.get("agent") == "__spawn__"}
+
+    # -- 2/3/5. dep validation ----------------------------------------------
+    for step in plan:
+        deps = step.get("depends_on") or []
+        if not isinstance(deps, list):
+            repairs.append(f"step {step['id']!r}: depends_on was not a list -- dropped")
+            step["depends_on"] = []
+            continue
+        clean: List[str] = []
+        for d in deps:
+            if d == step["id"]:
+                repairs.append(f"step {step['id']!r}: self-dependency dropped")
+            elif d not in id_pos:
+                repairs.append(f"step {step['id']!r}: unknown dependency {d!r} dropped")
+            elif d in spawn_ids:
+                repairs.append(
+                    f"step {step['id']!r}: dependency on spawn step {d!r} dropped "
+                    f"(spawn steps are bookkeeping, not data producers)"
+                )
+            elif d not in clean:
+                clean.append(d)
+        step["depends_on"] = clean
+
+    # -- 4. cycle breaking (Kahn's; drop the back-edge in plan order) -------
+    while True:
+        indeg = {sid: 0 for sid in ids}
+        dependents: Dict[str, List[str]] = {sid: [] for sid in ids}
+        for step in plan:
+            for d in step["depends_on"]:
+                indeg[step["id"]] += 1
+                dependents[d].append(step["id"])
+        queue = [sid for sid in ids if indeg[sid] == 0]
+        visited = 0
+        qi = 0
+        while qi < len(queue):
+            sid = queue[qi]; qi += 1
+            visited += 1
+            for dep_id in dependents[sid]:
+                indeg[dep_id] -= 1
+                if indeg[dep_id] == 0:
+                    queue.append(dep_id)
+        if visited == len(ids):
+            break
+        # Cycle exists. Among cyclic nodes, find the edge whose SOURCE is
+        # latest in plan order and TARGET earliest — the back-edge — and
+        # drop it. Plan order is the planner's own statement of intended
+        # sequence, so the forward reading survives.
+        cyclic = {sid for sid in ids if indeg[sid] > 0}
+        back_edge = None   # (source_dep, step_id) — step depends_on source
+        for step in plan:
+            if step["id"] not in cyclic:
+                continue
+            for d in step["depends_on"]:
+                if d in cyclic and id_pos[d] > id_pos[step["id"]]:
+                    cand = (d, step["id"])
+                    if back_edge is None or id_pos[d] > id_pos[back_edge[0]]:
+                        back_edge = cand
+        if back_edge is None:
+            # Pure forward-edge cycle can't exist; belt-and-braces: drop
+            # the first cyclic step's first dep so the loop terminates.
+            for step in plan:
+                if step["id"] in cyclic and step["depends_on"]:
+                    back_edge = (step["depends_on"][0], step["id"])
+                    break
+        src, tgt = back_edge
+        plan[[s["id"] for s in plan].index(tgt)]["depends_on"].remove(src)
+        repairs.append(f"cycle broken: dropped dependency {src!r} from step {tgt!r}")
+
+    if repairs and verbose:
+        for r in repairs:
+            print(f"{_C_ERROR}[supervisor.plan] repaired: {r}{_C_RESET}")
+    return plan, repairs
+
+
+def _topo_order(plan: List[dict]) -> List[int]:
+    """Stable topological order over plan indices: a step never precedes
+    its dependencies, and ties break by plan position. Assumes the plan
+    has been through ``_sanitize_plan`` (acyclic, valid ids)."""
+    ids = [s["id"] for s in plan]
+    id_idx = {sid: i for i, sid in enumerate(ids)}
+    indeg = [len(s.get("depends_on") or []) for s in plan]
+    dependents: List[List[int]] = [[] for _ in plan]
+    for i, step in enumerate(plan):
+        for d in step.get("depends_on") or []:
+            dependents[id_idx[d]].append(i)
+
+    import heapq
+    ready = [i for i, deg in enumerate(indeg) if deg == 0]
+    heapq.heapify(ready)
+    order: List[int] = []
+    while ready:
+        i = heapq.heappop(ready)   # smallest plan index first → stable
+        order.append(i)
+        for j in dependents[i]:
+            indeg[j] -= 1
+            if indeg[j] == 0:
+                heapq.heappush(ready, j)
+    return order
+
+
+def _evaluate_skip_when(
+    cond: Any,
+    results_by_id: Dict[str, SubtaskResult],
+    step_deps: List[str],
+    verbose: bool = False,
+) -> Tuple[bool, str]:
+    """Evaluate a step's ``skip_when`` condition against a DIRECT
+    dependency's structured output. Returns ``(skip, reason)``.
+
+    FAIL-OPEN by design: malformed condition, non-dep step reference,
+    missing output, missing field, comparison error — every failure
+    path returns ``(False, ...)`` and the step RUNS. A skip must be
+    provably justified. Single operator: ``is`` (equality). Dotted
+    field paths supported (``"meta.confidence"``).
+    """
+    if not isinstance(cond, dict):
+        return False, ""
+    ref = cond.get("step")
+    fld = cond.get("field")
+    if "is" not in cond or not isinstance(ref, str) or not isinstance(fld, str):
+        return False, ""
+    if ref not in step_deps:
+        if verbose:
+            print(f"{_C_ERROR}[supervisor.skip_when] step {ref!r} is not a "
+                  f"direct dependency -- condition ignored (fail-open){_C_RESET}")
+        return False, ""
+    dep = results_by_id.get(ref)
+    if dep is None or dep.output is None:
+        return False, ""
+    try:
+        value: Any = dep.output
+        for part in fld.split("."):
+            if isinstance(value, dict):
+                value = value[part]
+            else:
+                value = getattr(value, part)
+        if value == cond["is"]:
+            return True, f"{ref}.{fld} == {cond['is']!r}"
+    except Exception:
+        return False, ""
+    return False, ""
+
+
 # ANSI colors match the AgentRunner's verbose output so a mixed
 # supervisor + inner-runner trace reads consistently.
 _C_PLAN     = "\x1B[1;34m"   # blue bold  — plan header + steps
@@ -594,11 +887,14 @@ class Supervisor:
         spawn_config: Optional[SpawnConfig] = None,
         max_subtask_retries: int = 1,
         subtask_success_check: Optional[Callable[[SubtaskResult], Any]] = None,
+        max_plan_retries: int = 1,
     ):
         """
         Args:
             model: LLM used for planning and synthesis.
-            agents: Mapping of ``name -> (description, AgentRunner)``.
+            agents: Mapping of ``name -> (description, AgentRunner)`` or
+                ``name -> Specialist`` (3.3). Tuples are wrapped as
+                Specialist internally.
             max_subtasks: Hard upper bound on the number of planned sub-tasks.
             verbose: When True (default), print colored progress markers for
                 each stage — the plan, each sub-task dispatch and result,
@@ -634,16 +930,26 @@ class Supervisor:
                 preserved). A predicate that itself raises is treated as
                 "accept" so a buggy check can't wedge the run. Default
                 ``None`` keeps the exceptions-only behavior.
+            max_plan_retries: (3.3) When plan sanitization has to repair
+                the planner's graph (unknown dependency dropped, cycle
+                broken), the plan is re-requested up to this many times
+                with the repair warnings appended to the prompt. The
+                sanitized plan is kept as fallback if the retry is no
+                better. ``0`` disables replanning.
         """
         self.model = model
-        # Copy so run-time spawns don't mutate the caller's dict.
-        self.agents = dict(agents)
+        # Normalize (and copy) so run-time spawns don't mutate the
+        # caller's dict. Accepts (description, runner) tuples or
+        # Specialist entries (3.3); everything is stored as Specialist,
+        # which still tuple-unpacks for older code.
+        self.agents = _normalize_agents(agents)
         self.max_subtasks = max_subtasks
         self.verbose = verbose
         self.spawn_config = spawn_config or SpawnConfig(enabled=False)
         self._spawns_this_run = 0
         self.max_subtask_retries = max(0, int(max_subtask_retries))
         self.subtask_success_check = subtask_success_check
+        self.max_plan_retries = max(0, int(max_plan_retries))
 
     # -- internal helpers ----------------------------------------------------
 
@@ -662,12 +968,9 @@ class Supervisor:
         return _evaluate_success_verdict(verdict)
 
     def _build_agent_catalog(self) -> str:
-        lines = []
-        for name, (desc, _) in self.agents.items():
-            lines.append(f"- {name}: {desc}")
-        return "\n".join(lines)
+        return _render_agent_catalog(self.agents)
 
-    def _plan(self, user_task: str) -> List[dict]:
+    def _plan_once(self, user_task: str, repair_note: str = "") -> List[dict]:
         base_prompt = SUPERVISOR_PLAN_PROMPT.format(
             agent_catalog=self._build_agent_catalog(),
             user_task=user_task,
@@ -676,6 +979,8 @@ class Supervisor:
         prompt = base_prompt
         if self.spawn_config.enabled:
             prompt = prompt + SUPERVISOR_SPAWN_INSTRUCTION
+        if repair_note:
+            prompt = prompt + repair_note
         messages = [{"role": "user", "content": prompt}]
         response = self.model.Initialize(messages=messages)
 
@@ -696,6 +1001,28 @@ class Supervisor:
             and (item.get("agent") == "__spawn__" or item.get("agent") or item.get("query"))
         ]
         return filtered[: self.max_subtasks]
+
+    def _plan(self, user_task: str) -> List[dict]:
+        """Plan, sanitize, and (3.3) replan once per repair budget when
+        sanitization had to fix the graph. Returns a sanitized plan whose
+        every step carries a valid ``id`` and acyclic ``depends_on``."""
+        plan = self._plan_once(user_task)
+        if not plan:
+            return []
+        sane, repairs = _sanitize_plan(plan, verbose=self.verbose)
+        retries = self.max_plan_retries
+        while repairs and retries > 0:
+            retries -= 1
+            note = _plan_repair_note(repairs)
+            retry_plan = self._plan_once(user_task, repair_note=note)
+            if not retry_plan:
+                break
+            retry_sane, retry_repairs = _sanitize_plan(retry_plan, verbose=self.verbose)
+            if len(retry_repairs) < len(repairs):
+                sane, repairs = retry_sane, retry_repairs
+            else:
+                break   # retry was no better; keep the sanitized original
+        return sane
 
     # Map from SpawnRequest capability keyword -> the concrete tool names
     # a spawn would install. Kept in sync with _build_spawned_agent's
@@ -846,7 +1173,7 @@ class Supervisor:
         description, runner = _build_spawned_agent(
             req, model=self.model, allowed_paths=cfg.allowed_paths,
         )
-        self.agents[req.name] = (description, runner)
+        self.agents[req.name] = Specialist(description=description, runner=runner)
         self._spawns_this_run += 1
         return req.name, None
 
@@ -975,10 +1302,20 @@ class Supervisor:
         if self.verbose:
             _log_plan(plan)
 
+        # 3.3: DAG mode fires when ANY step declares depends_on. Dep-free
+        # plans keep byte-identical legacy semantics (plan order, every
+        # step sees ALL prior results).
+        dag_mode = _plan_uses_deps(plan)
+        order = _topo_order(plan) if dag_mode else list(range(len(plan)))
+
         subtask_results: List[SubtaskResult] = []
+        results_by_id: Dict[str, SubtaskResult] = {}
         spawn_rewrites: Dict[str, str] = {}
-        for step_idx, item in enumerate(plan):
+        for step_idx in order:
+            item = plan[step_idx]
             agent_name = item.get("agent")
+            step_id = item.get("id") or f"step_{step_idx + 1}"
+            step_deps = list(item.get("depends_on") or [])
 
             if agent_name == "__spawn__":
                 spawned_name, rewrite_from = self._handle_spawn(item)
@@ -987,28 +1324,86 @@ class Supervisor:
                        "rerouted_from": rewrite_from}
                 if spawned_name and rewrite_from:
                     spawn_rewrites[rewrite_from] = spawned_name
-                    subtask_results.append(SubtaskResult(
+                    sub_result = SubtaskResult(
                         agent="__spawn__",
                         query=f"spawn: {rewrite_from}",
                         content=f"REROUTED: caps already covered by existing "
                                 f"specialist '{spawned_name}'. Subsequent "
                                 f"dispatches to '{rewrite_from}' will run "
                                 f"on '{spawned_name}'.",
-                    ))
+                        step_id=step_id,
+                    )
                 elif spawned_name:
-                    subtask_results.append(SubtaskResult(
+                    sub_result = SubtaskResult(
                         agent="__spawn__",
                         query=f"spawn: {item.get('name', '?')}",
                         content=f"registered new specialist '{spawned_name}' with "
                                 f"capabilities: {', '.join(item.get('capabilities', []))}",
-                    ))
+                        step_id=step_id,
+                    )
                 else:
-                    subtask_results.append(SubtaskResult(
+                    sub_result = SubtaskResult(
                         agent="__spawn__",
                         query=f"spawn: {item.get('name', '?')}",
                         content="",
                         error="spawn refused (see log for reason)",
-                    ))
+                        step_id=step_id,
+                    )
+                subtask_results.append(sub_result)
+                results_by_id[step_id] = sub_result
+                continue
+
+            # 3.3 failure cascade: a FAILED direct dependency (error set,
+            # and not a mere condition-skip) skips this step. Condition-
+            # skipped deps count as empty successes -- the step still runs.
+            failed_dep = next(
+                (d for d in step_deps
+                 if d in results_by_id
+                 and results_by_id[d].error
+                 ), None,
+            )
+            if failed_dep is not None:
+                sub_result = SubtaskResult(
+                    agent=agent_name or "<none>",
+                    query=item.get("query", ""),
+                    content="",
+                    error=(f"skipped: dependency '{failed_dep}' failed "
+                           f"({results_by_id[failed_dep].error})"),
+                    skipped=True,
+                    step_id=step_id,
+                    depends_on=step_deps,
+                )
+                if self.verbose:
+                    print(f"{_C_ERROR}[supervisor.skip -> {agent_name}] "
+                          f"dependency '{failed_dep}' failed{_C_RESET}")
+                subtask_results.append(sub_result)
+                results_by_id[step_id] = sub_result
+                yield {"type": "subtask_result", "result": sub_result,
+                       "step": step_idx, "step_id": step_id}
+                continue
+
+            # 3.3 conditional skip: evaluated against a direct dep's typed
+            # output; fail-open. Does NOT cascade -- dependents treat this
+            # step as an empty success.
+            skip, reason = _evaluate_skip_when(
+                item.get("skip_when"), results_by_id, step_deps, self.verbose,
+            )
+            if skip:
+                sub_result = SubtaskResult(
+                    agent=agent_name or "<none>",
+                    query=item.get("query", ""),
+                    content=f"skipped: {reason}",
+                    skipped=True,
+                    step_id=step_id,
+                    depends_on=step_deps,
+                )
+                if self.verbose:
+                    print(f"{_C_DISPATCH}[supervisor.skip -> {agent_name}] "
+                          f"{reason}{_C_RESET}")
+                subtask_results.append(sub_result)
+                results_by_id[step_id] = sub_result
+                yield {"type": "subtask_result", "result": sub_result,
+                       "step": step_idx, "step_id": step_id}
                 continue
 
             if agent_name in spawn_rewrites:
@@ -1028,22 +1423,40 @@ class Supervisor:
                     query=item.get("query", ""),
                     content="",
                     error=f"specialist '{agent_name}' not in registry (spawn may have been refused)",
+                    step_id=step_id,
+                    depends_on=step_deps,
                 )
                 subtask_results.append(sub_result)
-                yield {"type": "subtask_result", "result": sub_result, "step": step_idx}
+                results_by_id[step_id] = sub_result
+                yield {"type": "subtask_result", "result": sub_result,
+                       "step": step_idx, "step_id": step_id}
                 continue
 
             sub_query = item["query"]
             _, agent_runner = self.agents[agent_name]
-            dispatched_query = _build_augmented_query(sub_query, subtask_results)
-            yield {"type": "dispatch", "agent": agent_name, "query": sub_query, "step": step_idx}
+            # Context routing: DAG mode threads DIRECT dependencies only
+            # (explicit routing, focused context budget); legacy mode
+            # threads everything prior, exactly as pre-3.3.
+            if dag_mode:
+                dep_results = [
+                    results_by_id[d] for d in step_deps if d in results_by_id
+                ]
+                dispatched_query = _build_augmented_query(sub_query, dep_results)
+            else:
+                dispatched_query = _build_augmented_query(sub_query, subtask_results)
+            yield {"type": "dispatch", "agent": agent_name, "query": sub_query,
+                   "step": step_idx, "step_id": step_id}
             if self.verbose:
                 _log_dispatch(agent_name, sub_query)
             sub_result = self._dispatch_with_retry(
                 agent_runner, agent_name, sub_query, dispatched_query,
             )
+            sub_result.step_id = step_id
+            sub_result.depends_on = step_deps
             subtask_results.append(sub_result)
-            yield {"type": "subtask_result", "result": sub_result, "step": step_idx}
+            results_by_id[step_id] = sub_result
+            yield {"type": "subtask_result", "result": sub_result,
+                   "step": step_idx, "step_id": step_id}
             if self.verbose:
                 _log_result(sub_result)
 
@@ -1104,20 +1517,24 @@ class AsyncSupervisor:
         sequential: bool = False,
         max_subtask_retries: int = 1,
         subtask_success_check: Optional[Callable[[SubtaskResult], Any]] = None,
+        max_parallel: Optional[int] = None,
+        max_plan_retries: int = 1,
     ):
         """
         Args:
             model: LLM used for planning and synthesis.
-            agents: Mapping of ``name -> (description, AgentRunner)``.
+            agents: Mapping of ``name -> (description, AgentRunner)`` or
+                ``name -> Specialist`` (3.3).
             max_subtasks: Hard upper bound on the number of planned sub-tasks.
             verbose: Print colored progress markers for each stage.
             sequential: When True, sub-tasks run one at a time in plan
                 order and each specialist receives the prior sub-tasks'
-                findings as context. Use when steps depend on earlier
-                steps' output (e.g. researcher then writer). Default
-                False keeps the classic concurrent behavior via
-                asyncio.gather — faster but each specialist runs in
-                isolation and can't see other specialists' results.
+                findings as context (sugar for ``max_parallel=1`` with
+                all-prior threading). Default False: dep-free plans run
+                fully concurrent as before; plans WITH ``depends_on``
+                (3.3) run as a DAG — independent steps concurrent, each
+                step threaded ONLY its direct dependencies' results, and
+                a step starts the moment its dependencies complete.
             max_subtask_retries: How many times a sub-task that RAISES is
                 re-dispatched (with the prior error appended) before the
                 Supervisor gives up on it. Default 1. See
@@ -1129,14 +1546,23 @@ class AsyncSupervisor:
                 rejects (ran fine but produced nothing useful). See
                 :class:`Supervisor` for the contract. Applies per sub-task
                 in both sequential and concurrent modes.
+            max_parallel: (3.3) Cap on concurrently running sub-tasks.
+                ``None`` (default) = unbounded. Useful under provider
+                rate limits. ``sequential=True`` forces this to 1.
+            max_plan_retries: (3.3) Replans after sanitization repairs;
+                see :class:`Supervisor`.
         """
         self.model = model
-        self.agents = agents
+        self.agents = _normalize_agents(agents)
         self.max_subtasks = max_subtasks
         self.verbose = verbose
         self.sequential = sequential
         self.max_subtask_retries = max(0, int(max_subtask_retries))
         self.subtask_success_check = subtask_success_check
+        self.max_parallel = 1 if sequential else (
+            max(1, int(max_parallel)) if max_parallel is not None else None
+        )
+        self.max_plan_retries = max(0, int(max_plan_retries))
 
     def _evaluate_success(self, result: SubtaskResult) -> tuple:
         """See ``Supervisor._evaluate_success``."""
@@ -1152,10 +1578,7 @@ class AsyncSupervisor:
     # -- internal helpers ----------------------------------------------------
 
     def _build_agent_catalog(self) -> str:
-        lines = []
-        for name, (desc, _) in self.agents.items():
-            lines.append(f"- {name}: {desc}")
-        return "\n".join(lines)
+        return _render_agent_catalog(self.agents)
 
     async def _call_model(self, messages: List[Dict[str, str]]) -> str:
         """Invoke the planning/synthesis model, preferring an async method."""
@@ -1166,12 +1589,14 @@ class AsyncSupervisor:
         # Fall back to running the sync method in a thread.
         return await asyncio.to_thread(self.model.Initialize, messages)
 
-    async def _plan(self, user_task: str) -> List[dict]:
+    async def _plan_once(self, user_task: str, repair_note: str = "") -> List[dict]:
         prompt = SUPERVISOR_PLAN_PROMPT.format(
             agent_catalog=self._build_agent_catalog(),
             user_task=user_task,
             max_subtasks=self.max_subtasks,
         )
+        if repair_note:
+            prompt = prompt + repair_note
         messages = [{"role": "user", "content": prompt}]
         response = await self._call_model(messages)
 
@@ -1190,6 +1615,27 @@ class AsyncSupervisor:
             and item.get("query")
         ]
         return filtered[: self.max_subtasks]
+
+    async def _plan(self, user_task: str) -> List[dict]:
+        """Plan + sanitize + (3.3) replan-on-repair. See Supervisor._plan."""
+        plan = await self._plan_once(user_task)
+        if not plan:
+            return []
+        sane, repairs = _sanitize_plan(plan, verbose=self.verbose)
+        retries = self.max_plan_retries
+        while repairs and retries > 0:
+            retries -= 1
+            retry_plan = await self._plan_once(
+                user_task, repair_note=_plan_repair_note(repairs),
+            )
+            if not retry_plan:
+                break
+            retry_sane, retry_repairs = _sanitize_plan(retry_plan, verbose=self.verbose)
+            if len(retry_repairs) < len(repairs):
+                sane, repairs = retry_sane, retry_repairs
+            else:
+                break
+        return sane
 
     async def _synthesize(
         self, user_task: str, subtask_results: List[SubtaskResult]
@@ -1324,32 +1770,124 @@ class AsyncSupervisor:
                    "agent": item.get("agent"), "query": item.get("query", ""),
                    "step": step_idx}
 
-        subtask_results: List[SubtaskResult] = []
-        if self.sequential:
-            for step_idx, item in enumerate(plan):
-                r = await self._run_subtask(
-                    item["agent"], item["query"],
-                    prior_results=subtask_results,
-                )
-                subtask_results.append(r)
-                yield {"type": "subtask_result", "result": r, "step": step_idx}
-        else:
-            tasks = [
-                (step_idx, asyncio.create_task(
-                    self._run_subtask(item["agent"], item["query"])
-                ))
-                for step_idx, item in enumerate(plan)
+        # 3.3 unified completion-driven scheduler. Dependencies per step:
+        #   - DAG mode (any step has depends_on): the parsed edges.
+        #   - legacy sequential: every prior step (all-prior threading,
+        #     identical context to pre-3.3) — with max_parallel=1 this
+        #     reproduces the old sequential loop exactly.
+        #   - legacy concurrent: no deps — everything runs at once, no
+        #     threading, exactly the old asyncio.gather behavior.
+        # Cascade + skip_when apply only in DAG mode (legacy plans never
+        # skipped later steps on failure, and must not start now).
+        dag_mode = _plan_uses_deps(plan)
+        step_ids = [
+            item.get("id") or f"step_{i + 1}" for i, item in enumerate(plan)
+        ]
+        if dag_mode:
+            deps_of: List[List[str]] = [
+                list(item.get("depends_on") or []) for item in plan
             ]
-            pending = {t: idx for idx, t in tasks}
-            while pending:
-                done, _ = await asyncio.wait(
-                    pending.keys(), return_when=asyncio.FIRST_COMPLETED,
-                )
-                for t in done:
-                    idx = pending.pop(t)
-                    r = t.result()
-                    subtask_results.append(r)
-                    yield {"type": "subtask_result", "result": r, "step": idx}
+        elif self.sequential:
+            deps_of = [step_ids[:i] for i in range(len(plan))]
+        else:
+            deps_of = [[] for _ in plan]
+
+        subtask_results: List[SubtaskResult] = []
+        results_by_id: Dict[str, SubtaskResult] = {}
+        done_ids: set = set()
+        launched: set = set()
+        running: Dict[asyncio.Task, int] = {}
+
+        def _ready() -> List[int]:
+            out = []
+            for i in range(len(plan)):
+                if i in launched:
+                    continue
+                if all(d in done_ids for d in deps_of[i] if d in step_ids):
+                    out.append(i)
+            return out
+
+        def _record(i: int, r: SubtaskResult) -> SubtaskResult:
+            r.step_id = step_ids[i]
+            r.depends_on = deps_of[i]
+            subtask_results.append(r)
+            results_by_id[step_ids[i]] = r
+            done_ids.add(step_ids[i])
+            return r
+
+        while len(done_ids) < len(plan):
+            # Launch everything ready (respecting max_parallel), resolving
+            # cascades and condition-skips inline — those complete
+            # instantly without dispatching.
+            progressed = False
+            for i in _ready():
+                if dag_mode:
+                    failed_dep = next(
+                        (d for d in deps_of[i]
+                         if d in results_by_id and results_by_id[d].error),
+                        None,
+                    )
+                    if failed_dep is not None:
+                        launched.add(i)
+                        r = _record(i, SubtaskResult(
+                            agent=plan[i].get("agent", "<none>"),
+                            query=plan[i].get("query", ""),
+                            content="",
+                            error=(f"skipped: dependency '{failed_dep}' failed "
+                                   f"({results_by_id[failed_dep].error})"),
+                            skipped=True,
+                        ))
+                        yield {"type": "subtask_result", "result": r,
+                               "step": i, "step_id": step_ids[i]}
+                        progressed = True
+                        continue
+                    skip, reason = _evaluate_skip_when(
+                        plan[i].get("skip_when"), results_by_id,
+                        deps_of[i], self.verbose,
+                    )
+                    if skip:
+                        launched.add(i)
+                        r = _record(i, SubtaskResult(
+                            agent=plan[i].get("agent", "<none>"),
+                            query=plan[i].get("query", ""),
+                            content=f"skipped: {reason}",
+                            skipped=True,
+                        ))
+                        yield {"type": "subtask_result", "result": r,
+                               "step": i, "step_id": step_ids[i]}
+                        progressed = True
+                        continue
+                if self.max_parallel is not None and len(running) >= self.max_parallel:
+                    break
+                launched.add(i)
+                dep_results = [
+                    results_by_id[d] for d in deps_of[i] if d in results_by_id
+                ]
+                task = asyncio.create_task(self._run_subtask(
+                    plan[i]["agent"], plan[i]["query"],
+                    prior_results=dep_results if dep_results else None,
+                ))
+                running[task] = i
+                progressed = True
+
+            if progressed and len(done_ids) >= len(plan):
+                break
+            if not running:
+                if not progressed:
+                    # Nothing running, nothing launchable: only possible if
+                    # a dep id points at a step outside the plan (sanitizer
+                    # prevents this) — bail rather than spin.
+                    break
+                continue
+
+            done, _ = await asyncio.wait(
+                running.keys(), return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in done:
+                i = running.pop(t)
+                r = _record(i, t.result())
+                yield {"type": "subtask_result", "result": r,
+                       "step": i, "step_id": step_ids[i]}
 
         yield {"type": "synthesize_start"}
         final = await self._synthesize(user_task, list(subtask_results))

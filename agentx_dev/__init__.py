@@ -64,7 +64,7 @@ from .Session import Session
 from .WebTools import web_fetch_tool, web_search_tool
 from .Supervisor import (
     Supervisor, AsyncSupervisor,
-    SpawnConfig, SpawnRequest,
+    SpawnConfig, SpawnRequest, Specialist,
     SupervisorResult, SubtaskResult,
 )
 
@@ -218,6 +218,7 @@ __all__ = [
     "Supervisor",
     "AsyncSupervisor",
     "SpawnConfig",
+    "Specialist",
     "SpawnRequest",
     "SupervisorResult",
     "SubtaskResult",

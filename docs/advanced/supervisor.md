@@ -294,6 +294,85 @@ and their `content` threads as prose. The planner prompt also knows
 chains like intent → retrieval → reranking are planned deliberately
 rather than avoided. See cookbook pattern 24 for the full pipeline.
 
+## Dependency DAGs (3.3)
+
+Plan steps carry an `id`, and a step that consumes another's output
+declares it in `depends_on`:
+
+```json
+{"plan": [
+  {"id": "intent",   "agent": "intent",    "query": "analyze the question"},
+  {"id": "retrieve", "agent": "retriever", "query": "get candidates", "depends_on": ["intent"]},
+  {"id": "rerank",   "agent": "reranker",  "query": "rank them",      "depends_on": ["retrieve"]},
+  {"id": "sum_a",    "agent": "writer",    "query": "summarize topic A"},
+  {"id": "sum_b",    "agent": "writer",    "query": "summarize topic B"}
+]}
+```
+
+The edges drive three things at once:
+
+- **Ordering** — sync runs stable topological order; a step never runs
+  before its dependencies.
+- **Parallelism** — `AsyncSupervisor` starts `intent`, `sum_a`, and
+  `sum_b` concurrently; `retrieve` starts the moment `intent` lands
+  (completion-driven, no wave barriers). `max_parallel=N` caps
+  concurrency for rate-limited providers; `sequential=True` is sugar
+  for `max_parallel=1`.
+- **Context routing** — each step is threaded ONLY its direct
+  dependencies' results (structured JSON when typed, 3.2). `rerank`
+  sees `retrieve`'s output and nothing else. Need two inputs? List
+  both ids — transitive context is not forwarded automatically.
+
+**Backward compatible:** a plan with no `depends_on` anywhere runs
+exactly as before 3.3 (all-prior threading in sequential modes, full
+isolation in async-concurrent).
+
+### Failure cascade and conditional skips
+
+- A step whose dependency FAILED is skipped (transitively) with
+  `skipped=True` and an error naming the dep. Independent branches
+  keep running; skipped steps never dispatch.
+- A step may skip itself conditionally — evaluated in Python against a
+  direct dependency's typed output, fail-open:
+
+```json
+{"id": "retrieve", "agent": "retriever", "query": "get",
+ "depends_on": ["intent"],
+ "skip_when": {"step": "intent", "field": "needs_rag", "is": false}}
+```
+
+Condition-skips do NOT cascade: the answer step downstream still runs
+("retrieval unnecessary" is not "answering impossible").
+
+### Specialist registry entries
+
+`agents={}` accepts `Specialist` alongside the classic tuple. Its
+metadata feeds the planner:
+
+```python
+from agentx_dev import Specialist
+
+sup = Supervisor(model=Claude(), agents={
+    "intent": Specialist(
+        description="Classifies the question.",
+        runner=intent_agent,                      # output_schema=QueryIntent
+        when_to_use="always run first for knowledge questions",
+    ),
+    "retriever": Specialist(
+        description="Retrieves candidates as structured JSON.",
+        runner=retriever,
+        depends_on=["intent"],                    # planner HINT, not a constraint
+    ),
+})
+```
+
+The catalog then shows `typically after: intent` and
+`returns: QueryIntent(intent, search_query, needs_rag, confidence)` so
+the planner writes real graphs and `skip_when` conditions against
+actual field names. If the planner emits an invalid graph anyway
+(typo'd id, cycle), sanitization repairs it deterministically and
+replans once with the warnings fed back (`max_plan_retries`).
+
 ## When NOT to use Supervisor
 
 - **Single-tool tasks** — use `AgentRunner` directly.

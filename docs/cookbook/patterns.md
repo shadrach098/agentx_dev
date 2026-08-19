@@ -558,3 +558,36 @@ and structured findings threading (the retriever literally sees
 `STRUCTURED OUTPUT (QueryIntent): {...}` in its context). Weighted
 blending of vector vs. semantic scores belongs in YOUR Python, not in a
 prompt — the LLM judges meaning, arithmetic stays deterministic.
+
+**With 3.3, make the pipeline a DAG.** Register the specialists with
+dependency hints and let the planner emit `depends_on` edges plus a
+greeting short-circuit:
+
+```python
+from agentx_dev import Specialist
+
+sup = Supervisor(model=Claude(), agents={
+    "intent": Specialist(
+        description="Classifies the question, emits QueryIntent.",
+        runner=intent_agent,
+        when_to_use="always first for knowledge questions",
+    ),
+    "retriever": Specialist(
+        description="Retrieves 15 candidates as structured JSON.",
+        runner=retriever,
+        depends_on=["intent"],
+    ),
+    "reranker": Specialist(
+        description="Judges relevance against the ORIGINAL question.",
+        runner=reranker,
+        depends_on=["retriever"],
+    ),
+})
+```
+
+The planner now emits step ids and edges; the retrieval step carries
+`"skip_when": {"step": "intent", "field": "needs_rag", "is": false}`
+so greetings never touch the vector store. Each step receives ONLY its
+direct dependency's output, a failed retrieval skips the reranker
+automatically (`skipped=True`), and under `AsyncSupervisor` any
+independent steps in the same plan run concurrently.

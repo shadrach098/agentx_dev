@@ -4,6 +4,74 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.3.0] - 2026-08-19
+
+Dependency DAGs for the Supervisor. Plans declare which steps consume
+which, and the executor derives ordering, parallelism, AND context
+routing from those edges — unifying the old split where sequential
+mode had threading but no parallelism and concurrent mode had
+parallelism but no threading. Design: docs/design/3.3-depends-on-dag.md.
+
+### Added
+
+- **`depends_on` plan steps.** Every plan step now carries an `id`;
+  a step that consumes an earlier step's output lists that id in
+  `depends_on`. Sync `Supervisor` executes in stable topological
+  order; `AsyncSupervisor` runs a completion-driven scheduler where a
+  step starts the MOMENT its dependencies finish (not on wave
+  barriers) and independent steps run concurrently. In DAG mode each
+  step is threaded ONLY its direct dependencies' results — explicit
+  routing instead of "everything prior", which also stops the
+  per-entry context budget shrinking as plans grow.
+
+- **Plan sanitization that never fails a run.** Missing/duplicate ids
+  auto-assigned, unknown dependencies dropped (a planner typo degrades
+  to a root step, not a dead run), self-deps dropped, cycles broken
+  deterministically (back-edge in plan order), spawn steps cannot be
+  depended on. If repairs were needed, the plan is re-requested once
+  (`max_plan_retries`, default 1) with the repair warnings appended;
+  the sanitized original is kept when the retry is no better.
+
+- **Failure cascade + `skipped` flag.** A step whose dependency failed
+  (after retries / success-check) is skipped, transitively, with
+  `SubtaskResult.skipped=True` and an error naming the failed dep.
+  Independent branches keep running; synthesis runs over what
+  succeeded. Skipped steps never dispatch — no tokens burned
+  downstream of garbage.
+
+- **`skip_when` conditional execution.** A step may declare
+  `{"step": <direct dep id>, "field": <typed output field>, "is": <value>}`;
+  evaluated in Python (no LLM call) against the dependency's 3.2
+  structured output, dotted paths supported, strictly FAIL-OPEN (any
+  doubt → the step runs). Condition-skips do NOT cascade — dependents
+  treat them as empty successes ("retrieval unnecessary" is not
+  "answering impossible").
+
+- **`Specialist` registry entries.** `agents={}` now also accepts
+  `Specialist(description, runner, depends_on=[...names...],
+  output_schema=..., when_to_use=...)`. The extras render into the
+  planning catalog (`typically after:` / `returns: Schema(fields)` /
+  `use when:`) so the planner can write real dependency graphs and
+  `skip_when` conditions against actual field names. `depends_on`
+  here is a planner HINT, never an execution constraint (the same
+  specialist can appear twice in one plan; step-ids disambiguate).
+  Classic `(description, runner)` tuples keep working — they are
+  wrapped internally, and `Specialist` tuple-unpacks for older code.
+
+- **`AsyncSupervisor(max_parallel=N)`.** Caps concurrent sub-tasks for
+  rate-limited deployments. `sequential=True` is now sugar for
+  `max_parallel=1` with all-prior threading.
+
+- **`SubtaskResult.step_id` / `.depends_on` / `.skipped`** and a
+  `step_id` field on `dispatch` / `subtask_result` stream events.
+
+### Backward compatibility
+
+A plan where NO step declares `depends_on` runs with byte-identical
+legacy semantics: sync + async-sequential thread all prior results in
+plan order; async-concurrent runs everything at once with no
+threading. Verified by regression tests against the 3.2 behaviour.
+
 ## [3.2.0] - 2026-08-13
 
 Typed multi-agent pipelines. Specialists can now declare a Pydantic

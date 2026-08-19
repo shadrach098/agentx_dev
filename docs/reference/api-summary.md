@@ -121,12 +121,13 @@ CLI: `python -m agentx_dev.Evals run <dir> --config <yaml>`
 
 | Symbol | Kind | Doc |
 |---|---|---|
-| `Supervisor` | class | Sync decompose + dispatch + synthesize |
-| `AsyncSupervisor` | class | Async concurrent dispatch |
+| `Supervisor` | class | Sync decompose + dispatch + synthesize (3.3: `depends_on` DAG plans, `skip_when` conditional steps, `max_plan_retries`) |
+| `AsyncSupervisor` | class | Async concurrent dispatch (3.3: completion-driven DAG scheduler, `max_parallel=` cap) |
 | `SupervisorResult` | dataclass | Plan + subtask results + final |
 | `SubtaskResult` | dataclass | One specialist's contribution. *(3.2)* `.output` carries the validated Pydantic instance when the runner declared an `output_schema` |
 | `SpawnConfig` | dataclass | Dynamic specialist spawning settings |
 | `SpawnRequest` | dataclass | One planner-issued spawn ask |
+| `Specialist` *(3.3)* | dataclass | Registry entry with planner metadata: `depends_on` hints, `output_schema` display, `when_to_use` |
 
 ## Session persistence
 
