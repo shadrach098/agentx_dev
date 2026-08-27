@@ -9,6 +9,38 @@ you can paste and run.
 
 ---
 
+## What's new in 3.3 — dependency DAGs for the Supervisor
+
+Plans stopped being flat lists. A step declares what it consumes, and
+the executor derives ordering, concurrency, AND context routing from
+those edges — closing the old split where sequential mode had context
+threading but no parallelism, and concurrent mode had parallelism but no
+threading. All additive; tuple-registered agents and edge-less plans
+behave exactly as before.
+
+| Feature | What you get |
+|---|---|
+| **`depends_on` plan steps** | Every step carries an `id`; a step that consumes an earlier one lists that id. `Supervisor` runs a stable topological order, `AsyncSupervisor` runs a completion-driven scheduler — a step starts the moment its own dependencies finish, not on a wave barrier. Each step is threaded ONLY its direct dependencies' results, so context budgets stop shrinking as plans grow. |
+| **`max_parallel=N`** | Concurrency cap on `AsyncSupervisor`, for when you're fighting a tokens-per-minute ceiling. `sequential=True` is now sugar for `max_parallel=1`. |
+| **Failure cascade** | A step whose dependency failed after retries is skipped transitively with `SubtaskResult.skipped=True` and an error naming the failed dep. Independent branches keep running; synthesis reports over what survived. No tokens burned downstream of garbage. |
+| **`skip_when` conditional steps** | `{"step": <dep id>, "field": <field>, "is": <value>}`, evaluated in Python against the dependency's typed output — no LLM call. Dotted paths supported. Strictly fail-open: a malformed condition runs the step rather than silently dropping work. |
+| **Plan sanitization that never fails a run** | Missing/duplicate ids auto-assigned, unknown deps dropped (a planner typo degrades to a root step, not a deadlock), self-deps dropped, cycles broken deterministically. Repairs trigger one re-plan (`max_plan_retries`, default 1). |
+| **`Specialist` registry entries** | `Specialist(description=, runner=, depends_on=, when_to_use=, output_schema=)` gives the planner real metadata. Iterable as a 2-tuple, so the old `{"name": ("desc", runner)}` form keeps working alongside it. |
+
+Design notes: [`docs/design/3.3-depends-on-dag.md`](docs/design/3.3-depends-on-dag.md).
+
+## What's new in 3.2 — typed multi-agent pipelines
+
+Structured output stopped being a model-level trick and became something
+a whole pipeline can rely on.
+
+| Feature | What you get |
+|---|---|
+| **Constructor `output_schema`** | `AgentRunner(..., output_schema=MySchema)` runs the full ReAct loop with all its tools, then coerces the final answer into the schema — preferring native function calling, so the provider's constrained decoding fills the fields instead of parsing JSON out of prose. Lands on `completion.output`; `completion.content` still holds the text. Also accepted per-call on `invoke()`, which wins over the constructor. |
+| **Typed output survives the Supervisor** | `SubtaskResult.output` carries the validated Pydantic instance, so downstream Python is deterministic instead of re-parsing prose. |
+| **Structured findings threading** | A dependent specialist literally sees `STRUCTURED OUTPUT (QuerySchema): {...}` in its context rather than a paraphrase. |
+| **Richer `vector_search_tool`** | `max_text_chars` (0 = full passages) and `structured_output` for a JSON `{id, text, vector_score, metadata}` array. |
+
 ## What's new in 3.1.4 — reliability hardening
 
 Four fixes for the "the agent said it would do the thing but didn't"

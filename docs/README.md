@@ -101,6 +101,15 @@ operational lever (memory, caching, budgets, rate limits).
   RAG (`vector_search_tool`), agent-to-agent handoffs, evals harness.
   See the [What's new in 3.1](../README.md#whats-new-in-31--power-features)
   section of the top-level README for a summary table.
+- **3.2** — typed multi-agent pipelines: constructor `output_schema` on
+  the runners, `SubtaskResult.output` carrying validated Pydantic
+  instances through the Supervisor, structured findings threading.
+  See [structured output](guides/structured-output.md).
+- **3.3** — `depends_on` execution DAG for the Supervisor: topological
+  ordering, a completion-driven async scheduler with `max_parallel`,
+  transitive failure cascade, and `skip_when` conditional steps.
+  See [supervisor](advanced/supervisor.md) and the
+  [design note](design/3.3-depends-on-dag.md).
 
 ## Where things live in the source
 

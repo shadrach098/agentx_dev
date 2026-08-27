@@ -437,31 +437,31 @@ result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"
           </a>`).join("")}
       </div>
 
-      <h2 class="section-title">What's new in 3.1</h2>
+      <h2 class="section-title">What's new in 3.3</h2>
       <ul class="whats-new-list">
         <li>
-          <strong>Prompt caching</strong>
-          <div class="desc"><code>Claude(enable_prompt_cache=True)</code> caches system prompt + tool schemas + long history. ~90% cheaper on cached input.</div>
+          <strong>Dependency DAGs</strong>
+          <div class="desc">Plan steps declare <code>depends_on</code>; the executor derives ordering, concurrency, and context routing from the edges. Each step is threaded only its direct dependencies' results.</div>
         </li>
         <li>
-          <strong>Parallel tools</strong>
-          <div class="desc"><code>bind_tools_natively=True</code> dispatches multiple <code>tool_use</code> blocks concurrently on a bounded thread pool.</div>
+          <strong>Completion-driven scheduling</strong>
+          <div class="desc"><code>AsyncSupervisor</code> starts a step the moment its dependencies finish -- no wave barriers. Cap it with <code>max_parallel=N</code>.</div>
         </li>
         <li>
-          <strong>Semantic memory</strong>
-          <div class="desc"><code>SemanticMemory</code> embeds every turn and pulls back top-K on <code>set_query</code>.</div>
+          <strong>Failure cascade</strong>
+          <div class="desc">A step whose dependency failed is skipped transitively (<code>skipped=True</code>). Independent branches keep running; synthesis reports over what survived.</div>
         </li>
         <li>
-          <strong>Retrieval (RAG)</strong>
-          <div class="desc"><code>VectorStore</code> + <code>vector_search_tool()</code>. Zero-dep <code>HashEmbeddings</code>, or <code>OpenAIEmbeddings</code> for production.</div>
+          <strong>Conditional steps</strong>
+          <div class="desc"><code>skip_when</code> short-circuits a branch in Python against a dependency's typed output -- no LLM call, and fail-open by design.</div>
         </li>
         <li>
-          <strong>Handoffs</strong>
-          <div class="desc"><code>HandoffCoordinator</code> routes between peer agents mid-run (Swarm-style).</div>
+          <strong>Typed specialist output (3.2)</strong>
+          <div class="desc"><code>AgentRunner(output_schema=...)</code> coerces the final answer via native function calling; the validated instance survives the Supervisor on <code>SubtaskResult.output</code>.</div>
         </li>
         <li>
-          <strong>Evals harness</strong>
-          <div class="desc"><code>EvalRunner</code> + assertion helpers + JSON case loader + CLI.</div>
+          <strong>Specialist registry (3.3)</strong>
+          <div class="desc"><code>Specialist(...)</code> gives the planner <code>depends_on</code> hints, <code>when_to_use</code> guidance, and the output schema. The plain tuple form still works.</div>
         </li>
       </ul>
     `;
@@ -770,7 +770,19 @@ result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"
     });
   }
 
+  function initVersionBadge() {
+    // Fed by host/build_data.py from pyproject.toml, so the badge tracks
+    // the shipped package instead of drifting like the old hardcoded v3.1.
+    const el = document.getElementById("brand-version");
+    if (!el) return;
+    const v = window.AGENTX_VERSION_SHORT || window.AGENTX_VERSION;
+    if (!v) return;
+    el.textContent = "v" + v;
+    if (window.AGENTX_VERSION) el.title = "agentx-dev " + window.AGENTX_VERSION;
+  }
+
   function init() {
+    initVersionBadge();
     initTopbarScrollBorder();
     initPalette();
     initTheme();
