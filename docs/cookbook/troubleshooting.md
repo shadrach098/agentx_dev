@@ -122,6 +122,81 @@ retried — one that returns thin/empty content is accepted as-is.
 Fixed in 3.1's `_sanitize_history_for_next_agent`. If you see it, you
 may be on an older build; upgrade.
 
+**A step reports `skipped=True` and never ran *(3.3)***
+Two causes, distinguished by `error`:
+
+- `error` **set** — a dependency failed after `max_subtask_retries`, so
+  this step was cascaded out. The message names the failed dependency.
+  This is intentional: dispatching a step whose input is missing burns
+  tokens to produce garbage. Independent branches keep running and
+  synthesis reports over what survived.
+- `error` **is None** — a `skip_when` condition matched. The reason is
+  in `content`.
+
+**A `skip_when` step ran when it should have been skipped *(3.3)***
+`skip_when` evaluation is deliberately **fail-open**. A malformed
+condition, a missing field, a dotted path that doesn't resolve, or a
+dependency with no typed output all run the step rather than dropping
+it. Check that the dependency actually declares an `output_schema` and
+that `field` names a real field on it — conditions are evaluated in
+Python against `SubtaskResult.output`, not against prose.
+
+**My `depends_on` edges disappeared from the plan *(3.3)***
+Plans are sanitized before execution and repairs never fail a run:
+missing or duplicate step ids are auto-assigned, unknown dependencies
+are dropped (a planner typo degrades to a root step rather than
+deadlocking), self-dependencies are dropped, cycles are broken
+deterministically at the back-edge in plan order, and spawn steps can't
+be depended on. If anything was repaired the plan is re-requested once
+(`max_plan_retries`, default `1`) with the warnings appended; if the
+retry isn't better, the sanitized original is used. Run with
+`verbose=True` to see the repair notes.
+
+**Everything runs sequentially even though I'm on `AsyncSupervisor` *(3.3)***
+Check three things: `sequential=True` is sugar for `max_parallel=1`;
+`max_parallel=N` caps concurrency; and a plan where every step depends
+on the previous one *is* a chain — the scheduler can only run what the
+edges permit. Register specialists with no `depends_on` if they're
+genuinely independent.
+
+## Structured output
+
+**`completion.output` is `None`**
+The runner had no schema. Either pass `output_schema=` on the
+constructor (applies to every call) or per-call on `invoke()`. A
+per-call schema wins over the constructor one.
+
+**`AgentRunner.__init__() got an unexpected keyword argument 'output_schema'`**
+Constructor `output_schema` landed in 3.2.0. You're on an older build —
+`pip install -U agentx-dev`. If you installed inside a notebook,
+restart the kernel; the old module stays imported otherwise.
+
+**`ValueError: output_schema=X: final answer is not JSON`**
+Coercion has two strategies. Native function calling is preferred — the
+schema goes to the model as a forced tool call, so the provider's
+constrained decoding fills the fields and nothing is parsed out of
+prose. Text JSON parsing is the fallback, used when the model has no
+`call_with_tools` implementation or the forced call failed. This error
+means you're on the fallback path and the model wrote prose. Fixes, in
+order of preference: use a provider with native function calling, or
+tell the agent in its prompt to end with JSON only.
+
+**`ValueError: output_schema=X: parsed JSON did not match the schema`**
+The model produced JSON with the wrong shape. The message includes the
+parsed dict — compare it against your field names. The usual cause is a
+`Field()` whose description was passed positionally: `Field("the user's
+intent")` sets the *default*, not the description, so the model never
+sees the hint. Use `Field(description="the user's intent")`.
+
+**`SubtaskResult.output` is `None` inside a Supervisor**
+The Supervisor reads `completion.output` off the specialist — it doesn't
+coerce anything itself. The schema has to be declared on the *runner*
+(`AgentRunner(..., output_schema=X)`), or on the registry entry via
+`Specialist(output_schema=X)`, which is display-only for the planner
+catalog and falls back to `runner.output_schema` when unset. If
+coercion raises, the sub-task takes the error path and is retried per
+`max_subtask_retries`.
+
 ## Cost / rate limit
 
 **`CostBudgetExceeded: spent $X, limit $Y`**
@@ -258,6 +333,27 @@ Install the extra: `pip install agentx-dev[chroma]` (or `[qdrant]` /
 The adapter shape is identical but the *backend* stores vectors on
 disk / server. Reindex from scratch when moving between adapters or
 between embedding models.
+
+**Qdrant: `UnicodeError` / IDNA failure when pointing at a local folder**
+You passed a filesystem path to `location=`, which qdrant-client parses
+as a hostname. Use `path="./.qdrant"` for file-backed local persistence
+(3.1.6). Passing both `path=` and `url=`/`location=` raises a
+`ValueError` — they're mutually exclusive.
+
+**`Exception ignored in: <function QdrantClient.__del__>` at exit**
+Harmless interpreter-shutdown noise from qdrant-client, not an AgentX
+error and not data loss — the local client's destructor runs after
+modules it depends on have already been torn down. The store owns its
+client privately and exposes no `close()`. If you need lifecycle
+control, build the client yourself and hand it in:
+
+```python
+from qdrant_client import QdrantClient
+client = QdrantClient(path="./.qdrant")
+store = QdrantVectorStore(embeddings=embeddings, client=client)
+...
+client.close()          # now the shutdown is yours to order
+```
 
 **Qdrant: "collection X vector dim Y != expected Z"**
 The collection was created with a different embedding dim. Delete

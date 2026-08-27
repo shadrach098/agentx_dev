@@ -237,21 +237,44 @@ coord = HandoffCoordinator(
 The answerer proposes; critic finds flaws; answerer revises; critic
 approves. `max_hops=4` = at most 2 revision rounds.
 
-## 16. Cache invalidation on tool changes
+## 16. Caching some tools but not others
 
-Tools whose inputs shouldn't cache (e.g. `current_time`) should NOT go
-through `runner.registry.cache`. Attach cache to specific tools only:
+`registry.configure_cache()` is **all-or-nothing** — it attaches one
+cache that every dispatch reads and writes through, keyed on
+`(tool_name, args)`. There is no per-tool opt-out at the registry
+level, so a time-sensitive tool like `current_time` will happily serve
+you a stale answer.
+
+When only *some* tools should cache, leave the registry cache off and
+decorate the individual tool functions instead:
 
 ```python
-runner.registry.configure_cache(get_global_cache())
+from agentx_dev import AgentRunner, StandardTool, InMemoryCache, cached_tool
 
-# Then override for tools you DON'T want cached:
-class NoCacheTool(StandardTool):
-    def dispatch(self, args):
-        return self.func(args)
+cache = InMemoryCache(default_ttl=300)
 
-runner.registry.tools_by_name["current_time"] = NoCacheTool(func=..., name="current_time", ...)
+@cached_tool(cache, ttl=3600)          # stable, expensive -> cache hard
+def lookup_company(ticker: str) -> str:
+    return expensive_api_call(ticker)
+
+def current_time(_: str) -> str:       # never decorated -> never cached
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+runner = AgentRunner(
+    model=llm,
+    tools=[
+        StandardTool(func=lookup_company, description="Look up a company by ticker."),
+        StandardTool(func=current_time, description="Current UTC time."),
+    ],
+)
+# Note: no runner.registry.configure_cache(...) call.
 ```
+
+Use the registry-wide cache (`configure_cache(get_global_cache())`)
+only when *every* tool in that runner is safe to memoize — a pure
+retrieval agent, say. Mixing the two means the registry cache wins at
+dispatch and your per-tool TTLs stop mattering.
 
 ## 17. Confidential redaction on outputs
 
@@ -441,6 +464,15 @@ store = QdrantVectorStore(
     api_key=os.environ["QDRANT_API_KEY"],
 )
 
+# Local file-backed Qdrant, no server (3.1.6) — use path=, NOT location=.
+# location= is parsed as a hostname and a filesystem path there fails
+# with an IDNA UnicodeError.
+store = QdrantVectorStore(
+    embeddings=OpenAIEmbeddings(),
+    collection_name="prod_docs",
+    path="./.qdrant",
+)
+
 # Already-have-Postgres production (pgvector)
 from agentx_dev.VectorStores import PgVectorStore
 store = PgVectorStore(
@@ -591,3 +623,93 @@ so greetings never touch the vector store. Each step receives ONLY its
 direct dependency's output, a failed retrieval skips the reranker
 automatically (`skipped=True`), and under `AsyncSupervisor` any
 independent steps in the same plan run concurrently.
+
+---
+
+## 25. Fan-out research → single synthesis, as a DAG *(3.3)*
+
+The shape most multi-agent work actually has: several independent
+investigations that must all land before one step can reason over the
+whole picture. Pre-3.3 you chose between `sequential=True` (context
+threading, no concurrency) and `sequential=False` (concurrency, no
+context threading). 3.3 removes the choice — declare the edges and the
+executor derives ordering, parallelism, and context routing from them.
+
+```python
+import asyncio
+from pydantic import BaseModel, Field
+from agentx_dev import AsyncSupervisor, Specialist, Claude
+
+
+class MarketRead(BaseModel):
+    signal: str = Field(description="What the data says")
+    confidence: float = Field(description="0.0-1.0")
+
+
+sup = AsyncSupervisor(
+    model=Claude(),
+    agents={
+        # Three roots — no depends_on, so they start together.
+        "filings":  Specialist(
+            description="Reads SEC filings and 10-Ks.",
+            runner=filings_agent,
+            when_to_use="anything about reported financials",
+        ),
+        "news":     Specialist(
+            description="Sweeps recent press and analyst notes.",
+            runner=news_agent,
+        ),
+        "pricing":  Specialist(
+            description="Pulls competitor pricing pages.",
+            runner=pricing_agent,
+        ),
+        # One join — waits for all three, sees all three outputs.
+        "analyst":  Specialist(
+            description="Reconciles the three reads into a position.",
+            runner=analyst_agent,
+            depends_on=["filings", "news", "pricing"],
+        ),
+    },
+    max_parallel=3,          # cap concurrency to stay under your TPM limit
+)
+
+result = asyncio.run(sup.run("Should we reprice the enterprise tier?"))
+
+for sub in result.subtasks:
+    if isinstance(sub.output, MarketRead):
+        print(sub.step_id, sub.output.signal, sub.output.confidence)
+```
+
+What the scheduler does with that plan:
+
+- **The three roots dispatch at once.** No wave barrier — the analyst
+  starts the moment the *last* of its three dependencies finishes, not
+  when some artificial round ends.
+- **`analyst` sees exactly three findings**, labelled by step id. Not
+  "everything that ran before it", which is what the old sequential
+  mode threaded and what made context budgets shrink as plans grew.
+- **`max_parallel=3`** is the throttle. Leave it `None` for unbounded;
+  set it when you're fighting a tokens-per-minute ceiling. Note
+  `sequential=True` is now just sugar for `max_parallel=1`.
+- **If `pricing` fails** after `max_subtask_retries`, `analyst` is
+  skipped transitively with `skipped=True` and an error naming the
+  failed dependency. `filings` and `news` still complete, and synthesis
+  runs over what survived — you get a partial answer instead of a
+  burned run.
+
+### Short-circuiting a branch
+
+Give a step a `skip_when` and it never dispatches when the condition
+holds — evaluated in Python against a dependency's typed output, so it
+costs zero tokens:
+
+```json
+{"step": "triage", "field": "severity", "is": "low"}
+```
+
+Dotted paths work (`"field": "meta.tier"`). Evaluation is strictly
+**fail-open**: a malformed condition, a missing field, or an untyped
+dependency runs the step rather than silently dropping it. A skipped
+step carries `skipped=True` with `error=None` — the reason lives in
+`content`. That's the tell for distinguishing "condition matched" from
+"dependency blew up".

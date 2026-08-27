@@ -32,12 +32,76 @@
 
 - **Supervisor** — plan shape is knowable upfront. Fixed decompose →
   dispatch → synthesize. One planning call + N specialist runs + one
-  synthesis call.
+  synthesis call. Since 3.3 the plan is a DAG, so "knowable upfront"
+  covers branch-and-join work too: declare `depends_on` edges and the
+  executor derives ordering, concurrency, and which findings each step
+  sees.
 - **Handoffs** — routing depends on partial results, or specialists
   chain in loops. Peer-to-peer transfers via `handoff_tool`.
 
 Both together: a top-level Supervisor whose specialists are themselves
 handoff coordinators.
+
+## `with_structured_output()` or `output_schema=`? *(3.2)*
+
+Different layers, and mixing them up is the most common 3.2 stumble.
+
+- **`model.with_structured_output(Schema)`** wraps the *model*. It
+  returns a `StructuredOutputRunnable` — one constrained call, no agent
+  loop, no tools. Reach for it when you want extraction, not agency.
+- **`AgentRunner(..., output_schema=Schema)`** wraps the *runner*. The
+  full ReAct loop runs with all its tools, and the final answer is
+  coerced into `Schema` afterwards, surfacing on
+  `completion.output`. `completion.content` still holds the prose.
+
+Pass `output_schema=` to `invoke()` instead for a one-off shape; the
+per-call schema wins over the constructor one. Coercion prefers native
+function calling (a forced tool call, so the provider's own constrained
+decoding fills the fields) and falls back to JSON parsing only when the
+model has no `call_with_tools`.
+
+## Do I have to use `Specialist` for Supervisor agents? *(3.3)*
+
+No. The plain tuple form still works and isn't deprecated:
+
+```python
+agents={"researcher": ("Searches the web.", research_agent)}
+```
+
+`Specialist` is what you upgrade to when you want to give the planner
+more to work with — `depends_on` hints, `when_to_use` guidance, and an
+`output_schema` shown in the catalog so the planner knows what a step
+returns. It's iterable as a 2-tuple, so both forms can coexist in the
+same `agents` dict.
+
+## My agent blows the TPM limit fetching web pages
+
+Give `web_fetch_tool` a vector store:
+
+```python
+web_fetch_tool(vector_store=store, chunk_size=1500, chunk_overlap=200)
+```
+
+Every successful fetch is chunked, embedded, and added to the store,
+and the tool returns a compact summary — URL, byte count, chunk count,
+a preview — instead of the raw body. The HTML never enters the model's
+context, so four parallel fetches of long pages stop being a
+40k-token turn. The agent pulls what it needs back out through
+`vector_search_tool`.
+
+## The agent writes files to the wrong directory
+
+Pass `workspace=` alongside `allowed_paths`:
+
+```python
+Permissions.full_access(["/srv/project"], workspace="/srv/project")
+```
+
+With a workspace set, short relative paths resolve against it —
+`write_file(path="report.md")` lands in the workspace instead of
+resolving against the process CWD. When `allowed_paths` has exactly one
+entry it's auto-set as the workspace, so the common case needs no extra
+argument.
 
 ## How do I add a new provider?
 
@@ -133,10 +197,36 @@ runner can consume, regardless of provider.
 
 ## How do I run multiple agents in parallel?
 
-- `AsyncSupervisor(sequential=False)` for concurrent sub-tasks.
-- Multiple `AsyncAgentRunner` instances via `asyncio.gather`.
+- **`AsyncSupervisor` with a `depends_on` DAG *(3.3)*** — the default
+  answer. Steps with no shared edges run concurrently, and a step
+  starts the moment its own dependencies finish rather than waiting on
+  a wave barrier. Cap it with `max_parallel=N` when you're near a TPM
+  ceiling. `sequential=True` is now just sugar for `max_parallel=1`.
+- Multiple `AsyncAgentRunner` instances via `asyncio.gather` — when you
+  don't want a planner in the loop at all.
 - One `AgentRunner` with `bind_tools_natively=True` + multiple tools
   per turn — dispatches on a thread pool.
+
+`AsyncSupervisor(sequential=False)` still works and is still concurrent.
+Before 3.3 it was concurrent *without* context threading — sub-tasks
+couldn't see each other's findings. Declaring edges is what buys you
+both at once.
+
+## Why did a sub-task not run? *(3.3)*
+
+Check `SubtaskResult.skipped`. Two different causes, told apart by
+`error`:
+
+- **`skipped=True`, `error` set** — a dependency failed after retries,
+  so this step was cascaded out. The error names the failed dep.
+  Independent branches still ran; synthesis reports what survived.
+- **`skipped=True`, `error=None`** — a `skip_when` condition matched.
+  The reason is in `content`.
+
+If a step ran that you expected to be skipped, the condition failed
+open: `skip_when` deliberately runs the step on any malformed
+condition, missing field, or untyped dependency rather than dropping
+work silently.
 
 ## How do I extend the AgentType templates?
 
@@ -214,6 +304,7 @@ Graduate to a persistent adapter when you outgrow it:
 |---|---|
 | < 10k chunks, single process, prototype | `VectorStore` |
 | Persistent local, < 100k chunks | `ChromaVectorStore(persist_directory=)` |
+| Persistent local, no server to run | `QdrantVectorStore(path=)` *(3.1.6)* |
 | Remote / multi-process / horizontal scale | `QdrantVectorStore(url=)` |
 | You already run Postgres | `PgVectorStore(dsn=)` — reuse existing DB |
 | Millions of chunks + hybrid search | Use the underlying SDK directly, adapter is for the base case |
