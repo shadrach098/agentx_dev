@@ -24,7 +24,26 @@ class MockModel(BaseChatModel):
 
     ``tool_script`` is the analogous shape for ``call_with_tools``: each
     call returns the next dict.
+
+    **Text mode vs function-calling mode.** Since 3.1.7 ``AgentRunner``
+    auto-detects ``use_function_calling`` by asking whether the model
+    class actually overrides ``call_with_tools``. This mock used to
+    define it unconditionally, so every ``MockModel(script=[...])`` --
+    a *text* script -- was routed down the FC path, where an empty
+    ``tool_script`` returned ``{"type": "text", "text": ""}`` and the
+    runner produced ``""``. That silently broke 20 text-mode tests.
+
+    A mock must therefore advertise the capability only when it is
+    scripted for it: passing ``tool_script`` returns a subclass that
+    implements ``call_with_tools``, and a bare ``script`` returns this
+    class, which does not. Auto-detect then picks the mode the test
+    actually meant, with no per-test flag.
     """
+
+    def __new__(cls, script: Any = None, tool_script: Optional[List[dict]] = None):
+        if cls is MockModel and tool_script is not None:
+            cls = _MockToolCallingModel
+        return object.__new__(cls)
 
     def __init__(
         self,
@@ -46,15 +65,24 @@ class MockModel(BaseChatModel):
             return self._script.pop(0)
         return ""
 
+    async def async_initialize(self, messages) -> str:
+        return self.Initialize(messages)
+
+
+class _MockToolCallingModel(MockModel):
+    """MockModel that DOES implement native function calling.
+
+    Constructed for you by ``MockModel(tool_script=[...])``; instantiate
+    it directly only if a test needs an FC-capable model with an empty
+    script.
+    """
+
     def call_with_tools(self, messages, tools, *, force_tool=None):
         self.tool_calls_made.append(list(messages))
         self._record_usage_counts(input_tokens=10, output_tokens=5)
         if not self._tool_script:
             return {"type": "text", "text": ""}
         return self._tool_script.pop(0)
-
-    async def async_initialize(self, messages) -> str:
-        return self.Initialize(messages)
 
     async def async_call_with_tools(self, messages, tools, *, force_tool=None):
         return self.call_with_tools(messages, tools, force_tool=force_tool)
