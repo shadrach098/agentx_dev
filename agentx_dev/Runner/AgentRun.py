@@ -807,12 +807,43 @@ class ToolRegistry:
     def cache(self):
         return getattr(self, "_cache", None)
 
+    def _tool_fingerprint(self, name: str) -> str:
+        """Stable identity of the callable currently registered under
+        ``name``.
+
+        The tool cache is a PROCESS-WIDE singleton keyed on
+        (tool_name, args), so two runners in one process whose tools
+        merely share a name -- ``search``, ``fetch``, ``query``, the
+        usual suspects, and routine across Supervisor specialists --
+        collided: the second runner was served the first one's result
+        and its own function never ran. Fold the implementation's
+        module+qualname into the key so same-name/different-impl misses
+        while genuinely identical tools still share, including across
+        processes for the disk-backed FileCache (which rules out id()).
+        """
+        for table in (self.sync_std, self.async_std):
+            fn = table.get(name)
+            if fn is not None:
+                break
+        else:
+            fn = None
+            for table in (self.sync_struct, self.async_struct):
+                spec = table.get(name)
+                if spec is not None:
+                    fn = spec.get("func")
+                    break
+        if fn is None:
+            return name
+        mod = getattr(fn, "__module__", "?")
+        qual = getattr(fn, "__qualname__", getattr(fn, "__name__", "?"))
+        return f"{mod}.{qual}"
+
     def _cache_get(self, name: str, args):
         cache = getattr(self, "_cache", None)
         if cache is None:
             return None
         from agentx_dev.Cache import generate_cache_key
-        key = generate_cache_key(name, args)
+        key = generate_cache_key(self._tool_fingerprint(name), args)
         try:
             hit = cache.get(key)
         except Exception as e:
@@ -827,7 +858,7 @@ class ToolRegistry:
         if cache is None:
             return
         from agentx_dev.Cache import generate_cache_key
-        key = generate_cache_key(name, args)
+        key = generate_cache_key(self._tool_fingerprint(name), args)
         ttl = getattr(self, "_cache_ttl", None)
         try:
             cache.set(key, result, ttl=ttl)
@@ -1835,9 +1866,36 @@ class AgentRunner:
             effective_history = self._memory.get_messages()
 
         if effective_history and isinstance(effective_history, list):
+            # Copy prior turns faithfully enough to be replayable. The old
+            # filter kept only truthy {role, content}, which silently broke
+            # every round-trip of a previous run's completion.history:
+            #   * assistant tool-calling turns carry content="" -> dropped,
+            #     so the agent lost all memory of its own actions;
+            #   * role="tool" messages lost tool_call_id/name -> providers
+            #     reject an orphaned tool message;
+            #   * a stored system prompt was replayed as history on top of
+            #     the freshly built one -> two contradictory system turns.
             for r in effective_history:
-                if r.get('role') and r.get('content'):
-                    working_history.append({'role': r['role'], 'content': r['content']})
+                role = r.get('role')
+                if not role:
+                    continue
+                # The runner builds its own system prompt above; a system
+                # message arriving as history is a leftover from a prior
+                # completion.history and must not be duplicated.
+                if role == 'system':
+                    continue
+                msg = {'role': role, 'content': r.get('content') or ''}
+                if r.get('tool_calls'):
+                    msg['tool_calls'] = r['tool_calls']
+                if role == 'tool':
+                    if r.get('tool_call_id'):
+                        msg['tool_call_id'] = r['tool_call_id']
+                    if r.get('name'):
+                        msg['name'] = r['name']
+                # Keep a turn only if it carries text OR a tool-call block;
+                # a bare empty message is noise either way.
+                if msg['content'] or msg.get('tool_calls') or role == 'tool':
+                    working_history.append(msg)
 
         working_history.append({"role": "user", "content": user_input})
 
@@ -1928,7 +1986,24 @@ class AgentRunner:
                 }]
 
                 # "respond" call → loop terminates with its answer text.
+                # A model may batch real tool calls ALONGSIDE respond in one
+                # turn ("do X, and here is my answer"). Honouring respond
+                # immediately used to discard those calls silently — the
+                # tool never ran, never appeared in completion.tool_calls,
+                # and nothing told the caller. Dispatch the batch first and
+                # let the NEXT turn produce the answer, so the model gets to
+                # see the results it asked for.
                 respond_call = next((c for c in turn_calls if c["name"] == "respond"), None)
+                if respond_call is not None and len(turn_calls) > 1:
+                    if self.verbose:
+                        others = [c["name"] for c in turn_calls if c["name"] != "respond"]
+                        print(
+                            f"[3;33m[loop] 'respond' batched with {others}; "
+                            f"running the tools first, deferring the answer"
+                            f"[0m"
+                        )
+                    respond_call = None
+                    turn_calls = [c for c in turn_calls if c["name"] != "respond"]
                 if respond_call is not None:
                     final_answer = str(respond_call["input"].get("answer", ""))
                     working_history.append({
@@ -1947,6 +2022,56 @@ class AgentRunner:
                     break
 
                 non_respond = [c for c in turn_calls if c["name"] != "respond"]
+
+                # Loop-level spiral check, native-mode edition. The
+                # text/FC path has had this since 3.0; the native branch
+                # `continue`d before ever reaching it, so a model stuck
+                # re-issuing the same call ran to max_iterations. The
+                # tool-layer dup-guard warns and then refuses, but a
+                # stubborn model treats the refusal as just another
+                # message and keeps going — which is the exact reason
+                # this loop-level stop exists. Signature is the whole
+                # TURN (sorted name+args) so batched calls compare too.
+                try:
+                    turn_sig = json.dumps(
+                        sorted(
+                            (c["name"], json.dumps(c["input"], sort_keys=True, default=repr))
+                            for c in non_respond
+                        ),
+                        default=repr,
+                    )
+                except Exception:
+                    turn_sig = repr([(c["name"], c["input"]) for c in non_respond])
+                if turn_sig == last_action_sig:
+                    consecutive_identical_actions += 1
+                else:
+                    last_action_sig = turn_sig
+                    consecutive_identical_actions = 1
+                if consecutive_identical_actions >= LOOP_FORCE_STOP:
+                    names = ", ".join(sorted({c["name"] for c in non_respond})) or "<none>"
+                    if tool_calls:
+                        last = tool_calls[-1]
+                        final_answer = (
+                            f"(Terminated: model issued {consecutive_identical_actions} "
+                            f"identical calls to '{names}' in a row. Best available "
+                            f"data from last successful call to '{last.name}':\n\n"
+                            f"{str(last.result)[:2000]})"
+                        )
+                    else:
+                        final_answer = (
+                            f"(Terminated: model issued {consecutive_identical_actions} "
+                            f"identical calls to '{names}' in a row without any "
+                            "successful tool result to fall back on.)"
+                        )
+                    if self.verbose:
+                        print(
+                            "[1;31m[loop] force-stop: "
+                            f"{consecutive_identical_actions} identical native turns "
+                            f"calling '{names}' — aborting before dispatch[0m"
+                        )
+                    yield {"type": "final", "content": final_answer}
+                    break
+
                 for i, c in enumerate(non_respond):
                     if not c.get("id"):
                         c["id"] = f"call_{count}_{i}"
@@ -2266,7 +2391,20 @@ class AgentRunner:
             # set so a legitimate batching call doesn't fall through to
             # implicit-final and dump its `action_input` (a list of
             # nested tool_use dicts) into the user-visible answer.
-            known_tools = set(self.func) | set(self.args) | {"multi_tool_use.parallel"}
+            # Union ALL FOUR registry dicts, not just the sync pair.
+            # A sync runner can be handed an AsyncStandardTool: the
+            # registry accepts it, registry.has() reports it, and it
+            # appears in the prompt block the model reads -- so the model
+            # calls it, and a sync-only known_tools sent that straight to
+            # the implicit-final guardrail. Result was a silently wrong
+            # answer (action_input returned as the final) with an empty
+            # tool_calls list and no error. AsyncAgentRun.py has always
+            # unioned all four; this brings the sync path in line.
+            known_tools = (
+                set(self.registry.sync_std) | set(self.registry.sync_struct)
+                | set(self.registry.async_std) | set(self.registry.async_struct)
+                | {"multi_tool_use.parallel"}
+            )
             if not action or action not in known_tools:
                 # Strict mode: when the unknown `action` looks like a
                 # tool identifier (no spaces, short), assume the model

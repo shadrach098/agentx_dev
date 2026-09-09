@@ -492,9 +492,36 @@ class AsyncAgentRunner:
             effective_history = self._memory.get_messages()
 
         if effective_history and isinstance(effective_history, list):
+            # Copy prior turns faithfully enough to be replayable. The old
+            # filter kept only truthy {role, content}, which silently broke
+            # every round-trip of a previous run's completion.history:
+            #   * assistant tool-calling turns carry content="" -> dropped,
+            #     so the agent lost all memory of its own actions;
+            #   * role="tool" messages lost tool_call_id/name -> providers
+            #     reject an orphaned tool message;
+            #   * a stored system prompt was replayed as history on top of
+            #     the freshly built one -> two contradictory system turns.
             for r in effective_history:
-                if r.get('role') and r.get('content'):
-                    working_history.append({'role': r['role'], 'content': r['content']})
+                role = r.get('role')
+                if not role:
+                    continue
+                # The runner builds its own system prompt above; a system
+                # message arriving as history is a leftover from a prior
+                # completion.history and must not be duplicated.
+                if role == 'system':
+                    continue
+                msg = {'role': role, 'content': r.get('content') or ''}
+                if r.get('tool_calls'):
+                    msg['tool_calls'] = r['tool_calls']
+                if role == 'tool':
+                    if r.get('tool_call_id'):
+                        msg['tool_call_id'] = r['tool_call_id']
+                    if r.get('name'):
+                        msg['name'] = r['name']
+                # Keep a turn only if it carries text OR a tool-call block;
+                # a bare empty message is noise either way.
+                if msg['content'] or msg.get('tool_calls') or role == 'tool':
+                    working_history.append(msg)
 
         working_history.append({"role": "user", "content": user_input})
 
@@ -706,10 +733,28 @@ class AsyncAgentRunner:
                     final_answer = text
                     break
 
+                # Record the assistant turn as a real function call, not
+                # as prose. The sync runner has done this since #15 so
+                # providers can correlate it with the tool result below
+                # via the OpenAI/Anthropic tool_use_id convention; the
+                # async path was still appending raw JSON text, which
+                # made the model see its own tool call as a message and
+                # sent observations back as role="user". Same shape both
+                # runners now.
+                tool_call_id = call_result.get("id") or f"call_{count}"
                 working_history.append({
                     "role": "assistant",
-                    "content": json.dumps(call_result["input"]),
+                    "content": "",
+                    "tool_calls": [{
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": call_result["name"],
+                            "arguments": json.dumps(call_result["input"]),
+                        },
+                    }],
                 })
+                self._last_function_call_id = tool_call_id
             else:
                 response = await self.model.async_initialize(messages=working_history)
                 working_history.append({"role": "assistant", "content": response})

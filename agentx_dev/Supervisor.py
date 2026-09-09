@@ -1815,79 +1815,94 @@ class AsyncSupervisor:
             done_ids.add(step_ids[i])
             return r
 
-        while len(done_ids) < len(plan):
-            # Launch everything ready (respecting max_parallel), resolving
-            # cascades and condition-skips inline — those complete
-            # instantly without dispatching.
-            progressed = False
-            for i in _ready():
-                if dag_mode:
-                    failed_dep = next(
-                        (d for d in deps_of[i]
-                         if d in results_by_id and results_by_id[d].error),
-                        None,
-                    )
-                    if failed_dep is not None:
-                        launched.add(i)
-                        r = _record(i, SubtaskResult(
-                            agent=plan[i].get("agent", "<none>"),
-                            query=plan[i].get("query", ""),
-                            content="",
-                            error=(f"skipped: dependency '{failed_dep}' failed "
-                                   f"({results_by_id[failed_dep].error})"),
-                            skipped=True,
-                        ))
-                        yield {"type": "subtask_result", "result": r,
-                               "step": i, "step_id": step_ids[i]}
-                        progressed = True
-                        continue
-                    skip, reason = _evaluate_skip_when(
-                        plan[i].get("skip_when"), results_by_id,
-                        deps_of[i], self.verbose,
-                    )
-                    if skip:
-                        launched.add(i)
-                        r = _record(i, SubtaskResult(
-                            agent=plan[i].get("agent", "<none>"),
-                            query=plan[i].get("query", ""),
-                            content=f"skipped: {reason}",
-                            skipped=True,
-                        ))
-                        yield {"type": "subtask_result", "result": r,
-                               "step": i, "step_id": step_ids[i]}
-                        progressed = True
-                        continue
-                if self.max_parallel is not None and len(running) >= self.max_parallel:
-                    break
-                launched.add(i)
-                dep_results = [
-                    results_by_id[d] for d in deps_of[i] if d in results_by_id
-                ]
-                task = asyncio.create_task(self._run_subtask(
-                    plan[i]["agent"], plan[i]["query"],
-                    prior_results=dep_results if dep_results else None,
-                ))
-                running[task] = i
-                progressed = True
+        # Every scheduled task is owned by this try/finally. Without it a
+        # BaseException out of a specialist (asyncio.CancelledError and
+        # KeyboardInterrupt are NOT Exception, so _run_subtask's handler
+        # never sees them) propagated out of t.result() and left the
+        # sibling tasks running unowned -- in-flight LLM calls still
+        # billing with nobody collecting the result. The same finally
+        # covers a consumer that stops iterating this generator early.
+        try:
+            while len(done_ids) < len(plan):
+                # Launch everything ready (respecting max_parallel), resolving
+                # cascades and condition-skips inline — those complete
+                # instantly without dispatching.
+                progressed = False
+                for i in _ready():
+                    if dag_mode:
+                        failed_dep = next(
+                            (d for d in deps_of[i]
+                             if d in results_by_id and results_by_id[d].error),
+                            None,
+                        )
+                        if failed_dep is not None:
+                            launched.add(i)
+                            r = _record(i, SubtaskResult(
+                                agent=plan[i].get("agent", "<none>"),
+                                query=plan[i].get("query", ""),
+                                content="",
+                                error=(f"skipped: dependency '{failed_dep}' failed "
+                                       f"({results_by_id[failed_dep].error})"),
+                                skipped=True,
+                            ))
+                            yield {"type": "subtask_result", "result": r,
+                                   "step": i, "step_id": step_ids[i]}
+                            progressed = True
+                            continue
+                        skip, reason = _evaluate_skip_when(
+                            plan[i].get("skip_when"), results_by_id,
+                            deps_of[i], self.verbose,
+                        )
+                        if skip:
+                            launched.add(i)
+                            r = _record(i, SubtaskResult(
+                                agent=plan[i].get("agent", "<none>"),
+                                query=plan[i].get("query", ""),
+                                content=f"skipped: {reason}",
+                                skipped=True,
+                            ))
+                            yield {"type": "subtask_result", "result": r,
+                                   "step": i, "step_id": step_ids[i]}
+                            progressed = True
+                            continue
+                    if self.max_parallel is not None and len(running) >= self.max_parallel:
+                        break
+                    launched.add(i)
+                    dep_results = [
+                        results_by_id[d] for d in deps_of[i] if d in results_by_id
+                    ]
+                    task = asyncio.create_task(self._run_subtask(
+                        plan[i]["agent"], plan[i]["query"],
+                        prior_results=dep_results if dep_results else None,
+                    ))
+                    running[task] = i
+                    progressed = True
 
-            if progressed and len(done_ids) >= len(plan):
-                break
-            if not running:
-                if not progressed:
-                    # Nothing running, nothing launchable: only possible if
-                    # a dep id points at a step outside the plan (sanitizer
-                    # prevents this) — bail rather than spin.
+                if progressed and len(done_ids) >= len(plan):
                     break
-                continue
+                if not running:
+                    if not progressed:
+                        # Nothing running, nothing launchable: only possible if
+                        # a dep id points at a step outside the plan (sanitizer
+                        # prevents this) — bail rather than spin.
+                        break
+                    continue
 
-            done, _ = await asyncio.wait(
-                running.keys(), return_when=asyncio.FIRST_COMPLETED,
-            )
-            for t in done:
-                i = running.pop(t)
-                r = _record(i, t.result())
-                yield {"type": "subtask_result", "result": r,
-                       "step": i, "step_id": step_ids[i]}
+                done, _ = await asyncio.wait(
+                    running.keys(), return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in done:
+                    i = running.pop(t)
+                    r = _record(i, t.result())
+                    yield {"type": "subtask_result", "result": r,
+                           "step": i, "step_id": step_ids[i]}
+        finally:
+            for _t in list(running):
+                if not _t.done():
+                    _t.cancel()
+            if running:
+                await asyncio.gather(*running, return_exceptions=True)
+            running.clear()
 
         yield {"type": "synthesize_start"}
         final = await self._synthesize(user_task, list(subtask_results))
