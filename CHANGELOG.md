@@ -4,6 +4,84 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.3.1] - 2026-09-09
+
+Correctness fixes in the agent loop, found by driving it with a
+scripted model rather than reading it. No API changes; every fix
+replaces a silent wrong answer or a runaway cost with correct
+behaviour. Nine regression tests ship with them
+(`tests/test_agent_loop_flaws.py`).
+
+### Fixed
+
+- **Native binding had no loop-level spiral guard.** The repeat breaker
+  sat after the native branch's `continue`, so `bind_tools_natively`
+  runs never reached it: a model stuck re-issuing one call burned the
+  full `max_iterations` (20 LLM turns where text mode stopped at 3) and
+  returned the "hit max_iterations" recap quoting the dup-guard's own
+  warning text instead of the data.
+
+- **`respond` batched with real tool calls dropped them.** A model that
+  emitted "do X, and here is my answer" in one turn had X silently
+  discarded -- never dispatched, never in `completion.tool_calls`, no
+  error. The batch now runs and the answer defers one turn.
+
+- **`completion.history` could not be replayed as `chat_history`.** The
+  copy filter kept only truthy `{role, content}`, which dropped every
+  tool-calling assistant turn (`content=""`), stripped `tool_call_id`
+  off `role="tool"` messages, and replayed a stored system prompt on top
+  of the fresh one -- so a follow-up call sent two system messages, zero
+  assistant turns, and an orphaned tool message providers reject. Fixed
+  in both runners.
+
+- **A sync `AgentRunner` silently ignored async tools.** `known_tools`
+  unioned only the two sync registry tables while the registry accepted,
+  listed and prompt-advertised async ones, so calling one fell through
+  to implicit-final and returned `action_input` as the answer with an
+  empty `tool_calls` list. Now unions all four, matching the async
+  runner; the sync dispatcher already returns a clear `ToolError`, so
+  the silent wrong answer became an actionable one.
+
+- **`AsyncAgentRunner` regressed the function-calling message shape.**
+  It appended its FC turn as raw JSON text with no `tool_calls` block
+  and never set `_last_function_call_id`, so observations went back as
+  `role="user"` -- text-mode shape while in FC mode, losing provider
+  correlation and the cached prefix.
+
+- **A `BaseException` from a specialist orphaned its siblings.**
+  `CancelledError` and `KeyboardInterrupt` are not `Exception`, so
+  `_run_subtask`'s handler never saw them; `t.result()` re-raised and
+  left sibling tasks running unowned, with in-flight LLM calls still
+  billing. The scheduler now owns its tasks in a `try`/`finally`, which
+  also covers a consumer that stops iterating `astream` early.
+
+- **The tool cache collided on tool name.** It is a process-wide
+  singleton keyed on `(tool_name, args)` with no record of which
+  implementation ran, so two runners whose tools merely share a name --
+  `search`, `fetch`, `query`, routine across Supervisor specialists --
+  served each other's results and the second function never ran. Keys
+  now fold in the callable's `module.qualname`, so same-name /
+  different-implementation misses while genuinely identical tools still
+  share, including across processes for the disk-backed `FileCache`.
+
+### Docs
+
+- Streaming documentation described parameters the API rejects.
+  `AsyncAgentRunner.astream()` and `HandoffCoordinator.stream()` take no
+  `stream_tokens` (only the sync `AgentRunner.stream()` does), and every
+  `text_delta` example was built on a default model where
+  `use_function_calling` auto-detects to `True` and yields zero deltas.
+  `simple_stream` was documented with the wrong signature entirely.
+  Added a table naming exactly which stream methods accept what.
+
+### Tests
+
+- Repaired 20 stale text-mode tests. `MockModel` defined
+  `call_with_tools` unconditionally, so 3.1.7's auto-detect routed every
+  text script down the function-calling path and the runner returned
+  `""`. The mock now advertises the capability only when scripted for
+  it. Suite: 206 passed, 3 skipped.
+
 ## [3.3.0] - 2026-08-19
 
 Dependency DAGs for the Supervisor. Plans declare which steps consume
