@@ -895,7 +895,13 @@ print(receipt.merchant)
 ## Stream output token-by-token
 
 ```python
-runner = AgentRunner(model=Claude(), agent=AgentType.ReAct, tools=[weather_tool])
+# use_function_calling=False is REQUIRED for text_delta: FC mode (the
+# auto-detected default since 3.1.7) emits structured tool calls, not
+# streaming text, so stream_tokens=True would yield zero text_delta.
+runner = AgentRunner(
+    model=Claude(), agent=AgentType.ReAct, tools=[weather_tool],
+    use_function_calling=False,
+)
 
 for event in runner.stream("What's the weather in NYC?", stream_tokens=True):
     if event["type"] == "text_delta":

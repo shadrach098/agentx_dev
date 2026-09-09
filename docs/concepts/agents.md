@@ -635,7 +635,11 @@ for event in runner.stream("What's the weather in NYC?"):
 ```
 
 Add `stream_tokens=True` for `text_delta` events with per-token
-chunks. See [Streaming](../guides/streaming.md).
+chunks — this also needs `use_function_calling=False`, since FC mode
+(the auto-detected default) emits structured tool calls instead of
+streaming text and yields no `text_delta` at all. Sync
+`AgentRunner.stream()` only; `AsyncAgentRunner.astream()` does not take
+the argument. See [Streaming](../guides/streaming.md).
 
 ---
 

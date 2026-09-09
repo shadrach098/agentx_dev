@@ -184,11 +184,16 @@ for input in inputs:
 @app.post("/chat")
 async def chat(req: dict):
     async def event_stream():
-        async for event in runner.astream(req["query"], stream_tokens=True):
+        # astream() yields step events only -- it takes no stream_tokens.
+        async for event in runner.astream(req["query"]):
             if event["type"] == "completion": continue
             yield f"data: {json.dumps(event)}\n\n"
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 ```
+
+For token-level deltas the loop has to be the sync runner
+(`runner.stream(..., stream_tokens=True)` with
+`use_function_calling=False`); `astream` has no `text_delta` path.
 
 ## 13. Evals in CI
 

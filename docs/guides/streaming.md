@@ -66,9 +66,17 @@ consume it in one loop.
 
 ## Both at once — text_delta + step events
 
-Add `stream_tokens=True`:
+`text_delta` events require **text mode**. Since 3.1.7
+`use_function_calling` auto-detects to `True` for any model with native
+function calling (both `Claude()` and `GPT()`), so you must opt out
+explicitly or you will get step events and no tokens:
 
 ```python
+runner = AgentRunner(
+    model=Claude(), agent=AgentType.ReAct, tools=[weather_tool],
+    use_function_calling=False,      # REQUIRED for text_delta
+)
+
 for event in runner.stream("Explain MVCC", stream_tokens=True):
     if event["type"] == "text_delta":
         print(event["content"], end="", flush=True)
@@ -80,23 +88,44 @@ for event in runner.stream("Explain MVCC", stream_tokens=True):
         print("\n\nDONE")
 ```
 
-`text_delta` events only fire when `use_function_calling=False` (in
+`text_delta` events only fire when `use_function_calling=False` — in
 function-calling mode the model emits structured tool calls, not
-streaming text). Non-streaming models (or subclasses that don't
-override `stream_text`) yield the whole response in one chunk.
+streaming text, so `stream_tokens=True` is accepted but yields zero
+`text_delta` events. That combination is silent, not an error: you get
+`thought` / `tool_call` / `tool_result` / `final` and nothing else.
+Non-streaming models (or subclasses that don't override `stream_text`)
+yield the whole response in one chunk.
 
 ## Async streaming
 
-`AsyncAgentRunner.astream(...)` mirrors sync:
+`AsyncAgentRunner.astream(...)` yields the same **step** events as the
+sync runner — `thought`, `tool_call`, `tool_result`, `final`,
+`completion`:
 
 ```python
 from agentx_dev import AsyncAgentRunner, AgentType, Claude
 
 runner = AsyncAgentRunner(model=Claude(), agent=AgentType.ReAct, tools=[])
 
-async for event in runner.astream("Explain MVCC", stream_tokens=True):
-    if event["type"] == "text_delta":
-        print(event["content"], end="", flush=True)
+async for event in runner.astream("Explain MVCC"):
+    if event["type"] == "tool_call":
+        print(f"[calling {event['name']}]")
+    elif event["type"] == "final":
+        print(event["content"])
+```
+
+> **`astream` does not take `stream_tokens`.** Its signature is
+> `astream(user_input, chat_history=None)` — passing `stream_tokens=True`
+> raises `TypeError: AsyncAgentRunner.astream() got an unexpected
+> keyword argument 'stream_tokens'`, and it never emits `text_delta`.
+> Token-level streaming inside the agent loop is sync-only today.
+
+For async token streaming, go one layer down to the model and drive
+`astream_text` yourself:
+
+```python
+async for chunk in llm.astream_text([{"role": "user", "content": "Explain MVCC"}]):
+    print(chunk, end="", flush=True)
 ```
 
 ## Streaming to a web client (FastAPI + SSE)
@@ -113,7 +142,8 @@ async def chat(request: dict):
     runner = build_runner()
 
     async def event_stream():
-        async for event in runner.astream(request["query"], stream_tokens=True):
+        # astream() takes no stream_tokens -- step events only.
+        async for event in runner.astream(request["query"]):
             # Skip the final completion event — it's the same AgentCompletion
             # object; the caller can reconstruct it from the streamed pieces.
             if event["type"] == "completion":
@@ -153,15 +183,26 @@ session.save("./sessions/chat.json")
   highlighting, markdown rendering, redaction).
 - **`OpenAIStreamAdapter`** — normalize the OpenAI SDK's chunk format
   into `StreamChunk` objects.
-- **`simple_stream(model, messages)`** — convenience wrapper that yields
-  strings.
+- **`simple_stream(stream, print_chunks=True)`** — an **async**
+  coroutine that consumes an `AsyncIterator[str]` (e.g. the return of
+  `llm.astream_text(...)`), optionally prints each chunk, and returns
+  the accumulated string. It does not take a model or messages, and it
+  is not a generator:
+
+  ```python
+  text = await simple_stream(llm.astream_text(messages))
+  ```
 
 ## Common issues
 
 - **Nothing prints** — check `flush=True` in your `print(...)`.
-- **Streaming and function-calling** — mutually incompatible for
-  `text_delta` events; the model emits structured tool calls instead
-  of streaming text.
+- **`stream_tokens=True` but no `text_delta` events** — the most common
+  one. `use_function_calling` defaults to `True` (auto-detected) on any
+  model with native function calling, and FC mode emits structured tool
+  calls rather than streaming text. Pass `use_function_calling=False`.
+- **`TypeError: ... unexpected keyword argument 'stream_tokens'`** — you
+  called `AsyncAgentRunner.astream()` or `HandoffCoordinator.stream()`.
+  Neither accepts it; only the sync `AgentRunner.stream()` does.
 - **Chunks arrive in bursts** — provider buffering. Try adjusting the
   provider's `stream_options`.
 - **Slow first token** — that's the model's warmup, not the framework.

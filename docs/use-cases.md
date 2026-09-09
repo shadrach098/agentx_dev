@@ -758,8 +758,14 @@ def _now() -> str:
 def chat_stream(user_id: str, user_message: str):
     """Yields structured events for a chat UI. Route the 'tool_call' /
     'tool_result' events to a 'searching...' indicator; route
-    'text_delta' events to the message bubble."""
+    'text_delta' events to the message bubble.
+
+    NOTE: text_delta requires text mode. build_agent() leaves
+    use_function_calling on its auto-detected default (True for any
+    model with native function calling), which emits zero text_delta
+    events -- so switch this streaming path into text mode."""
     runner = build_agent(user_id)
+    runner.use_function_calling = False   # required for text_delta
     session_path = Path(f"./data/sessions/{user_id}.json")
     session = (
         Session.load(session_path).attach(runner) if session_path.exists()
@@ -1130,10 +1136,11 @@ async def chat_stream(req: ChatRequest):
         # agent runs to completion internally. For token-level streaming
         # from the specific agent, use runner.stream directly (below).
         completion = None
+        # HandoffCoordinator.stream(query, chat_history=None) -- it does
+        # NOT accept stream_tokens; passing it raises TypeError.
         for event in triage.stream(
             req.message,
             chat_history=session.history or None,
-            stream_tokens=True,
         ):
             t = event["type"]
             if t == "completion":

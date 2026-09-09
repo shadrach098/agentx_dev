@@ -143,7 +143,7 @@ CLI: `python -m agentx_dev.Evals run <dir> --config <yaml>`
 | `StreamBuffer` | class | Accumulate stream + get joined text |
 | `StreamProcessor` | class | Per-chunk transform |
 | `OpenAIStreamAdapter` | class | Normalize OpenAI SDK chunks |
-| `simple_stream` | func | Yield strings from a model |
+| `simple_stream` | async func | `await simple_stream(async_iter_of_str, print_chunks=True)` → accumulated `str`. Takes a stream, NOT a model |
 
 ## Cache
 
