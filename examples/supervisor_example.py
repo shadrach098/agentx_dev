@@ -21,7 +21,8 @@ from agentx_dev import (
 )
 from agentx_dev.Tools import StandardTool, StructuredTool
 from agentx_dev.AsyncTools import AsyncStandardTool
-
+from dotenv import load_dotenv
+load_dotenv(r'C:\Users\bruce\Desktop\folder\AgentX\.env')
 
 # --- Tools for specialist agents ---
 
@@ -47,7 +48,7 @@ search_tool = StandardTool(func=fake_search, name="search", description="Search 
 # --- Sync supervisor ---
 
 def run_sync():
-    model = GPT if not os.environ.get("ANTHROPIC_API_KEY",'')  else  Claude(model="claude-sonnet-4-6") 
+    model = GPT() 
 
 
     search_agent = AgentRunner(model=model, Agent=AgentType.ReAct, tools=[search_tool])
@@ -78,8 +79,7 @@ async def search_async(q: str) -> str:
 
 
 async def run_async():
-    model = GPT if not os.environ.get("ANTHROPIC_API_KEY",'')  else  Claude(model="claude-sonnet-4-6") 
-
+    model = GPT() 
     search_tool_a = AsyncStandardTool(func=search_async, name="search", description="Async web search.")
     research_agent = AsyncAgentRunner(model=model, Agent=AgentType.ReAct, tools=[search_tool_a])
 
@@ -88,11 +88,11 @@ async def run_async():
         agents={"research": ("Web research.", research_agent)},
     )
 
-    result = await sup.run("Research the history of Python")
+    result = await sup.run("Find facts about Mars, then compute 42 * 1337")
     print("Async final answer:", result.content)
 
 
 if __name__ == "__main__":
     run_sync()
     print("\n--- Async ---\n")
-    run_async()
+    r =  asyncio.run(run_async())
