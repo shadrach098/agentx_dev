@@ -39,6 +39,24 @@ final usage block from the stream (via `stream_options` for OpenAI, via
 `get_final_message()` for Anthropic) so `llm.usage` stays accurate for
 streamed calls.
 
+## Which methods accept `stream_tokens`?
+
+Exactly one. `stream_tokens` is **not** a general streaming flag — it
+lives only on the sync `AgentRunner.stream()`. Passing it to any of the
+others raises `TypeError`.
+
+| Method | Signature | `stream_tokens` | `text_delta` |
+|---|---|---|---|
+| `AgentRunner.stream` | `(user_input, chat_history=None, *, stream_tokens=False)` | **yes** | yes, in text mode |
+| `AsyncAgentRunner.astream` | `(user_input, chat_history=None)` | no | never |
+| `Supervisor.stream` | `(user_task)` | no | never |
+| `AsyncSupervisor.astream` | `(user_task)` | no | never |
+| `HandoffCoordinator.stream` | `(query, chat_history=None)` | no | never |
+
+The orchestrators stream their own event vocabulary (`plan`,
+`dispatch`, `subtask_result`, `synthesize_start`, …), not token deltas —
+each specialist runs to completion inside them.
+
 ## Runner-level event streaming
 
 `runner.stream(...)` yields structured step events:

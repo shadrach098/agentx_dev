@@ -34,9 +34,12 @@ for event in runner.stream("What's the weather in Tokyo?"):
         print(f"[answer] {event['content']}")
 ```
 
-Want text tokens on top of that? Add `stream_tokens=True` and you
-get `text_delta` events interleaved with the step events. Async
-version mirrors sync one-for-one.
+Want text tokens on top of that? Build the runner with
+`use_function_calling=False` and pass `stream_tokens=True` — you get
+`text_delta` events interleaved with the step events. (Function-calling
+mode emits structured tool calls rather than streaming text, so the two
+are mutually exclusive.) The async runner streams the same step events;
+token deltas are sync-only today.
 
 When you need to go beyond the terminal, there is a trace viewer.
 It ingests the same events and lets you inspect a full agent run
