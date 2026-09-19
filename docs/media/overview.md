@@ -112,8 +112,8 @@ zip,region,total
 - **CSV and other text files are sent exactly as written.** They're not
   parsed, so a ZIP code like `02134` keeps its leading zero.
 - **Spreadsheets are converted with pandas**, one CSV block per sheet,
-  headed with the sheet name and size. Install the extra first:
-  `pip install agentx-dev[excel]`.
+  headed with the sheet name and size. pandas and openpyxl install
+  with agentx-dev, so there's nothing extra to set up.
 - **There's a size limit:** 100,000 characters (about 25k tokens) by
   default. Above that you get a `ValueError`, unless you pass
   `truncate=True` to send the first part, or raise `max_chars=`.

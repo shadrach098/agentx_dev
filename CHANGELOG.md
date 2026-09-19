@@ -4,7 +4,10 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
-## [Unreleased]
+## [3.4.2] - 2026-09-19
+
+`media=` everywhere, CSV / text / Excel attachments, and structured output
+on models that need the Responses API. Non-breaking.
 
 ### Added
 
@@ -20,8 +23,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   cell values aren't re-inferred) to one CSV block per sheet. Both reach
   GPT (chat and Responses) and Claude as a labelled text block, which
   every model accepts. New `Media.text()` / `Media.spreadsheet()`; a
-  100,000-character cap (`max_chars=`, `truncate=True`). New extra:
-  `pip install agentx-dev[excel]` (pandas + openpyxl).
+  100,000-character cap (`max_chars=`, `truncate=True`). pandas and
+  openpyxl are now core dependencies, so spreadsheets work after a plain
+  `pip install agentx-dev` (`[excel]` still works). Date cells without a
+  time are written as dates, not `... 00:00:00`.
 - **Media docs section.** Its own nav group: Overview & flow, With chat
   models, With agents, Reference (constructors, per-provider wire
   formats, errors). `docs/guides/media.md` is now a pointer to it.

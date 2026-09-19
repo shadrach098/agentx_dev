@@ -909,7 +909,7 @@ llm.invoke([{"role": "user", "content": ["What's in this photo?", Media.image("c
 | image (file or URL) | yes | yes |
 | PDF | file | file or URL |
 | CSV, TXT, JSON, Markdown ... | yes, as text | yes, as text |
-| Excel (`.xlsx`) | yes, CSV per sheet (`pip install agentx-dev[excel]`) | same |
+| Excel (`.xlsx`) | yes, CSV per sheet (pandas, installed with agentx-dev) | same |
 | audio (wav / mp3) | audio models | no — `ValueError` |
 
 Paths are relative to where your program runs, not the agent's

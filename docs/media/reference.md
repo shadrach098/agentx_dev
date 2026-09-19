@@ -11,7 +11,7 @@ from agentx_dev import Media
 | `Media.image(src)` | `media_type=`, `detail=` | `detail` is `"low"`, `"high"` or `"auto"`; GPT uses it, Claude ignores it |
 | `Media.document(src)` | `media_type=`, `filename=` | a PDF; also routes text files and spreadsheets to the constructors below. Raw bytes default to `application/pdf`. Alias: `Media.pdf` |
 | `Media.text(src)` | `media_type=`, `filename=`, `encoding=`, `max_chars=`, `truncate=` | CSV, TSV, TXT, Markdown, JSON, XML, YAML, HTML, sent as written. Raw bytes default to `text/plain` |
-| `Media.spreadsheet(src)` | `sheets=`, `filename=`, `max_chars=`, `truncate=` | `.xlsx` / `.xls` / `.ods` → one CSV block per sheet. Needs `pip install agentx-dev[excel]` |
+| `Media.spreadsheet(src)` | `sheets=`, `filename=`, `max_chars=`, `truncate=` | `.xlsx` / `.xls` / `.ods` → one CSV block per sheet (pandas + openpyxl, installed with agentx-dev) |
 | `Media.audio(src)` | `media_type=` | wav or mp3; GPT audio models only |
 | `Media.from_path(path)` | `media_type=` | kind taken from the file extension |
 | `Media.from_url(url)` | `kind=`, `media_type=` | kind from the URL, or pass `kind="image"` etc. |
@@ -40,7 +40,8 @@ The same options work on `Media.document()`, `Media.from_path()` and
 Spreadsheets are read with `pandas.read_excel(..., dtype=object)`, so
 cells keep the values they hold — a text-formatted `02134` stays
 `02134` — and each sheet is written as CSV under a header like
-`## Sheet: Sales (120 rows x 5 columns)`.
+`## Sheet: Sales (120 rows x 5 columns)`. Date cells are written as
+dates (`2026-07-01`); cells with a time keep it (`2026-07-01 14:30:00`).
 
 | Attribute | Meaning |
 |---|---|
@@ -114,7 +115,7 @@ All raised before any request is sent:
 | `ValueError: Can't infer a media type for ...` | a file with an unknown extension | pass `media_type=` |
 | `FileNotFoundError: Media file not found` | wrong path — paths are relative to your program, not the workspace | fix the path |
 | `ValueError: ... over max_chars=...` | a text file or spreadsheet over the size cap | `truncate=True`, a bigger `max_chars=`, or let an agent read it with pandas |
-| `ImportError: ... pip install agentx-dev[excel]` | a spreadsheet without pandas / openpyxl | `pip install agentx-dev[excel]` (`.xls` also needs `xlrd`, `.ods` needs `odfpy`) |
+| `ImportError: Reading spreadsheets needs pandas and openpyxl` | an environment without them (e.g. an older install) | `pip install -U agentx-dev pandas openpyxl` (`.xls` also needs `xlrd`, `.ods` needs `odfpy`) |
 | `ValueError: Word files aren't accepted by GPT or Claude` | `.docx` / `.doc` | save as PDF, or paste the text |
 | `ValueError: PowerPoint files aren't accepted by GPT or Claude` | `.pptx` / `.ppt` | export as PDF |
 | `ValueError: Archives can't be sent to a model` | `.zip` | extract and attach the files |

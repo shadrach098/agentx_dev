@@ -54,7 +54,7 @@ model to `/v1/responses` automatically. See
 
 ```python
 llm.invoke("Which region grew fastest?", media=["sales.csv"])
-llm.invoke("Summarise every sheet", media=["q3_report.xlsx"])   # pip install agentx-dev[excel]
+llm.invoke("Summarise every sheet", media=["q3_report.xlsx"])
 ```
 
 The model receives the file's contents as text, labelled with its

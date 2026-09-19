@@ -40,7 +40,7 @@ take the same `media=` argument (3.4.2). See [Media](../media/overview.md).
 Yes — pass the path: `media=["sales.csv"]` or `media=["q3.xlsx"]`.
 Neither provider reads spreadsheet files directly, so the framework
 sends the contents as text: CSV exactly as written, Excel converted with
-pandas to one CSV block per sheet (`pip install agentx-dev[excel]`).
+pandas to one CSV block per sheet (pandas and openpyxl install with agentx-dev).
 Files over 100,000 characters raise unless you pass `truncate=True`.
 For large datasets, let an agent load the file with pandas instead of
 pasting it in. See [Media: data files](../media/overview.md#data-files-csv-and-excel).

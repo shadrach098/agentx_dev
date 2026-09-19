@@ -1,7 +1,7 @@
 [project]
 
 name = "agentx-dev"
-version = "3.4.1"
+version = "3.4.2"
 description = "A production-grade Python framework for building LLM agents. Multi-provider chat, permission-gated tools, RAG (in-mem + Chroma/Qdrant/pgvector), semantic memory, Supervisor + Handoffs multi-agent orchestration with streaming, evals harness, prompt caching, Batch API, prompt-optimizer, MCP integration."
 authors = [{ name = "Bruce-Arhin Shadrach", email = "brucearhin098@gmail.com" }]
 # Best practice: link to the license file
@@ -18,6 +18,8 @@ dependencies = [
     "pydantic>=2.0",       # StructuredTool schemas, output parsing, everywhere
     "PyYAML>=5.3.1",       # AgentType prompt templates (>=5.3.1 for CVE fixes)
     "rich>=10.0",          # console output in the Agents module
+    "pandas>=1.5",         # Media: Excel / OpenDocument sheets -> CSV text
+    "openpyxl>=3.1",       # pandas' reader for .xlsx
 ]
 
 [project.optional-dependencies]
@@ -33,8 +35,8 @@ chroma = ["chromadb>=0.4"]
 qdrant = ["qdrant-client>=1.6"]
 # `pip install agentx-dev[pgvector]` — PgVectorStore adapter (psycopg v3)
 pgvector = ["psycopg[binary]>=3.1"]
-# `pip install agentx-dev[excel]` — Media.spreadsheet(): .xlsx / .xls / .ods
-# sent to models as CSV text (pandas; openpyxl reads .xlsx)
+# `pip install agentx-dev[excel]` — kept for older install commands; pandas
+# and openpyxl are core dependencies since 3.4.2
 excel = ["pandas>=1.5", "openpyxl>=3.1"]
 # `pip install agentx-dev[dev]` — everything needed to run the tests
 dev = [

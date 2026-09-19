@@ -226,21 +226,32 @@ def _spreadsheet_to_text(src: Any, name: str, sheets: Any) -> str:
         import pandas as pd
     except ImportError as e:
         raise ImportError(
-            "Reading spreadsheets needs pandas and openpyxl: "
-            "pip install agentx-dev[excel]"
+            "Reading spreadsheets needs pandas and openpyxl, which install "
+            "with agentx-dev: pip install -U agentx-dev pandas openpyxl"
         ) from e
     try:
         frames = pd.read_excel(src, sheet_name=sheets, dtype=object)
     except ImportError as e:
         raise ImportError(
             f"Reading {name} needs another package ({e}). "
-            "Install the spreadsheet extras: pip install agentx-dev[excel] "
+            "pip install -U pandas openpyxl "
             "(.xls also needs xlrd; .ods needs odfpy)"
         ) from e
     if not isinstance(frames, dict):
         frames = {sheets: frames}
+    import datetime as _dt
+
+    def _cell(v):
+        # Excel stores a plain date as a midnight datetime; print it as a
+        # date so every cell isn't padded with ' 00:00:00'. Real
+        # timestamps keep their time.
+        if isinstance(v, _dt.datetime) and v.time() == _dt.time(0):
+            return v.date()
+        return v
+
     blocks = []
     for sheet, df in frames.items():
+        df = df.map(_cell) if hasattr(df, "map") else df.applymap(_cell)
         header = f"## Sheet: {sheet} ({len(df)} rows x {len(df.columns)} columns)"
         # lineterminator: pandas defaults to os.linesep, i.e. \r\n on Windows.
         csv_text = df.to_csv(index=False, lineterminator="\n")
@@ -447,9 +458,8 @@ class Media:
                     truncate: bool = False) -> "Media":
         """An Excel or OpenDocument spreadsheet, converted with pandas to one
         CSV block per sheet (with its name and size). ``sheets`` picks sheets
-        by name or index -- one, or a list; default all. Needs
-        ``pip install agentx-dev[excel]`` (pandas + openpyxl). Size options
-        as :meth:`text`."""
+        by name or index -- one, or a list; default all. pandas and
+        openpyxl install with agentx-dev. Size options as :meth:`text`."""
         media_type = None
         if isinstance(src, (bytes, bytearray)):
             media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

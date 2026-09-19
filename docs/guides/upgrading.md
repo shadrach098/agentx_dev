@@ -25,7 +25,7 @@ module stays imported until you do, which shows up as errors like
   `tool_choice="required"` and remembers it.
 - CSV, TSV, TXT, Markdown, JSON, XML, YAML and Excel files can go in
   `media=`. Text is sent as written; spreadsheets are converted with
-  pandas (`pip install agentx-dev[excel]`). There's a 100,000-character
+  pandas (pandas and openpyxl are now installed with agentx-dev). There's a 100,000-character
   cap; pass `truncate=True` or `max_chars=` to change it. See
   [Data files](../media/overview.md#data-files-csv-and-excel).
 - **Fixed:** `.txt` files sent to Claude used to fail — they went out as

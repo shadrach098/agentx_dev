@@ -1,6 +1,7 @@
 """Text-like files, spreadsheets, size limits, and refused file types."""
 
 import base64
+import datetime
 import json
 import sys
 import types
@@ -131,7 +132,7 @@ class TestSpreadsheets:
         monkeypatch.setitem(sys.modules, "pandas", None)
         path = tmp_path / "sales.xlsx"
         path.write_bytes(b"PK")
-        with pytest.raises(ImportError, match=r"agentx-dev\[excel\]"):
+        with pytest.raises(ImportError, match="pip install -U agentx-dev pandas openpyxl"):
             Media.from_path(path)
 
     def test_real_xlsx_round_trip(self, tmp_path):
@@ -140,13 +141,14 @@ class TestSpreadsheets:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Sales"
-        ws.append(["zip", "region", "total"])
-        ws.append(["02134", "North", 120])
+        ws.append(["zip", "region", "total", "day", "logged_at"])
+        ws.append(["02134", "North", 120, datetime.date(2026, 7, 1),
+                   datetime.datetime(2026, 7, 1, 14, 30)])
         path = tmp_path / "sales.xlsx"
         wb.save(path)
         body = Media.from_path(path).body
-        assert body.startswith("## Sheet: Sales (1 rows x 3 columns)")
-        assert "02134,North,120" in body
+        assert body.startswith("## Sheet: Sales (1 rows x 5 columns)")
+        assert "02134,North,120,2026-07-01,2026-07-01 14:30:00" in body, body
 
 
 class TestRefused:
