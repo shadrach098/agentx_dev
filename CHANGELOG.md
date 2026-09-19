@@ -4,7 +4,9 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
-## [Unreleased]
+## [3.4.1] - 2026-09-18
+
+Tool calls on OpenAI models that require the Responses API.
 
 ### Fixed
 
