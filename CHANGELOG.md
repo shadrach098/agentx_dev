@@ -4,7 +4,11 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
-## [Unreleased]
+## [3.4.0] - 2026-09-18
+
+Media input for GPT and Claude, models that adapt to each generation's
+parameter support, and workspace-rooted paths. Non-breaking; two
+defaults changed -- see docs/guides/upgrading.md.
 
 ### Added
 
