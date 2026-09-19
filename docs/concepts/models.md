@@ -172,10 +172,11 @@ GPT(model="gpt-6-astra", use_responses_api=False)  # never; raise the provider e
 
 Both models accept media in a message's `content` list — a `Media`
 object, an OpenAI-style part, or an Anthropic-style block, translated
-to each provider's format. See [Media](../guides/media.md).
+to each provider's format. See [Media](../media/overview.md).
 
 ```python
 from agentx_dev import Media
+llm.invoke("What's this?", media=["cat.jpg"])                                  # 3.4.2
 llm.invoke([{"role": "user", "content": ["What's this?", Media.image("cat.jpg")]}])
 ```
 

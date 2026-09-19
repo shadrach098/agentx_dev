@@ -63,6 +63,18 @@ automatically and logs a WARNING. On 3.4.0, upgrade. If you set
 `use_responses_api=False`, the error is deliberate. Remove that, or pass
 `use_responses_api=True`.
 
+**`with_structured_output(...)` fails on a model that needs the Responses API**
+Structured output forces a single tool call. Since 3.4.2, if the
+Responses API rejects that forced choice, `GPT` retries with
+`tool_choice="required"`, which picks the same tool when there's only
+one, and remembers that for the model. Upgrade from 3.4.1.
+
+**The log shows the old `Function tools with reasoning_effort ...` error but the call worked**
+Before 3.4.2 the retry wrapper logged the original chat-completions
+rejection at WARNING, even when the call then succeeded through the
+Responses API. It's DEBUG now; the switch has its own WARNING, and a real
+failure is still logged at ERROR.
+
 **A WARNING says my setting was changed, but I need the exact value**
 The model doesn't support it — no retry can make it. Choose a model that
 does, or pass `adapt_params=False` to fail instead of adjusting.
@@ -176,7 +188,7 @@ start paths with `/` — to Python that's the filesystem root. Use
 
 **`ERROR: file is not utf-8 text` when reading an image**
 `read_path` reads text. To have the model look at an image or PDF,
-attach it with `media=` — see [Media](../guides/media.md).
+attach it with `media=` — see [Media](../media/overview.md).
 
 **`.agentx/permissions.json` refuses to load**
 Check file mode (should be 0o600, only readable by you). Fix:

@@ -30,7 +30,9 @@ Task guides:
 - [Build a file-editing agent](guides/file-agent.md)
 - [Get typed output back](guides/structured-output.md)
 - [Stream tokens as they arrive](guides/streaming.md)
-- [Send images, PDFs and audio](guides/media.md) *(3.4)*
+- [Send images, PDFs and audio](media/overview.md) *(3.4)* — its own section:
+  [chat models](media/chat-models.md), [agents](media/agents.md),
+  [reference](media/reference.md)
 - [Persist conversations](guides/sessions.md)
 - [Connect an MCP server](guides/mcp.md)
 - [Configure from YAML](guides/yaml-config.md)
@@ -116,7 +118,7 @@ operational lever (memory, caching, budgets, rate limits).
   `Media` and `media=`; models that adapt to each generation's
   parameter support (`adapt_params`); new Claude settings; workspace-
   rooted paths and `run_python` starting in the workspace. See
-  [media](guides/media.md) and [upgrading](guides/upgrading.md).
+  [media](media/overview.md) and [upgrading](guides/upgrading.md).
 
 ## Where things live in the source
 

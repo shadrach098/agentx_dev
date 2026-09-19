@@ -4,6 +4,33 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`media=` on chat models and structured output.** `llm.invoke`,
+  `llm.ainvoke`, and `with_structured_output(...).invoke` / `.ainvoke` take
+  `media=[...]` (paths, URLs, `Media`, part dicts), appended to the last
+  user turn, matching the agent runner. Media inside `content` lists
+  already worked; this adds the argument.
+- **Media docs section.** Its own nav group: Overview & flow, With chat
+  models, With agents, Reference (constructors, per-provider wire
+  formats, errors). `docs/guides/media.md` is now a pointer to it.
+
+### Fixed
+
+- **`with_structured_output` on models that need the Responses API.**
+  Structured output forces a single tool; if the Responses API rejects a
+  forced tool choice for the model, `GPT` retries with
+  `tool_choice="required"` (the same tool when there is only one), then
+  `"auto"`, remembering it per model. `StructuredOutputRunnable` also
+  accepts a JSON text answer that validates against the schema.
+- **Misleading WARNING on recovered calls.** The retry wrapper logged
+  every non-retryable 400 at WARNING before the caller could recover, so a
+  call that switched to the Responses API and succeeded still printed the
+  original "Function tools with reasoning_effort are not supported" text.
+  Now DEBUG; recoveries log their own WARNING and real failures log ERROR.
+
 ## [3.4.1] - 2026-09-18
 
 Tool calls on OpenAI models that require the Responses API.

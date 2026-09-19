@@ -228,6 +228,34 @@ class TokenUsage:
         )
 
 
+def _attach_media(messages: List[Dict[str, Any]], media: Optional[Iterable[Any]]) -> List[Dict[str, Any]]:
+    """Return ``messages`` with ``media`` added to the LAST user turn.
+
+    Lets every entry point take ``media=[...]`` the way the agent runner
+    does: ``llm.invoke("Describe this", media=["photo.jpg"])``. A string
+    user turn becomes ``[text, *media]``; a list turn gets the media
+    appended. With no user turn, a media-only user turn is added. The
+    caller's list and dicts are not mutated."""
+    from agentx_dev.Media import to_media_part
+    parts = [to_media_part(m) for m in (media or [])]
+    if not parts:
+        return messages
+    out = [dict(m) if isinstance(m, dict) else m for m in messages]
+    for i in range(len(out) - 1, -1, -1):
+        m = out[i]
+        if isinstance(m, dict) and m.get("role") == "user":
+            content = m.get("content")
+            if isinstance(content, list):
+                m["content"] = list(content) + parts
+            elif content:
+                m["content"] = [{"type": "text", "text": str(content)}] + parts
+            else:
+                m["content"] = parts
+            return out
+    out.append({"role": "user", "content": parts})
+    return out
+
+
 class StructuredOutputRunnable:
     """LangChain-style wrapper produced by ``BaseChatModel.with_structured_output``.
 
@@ -276,8 +304,11 @@ class StructuredOutputRunnable:
             f"'messages'; got {type(input_value).__name__}"
         )
 
-    def invoke(self, input_value: Any) -> Any:
-        messages = self._to_messages(input_value)
+    def invoke(self, input_value: Any, *, media: Optional[Iterable[Any]] = None) -> Any:
+        """Run the forced schema call. ``media=[...]`` attaches images /
+        PDFs / audio to the last user turn, e.g. a scanned document for a
+        verification schema."""
+        messages = _attach_media(self._to_messages(input_value), media)
         result = self.model.call_with_tools(
             messages=messages,
             tools=[self._tool_spec],
@@ -285,8 +316,8 @@ class StructuredOutputRunnable:
         )
         return self._parse(result)
 
-    async def ainvoke(self, input_value: Any) -> Any:
-        messages = self._to_messages(input_value)
+    async def ainvoke(self, input_value: Any, *, media: Optional[Iterable[Any]] = None) -> Any:
+        messages = _attach_media(self._to_messages(input_value), media)
         result = await self.model.async_call_with_tools(
             messages=messages,
             tools=[self._tool_spec],
@@ -298,9 +329,21 @@ class StructuredOutputRunnable:
 
     def _parse(self, result: Dict[str, Any]):
         if result.get("type") != "tool_use":
+            # A provider that couldn't honour the forced tool choice (see
+            # GPT's Responses fallback) may answer with the JSON as text.
+            # Accept it if it validates; otherwise say what came back.
+            text = result.get("text", "") or ""
+            try:
+                from agentx_dev.Agents.Agent import convert_to_json
+                data = convert_to_json(text)
+                if isinstance(data, dict):
+                    parsed = self.schema(**data)
+                    return {"raw": result, "parsed": parsed} if self.include_raw else parsed
+            except Exception:
+                pass
             raise ValueError(
                 f"Model returned text instead of a {self._tool_name!r} tool call: "
-                f"{result.get('text', '')[:200]!r}"
+                f"{text[:200]!r}"
             )
         parsed = self.schema(**result["input"])
         if self.include_raw:
@@ -1036,10 +1079,14 @@ class BaseChatModel(ABC):
         # exotic shapes still work; only the string case is normalized.
         return messages
 
-    def invoke(self, messages) -> str:
+    def invoke(self, messages, *, media: Optional[Iterable[Any]] = None) -> str:
         """Canonical entry point. Alias for ``Initialize`` with input
-        normalization. See ``_coerce_messages`` for the accepted shapes."""
-        return self.Initialize(self._coerce_messages(messages))
+        normalization. See ``_coerce_messages`` for the accepted shapes.
+
+        ``media=[...]`` attaches images / PDFs / audio (paths, URLs,
+        ``Media``, or part dicts) to the last user turn -- the same
+        argument ``AgentRunner.invoke`` takes."""
+        return self.Initialize(_attach_media(self._coerce_messages(messages), media))
 
     async def async_initialize(self, messages) -> str:
         """
@@ -1055,9 +1102,10 @@ class BaseChatModel(ABC):
             None, self.Initialize, self._coerce_messages(messages)
         )
 
-    async def ainvoke(self, messages) -> str:
-        """Canonical async entry point. Alias for ``async_initialize``."""
-        return await self.async_initialize(messages)
+    async def ainvoke(self, messages, *, media: Optional[Iterable[Any]] = None) -> str:
+        """Canonical async entry point. Alias for ``async_initialize``;
+        takes ``media=`` like ``invoke``."""
+        return await self.async_initialize(_attach_media(self._coerce_messages(messages), media))
 
     def call_with_tools(
         self,
@@ -1196,7 +1244,13 @@ class BaseChatModel(ABC):
             except Exception as e:
                 last_exc = e
                 if self._is_non_retryable(e):
-                    logger.warning(
+                    # DEBUG, not WARNING: the caller either recovers (a
+                    # parameter fix or the Responses API switch, each with
+                    # its own WARNING) or logs the final failure itself.
+                    # At WARNING this printed the original rejection text
+                    # even on calls that then succeeded, which read as the
+                    # old error coming back.
+                    logger.debug(
                         f"LLM call failed with non-retryable error "
                         f"(HTTP {getattr(e, 'status_code', '?')}): {e}. "
                         "Skipping retries."
@@ -1325,6 +1379,8 @@ class GPT(BaseChatModel):
         self.use_responses_api = use_responses_api
         # Models the provider told us need /v1/responses for tool calls.
         self._responses_models: set = set()
+        # Per-model tool_choice to use instead of a forced one.
+        self._relaxed_tool_choice: Dict[str, Any] = {}
         self._warned_dropped: set = set()
 
     def _request_kwargs(self, exclude: Iterable[str] = ()) -> Dict[str, Any]:
@@ -1410,19 +1466,46 @@ class GPT(BaseChatModel):
     def _call_with_tools_responses(self, messages, tools, force_tool):
         normalized = [_normalize_tool_spec_for_openai_responses(t) for t in tools]
         tool_choice: Any = {"type": "function", "name": force_tool} if force_tool else "auto"
+        model_key = str(self.defaults.get("model"))
+        if force_tool and model_key in self._relaxed_tool_choice:
+            tool_choice = self._relaxed_tool_choice[model_key]
         kwargs = self._request_kwargs(
             ("tools", "tool_choice", "functions", "function_call", "response_format")
         )
         kwargs.update(input=_messages_for_openai_responses(list(messages)),
                       tools=normalized, tool_choice=tool_choice)
-        try:
-            response = self._with_retry(
-                lambda: self._params.call(self._responses_create_flat, kwargs),
-                max_retries=3, base_delay=0.1,
-            )
-        except Exception as e:
-            logger.error(f"Error during Responses API call (tools): {e}")
-            raise
+        # A forced tool choice is what structured output relies on. If the
+        # model refuses one (with reasoning on, some do), relax it step by
+        # step: 'required' still guarantees a tool call and, with a single
+        # tool, it is the same tool; 'auto' is the last resort, and
+        # StructuredOutputRunnable then accepts the JSON as text.
+        fallbacks = ["required", "auto"] if force_tool else []
+        if isinstance(tool_choice, str) and tool_choice in fallbacks:
+            fallbacks = fallbacks[fallbacks.index(tool_choice) + 1:]
+        while True:
+            try:
+                response = self._with_retry(
+                    lambda: self._params.call(self._responses_create_flat, kwargs),
+                    max_retries=3, base_delay=0.1,
+                )
+                break
+            except Exception as e:
+                if (fallbacks and getattr(e, "status_code", None) == 400
+                        and (getattr(e, "param", None) == "tool_choice"
+                             or "tool_choice" in _error_text(e))):
+                    relaxed = fallbacks.pop(0)
+                    if relaxed == "required" and len(normalized) != 1:
+                        relaxed = fallbacks.pop(0) if fallbacks else relaxed
+                    self._relaxed_tool_choice[model_key] = relaxed
+                    logger.warning(
+                        f"OpenAI model {model_key!r} rejected a forced tool choice on "
+                        f"the Responses API; retrying with tool_choice={relaxed!r}. "
+                        f"Remembered for this model. (Provider said: {_error_text(e)[:200]})"
+                    )
+                    kwargs["tool_choice"] = relaxed
+                    continue
+                logger.error(f"Error during Responses API call (tools): {e}")
+                raise
         self._record_responses_usage(response)
         return _parse_responses_output(response)
 

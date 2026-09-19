@@ -18,7 +18,7 @@ breaks — see [Upgrading](docs/guides/upgrading.md).
 
 | Feature | What you get |
 |---|---|
-| **Media input** | `runner.invoke("Describe this", media=["photo.jpg", "report.pdf"])`. Paths, URLs, bytes or `Media` objects. The same code works on `GPT()` and `Claude()`: each model gets its own format, and either provider's native part shape is accepted too. Unsupported pairs — audio to Claude, a PDF URL to GPT — fail fast with a clear `ValueError`. [Guide](docs/guides/media.md). |
+| **Media input** | `runner.invoke("Describe this", media=["photo.jpg", "report.pdf"])`. Paths, URLs, bytes or `Media` objects. The same code works on `GPT()` and `Claude()`: each model gets its own format, and either provider's native part shape is accepted too. Unsupported pairs — audio to Claude, a PDF URL to GPT — fail fast with a clear `ValueError`. [Media docs](docs/media/overview.md). |
 | **Models that adapt** | Parameter support changes between model generations — `reasoning_effort`'s allowed values, `max_tokens` vs `max_completion_tokens`, Claude's `temperature` + `top_p` conflict. When a model rejects a parameter, `GPT` and `Claude` make the smallest change the error asks for (`'none'` → `'low'`), retry, and remember it for that model. Logged at WARNING; `adapt_params=False` opts out. [Details](docs/concepts/models.md#old-and-new-models). |
 | **More Claude settings** | `Claude(top_p=, top_k=, thinking=, stop_sequences=)`. `temperature` is only sent when you set it. |
 | **Workspace paths** | With a workspace set, `/notes.txt` means the workspace's `notes.txt`, not `C:\notes.txt`. `run_python` now starts in the workspace, so `open("notes.txt")` finds it. |
@@ -911,7 +911,9 @@ llm.invoke([{"role": "user", "content": ["What's in this photo?", Media.image("c
 | audio (wav / mp3) | audio models | no — `ValueError` |
 
 Paths are relative to where your program runs, not the agent's
-workspace. See [Media](docs/guides/media.md).
+workspace. The same `media=` works on `llm.invoke(...)` and
+`llm.with_structured_output(Schema).invoke(...)`. See
+[Media](docs/media/overview.md).
 
 ## Get a typed result back
 

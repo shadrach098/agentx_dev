@@ -13,6 +13,20 @@ module stays imported until you do, which shows up as errors like
 
 ---
 
+## Upgrading to 3.4.2
+
+**Nothing breaks.**
+
+- `llm.invoke`, `llm.ainvoke`, and `with_structured_output(...).invoke`
+  / `.ainvoke` take `media=[...]`, like the agent runner. See
+  [Media with chat models](../media/chat-models.md).
+- `with_structured_output` works on models that need the Responses API.
+  If the model rejects a forced tool choice there, `GPT` retries with
+  `tool_choice="required"` and remembers it.
+- Quieter logs. The original chat-completions rejection is no longer
+  printed at WARNING when a call recovers, so a successful switch no
+  longer looks like the old error coming back.
+
 ## Upgrading to 3.4.1
 
 **Nothing breaks.** Tool calls on models that refuse tools plus
@@ -32,7 +46,7 @@ knowing about.
 
 | Feature | Use it |
 |---|---|
-| Images, PDFs and audio for GPT and Claude | `runner.invoke("Describe this", media=["photo.jpg"])` — see [Media](media.md) |
+| Images, PDFs and audio for GPT and Claude | `runner.invoke("Describe this", media=["photo.jpg"])` — see [Media](../media/overview.md) |
 | Models adjust to what each model generation accepts | on by default; `adapt_params=False` turns it off — see [Old and new models](../concepts/models.md#old-and-new-models) |
 | Extra Claude settings | `Claude(top_p=, top_k=, thinking=, stop_sequences=)` |
 | A leading `/` means the workspace | `read_path("/notes.txt")` reads `<workspace>/notes.txt` |

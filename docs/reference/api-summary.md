@@ -10,11 +10,11 @@ from agentx_dev import X
 
 | Symbol | Kind | Doc |
 |---|---|---|
-| `BaseChatModel` | ABC | [concepts/models](../concepts/models.md) |
+| `BaseChatModel` | ABC | [concepts/models](../concepts/models.md) (3.4.2: `invoke` / `ainvoke` take `media=[...]`) |
 | `GPT` | class | OpenAI Chat Completions wrapper (3.4: `adapt_params` — adapts to per-model parameter support, e.g. `reasoning_effort` values; 3.4.1: `use_responses_api` — tool calls move to `/v1/responses` when a model requires it) |
 | `Claude` | class | Anthropic Messages wrapper (3.1: `enable_prompt_cache`; 3.4: `top_p`, `top_k`, `thinking`, `stop_sequences`, `adapt_params`; `temperature` defaults to unset) |
-| `Media` *(3.4)* | class | Image / PDF / audio input, rendered per provider. `Media.image()`, `.document()`, `.audio()`, `.from_path()`, `.from_url()`, `.from_bytes()` |
-| `StructuredOutputRunnable` | class | Result of `.with_structured_output(schema)` |
+| `Media` *(3.4)* | class | Image / PDF / audio input, rendered per provider. `Media.image()`, `.document()`, `.audio()`, `.from_path()`, `.from_url()`, `.from_bytes()`. See [Media reference](../media/reference.md) |
+| `StructuredOutputRunnable` | class | Result of `.with_structured_output(schema)` (3.4.2: `invoke` / `ainvoke` take `media=[...]`) |
 | `TokenBucket` | class | Rate limiter |
 | `TokenUsage` | class | Per-model token counter (3.1: `cache_hit_ratio`) |
 | `RetryBudgetExceeded` | exception | Retry cap exhausted |

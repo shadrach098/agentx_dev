@@ -36,12 +36,17 @@ NAV = [
         ("guides/file-agent", DOCS_DIR / "guides" / "file-agent.md", None),
         ("guides/structured-output", DOCS_DIR / "guides" / "structured-output.md", None),
         ("guides/streaming", DOCS_DIR / "guides" / "streaming.md", None),
-        ("guides/media", DOCS_DIR / "guides" / "media.md", "Images, PDFs & audio"),
         ("guides/sessions", DOCS_DIR / "guides" / "sessions.md", None),
         ("guides/mcp", DOCS_DIR / "guides" / "mcp.md", None),
         ("guides/yaml-config", DOCS_DIR / "guides" / "yaml-config.md", None),
         ("guides/custom-tools", DOCS_DIR / "guides" / "custom-tools.md", None),
         ("guides/upgrading", DOCS_DIR / "guides" / "upgrading.md", "Upgrading"),
+    ]),
+    ("Media", [
+        ("media/overview", DOCS_DIR / "media" / "overview.md", "Overview & flow"),
+        ("media/chat-models", DOCS_DIR / "media" / "chat-models.md", "With chat models"),
+        ("media/agents", DOCS_DIR / "media" / "agents.md", "With agents"),
+        ("media/reference", DOCS_DIR / "media" / "reference.md", "Reference"),
     ]),
     ("Advanced", [
         ("advanced/memory", DOCS_DIR / "advanced" / "memory.md", None),

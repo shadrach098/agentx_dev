@@ -32,7 +32,8 @@ Each item can be a path, a URL, raw bytes wrapped in `Media`, or a
 content-part dict in OpenAI's or Anthropic's format. The framework
 renders it for whichever model receives it. Claude has no audio input,
 and GPT can't fetch a PDF from a URL — both raise `ValueError` before
-any request. See [Media](../guides/media.md).
+any request. `llm.invoke(...)` and `with_structured_output(...).invoke(...)`
+take the same `media=` argument (3.4.2). See [Media](../media/overview.md).
 
 ## Why do I see "rejected a request parameter" warnings? *(3.4)*
 
