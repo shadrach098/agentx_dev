@@ -437,31 +437,31 @@ result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"
           </a>`).join("")}
       </div>
 
-      <h2 class="section-title">What's new in 3.3</h2>
+      <h2 class="section-title">What's new in 3.4</h2>
       <ul class="whats-new-list">
         <li>
-          <strong>Dependency DAGs</strong>
-          <div class="desc">Plan steps declare <code>depends_on</code>; the executor derives ordering, concurrency, and context routing from the edges. Each step is threaded only its direct dependencies' results.</div>
+          <strong>Images, PDFs &amp; audio</strong>
+          <div class="desc"><code>runner.invoke("Describe this", media=["photo.jpg"])</code>. One <code>Media</code> type, rendered for whichever model receives it -- the same code runs on <code>GPT()</code> and <code>Claude()</code>.</div>
         </li>
         <li>
-          <strong>Completion-driven scheduling</strong>
-          <div class="desc"><code>AsyncSupervisor</code> starts a step the moment its dependencies finish -- no wave barriers. Cap it with <code>max_parallel=N</code>.</div>
+          <strong>Models that adapt</strong>
+          <div class="desc">When a model rejects a parameter -- <code>reasoning_effort="none"</code>, <code>max_tokens</code> on a reasoning model, <code>top_p</code> next to <code>temperature</code> -- it adjusts, retries, and remembers the fix for that model. <code>adapt_params=False</code> opts out.</div>
         </li>
         <li>
-          <strong>Failure cascade</strong>
-          <div class="desc">A step whose dependency failed is skipped transitively (<code>skipped=True</code>). Independent branches keep running; synthesis reports over what survived.</div>
+          <strong>More Claude settings</strong>
+          <div class="desc"><code>top_p</code>, <code>top_k</code>, <code>thinking</code> and <code>stop_sequences</code>. <code>temperature</code> is only sent when you set it.</div>
         </li>
         <li>
-          <strong>Conditional steps</strong>
-          <div class="desc"><code>skip_when</code> short-circuits a branch in Python against a dependency's typed output -- no LLM call, and fail-open by design.</div>
+          <strong>Workspace paths</strong>
+          <div class="desc">A leading <code>/</code> means the workspace root, and <code>run_python</code> starts in the workspace -- so <code>open("notes.txt")</code> finds it.</div>
         </li>
         <li>
-          <strong>Typed specialist output (3.2)</strong>
-          <div class="desc"><code>AgentRunner(output_schema=...)</code> coerces the final answer via native function calling; the validated instance survives the Supervisor on <code>SubtaskResult.output</code>.</div>
+          <strong>Dependency DAGs (3.3)</strong>
+          <div class="desc">Supervisor plans declare <code>depends_on</code>; independent steps run concurrently and each step sees only its dependencies' results.</div>
         </li>
         <li>
-          <strong>Specialist registry (3.3)</strong>
-          <div class="desc"><code>Specialist(...)</code> gives the planner <code>depends_on</code> hints, <code>when_to_use</code> guidance, and the output schema. The plain tuple form still works.</div>
+          <strong>Upgrading</strong>
+          <div class="desc">Nothing breaks. Two defaults changed -- see <a href="#guides/upgrading">Upgrading</a>.</div>
         </li>
       </ul>
     `;

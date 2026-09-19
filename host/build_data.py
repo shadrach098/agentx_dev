@@ -41,6 +41,7 @@ NAV = [
         ("guides/mcp", DOCS_DIR / "guides" / "mcp.md", None),
         ("guides/yaml-config", DOCS_DIR / "guides" / "yaml-config.md", None),
         ("guides/custom-tools", DOCS_DIR / "guides" / "custom-tools.md", None),
+        ("guides/upgrading", DOCS_DIR / "guides" / "upgrading.md", "Upgrading"),
     ]),
     ("Advanced", [
         ("advanced/memory", DOCS_DIR / "advanced" / "memory.md", None),

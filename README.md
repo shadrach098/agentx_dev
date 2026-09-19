@@ -9,6 +9,32 @@ you can paste and run.
 
 ---
 
+## What's new in 3.4 — media input and models that adapt
+
+Send images, PDFs and audio to GPT or Claude with one type. The model
+classes now adjust themselves to whatever each model generation accepts,
+and sandboxed file paths behave the way you'd write them. Nothing
+breaks — see [Upgrading](docs/guides/upgrading.md).
+
+| Feature | What you get |
+|---|---|
+| **Media input** | `runner.invoke("Describe this", media=["photo.jpg", "report.pdf"])`. Paths, URLs, bytes or `Media` objects. The same code works on `GPT()` and `Claude()`: each model gets its own format, and either provider's native part shape is accepted too. Unsupported pairs — audio to Claude, a PDF URL to GPT — fail fast with a clear `ValueError`. [Guide](docs/guides/media.md). |
+| **Models that adapt** | Parameter support changes between model generations — `reasoning_effort`'s allowed values, `max_tokens` vs `max_completion_tokens`, Claude's `temperature` + `top_p` conflict. When a model rejects a parameter, `GPT` and `Claude` make the smallest change the error asks for (`'none'` → `'low'`), retry, and remember it for that model. Logged at WARNING; `adapt_params=False` opts out. [Details](docs/concepts/models.md#old-and-new-models). |
+| **More Claude settings** | `Claude(top_p=, top_k=, thinking=, stop_sequences=)`. `temperature` is only sent when you set it. |
+| **Workspace paths** | With a workspace set, `/notes.txt` means the workspace's `notes.txt`, not `C:\notes.txt`. `run_python` now starts in the workspace, so `open("notes.txt")` finds it. |
+
+### Upgrade notes
+
+- `Claude(temperature=)` now defaults to unset. The API default is the
+  old `1.0`, so output is the same.
+- A parameter a model rejects is adjusted with a WARNING instead of
+  raising. Use `adapt_params=False` if you'd rather it fail.
+- `run_python` starts in the workspace, not the launch directory.
+- Drop any `reasoning_effort="none"` workarounds. Earlier docs
+  recommended it, and it's the value newer models reject.
+
+Full notes: [docs/guides/upgrading.md](docs/guides/upgrading.md).
+
 ## What's new in 3.3 — dependency DAGs for the Supervisor
 
 Plans stopped being flat lists. A step declares what it consumes, and
@@ -858,6 +884,35 @@ guarantees a crashed save can't corrupt an existing valid file.
 
 ---
 
+## Send images, PDFs and audio
+
+```python
+from agentx_dev import AgentRunner, AgentType, Claude, Media
+
+runner = AgentRunner(model=Claude(), agent=AgentType.ReAct, tools=[])
+
+result = runner.invoke(
+    "What does this chart show, and does the report agree?",
+    media=["q3_chart.png", "q3_report.pdf"],
+)
+```
+
+Swap in `GPT(model="gpt-4o")` and nothing else changes. You can also put
+media straight into a message for a bare model call:
+
+```python
+llm.invoke([{"role": "user", "content": ["What's in this photo?", Media.image("cat.jpg")]}])
+```
+
+| | GPT | Claude |
+|---|---|---|
+| image (file or URL) | yes | yes |
+| PDF | file | file or URL |
+| audio (wav / mp3) | audio models | no — `ValueError` |
+
+Paths are relative to where your program runs, not the agent's
+workspace. See [Media](docs/guides/media.md).
+
 ## Get a typed result back
 
 Force the agent's final answer to fit a Pydantic schema:
@@ -1092,7 +1147,7 @@ print(f"Spent: ${llm.usage.estimate_cost(0.003, 0.015):.4f}")
     exercising the dynamic-spawn machinery and the persistent-state feature.
 - Project-scoped instruction sheet: [`AGENTX.md`](AGENTX.md) —
   read for the conventions this codebase expects.
-- The full framework docs: see [`agentx_dev/README.md`](agentx_dev/README.md)
+- The full framework docs: see [`docs/README.md`](docs/README.md)
   (every class, every method, every operational lever)
 
 ## Links

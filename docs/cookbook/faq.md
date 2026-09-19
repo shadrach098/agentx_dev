@@ -20,6 +20,47 @@
 - **`gpt-4o-mini`** — cheap fallback. Prone to duplicate-call spirals —
   the framework's guards catch them.
 
+## How do I send an image, PDF, or audio file? *(3.4)*
+
+Pass it with `media=`:
+
+```python
+runner.invoke("What's in this photo?", media=["photo.jpg"])
+```
+
+Each item can be a path, a URL, raw bytes wrapped in `Media`, or a
+content-part dict in OpenAI's or Anthropic's format. The framework
+renders it for whichever model receives it. Claude has no audio input,
+and GPT can't fetch a PDF from a URL — both raise `ValueError` before
+any request. See [Media](../guides/media.md).
+
+## Why do I see "rejected a request parameter" warnings? *(3.4)*
+
+A model refused one of your settings, and the framework adjusted it and
+retried. For example, `reasoning_effort="none"` on a model that only
+takes `low`/`medium`/`high` becomes `low`. The warning shows exactly what
+changed. It appears once per model object; later calls reuse the fix.
+
+To silence it, set a value the model accepts. To turn the adjustment
+off and get the provider's error instead, pass `adapt_params=False`.
+
+## Which `reasoning_effort` should I set? *(3.4)*
+
+The one you want. Generations accept different sets — `none`,
+`minimal`, `low`, `medium`, `high`, `xhigh`, and older models don't take
+the parameter at all. The model moves to the nearest value it supports
+(or drops the parameter), so one config works across models. Earlier
+docs suggested `"none"` to dodge a tool-calling conflict — you don't
+need that workaround anymore.
+
+## How do I point the agent at a file in its workspace? *(3.4)*
+
+For the file tools, use the name — `notes.txt`, `./notes.txt` and
+`/notes.txt` all mean the workspace's `notes.txt`. `run_python` starts in
+the workspace, so `open("notes.txt")` works there too. For images and
+PDFs the model should *look at*, attach them with `media=` instead of
+asking the agent to read them.
+
 ## When should I use ReAct vs. function-calling vs. native binding?
 
 | Mode | When |

@@ -718,3 +718,95 @@ dependency runs the step rather than silently dropping it. A skipped
 step carries `skipped=True` with `error=None` — the reason lives in
 `content`. That's the tell for distinguishing "condition matched" from
 "dependency blew up".
+
+
+---
+
+## 26. Vision and document review agent *(3.4)*
+
+An agent that looks at a scan and a PDF, compares them, and writes its
+findings into its workspace. The text is the task; the files ride along
+as media.
+
+```python
+from agentx_dev import AgentRunner, AgentType, Claude, Media, Permissions
+
+runner = AgentRunner(
+    model=Claude(),                     # or GPT(model="gpt-4o")
+    agent=AgentType.ReAct,
+    permissions=Permissions.full_access(["./inbox"]),
+)
+
+result = runner.invoke(
+    "Compare the invoice to the receipt photo. List any line items that "
+    "don't match, then save the list to mismatches.md.",
+    media=[
+        "./inbox/invoice.pdf",
+        Media.image("./inbox/receipt.jpg", detail="high"),
+    ],
+)
+print(result.content)
+```
+
+Why it's built this way:
+
+- **The model sees files through `media=`, not `read_path`.**
+  `read_path` is a text reader. Pointing the agent at a JPEG path in the
+  prompt gets you "file is not utf-8 text" — attaching it gets you an
+  answer.
+- **Media paths are relative to your program**, not the workspace — hence
+  `./inbox/receipt.jpg`, not `receipt.jpg`.
+- **Writes land in the workspace.** `mismatches.md` goes to
+  `./inbox/mismatches.md`. A leading slash would too: `/mismatches.md`
+  means the workspace root.
+- **Same code, either provider.** The one exception is audio: only GPT
+  audio models accept it, and Claude raises `ValueError` before sending
+  anything.
+
+For a batch of documents, loop `runner.invoke(..., media=[path])` per
+file, or use pattern #19 (the Batch API) for a 50% discount on
+Claude-only workloads.
+
+---
+
+## 27. One agent across old and new models *(3.4)*
+
+Configure models by what you *want*, and let each one settle on what it
+supports. Useful when a config file picks the model, or when you run the
+same evals across generations.
+
+```python
+from agentx_dev import AgentRunner, AgentType, GPT, Claude
+
+MODELS = {
+    "reasoning": GPT(model="gpt-5.4", reasoning_effort="none", max_tokens=4000),
+    "legacy":    GPT(model="gpt-4o",  reasoning_effort="high", max_tokens=4000),
+    "claude":    Claude(model="claude-sonnet-4-6", temperature=0.3, top_p=0.9),
+    "claude-3":  Claude(model="claude-3-haiku-20240307", max_tokens=64000),
+}
+
+def run(task, which):
+    runner = AgentRunner(model=MODELS[which], agent=AgentType.ReAct, tools=[])
+    return runner.invoke(task).content
+```
+
+What each model does with the same intent:
+
+| Model | Adjustment (logged once, then remembered) |
+|---|---|
+| `gpt-5.4` | `reasoning_effort` `'none'` → nearest supported value; `max_tokens` sent as `max_completion_tokens` |
+| `gpt-4o` | `reasoning_effort` dropped — the model doesn't have it |
+| `claude-sonnet-4-6` | if the model rejects `top_p` next to `temperature`, `top_p` is dropped |
+| `claude-3-haiku` | `max_tokens` clamped to the model's output cap |
+
+Things to know:
+
+- **The first call to a model that rejects something costs one extra
+  request.** After that the fix is remembered on that model object, so
+  keep the object around (as the dict above does) rather than building a
+  fresh `GPT(...)` for every call.
+- **Want a hard failure instead?** In CI or config validation, pass
+  `adapt_params=False` and a wrong setting raises the provider's `400`
+  unchanged.
+- **Only parameter errors are adjusted.** Context overflows, auth
+  failures and bad requests of any other kind raise as usual.

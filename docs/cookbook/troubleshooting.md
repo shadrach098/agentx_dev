@@ -34,6 +34,65 @@ Check your `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` env var.
 You passed a raw provider client. Wrap it in a `BaseChatModel`
 subclass.
 
+## Model parameters *(3.4)*
+
+**`400 Unsupported value: 'reasoning_effort' does not support 'none' with this model`**
+Different model generations accept different `reasoning_effort` values.
+Since 3.4 the model moves to the nearest supported value automatically
+and logs a WARNING. On an older build, upgrade — or set a value from the
+list in the error. If you passed `adapt_params=False`, the error is
+deliberate: choose a listed value.
+
+**`400 Unsupported parameter: 'max_tokens' ... Use 'max_completion_tokens' instead`**
+Reasoning models renamed the parameter. 3.4 sends it under the new name
+automatically (up front for `o1`/`o3`/`o4`/`gpt-5*`, and learned from the
+error for anything newer).
+
+**`400 temperature and top_p cannot both be specified for this model`**
+Newer Claude models accept one or the other. 3.4 drops `top_p` and keeps
+your `temperature`. Or set only one.
+
+**`400 max_tokens: 64000 > 4096, which is the maximum allowed ...`**
+The model has a lower output cap. 3.4 clamps `max_tokens` to it.
+
+**A WARNING says my setting was changed, but I need the exact value**
+The model doesn't support it — no retry can make it. Choose a model that
+does, or pass `adapt_params=False` to fail instead of adjusting.
+
+**Still a `400` after upgrading**
+Only parameter-compatibility errors are adjusted. Context-length
+overflows, malformed messages, and content-policy refusals raise as
+before. Read the provider's message — it's passed through unchanged.
+
+## Media *(3.4)*
+
+**`ValueError: Claude does not accept audio input`**
+Claude has no audio input. Transcribe the audio first, or send it to an
+audio-capable GPT model.
+
+**`ValueError: GPT (chat completions) cannot fetch a document from a URL`**
+Download the PDF and pass the file: `Media.document("report.pdf")`.
+Claude can take a PDF URL; GPT can't.
+
+**`ValueError: Media from raw bytes needs media_type=`**
+Bytes carry no file type. Say what it is:
+`Media.image(data, media_type="image/png")`. The exception is
+`Media.document(data)`, which assumes `application/pdf`.
+
+**`FileNotFoundError: Media file not found: bruce.jpeg`**
+Media paths are relative to where your program runs, **not** the
+agent's workspace. Use `./my_workspace/bruce.jpeg` or an absolute path.
+
+**The model says it can't see the image**
+The image was never attached. Naming a path in the prompt, or having the
+agent call `read_path` (a text reader), doesn't show the model anything.
+Pass the file with `media=`.
+
+**A provider `400` about image size or format**
+Providers cap image size (about 5 MB for Claude, 20 MB for GPT) and
+accept a set of formats (PNG, JPEG, GIF, WebP). The framework doesn't
+resize; shrink or convert the image first.
+
 ## Runner errors
 
 **`TypeError: AgentRunner received both 'Agent' and 'agent'`**
@@ -92,6 +151,22 @@ it to `True`.
 **`PermissionError: path outside sandbox`**
 The path resolves outside `allowed_paths`. Either widen the sandbox or
 use a path inside it.
+
+**`PermissionError: path '/bruce.jpeg' (resolved to C:\bruce.jpeg) is outside the allowed sandbox`**
+Before 3.4, a leading slash meant the root of the current drive, not the
+workspace. Upgrade — with a workspace set, `/bruce.jpeg` now means the
+workspace's `bruce.jpeg`. If no workspace is set (only `allowed_paths`),
+set one, or drop the leading slash.
+
+**`read_path` finds a file but `run_python` can't open it**
+Before 3.4 `run_python` started in the directory your program was
+launched from, not the workspace. Upgrade. Inside Python code, don't
+start paths with `/` — to Python that's the filesystem root. Use
+`open("bruce.jpeg")` or the workspace's absolute path.
+
+**`ERROR: file is not utf-8 text` when reading an image**
+`read_path` reads text. To have the model look at an image or PDF,
+attach it with `media=` — see [Media](../guides/media.md).
 
 **`.agentx/permissions.json` refuses to load**
 Check file mode (should be 0o600, only readable by you). Fix:

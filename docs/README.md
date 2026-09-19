@@ -30,10 +30,12 @@ Task guides:
 - [Build a file-editing agent](guides/file-agent.md)
 - [Get typed output back](guides/structured-output.md)
 - [Stream tokens as they arrive](guides/streaming.md)
+- [Send images, PDFs and audio](guides/media.md) *(3.4)*
 - [Persist conversations](guides/sessions.md)
 - [Connect an MCP server](guides/mcp.md)
 - [Configure from YAML](guides/yaml-config.md)
 - [Author your own tools](guides/custom-tools.md)
+- [Upgrading between releases](guides/upgrading.md)
 
 Advanced topics:
 - [Memory strategies](advanced/memory.md) — 5 built-in memories + SemanticMemory
@@ -110,6 +112,11 @@ operational lever (memory, caching, budgets, rate limits).
   transitive failure cascade, and `skip_when` conditional steps.
   See [supervisor](advanced/supervisor.md) and the
   [design note](design/3.3-depends-on-dag.md).
+- **3.4** — media input (images, PDFs, audio) for GPT and Claude via
+  `Media` and `media=`; models that adapt to each generation's
+  parameter support (`adapt_params`); new Claude settings; workspace-
+  rooted paths and `run_python` starting in the workspace. See
+  [media](guides/media.md) and [upgrading](guides/upgrading.md).
 
 ## Where things live in the source
 
@@ -120,7 +127,7 @@ Every module in `agentx_dev/` is documented; the mapping is:
 | `ChatModel.py` | [Chat models](concepts/models.md) |
 | `Tools.py`, `AsyncTools.py` | [Tools](concepts/tools.md) |
 | `Agents/Agent.py` | [Agents](concepts/agents.md) |
-| `Runner/AgentRun.py`, `AsyncAgentRun.py` | [The runner loop](concepts/agents.md#the-runner-loop) |
+| `Runner/AgentRun.py`, `AsyncAgentRun.py` | [The runner loop](concepts/agents.md#4-the-runner-loop) |
 | `DefaultTools.py` | [Permissions & sandbox](concepts/permissions.md) |
 | `WebTools.py` | [Web tools](guides/custom-tools.md#web-tools) |
 | `Observability.py` | [Observability](concepts/observability.md) |
