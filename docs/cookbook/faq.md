@@ -35,6 +35,16 @@ and GPT can't fetch a PDF from a URL — both raise `ValueError` before
 any request. `llm.invoke(...)` and `with_structured_output(...).invoke(...)`
 take the same `media=` argument (3.4.2). See [Media](../media/overview.md).
 
+## Can I send a CSV or an Excel file? *(3.4.2)*
+
+Yes — pass the path: `media=["sales.csv"]` or `media=["q3.xlsx"]`.
+Neither provider reads spreadsheet files directly, so the framework
+sends the contents as text: CSV exactly as written, Excel converted with
+pandas to one CSV block per sheet (`pip install agentx-dev[excel]`).
+Files over 100,000 characters raise unless you pass `truncate=True`.
+For large datasets, let an agent load the file with pandas instead of
+pasting it in. See [Media: data files](../media/overview.md#data-files-csv-and-excel).
+
 ## Why do I see "rejected a request parameter" warnings? *(3.4)*
 
 A model refused one of your settings, and the framework adjusted it and

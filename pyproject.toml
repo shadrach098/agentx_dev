@@ -33,11 +33,16 @@ chroma = ["chromadb>=0.4"]
 qdrant = ["qdrant-client>=1.6"]
 # `pip install agentx-dev[pgvector]` — PgVectorStore adapter (psycopg v3)
 pgvector = ["psycopg[binary]>=3.1"]
+# `pip install agentx-dev[excel]` — Media.spreadsheet(): .xlsx / .xls / .ods
+# sent to models as CSV text (pandas; openpyxl reads .xlsx)
+excel = ["pandas>=1.5", "openpyxl>=3.1"]
 # `pip install agentx-dev[dev]` — everything needed to run the tests
 dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.23",
     "numpy>=1.24",
+    "pandas>=1.5",
+    "openpyxl>=3.1",
 ]
 # `pip install agentx-dev[all]` — the works
 all = [
@@ -48,6 +53,8 @@ all = [
     "chromadb>=0.4",
     "qdrant-client>=1.6",
     "psycopg[binary]>=3.1",
+    "pandas>=1.5",
+    "openpyxl>=3.1",
 ]
 
 [project.urls]

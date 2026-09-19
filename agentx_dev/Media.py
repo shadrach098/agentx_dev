@@ -1,16 +1,12 @@
-"""Provider-neutral media input (images, PDFs, audio).
+"""Provider-neutral media input: images, PDFs, audio, text files, spreadsheets.
 
 Build a ``Media`` once and hand it to any model or runner; the framework
 translates it to the wire format of whichever provider receives it::
 
     from agentx_dev import Media
 
-    llm.invoke([{"role": "user", "content": [
-        {"type": "text", "text": "What is in this chart?"},
-        Media.image("chart.png"),
-    ]}])
-
-    runner.invoke("Summarise the attached report", media=["report.pdf"])
+    llm.invoke("What is in this chart?", media=["chart.png"])
+    runner.invoke("Which region grew fastest?", media=["sales.xlsx"])
 
 Canonical form
 --------------
@@ -21,30 +17,37 @@ Inside the framework a media part is a plain, JSON-serialisable dict, so
     {"type": "image",    "source": {"type": "url", "url": "https://..."}}
     {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "..."},
      "filename": "report.pdf"}
+    {"type": "document", "source": {"type": "text", "media_type": "text/csv", "data": "a,b
+1,2"},
+     "filename": "sales.csv"}
     {"type": "audio",    "source": {"type": "base64", "media_type": "audio/wav", "data": "..."}}
 
-That is Anthropic's content-block shape (plus an ``audio`` type and an
-optional ``filename`` / ``detail``), chosen because it carries the most
-information. :func:`content_for_openai` and :func:`content_for_anthropic`
-translate to each provider, and both ALSO accept the other provider's
-native part shapes -- an OpenAI-style ``image_url`` part sent to
-``Claude()`` works, and an Anthropic ``image`` block sent to ``GPT()``
-works. Callers keep writing whichever shape they already know.
+Text-like files (CSV, TSV, TXT, Markdown, JSON, XML, YAML, HTML) are kept
+as text, exactly as written. Spreadsheets (.xlsx / .xls / .ods) are
+converted with pandas to one CSV block per sheet. Both reach every
+provider as a labelled text block (``<file name="sales.csv" ...>``),
+which all GPT and Claude models accept.
+
+:func:`content_for_openai`, :func:`content_for_openai_responses` and
+:func:`content_for_anthropic` translate to each provider, and all of them
+also accept the other provider's native part shapes.
 
 Provider support
 ----------------
-===========  ======================  ==========================
-kind         GPT (chat completions)  Claude (messages)
-===========  ======================  ==========================
-image        base64 + URL            base64 + URL
-document     base64 PDF              base64 + URL PDF
-audio        base64 wav / mp3        not supported -> ValueError
-===========  ======================  ==========================
+===========  =============================  ==========================
+kind         GPT                            Claude
+===========  =============================  ==========================
+image        base64 + URL                   base64 + URL
+PDF          base64 (URL via Responses)     base64 + URL
+text files   text                           text
+spreadsheet  text (CSV per sheet)           text (CSV per sheet)
+audio        base64 wav / mp3               not supported -> ValueError
+===========  =============================  ==========================
 
-Unsupported combinations raise ``ValueError`` naming the fix, rather than
-sending a request the provider rejects with a less helpful message.
-Whether a particular *model* accepts a modality (e.g. audio needs an
-audio-capable GPT model) is still the provider's decision.
+Unsupported inputs -- Word, PowerPoint, archives, audio to Claude, a text
+file by URL -- raise ``ValueError`` naming the fix before any request is
+sent. Whether a particular *model* accepts a modality is still the
+provider's decision.
 """
 
 from __future__ import annotations
@@ -77,8 +80,74 @@ _EXT_MIME = {
     ".pdf": "application/pdf",
     ".wav": "audio/wav",
     ".mp3": "audio/mpeg",
+    # Text-like files: sent to the model as text. Listed explicitly because
+    # the OS table is unreliable -- on Windows mimetypes maps .csv to
+    # application/vnd.ms-excel.
     ".txt": "text/plain",
+    ".log": "text/plain",
+    ".csv": "text/csv",
+    ".tsv": "text/tab-separated-values",
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".json": "application/json",
+    ".jsonl": "application/jsonl",
+    ".xml": "application/xml",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".html": "text/html",
+    ".htm": "text/html",
+    # Spreadsheets: converted to CSV text per sheet (pandas).
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroenabled.12",
+    ".xls": "application/vnd.ms-excel",
+    ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+    # Recognised only so they can be refused with a useful message.
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".zip": "application/zip",
 }
+
+_TEXT_TYPES = frozenset({
+    "application/json", "application/jsonl", "application/xml",
+    "application/yaml", "application/x-yaml",
+})
+_SPREADSHEET_TYPES = frozenset({
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel.sheet.macroenabled.12",
+    "application/vnd.ms-excel",
+    "application/vnd.oasis.opendocument.spreadsheet",
+})
+_UNSUPPORTED_FIX = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        "Word files aren't accepted by GPT or Claude. Save it as PDF and use "
+        "Media.document('file.pdf'), or paste its text into the prompt.",
+    "application/msword":
+        "Word files aren't accepted by GPT or Claude. Save it as PDF first.",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+        "PowerPoint files aren't accepted by GPT or Claude. Export it as PDF "
+        "and use Media.document('slides.pdf').",
+    "application/vnd.ms-powerpoint":
+        "PowerPoint files aren't accepted by GPT or Claude. Export it as PDF first.",
+    "application/zip":
+        "Archives can't be sent to a model. Extract the files and attach them "
+        "individually.",
+}
+
+# Default cap on a text or spreadsheet attachment, in characters (roughly
+# 25k tokens). Big enough for a real document, small enough that a stray
+# 500k-row export fails loudly instead of overflowing the context window.
+DEFAULT_MAX_CHARS = 100_000
+
+
+def _is_text_type(media_type: Optional[str]) -> bool:
+    mt = (media_type or "").lower()
+    return mt.startswith("text/") or mt in _TEXT_TYPES
+
+
+def _is_spreadsheet_type(media_type: Optional[str]) -> bool:
+    return (media_type or "").lower() in _SPREADSHEET_TYPES
 
 # OpenAI's input_audio only takes these two format names.
 _AUDIO_FORMAT = {
@@ -105,9 +174,78 @@ def _kind_for_mime(media_type: Optional[str]) -> Optional[str]:
         return "image"
     if media_type.startswith("audio/"):
         return "audio"
-    if media_type in ("application/pdf", "text/plain"):
+    if (media_type == "application/pdf" or _is_text_type(media_type)
+            or _is_spreadsheet_type(media_type) or media_type.lower() in _UNSUPPORTED_FIX):
         return "document"
     return None
+
+
+def _decode_text(raw: bytes, name: str, encoding: Optional[str]) -> str:
+    """Bytes -> str. UTF-8 (BOM stripped) first, then cp1252, which is what
+    Excel writes when it saves CSV on Windows. An explicit ``encoding``
+    wins."""
+    # Windows line endings are normalised: same content, fewer tokens,
+    # and no stray carriage return at the end of every row.
+    if encoding:
+        return raw.decode(encoding).replace("\r\n", "\n")
+    for enc in ("utf-8-sig", "cp1252"):
+        try:
+            return raw.decode(enc).replace("\r\n", "\n")
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"{name} isn't UTF-8 or Windows-1252 text; pass encoding=")
+
+
+def _limit_text(text: str, name: str, max_chars: Optional[int], truncate: bool) -> str:
+    """Enforce the size cap on a text attachment."""
+    if max_chars is None or len(text) <= max_chars:
+        return text
+    if not truncate:
+        raise ValueError(
+            f"{name} is {len(text):,} characters as text, over max_chars={max_chars:,} "
+            f"(about {len(text) // 4:,} tokens). Pass truncate=True to send the first "
+            f"{max_chars:,} characters, raise max_chars=, or for large data let an "
+            "agent read the file with pandas via run_python instead."
+        )
+    cut = text.rfind("\n", 0, max_chars)
+    if cut <= 0:
+        cut = max_chars
+    kept = text[:cut]
+    total_lines = text.count("\n") + 1
+    kept_lines = kept.count("\n") + 1
+    return kept + (f"\n[... truncated: showing the first {kept_lines:,} of "
+                   f"{total_lines:,} lines of {name}]")
+
+
+def _spreadsheet_to_text(src: Any, name: str, sheets: Any) -> str:
+    """Every requested sheet -> CSV text via pandas, one block per sheet.
+
+    ``dtype=object`` keeps cell values as stored (a text-formatted "02134"
+    stays "02134") instead of letting pandas re-infer column types."""
+    try:
+        import pandas as pd
+    except ImportError as e:
+        raise ImportError(
+            "Reading spreadsheets needs pandas and openpyxl: "
+            "pip install agentx-dev[excel]"
+        ) from e
+    try:
+        frames = pd.read_excel(src, sheet_name=sheets, dtype=object)
+    except ImportError as e:
+        raise ImportError(
+            f"Reading {name} needs another package ({e}). "
+            "Install the spreadsheet extras: pip install agentx-dev[excel] "
+            "(.xls also needs xlrd; .ods needs odfpy)"
+        ) from e
+    if not isinstance(frames, dict):
+        frames = {sheets: frames}
+    blocks = []
+    for sheet, df in frames.items():
+        header = f"## Sheet: {sheet} ({len(df)} rows x {len(df.columns)} columns)"
+        # lineterminator: pandas defaults to os.linesep, i.e. \r\n on Windows.
+        csv_text = df.to_csv(index=False, lineterminator="\n")
+        blocks.append(header + "\n" + csv_text.rstrip("\n"))
+    return "\n\n".join(blocks)
 
 
 def _is_url(value: str) -> bool:
@@ -126,20 +264,24 @@ class Media:
 
     Construct with a classmethod rather than ``__init__``:
 
-    - ``Media.image(src)``    -- path, URL, or bytes
-    - ``Media.document(src)`` -- a PDF (or plain text) path, URL, or bytes
-    - ``Media.audio(src)``    -- a wav/mp3 path or bytes (GPT audio models)
-    - ``Media.from_path(p)``  -- kind inferred from the file extension
-    - ``Media.from_url(u)``   -- kind inferred from the URL, or pass ``kind=``
+    - ``Media.image(src)``        -- path, URL, or bytes
+    - ``Media.document(src)``     -- a PDF, a text-like file, or a spreadsheet
+    - ``Media.text(src)``         -- CSV, TSV, TXT, Markdown, JSON, XML, YAML ...
+    - ``Media.spreadsheet(src)``  -- .xlsx / .xls / .ods, one CSV block per sheet
+    - ``Media.audio(src)``        -- a wav/mp3 path or bytes (GPT audio models)
+    - ``Media.from_path(p)``      -- kind inferred from the file extension
+    - ``Media.from_url(u)``       -- kind inferred from the URL, or pass ``kind=``
     - ``Media.from_bytes(b, media_type)``
 
-    Files are read and base64-encoded at construction, so a ``Media`` is
-    self-contained and safe to reuse across calls and providers. URLs are
-    NOT fetched by the framework; the URL goes to the provider, which
-    fetches it (where the provider supports that for the kind).
+    Files are read when the ``Media`` is created, so it is self-contained
+    and safe to reuse across calls and providers. Images, PDFs and audio are
+    kept as base64; text-like files and spreadsheets are kept as TEXT and
+    reach the model as a labelled text block, which every model on both
+    providers accepts. URLs are NOT fetched by the framework; the URL goes
+    to the provider, which fetches it (images and PDFs only).
     """
 
-    __slots__ = ("kind", "media_type", "data", "url", "filename", "detail")
+    __slots__ = ("kind", "media_type", "data", "url", "body", "filename", "detail")
 
     def __init__(
         self,
@@ -148,19 +290,35 @@ class Media:
         media_type: Optional[str] = None,
         data: Optional[str] = None,
         url: Optional[str] = None,
+        body: Optional[str] = None,
         filename: Optional[str] = None,
         detail: Optional[str] = None,
     ):
         if kind not in _MEDIA_TYPES:
             raise ValueError(f"Media kind must be one of {_MEDIA_TYPES}, got {kind!r}")
-        if (data is None) == (url is None):
-            raise ValueError("Media needs exactly one of data= (base64) or url=")
+        if sum(v is not None for v in (data, url, body)) != 1:
+            raise ValueError("Media needs exactly one of data= (base64), url=, or body= (text)")
         if data is not None and not media_type:
             raise ValueError("Media with inline data needs a media_type (e.g. 'image/png')")
+        mt = (media_type or "").lower()
+        if body is not None and kind != "document":
+            raise ValueError("body= (text) is only valid for documents")
+        if mt and kind == "image" and not mt.startswith("image/"):
+            raise ValueError(f"{media_type!r} isn't an image type")
+        if mt and kind == "audio" and not mt.startswith("audio/"):
+            raise ValueError(f"{media_type!r} isn't an audio type")
+        if kind == "document" and data is not None and mt != "application/pdf":
+            # Neither provider accepts arbitrary binary documents inline.
+            fix = _UNSUPPORTED_FIX.get(mt)
+            raise ValueError(fix or (
+                f"Inline documents must be PDF; got {media_type!r}. Text-like files "
+                "use Media.text(), spreadsheets Media.spreadsheet()."
+            ))
         self.kind = kind
         self.media_type = media_type
         self.data = data
         self.url = url
+        self.body = body
         self.filename = filename
         self.detail = detail
 
@@ -168,33 +326,35 @@ class Media:
 
     @classmethod
     def _build(cls, kind: Optional[str], src: Any, media_type: Optional[str],
-               filename: Optional[str], detail: Optional[str]) -> "Media":
+               filename: Optional[str], detail: Optional[str], **opts: Any) -> "Media":
+        """Shared loader. ``opts`` carries text/spreadsheet options:
+        ``max_chars``, ``truncate``, ``sheets``, ``encoding``."""
         if isinstance(src, Media):
             return src
+        if isinstance(src, os.PathLike):
+            src = os.fspath(src)
+
+        # ---- where the bytes come from
+        raw: Optional[bytes] = None
         if isinstance(src, (bytes, bytearray)):
             if not media_type:
                 raise ValueError(
                     "Media from raw bytes needs media_type=, e.g. "
                     "Media.image(data, media_type='image/png')"
                 )
-            kind = kind or _kind_for_mime(media_type)
-            if kind is None:
-                raise ValueError(f"Can't infer a media kind from {media_type!r}; pass kind explicitly")
-            return cls(kind, media_type=media_type,
-                       data=base64.b64encode(bytes(src)).decode("ascii"),
-                       filename=filename, detail=detail)
-        if isinstance(src, os.PathLike):
-            src = os.fspath(src)
-        if not isinstance(src, str):
+            raw, mt = bytes(src), media_type
+        elif not isinstance(src, str):
             raise TypeError(f"Media source must be a path, URL, bytes, or Media; got {type(src).__name__}")
-        if src.startswith("data:"):
-            mt, data = _parse_data_uri(src)
+        elif src.startswith("data:"):
+            mt, b64 = _parse_data_uri(src)
             mt = media_type or mt
-            kind = kind or _kind_for_mime(mt)
-            if kind is None:
-                raise ValueError(f"Can't infer a media kind from data URI type {mt!r}")
-            return cls(kind, media_type=mt, data=data, filename=filename, detail=detail)
-        if _is_url(src):
+            raw = base64.b64decode(b64) if (_is_text_type(mt) or _is_spreadsheet_type(mt)) else None
+            if raw is None:
+                kind = kind or _kind_for_mime(mt)
+                if kind is None:
+                    raise ValueError(f"Can't infer a media kind from data URI type {mt!r}")
+                return cls(kind, media_type=mt, data=b64, filename=filename, detail=detail)
+        elif _is_url(src):
             mt = media_type or _guess_mime(src)
             kind = kind or _kind_for_mime(mt)
             if kind is None:
@@ -202,21 +362,45 @@ class Media:
                     f"Can't infer whether {src!r} is an image, document, or audio; "
                     "use Media.image(url) / Media.document(url) / Media.audio(url)"
                 )
+            if kind == "document" and mt and mt.lower() != "application/pdf":
+                raise ValueError(
+                    f"Only PDFs can be passed by URL ({src!r} is {mt}). Download the "
+                    "file and pass the local path -- text and spreadsheets are sent as text."
+                )
             return cls(kind, media_type=mt, url=src, filename=filename, detail=detail)
-        # A filesystem path.
-        if not os.path.isfile(src):
-            raise FileNotFoundError(f"Media file not found: {src}")
-        mt = media_type or _guess_mime(src)
+        else:
+            if not os.path.isfile(src):
+                raise FileNotFoundError(f"Media file not found: {src}")
+            mt = media_type or _guess_mime(src)
+            filename = filename or os.path.basename(src)
+            with open(src, "rb") as fh:
+                raw = fh.read()
+
+        name = filename or "attachment"
         kind = kind or _kind_for_mime(mt)
         if kind is None or not mt:
             raise ValueError(
-                f"Can't infer a media type for {src!r}; pass media_type= "
-                "(e.g. 'image/png', 'application/pdf', 'audio/wav')"
+                f"Can't infer a media type for {name!r}; pass media_type= "
+                "(e.g. 'image/png', 'application/pdf', 'text/csv', 'audio/wav')"
             )
-        with open(src, "rb") as fh:
-            data = base64.b64encode(fh.read()).decode("ascii")
-        return cls(kind, media_type=mt, data=data,
-                   filename=filename or os.path.basename(src), detail=detail)
+
+        # ---- text and spreadsheets become text documents
+        if kind == "document" and _is_spreadsheet_type(mt):
+            import io
+            text = _spreadsheet_to_text(io.BytesIO(raw), name, opts.get("sheets"))
+            text = _limit_text(text, name, opts.get("max_chars", DEFAULT_MAX_CHARS),
+                               opts.get("truncate", False))
+            return cls("document", media_type="text/csv", body=text, filename=name)
+        if kind == "document" and _is_text_type(mt):
+            text = _decode_text(raw, name, opts.get("encoding"))
+            text = _limit_text(text, name, opts.get("max_chars", DEFAULT_MAX_CHARS),
+                               opts.get("truncate", False))
+            return cls("document", media_type=mt, body=text, filename=name)
+        if kind == "document" and mt.lower() in _UNSUPPORTED_FIX:
+            raise ValueError(_UNSUPPORTED_FIX[mt.lower()])
+
+        return cls(kind, media_type=mt, data=base64.b64encode(raw).decode("ascii"),
+                   filename=filename, detail=detail)
 
     @classmethod
     def image(cls, src: Any, *, media_type: Optional[str] = None,
@@ -227,13 +411,52 @@ class Media:
 
     @classmethod
     def document(cls, src: Any, *, media_type: Optional[str] = None,
-                 filename: Optional[str] = None) -> "Media":
-        """A document -- normally a PDF. Raw bytes default to PDF."""
+                 filename: Optional[str] = None, **opts: Any) -> "Media":
+        """A document: a PDF, a text-like file (CSV, TXT, JSON ...), or a
+        spreadsheet -- routed by type. Raw bytes default to PDF. ``opts``
+        are the :meth:`text` / :meth:`spreadsheet` options."""
         if media_type is None and isinstance(src, (bytes, bytearray)):
             media_type = "application/pdf"
-        return cls._build("document", src, media_type, filename, None)
+        return cls._build("document", src, media_type, filename, None, **opts)
 
     pdf = document
+
+    @classmethod
+    def text(cls, src: Any, *, media_type: Optional[str] = None,
+             filename: Optional[str] = None, encoding: Optional[str] = None,
+             max_chars: Optional[int] = DEFAULT_MAX_CHARS,
+             truncate: bool = False) -> "Media":
+        """A text-like file -- CSV, TSV, TXT, Markdown, JSON, XML, YAML, HTML --
+        sent to the model exactly as written, labelled with its file name.
+
+        ``max_chars`` caps the size (default 100,000 characters, about 25k
+        tokens; ``None`` for no cap). Over the cap it raises, unless
+        ``truncate=True``, which keeps the first whole lines up to the cap
+        and notes how many were dropped. Raw bytes default to text/plain."""
+        if media_type is None and isinstance(src, (bytes, bytearray)):
+            media_type = "text/plain"
+        if media_type is None and isinstance(src, (str, os.PathLike)):
+            guessed = _guess_mime(os.fspath(src))
+            media_type = guessed if _is_text_type(guessed) else "text/plain"
+        return cls._build("document", src, media_type, filename, None,
+                          encoding=encoding, max_chars=max_chars, truncate=truncate)
+
+    @classmethod
+    def spreadsheet(cls, src: Any, *, sheets: Any = None, filename: Optional[str] = None,
+                    max_chars: Optional[int] = DEFAULT_MAX_CHARS,
+                    truncate: bool = False) -> "Media":
+        """An Excel or OpenDocument spreadsheet, converted with pandas to one
+        CSV block per sheet (with its name and size). ``sheets`` picks sheets
+        by name or index -- one, or a list; default all. Needs
+        ``pip install agentx-dev[excel]`` (pandas + openpyxl). Size options
+        as :meth:`text`."""
+        media_type = None
+        if isinstance(src, (bytes, bytearray)):
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        elif isinstance(src, (str, os.PathLike)) and not _is_spreadsheet_type(_guess_mime(os.fspath(src))):
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return cls._build("document", src, media_type, filename, None,
+                          sheets=sheets, max_chars=max_chars, truncate=truncate)
 
     @classmethod
     def audio(cls, src: Any, *, media_type: Optional[str] = None) -> "Media":
@@ -242,8 +465,8 @@ class Media:
         return cls._build("audio", src, media_type, None, None)
 
     @classmethod
-    def from_path(cls, path: Any, *, media_type: Optional[str] = None) -> "Media":
-        return cls._build(None, path, media_type, None, None)
+    def from_path(cls, path: Any, *, media_type: Optional[str] = None, **opts: Any) -> "Media":
+        return cls._build(None, path, media_type, None, None, **opts)
 
     @classmethod
     def from_url(cls, url: str, *, kind: Optional[str] = None,
@@ -254,15 +477,18 @@ class Media:
 
     @classmethod
     def from_bytes(cls, data: bytes, media_type: str, *,
-                   filename: Optional[str] = None) -> "Media":
-        return cls._build(None, data, media_type, filename, None)
+                   filename: Optional[str] = None, **opts: Any) -> "Media":
+        return cls._build(None, data, media_type, filename, None, **opts)
 
     # -- conversion -----------------------------------------------------
 
     def to_part(self) -> Dict[str, Any]:
         """The canonical JSON-serialisable content part."""
-        if self.url is not None:
-            source: Dict[str, Any] = {"type": "url", "url": self.url}
+        if self.body is not None:
+            source: Dict[str, Any] = {"type": "text", "media_type": self.media_type or "text/plain",
+                                      "data": self.body}
+        elif self.url is not None:
+            source = {"type": "url", "url": self.url}
             if self.media_type:
                 source["media_type"] = self.media_type
         else:
@@ -275,8 +501,12 @@ class Media:
         return part
 
     def __repr__(self) -> str:
-        where = self.url or f"<{len(self.data or '')} b64 chars>"
-        return f"Media({self.kind}, {self.media_type or '?'}, {where})"
+        if self.body is not None:
+            where = f"<{len(self.body):,} chars of text>"
+        else:
+            where = self.url or f"<{len(self.data or ''):,} b64 chars>"
+        name = f" {self.filename}" if self.filename else ""
+        return f"Media({self.kind}, {self.media_type or '?'}{name}, {where})"
 
 
 # ----------------------------------------------------------------------
@@ -386,6 +616,45 @@ def _canonicalise_part(part: Dict[str, Any]) -> Dict[str, Any]:
 # Provider translators
 # ----------------------------------------------------------------------
 
+def _text_document(part: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+    """``(filename, media_type, text)`` for a document that should reach
+    the model as text, else None.
+
+    Covers text-sourced parts (CSV, spreadsheets, JSON ...) and older
+    base64 parts with a text media type -- 3.4.0/3.4.1 stored ``.txt`` that
+    way, which Claude rejects as a document."""
+    if part.get("type") != "document":
+        return None
+    source = part.get("source") or {}
+    mt = source.get("media_type") or "text/plain"
+    name = part.get("filename") or part.get("title") or "attachment"
+    if source.get("type") == "text":
+        return name, mt, str(source.get("data", ""))
+    if source.get("type") == "base64" and _is_text_type(mt):
+        raw = base64.b64decode(source.get("data", "") or "")
+        return name, mt, _decode_text(raw, name, None)
+    return None
+
+
+def _file_block(name: str, media_type: str, text: str) -> str:
+    """A text attachment as the model sees it: delimited, with its name,
+    so it's distinguishable from the user's own words."""
+    safe = name.replace('"', "'")
+    return f'<file name="{safe}" type="{media_type}">\n{text}\n</file>'
+
+
+def _refuse_binary_document(part: Dict[str, Any]) -> None:
+    """Raise for an inline non-PDF document neither provider accepts."""
+    source = part.get("source") or {}
+    mt = (source.get("media_type") or "").lower()
+    if part.get("type") == "document" and source.get("type") == "base64" and mt != "application/pdf":
+        if _is_spreadsheet_type(mt):
+            raise ValueError("Spreadsheets must be converted before sending; use "
+                             "Media.spreadsheet(path) (or pass the path in media=).")
+        raise ValueError(_UNSUPPORTED_FIX.get(mt) or
+                         f"Inline documents must be PDF; got {mt or 'an unknown type'!r}.")
+
+
 def _data_uri(source: Dict[str, Any]) -> str:
     return f"data:{source.get('media_type') or 'application/octet-stream'};base64,{source.get('data', '')}"
 
@@ -417,6 +686,11 @@ def content_for_openai(content: Any) -> Any:
         if ptype not in _MEDIA_TYPES:
             out.append(part)                       # text and anything else
             continue
+        text_doc = _text_document(part)
+        if text_doc is not None:
+            out.append({"type": "text", "text": _file_block(*text_doc)})
+            continue
+        _refuse_binary_document(part)
         source = part.get("source") or {}
         if ptype == "image":
             url = source.get("url") if source.get("type") == "url" else _data_uri(source)
@@ -485,6 +759,11 @@ def content_for_openai_responses(content: Any) -> Any:
         if ptype not in _MEDIA_TYPES:
             out.append(part)
             continue
+        text_doc = _text_document(part)
+        if text_doc is not None:
+            out.append({"type": "input_text", "text": _file_block(*text_doc)})
+            continue
+        _refuse_binary_document(part)
         source = part.get("source") or {}
         is_url = source.get("type") == "url"
         if ptype == "image":
@@ -550,6 +829,16 @@ def content_for_anthropic(content: Any) -> Any:
                 "Claude does not accept audio input. Transcribe it first, or "
                 "send it to an audio-capable GPT model."
             )
+        text_doc = _text_document(part)
+        if text_doc is not None:
+            # A plain text block: every Claude model accepts it, and a
+            # base64 document block only takes PDFs.
+            block_t: Dict[str, Any] = {"type": "text", "text": _file_block(*text_doc)}
+            if part.get("cache_control"):
+                block_t["cache_control"] = part["cache_control"]
+            out.append(block_t)
+            continue
+        _refuse_binary_document(part)
         source = dict(part.get("source") or {})
         if source.get("type") == "url":
             source = {"type": "url", "url": source.get("url")}

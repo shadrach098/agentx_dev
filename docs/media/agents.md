@@ -48,6 +48,34 @@ runner.invoke(
 )
 ```
 
+## Large data: let the agent use pandas
+
+`media=` sends a file's full contents in the prompt. That's right for a
+short CSV, but a 50,000-row export would go over the size limit, and
+past the model's context window. For real datasets, give the agent the
+file and Python, and let it run the analysis:
+
+```python
+from agentx_dev import AgentRunner, AgentType, GPT, Permissions
+
+runner = AgentRunner(
+    model=GPT(model="gpt-4o"),
+    agent=AgentType.ReAct,
+    permissions=Permissions.full_access(["./data"]),     # sales.xlsx lives here
+)
+runner.invoke("Load sales.xlsx with pandas and tell me which region grew fastest.")
+```
+
+`run_python` starts in the workspace and uses your program's Python
+environment, so `pd.read_excel("sales.xlsx")` works once pandas and
+openpyxl are installed there. The model only sees what its code
+prints: a total, a grouped summary, a chart path — not every row.
+
+| Data | Use |
+|---|---|
+| a short CSV or one small sheet | `media=["file.csv"]` — the model reads it all |
+| a big CSV, many sheets, calculations | the agent + pandas, as above |
+
 ## Files in the agent's workspace
 
 The model sees a file only when it's **attached**. Mentioning a path in

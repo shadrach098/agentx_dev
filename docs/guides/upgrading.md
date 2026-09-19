@@ -23,6 +23,16 @@ module stays imported until you do, which shows up as errors like
 - `with_structured_output` works on models that need the Responses API.
   If the model rejects a forced tool choice there, `GPT` retries with
   `tool_choice="required"` and remembers it.
+- CSV, TSV, TXT, Markdown, JSON, XML, YAML and Excel files can go in
+  `media=`. Text is sent as written; spreadsheets are converted with
+  pandas (`pip install agentx-dev[excel]`). There's a 100,000-character
+  cap; pass `truncate=True` or `max_chars=` to change it. See
+  [Data files](../media/overview.md#data-files-csv-and-excel).
+- **Fixed:** `.txt` files sent to Claude used to fail — they went out as
+  base64 documents, which Claude only accepts for PDFs. They're sent as
+  text now.
+- Word, PowerPoint and zip files now fail with a `ValueError` before any
+  request is sent, instead of a provider `400`.
 - Quieter logs. The original chat-completions rejection is no longer
   printed at WARNING when a call recovers, so a successful switch no
   longer looks like the old error coming back.

@@ -1,7 +1,8 @@
 # Media: overview and flow
 
-Send images, PDFs and audio to GPT or Claude, directly or through an
-agent, with one type: `Media`. You describe *what* the file is once, and
+Send images, PDFs, audio, CSV and other text files, and Excel
+spreadsheets to GPT or Claude, directly or through an agent, with one
+type: `Media`. You describe *what* the file is once, and
 the framework turns it into the exact format each provider expects.
 
 ```python
@@ -39,7 +40,7 @@ Details for each: [chat models](chat-models.md) · [agents](agents.md).
 
 | Item | Example | What happens |
 |---|---|---|
-| a file path | `"scan.png"`, `Path("docs/r.pdf")` | read and base64-encoded; type from the extension |
+| a file path | `"scan.png"`, `Path("docs/r.pdf")`, `"sales.csv"`, `"q3.xlsx"` | read; type from the extension |
 | a URL | `"https://example.com/cat.jpg"` | passed to the provider, which downloads it |
 | a `Media` | `Media.image("scan.png", detail="high")` | used as-is |
 | raw bytes | `Media.image(data, media_type="image/png")` | bytes need a type, so wrap them in `Media` |
@@ -74,11 +75,16 @@ and a text-only call is still a plain string on the wire.
 
 ## What each provider accepts
 
-| Kind | GPT | Claude |
-|---|---|---|
-| image | file or URL | file or URL |
-| PDF | file (URL via the Responses API) | file or URL |
-| audio (wav / mp3) | file, on audio-capable models | not supported |
+| Kind | Files | GPT | Claude |
+|---|---|---|---|
+| image | `.png` `.jpg` `.gif` `.webp` | file or URL | file or URL |
+| PDF | `.pdf` | file (URL via the Responses API) | file or URL |
+| text | `.csv` `.tsv` `.txt` `.md` `.json` `.xml` `.yaml` `.html` | file, sent as text | file, sent as text |
+| spreadsheet | `.xlsx` `.xls` `.ods` | converted to CSV text per sheet | converted to CSV text per sheet |
+| audio | `.wav` `.mp3` | file, on audio-capable models | not supported |
+
+Word, PowerPoint and zip files aren't accepted by either provider, so
+they raise `ValueError` with the fix (usually: save as PDF).
 
 Two combinations need care:
 
@@ -89,6 +95,32 @@ Two combinations need care:
 
 Whether a particular *model* accepts a kind of media is still up to the
 provider. Audio, for example, needs an audio-capable GPT model.
+
+## Data files: CSV and Excel
+
+Text-like files and spreadsheets don't go to the model as attachments
+— no provider reads an `.xlsx` directly. The framework reads them and
+sends the contents as a labelled text block:
+
+```text
+<file name="sales.csv" type="text/csv">
+zip,region,total
+02134,North,120
+</file>
+```
+
+- **CSV and other text files are sent exactly as written.** They're not
+  parsed, so a ZIP code like `02134` keeps its leading zero.
+- **Spreadsheets are converted with pandas**, one CSV block per sheet,
+  headed with the sheet name and size. Install the extra first:
+  `pip install agentx-dev[excel]`.
+- **There's a size limit:** 100,000 characters (about 25k tokens) by
+  default. Above that you get a `ValueError`, unless you pass
+  `truncate=True` to send the first part, or raise `max_chars=`.
+
+For big data — thousands of rows, many sheets — don't paste it into
+the prompt. Let an agent load it with pandas instead. See
+[Large data](agents.md#large-data-let-the-agent-use-pandas).
 
 ## Limits
 

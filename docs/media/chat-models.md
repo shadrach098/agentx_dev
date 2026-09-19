@@ -50,6 +50,34 @@ This works on models that need OpenAI's Responses API for tool calls
 model to `/v1/responses` automatically. See
 [Tools on models that need the Responses API](../concepts/models.md#tools-on-models-that-need-the-responses-api).
 
+## CSV, Excel and other data files
+
+```python
+llm.invoke("Which region grew fastest?", media=["sales.csv"])
+llm.invoke("Summarise every sheet", media=["q3_report.xlsx"])   # pip install agentx-dev[excel]
+```
+
+The model receives the file's contents as text, labelled with its
+name. For more control, build the `Media` yourself:
+
+```python
+Media.spreadsheet("q3_report.xlsx", sheets="Summary")        # one sheet (or a list)
+Media.text("events.log", max_chars=50_000, truncate=True)      # keep the first 50k chars
+Media.text("legacy.csv", encoding="latin-1")                 # override the encoding guess
+```
+
+Typed output works the same way. Pull structured data straight out of a
+sheet:
+
+```python
+class RegionTotals(BaseModel):
+    leader: str
+    totals: dict[str, float]
+
+GPT(model="gpt-4o").with_structured_output(RegionTotals).invoke(
+    "Total the sales by region.", media=["q3_report.xlsx"])
+```
+
 ## Media inside messages
 
 Instead of `media=`, you can put `Media` straight into a message's

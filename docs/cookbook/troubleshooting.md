@@ -110,6 +110,24 @@ The image was never attached. Naming a path in the prompt, or having the
 agent call `read_path` (a text reader), doesn't show the model anything.
 Pass the file with `media=`.
 
+**`ValueError: sales.csv is 1,234,567 characters as text, over max_chars=100,000`**
+Too big to send as text. Pass `Media.text(path, truncate=True)` to send
+the first part, raise `max_chars=`, or — better for real datasets — let
+an agent load the file with pandas through `run_python`.
+
+**`ImportError: Reading spreadsheets needs pandas and openpyxl`**
+Install the extra: `pip install agentx-dev[excel]`. `.xls` files also
+need `xlrd`, and `.ods` files need `odfpy`.
+
+**`ValueError: Word files aren't accepted by GPT or Claude`** (or PowerPoint, or archives)
+Neither provider reads these. Save the file as PDF and send it with
+`Media.document("file.pdf")`.
+
+**A `.txt` file failed on Claude with a 400 about documents** *(3.4.0 / 3.4.1)*
+Those versions sent text files as base64 documents, which Claude only
+accepts for PDFs. 3.4.2 sends them as text. Upgrade; saved histories
+with the old shape are converted automatically.
+
 **A provider `400` about image size or format**
 Providers cap image size (about 5 MB for Claude, 20 MB for GPT) and
 accept a set of formats (PNG, JPEG, GIF, WebP). The framework doesn't

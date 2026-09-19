@@ -13,6 +13,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   `media=[...]` (paths, URLs, `Media`, part dicts), appended to the last
   user turn, matching the agent runner. Media inside `content` lists
   already worked; this adds the argument.
+- **CSV, text files, and Excel in `media=`.** Text-like files (CSV, TSV,
+  TXT, Markdown, JSON, XML, YAML, HTML) are read as text -- exactly as
+  written, UTF-8 or Windows-1252, CRLF normalised -- and spreadsheets
+  (.xlsx / .xls / .ods) are converted with pandas (`dtype=object`, so
+  cell values aren't re-inferred) to one CSV block per sheet. Both reach
+  GPT (chat and Responses) and Claude as a labelled text block, which
+  every model accepts. New `Media.text()` / `Media.spreadsheet()`; a
+  100,000-character cap (`max_chars=`, `truncate=True`). New extra:
+  `pip install agentx-dev[excel]` (pandas + openpyxl).
 - **Media docs section.** Its own nav group: Overview & flow, With chat
   models, With agents, Reference (constructors, per-provider wire
   formats, errors). `docs/guides/media.md` is now a pointer to it.
@@ -25,6 +34,16 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   `tool_choice="required"` (the same tool when there is only one), then
   `"auto"`, remembering it per model. `StructuredOutputRunnable` also
   accepts a JSON text answer that validates against the schema.
+- **`.txt` media failed on Claude.** 3.4.0 stored text files as base64
+  documents, which Anthropic only accepts for PDFs. Text files now go
+  out as text; older base64 text parts in saved histories are decoded
+  on the way out.
+- **Unsupported files reached the provider.** `Media.document()`
+  accepted any file type -- including CSV, which Windows' own type table
+  labels `application/vnd.ms-excel` -- and sent it as an attachment
+  neither provider accepts. Word, PowerPoint and archives now raise
+  `ValueError` with the fix before any request; a text file or
+  spreadsheet by URL raises too, since only PDFs can be fetched by URL.
 - **Misleading WARNING on recovered calls.** The retry wrapper logged
   every non-retryable 400 at WARNING before the caller could recover, so a
   call that switched to the Responses API and succeeded still printed the
