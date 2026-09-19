@@ -98,10 +98,38 @@ write_file(path, content, if_exists='overwrite')  # force
 write_file(path, content, if_exists='append')     # add to the end
 ```
 
+## Workspace paths
+
+With a workspace set (explicitly, or inferred from a single
+`full_access` path), the file tools resolve paths against it:
+
+| Path the model writes | Resolves to |
+|---|---|
+| `report.md` | `<workspace>/report.md` |
+| `./report.md` | `<workspace>/report.md` |
+| `/report.md` *(3.4)* | `<workspace>/report.md` — the workspace root, not the drive root |
+| an absolute path inside the sandbox | itself |
+
+A leading slash used to fall through to the OS: on Windows `/x` with no
+drive means the root of the *current* drive, so `/bruce.jpeg` became
+`C:\bruce.jpeg` and the sandbox rejected it. It's now re-rooted at the
+workspace — and the re-rooted path still goes through the sandbox
+check, so `/../../etc/passwd` is rejected as before. Without a
+workspace, leading-slash paths keep their OS meaning.
+
+`run_python` and `run_shell` **start in the workspace** (3.4 for
+`run_python`, which previously inherited the host process's directory),
+so `open("report.md")` in the model's code finds the workspace file
+no matter where the program was launched from. Inside Python a leading
+slash is still the filesystem root — the system prompt tells the model
+to use bare names or the workspace's absolute path there.
+
 ## Subprocess isolation (`run_python`, `run_shell`)
 
 - **Fresh subprocess** — the parent process isn't touched. A crashed
   snippet doesn't crash the agent.
+- **Starts in the workspace** — both tools run with the workspace as
+  their working directory when one is set.
 - **Wall-clock timeout** — `python_timeout_sec` / `shell_timeout_sec`.
   A runaway loop gets killed.
 - **Output cap** — `python_max_output_bytes` / `shell_max_output_bytes`.

@@ -35,7 +35,7 @@ llm = Claude(model="claude-sonnet-4-6")
 # All three of these work:
 reply = llm.invoke("hi")                                     # str
 reply = llm.invoke([{"role": "user", "content": "hi"}])      # list
-reply = llm.invoke({"messages": [{"role": "user", ...}]})    # dict
+reply = llm.invoke({"messages": [{"role": "user", "content": "hi"}]})  # dict
 ```
 
 ## GPT — OpenAI
@@ -53,10 +53,10 @@ llm = GPT(
 result = llm.invoke("Explain MVCC in one sentence.")
 ```
 
-**Gotcha:** reasoning models (`gpt-5.x`, `o1`, `o3`, `o4`) can conflict
-with `tools` + `reasoning_effort=medium/high`, causing a 400. Pass
-`reasoning_effort="none"` to disable reasoning for that call, or route
-through the `/v1/responses` endpoint.
+`reasoning_effort` takes any value a model generation uses —
+`"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`.
+Generations disagree about which are valid, and about whether they
+take the parameter at all; see [Old and new models](#old-and-new-models).
 
 ## Claude — Anthropic
 
@@ -66,13 +66,82 @@ from agentx_dev import Claude
 llm = Claude(
     model="claude-sonnet-4-6",   # or claude-opus-4-6, claude-haiku-4-5
     max_tokens=4096,
-    temperature=1.0,
     enable_prompt_cache=True,    # 3.1: mark system + tools as cacheable
     cache_history_after=4,       # 3.1: cache long histories after N turns
+    # 3.4, all optional and only sent when set:
+    # temperature=0.3, top_p=0.9, top_k=40, stop_sequences=["END"],
+    # thinking={"type": "enabled", "budget_tokens": 8000},
 )
 ```
 
+`temperature` defaults to `None` since 3.4 — not sent, so the API
+default (1.0, the old default) applies. Sending it unconditionally
+collided with `top_p` on newer models and with extended thinking.
+With `thinking` set, `temperature` and `top_k` are held back because
+Anthropic requires the defaults there. Thinking with native tool
+calling isn't supported yet (thinking blocks aren't replayed into
+later turns).
+
 Prompt caching is Anthropic-specific; see [Prompt caching](../advanced/prompt-caching.md).
+
+## Old and new models
+
+Request parameters drift between model generations, and a value one
+model needs is a 400 on another:
+
+| Parameter | What varies |
+|---|---|
+| `reasoning_effort` | absent on `gpt-4o`-era models; `low`–`high` on `o1`/`o3`/`o4`; `minimal`–`high` on `gpt-5`; `none`–`high` on `gpt-5.1`; some newer models add `xhigh` and drop `none` |
+| `max_tokens` | reasoning models reject it and want `max_completion_tokens` |
+| `temperature` | reasoning models accept only the default |
+| Claude `top_p` | newer models reject it alongside `temperature` |
+| Claude `thinking` | older models reject it |
+| Claude `max_tokens` | capped per model |
+
+Rather than a lookup table that goes stale the day a model ships, both
+`GPT` and `Claude` read the provider's 400 — which names the parameter
+and, for enums, the allowed values — make the smallest change that
+satisfies it, retry, and **remember the change for that model** so
+later calls never pay the rejected request again:
+
+```python
+llm = GPT(model="gpt-5.4", reasoning_effort="none")
+llm.invoke("hi")
+# WARNING  OpenAI model 'gpt-5.4' rejected a request parameter; changed
+#          reasoning_effort 'none' -> 'low' and retried. Remembered for
+#          this model.
+```
+
+The adjustments:
+
+- **Unsupported enum value** → the nearest value the model lists, on
+  the `none < minimal < low < medium < high < xhigh` scale.
+- **Renamed parameter** ("Use 'max_completion_tokens' instead") →
+  sent under the new name. Known reasoning families get this up front
+  with no rejected call.
+- **Unsupported parameter** → dropped, so the model uses its default.
+- **Claude `max_tokens` over the cap** → clamped to the cap.
+
+Only parameter-compatibility errors are handled. Anything else — a
+context-length overflow, a bad API key — raises exactly as before, and
+`model`, `messages`, and `tools` are never altered. Each adjustment is
+logged at `WARNING`. For the raw provider error, opt out:
+
+```python
+GPT(model="gpt-5.4", reasoning_effort="none", adapt_params=False)
+Claude(temperature=0.3, top_p=0.9, adapt_params=False)
+```
+
+## Images, PDFs, audio
+
+Both models accept media in a message's `content` list — a `Media`
+object, an OpenAI-style part, or an Anthropic-style block, translated
+to each provider's format. See [Media](../guides/media.md).
+
+```python
+from agentx_dev import Media
+llm.invoke([{"role": "user", "content": ["What's this?", Media.image("cat.jpg")]}])
+```
 
 ## Token usage
 

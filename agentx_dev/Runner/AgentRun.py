@@ -229,6 +229,17 @@ def _coerce_runner_input(
     value: Any,
     chat_history: Optional[List[Dict[str, str]]] = None,
 ) -> tuple:
+    """Back-compat 2-tuple form of :func:`_coerce_runner_input_media`
+    (drops any media found in the trailing user turn)."""
+    query, hist, _media = _coerce_runner_input_media(value, chat_history)
+    return query, hist
+
+
+def _coerce_runner_input_media(
+    value: Any,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+    media: Optional[List[Any]] = None,
+) -> tuple:
     """Normalize the ``invoke``/``ainvoke``/``stream``/``astream`` input into
     ``(user_input: str, chat_history: Optional[list])``.
 
@@ -252,11 +263,21 @@ def _coerce_runner_input(
       - anything else                        → TypeError
 
     Empty string / message list with no user turn raises TypeError so a
-    caller can't accidentally kick off a run with no query."""
+    caller can't accidentally kick off a run with no query.
+
+    Media: returns ``(query, history, media_parts)``. Images / PDFs /
+    audio in the trailing user turn's content list are split off into
+    ``media_parts`` (the query keeps only its text) and merged with any
+    explicit ``media=``. Previously the whole content list was run
+    through ``str()``, so an attached image reached the model as a
+    base64 wall of text inside the prompt. Earlier turns keep their
+    list content intact for the provider translators."""
+    from agentx_dev.Media import split_text_and_media, to_media_part
+    extra = [to_media_part(m) for m in (media or [])]
     if isinstance(value, str):
-        return value, chat_history
+        return value, chat_history, extra
     if isinstance(value, dict) and "messages" in value:
-        return _coerce_runner_input(list(value["messages"]), chat_history)
+        return _coerce_runner_input_media(list(value["messages"]), chat_history, media)
     if isinstance(value, list):
         # Walk backwards for the trailing user turn — that's the query.
         # Everything before it (excluding the system message which the
@@ -272,7 +293,7 @@ def _coerce_runner_input(
                 "runner.invoke(messages=...) requires at least one "
                 "{'role': 'user', ...} message in the list; got none."
             )
-        query = str(value[last_user_idx].get("content", ""))
+        query, found_media = split_text_and_media(value[last_user_idx].get("content", ""))
         prior: List[Dict[str, str]] = []
         for i, m in enumerate(value):
             if i == last_user_idx:
@@ -289,13 +310,17 @@ def _coerce_runner_input(
             content = m.get("content")
             if content is None:
                 continue
-            prior.append({"role": role, "content": str(content)})
+            # Lists (text + media parts) stay lists; the model's
+            # translator renders them for its provider.
+            if not isinstance(content, (list, str)):
+                content = str(content)
+            prior.append({"role": role, "content": content})
         # Concat with any explicit chat_history the caller also passed —
         # positional first, then earlier turns from the list, so the list
         # ordering wins for the immediate context.
         merged = list(chat_history) if chat_history else []
         merged.extend(prior)
-        return query, (merged if merged else None)
+        return query, (merged if merged else None), found_media + extra
     raise TypeError(
         f"runner input must be str, list of message dicts, or "
         f"{{'messages': [...]}}; got {type(value).__name__}"
@@ -424,7 +449,15 @@ def _build_sandbox_hint(perms: Any) -> Optional[str]:
         )
         lines.append(
             "  Unqualified paths like 'report.md' or 'notes/x.txt' resolve "
-            "here automatically — you don't need to prefix them."
+            "here automatically — you don't need to prefix them. A "
+            "leading slash ('/report.md') also means the workspace root "
+            "for the file tools, NOT the filesystem root."
+        )
+        lines.append(
+            "  run_python and run_shell START IN the workspace, so "
+            "open('report.md') finds it. Inside Python code do NOT write "
+            "'/report.md' -- to Python that is the drive/filesystem root. "
+            f"Use 'report.md' or the absolute path {abs_ws}."
         )
 
     # List other allowed paths that aren't just the workspace.
@@ -1793,6 +1826,7 @@ class AgentRunner:
         user_input: str,
         chat_history: Optional[List[Dict[str, str]]] = None,
         stream_tokens: bool = False,
+        media: Optional[List[Any]] = None,
     ):
         """Run the agent loop as a generator of step events.
 
@@ -1897,7 +1931,11 @@ class AgentRunner:
                 if msg['content'] or msg.get('tool_calls') or role == 'tool':
                     working_history.append(msg)
 
-        working_history.append({"role": "user", "content": user_input})
+        # Text-only turns stay a plain string; with media the turn becomes
+        # [text, image, ...] parts, rendered per provider by the model.
+        from agentx_dev.Media import user_content
+        working_history.append({"role": "user",
+                                "content": user_content(user_input, media)})
 
         if not isinstance(self.model, BaseChatModel):
             raise TypeError(
@@ -2578,8 +2616,12 @@ class AgentRunner:
         *,
         chat_history: Optional[List[Dict[str, str]]] = None,
         output_schema: Optional[Type[BaseModel]] = None,
+        media: Optional[List[Any]] = None,
     ) -> AgentCompletion:
         """The main agent execution loop. Returns the final AgentCompletion.
+
+        ``media`` attaches images / PDFs / audio to this turn -- a list of
+        :class:`agentx_dev.Media`, file paths, URLs, or content-part dicts.
 
         Accepts either ``ChatHistory=`` (legacy) or ``chat_history=`` (PEP 8).
         For step-by-step event streaming, use ``stream()`` instead.
@@ -2603,7 +2645,7 @@ class AgentRunner:
             ChatHistory = chat_history
 
         completion: Optional[AgentCompletion] = None
-        for event in self._iter_run(user_input, ChatHistory):
+        for event in self._iter_run(user_input, ChatHistory, media=media):
             if event["type"] == "completion":
                 completion = event["completion"]
         assert completion is not None, "Loop exited without yielding completion"
@@ -2737,6 +2779,7 @@ class AgentRunner:
         chat_history: Optional[List[Dict[str, str]]] = None,
         *,
         stream_tokens: bool = False,
+        media: Optional[List[Any]] = None,
     ):
         """Yield step events as the agent runs.
 
@@ -2763,8 +2806,8 @@ class AgentRunner:
         so callers that want both real-time updates AND the final
         AgentCompletion can have both.
         """
-        query, hist = _coerce_runner_input(user_input, chat_history)
-        yield from self._iter_run(query, hist, stream_tokens=stream_tokens)
+        query, hist, parts = _coerce_runner_input_media(user_input, chat_history, media)
+        yield from self._iter_run(query, hist, stream_tokens=stream_tokens, media=parts)
 
     def invoke(
         self,
@@ -2773,9 +2816,14 @@ class AgentRunner:
         *,
         chat_history: Optional[List[Dict[str, str]]] = None,
         output_schema: Optional[Type[BaseModel]] = None,
+        media: Optional[List[Any]] = None,
     ) -> AgentCompletion:
         """Canonical entry point. Alias for ``Initialize`` with shape
         normalization.
+
+        ``media=[...]`` attaches images / PDFs / audio (``Media``, paths,
+        URLs, or part dicts). Media inside a message-list input's last
+        user turn is picked up too.
 
         ``user_input`` may be:
           - ``str``                    — treated as the query (classic path)
@@ -2791,11 +2839,12 @@ class AgentRunner:
         if ChatHistory is not None and chat_history is not None:
             raise TypeError("Pass either 'ChatHistory' or 'chat_history', not both.")
         base_history = chat_history if chat_history is not None else ChatHistory
-        query, hist = _coerce_runner_input(user_input, base_history)
+        query, hist, parts = _coerce_runner_input_media(user_input, base_history, media)
         return self.Initialize(
             query, None,
             chat_history=hist,
             output_schema=output_schema,
+            media=parts,
         )
 
     def __repr__(self) -> str:

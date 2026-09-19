@@ -11,8 +11,9 @@ from agentx_dev import X
 | Symbol | Kind | Doc |
 |---|---|---|
 | `BaseChatModel` | ABC | [concepts/models](../concepts/models.md) |
-| `GPT` | class | OpenAI Chat Completions wrapper |
-| `Claude` | class | Anthropic Messages wrapper (3.1: `enable_prompt_cache`) |
+| `GPT` | class | OpenAI Chat Completions wrapper (3.4: `adapt_params` — adapts to per-model parameter support, e.g. `reasoning_effort` values) |
+| `Claude` | class | Anthropic Messages wrapper (3.1: `enable_prompt_cache`; 3.4: `top_p`, `top_k`, `thinking`, `stop_sequences`, `adapt_params`; `temperature` defaults to unset) |
+| `Media` *(3.4)* | class | Image / PDF / audio input, rendered per provider. `Media.image()`, `.document()`, `.audio()`, `.from_path()`, `.from_url()`, `.from_bytes()` |
 | `StructuredOutputRunnable` | class | Result of `.with_structured_output(schema)` |
 | `TokenBucket` | class | Rate limiter |
 | `TokenUsage` | class | Per-model token counter (3.1: `cache_hit_ratio`) |
@@ -23,8 +24,8 @@ from agentx_dev import X
 
 | Symbol | Kind | Doc |
 |---|---|---|
-| `AgentRunner` | class | Sync runner (3.1: `bind_tools_natively`, `parallel_tool_workers`; 3.2: constructor `output_schema=` — typed output coerced via native FC after the loop, on `completion.output`) |
-| `AsyncAgentRunner` | class | Async runner with concurrent tool dispatch (3.2: constructor `output_schema=` too) |
+| `AgentRunner` | class | Sync runner (3.1: `bind_tools_natively`, `parallel_tool_workers`; 3.2: constructor `output_schema=` — typed output coerced via native FC after the loop, on `completion.output`; 3.4: `invoke` / `stream` take `media=[...]`) |
+| `AsyncAgentRunner` | class | Async runner with concurrent tool dispatch (3.2: constructor `output_schema=` too; 3.4: `ainvoke` / `astream` take `media=[...]`) |
 | `AgentType` | enum | `ReAct` / `Chain_of_Thought` / `Zero_Shot` / `Few_Shot` / `Instruction_Tuned` |
 | `AgentFormatter` | class | Custom prompt template + parser pair |
 | `AgentFormattor` | class | Legacy alias (typo kept for BC) |

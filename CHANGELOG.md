@@ -4,6 +4,67 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Media input for GPT and Claude.** New `Media` type
+  (`Media.image()`, `.document()`, `.audio()`, `.from_path()`,
+  `.from_url()`, `.from_bytes()`) and a `media=[...]` argument on
+  `AgentRunner.invoke` / `stream` and `AsyncAgentRunner.ainvoke` /
+  `astream`. Items can be paths, URLs, `Media`, or content-part dicts
+  in either provider's native shape; each model renders them in its
+  own wire format (OpenAI `image_url` / `file` / `input_audio`,
+  Anthropic `image` / `document`). Unsupported combinations -- audio to
+  Claude, a document URL to GPT -- raise `ValueError` before any
+  request. Media is stored as plain JSON dicts, so `completion.history`
+  and `Session.save()` keep working. Guide: docs/guides/media.md.
+
+- **Models adapt to per-generation parameter support.** `GPT` and
+  `Claude` read a parameter-compatibility 400 (which names the
+  parameter and, for enums, the allowed values), make the smallest
+  change it asks for, retry, and remember it per model: an unsupported
+  `reasoning_effort` moves to the nearest supported value, `max_tokens`
+  becomes `max_completion_tokens` on reasoning models (up front for
+  known families), parameters a model lacks are dropped, and Claude's
+  `max_tokens` is clamped to the model's cap. Logged at WARNING; other
+  400s raise unchanged. `adapt_params=False` opts out.
+
+- **`Claude` gains `top_p`, `top_k`, `thinking`, `stop_sequences`.**
+
+### Changed
+
+- `Claude(temperature=)` defaults to `None` (not sent; the API default is
+  the old 1.0). Always sending it conflicted with `top_p` on newer models
+  and with extended thinking.
+- `GPT(reasoning_effort=)` accepts any string, not just
+  `none | low | medium | high`, so `minimal` and `xhigh` are expressible.
+
+### Fixed
+
+- **`reasoning_effort="none"` crashed on models that don't take it**
+  ("Unsupported value: 'reasoning_effort' does not support 'none' with
+  this model"). The models docs even recommended `"none"` as a fix for
+  tool-calling conflicts; that advice is gone.
+- **Workspace-rooted paths resolved to the drive root.** With a workspace
+  set, `/bruce.jpeg` became `C:\bruce.jpeg` on Windows (a leading slash
+  with no drive means the current drive's root) and the sandbox rejected
+  it. A leading slash now means the workspace root; the re-rooted path
+  is still sandbox-checked, so traversal is rejected as before.
+- **`run_python` ran in the host process's directory, not the
+  workspace.** It passed no `cwd`, so `open("bruce.jpeg")` looked
+  wherever the program was launched from. It now starts in the workspace,
+  matching `run_shell`.
+- **Message-list input stringified media into the prompt.** A user turn
+  whose content was a list (text + image) went through `str()`, so an
+  attached image reached the model as base64 text. Text and media are
+  now split, and earlier turns keep their list content.
+- **Claude returned the wrong block with extended thinking.** It read
+  `response.content[0].text`; with thinking the first block is a
+  `thinking` block. Text blocks are now joined.
+- `GPT.Initialize` / `stream_text` / `astream_text` now run messages
+  through the same OpenAI translator as `call_with_tools`.
+
 ## [3.3.1] - 2026-09-09
 
 Correctness fixes in the agent loop, found by driving it with a

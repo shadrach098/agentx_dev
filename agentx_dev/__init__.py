@@ -61,6 +61,7 @@ from .Loader import (
 )
 from .DefaultTools import DefaultTools, Permissions, DEFAULT_PERMISSIONS_PATH, mint_session_dir
 from .Session import Session
+from .Media import Media
 from .WebTools import web_fetch_tool, web_search_tool
 from .Supervisor import (
     Supervisor, AsyncSupervisor,
@@ -118,6 +119,9 @@ __all__ = [
     "config",
     "get_config",
     "set_config",
+
+    # Media input (3.4)
+    "Media",
 
     # Streaming
     "StreamChunk",

@@ -6,6 +6,7 @@ from openai.types.chat.completion_create_params import (
 )
 from openai._types import NOT_GIVEN, NotGiven
 from pydantic import BaseModel
+from agentx_dev.Media import content_for_openai, content_for_anthropic
 import asyncio
 import json
 import re
@@ -346,6 +347,236 @@ class StructuredOutputRunnable:
         return _Piped()
 
 
+# ----------------------------------------------------------------------
+# Model-compatibility adaptation
+# ----------------------------------------------------------------------
+# Model generations disagree about which request parameters they accept,
+# and the disagreement moves every release:
+#   * reasoning_effort -- absent on gpt-4o-era models; low/medium/high on
+#     o1/o3/o4; minimal..high on gpt-5; none..high on gpt-5.1; some newer
+#     models add xhigh and drop none.
+#   * max_tokens -- rejected by reasoning models, which want
+#     max_completion_tokens.
+#   * temperature -- reasoning models accept only the default.
+#   * Claude: temperature + top_p together are rejected by newer models,
+#     thinking is rejected by older ones, max_tokens has per-model caps.
+# A static table of "what model X accepts" goes stale the week a model
+# ships. Instead the providers say exactly what they reject in the 400
+# body ("Unsupported value: 'reasoning_effort' does not support 'none'
+# ... Supported values are: 'low', 'medium', 'high'"). The models below
+# read that, make the smallest adjustment that satisfies it, retry, and
+# remember the adjustment per model so later calls never pay the 400.
+# Every adjustment is logged. Pass adapt_params=False to get the raw
+# provider error instead.
+
+_MAX_PARAM_FIXES = 4
+_EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh")
+_OPENAI_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5")
+# Never adapted away -- these define the request itself.
+_PROTECTED_PARAMS = frozenset({"model", "messages", "tools", "tool_choice",
+                               "stream", "system"})
+
+
+def _is_openai_reasoning_model(model: Any) -> bool:
+    name = str(model or "").lower().rsplit("/", 1)[-1]
+    return name.startswith(_OPENAI_REASONING_PREFIXES)
+
+
+def _nearest_effort(requested: Any, supported: List[str]) -> Optional[str]:
+    """Closest supported reasoning_effort to the requested one, on the
+    none < minimal < low < medium < high < xhigh scale."""
+    ordered = [v for v in _EFFORT_ORDER if v in supported]
+    if not ordered:
+        return supported[0] if supported else None
+    try:
+        want = _EFFORT_ORDER.index(str(requested))
+    except ValueError:
+        return ordered[0]
+    return min(ordered, key=lambda v: (abs(_EFFORT_ORDER.index(v) - want),
+                                       -_EFFORT_ORDER.index(v)))
+
+
+def _error_text(exc: Exception) -> str:
+    """The provider's own error message, once.
+
+    Prefer the structured body: the SDK's ``str(exc)`` / ``.message`` embed
+    a repr of that same body, so concatenating both duplicated every
+    phrase -- and a parser reading "Supported values are: ..." then also
+    picked up the REJECTED value from the other copy."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        inner = body.get("error") if isinstance(body.get("error"), dict) else body
+        if isinstance(inner, dict) and inner.get("message"):
+            return str(inner["message"])
+    return str(getattr(exc, "message", None) or exc)
+
+
+def _is_set(kwargs: Dict[str, Any], key: str) -> bool:
+    return key in kwargs and kwargs[key] is not NOT_GIVEN and kwargs[key] is not None
+
+
+def _openai_param_fix(exc: Exception, kwargs: Dict[str, Any]):
+    """Map an OpenAI 400 to one parameter adjustment.
+
+    Returns ``(param, action)`` with action ``("drop",)``,
+    ``("rename", new_name)`` or ``("value", new_value)``; ``None`` when the
+    error isn't a parameter-compatibility error we can act on."""
+    if getattr(exc, "status_code", None) != 400:
+        return None
+    code = getattr(exc, "code", None)
+    param = getattr(exc, "param", None)
+    text = _error_text(exc)
+
+    if not param:
+        m = (re.search(r"Unsupported (?:parameter|value): '([^']+)'", text)
+             or re.search(r"Unrecognized request argument supplied: (\w+)", text))
+        if m:
+            param = m.group(1)
+    if not param or param in _PROTECTED_PARAMS or not _is_set(kwargs, param):
+        return None
+
+    unsupported_param = (code == "unsupported_parameter"
+                         or "Unsupported parameter" in text
+                         or "Unrecognized request argument" in text)
+    unsupported_value = code == "unsupported_value" or "Unsupported value" in text
+    if not (unsupported_param or unsupported_value):
+        return None
+
+    if unsupported_param:
+        m = re.search(r"Use '([^']+)' instead", text)
+        if m and m.group(1) not in kwargs:
+            return param, ("rename", m.group(1))
+        return param, ("drop",)
+
+    # Unsupported value: move to the nearest value the model lists, else
+    # drop the parameter and let the model use its default.
+    tail = text.split("Supported values are:", 1)
+    if len(tail) == 2 and param == "reasoning_effort":
+        # Values end at the sentence's full stop; nothing after it counts.
+        supported = re.findall(r"'([^']+)'", tail[1].split(".", 1)[0])
+        choice = _nearest_effort(kwargs[param], supported)
+        if choice and choice != kwargs[param]:
+            return param, ("value", choice)
+    return param, ("drop",)
+
+
+# Claude: which optional params to give up first when a 400 names several.
+_ANTHROPIC_OPTIONAL = ("top_k", "top_p", "temperature", "thinking", "stop_sequences")
+
+
+def _anthropic_param_fix(exc: Exception, kwargs: Dict[str, Any]):
+    """Map an Anthropic 400 to one parameter adjustment (see
+    ``_openai_param_fix`` for the return shape)."""
+    if getattr(exc, "status_code", None) != 400:
+        return None
+    text = _error_text(exc)
+    low = text.lower()
+
+    m = re.search(r"max_tokens:\s*(\d+)\s*>\s*(\d+)", text)
+    if m and _is_set(kwargs, "max_tokens"):
+        limit = int(m.group(2))
+        if limit < int(kwargs["max_tokens"]):
+            return "max_tokens", ("value", limit)
+
+    for name in _ANTHROPIC_OPTIONAL:
+        if _is_set(kwargs, name) and re.search(rf"\b{name}\b", low):
+            return name, ("drop",)
+    return None
+
+
+def _apply_action(kwargs: Dict[str, Any], param: str, action: tuple) -> None:
+    if not _is_set(kwargs, param):
+        return
+    if action[0] == "drop":
+        kwargs.pop(param, None)
+    elif action[0] == "rename":
+        kwargs[action[1]] = kwargs.pop(param)
+    elif action[0] == "value":
+        kwargs[param] = action[1]
+
+
+def _describe(param: str, action: tuple, old: Any) -> str:
+    if action[0] == "drop":
+        return f"dropped {param}={old!r}"
+    if action[0] == "rename":
+        return f"sent {param} as {action[1]}"
+    return f"changed {param} {old!r} -> {action[1]!r}"
+
+
+class _ParamAdapter:
+    """Per-model memory of parameter adjustments, shared by GPT and Claude."""
+
+    def __init__(self, provider: str, fixer, enabled: bool):
+        self.provider = provider
+        self._fixer = fixer
+        self.enabled = enabled
+        self.learned: Dict[str, Dict[str, tuple]] = {}
+
+    def apply(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        out = dict(kwargs)
+        for param, action in self.learned.get(str(out.get("model")), {}).items():
+            _apply_action(out, param, action)
+        return out
+
+    def learn(self, kwargs: Dict[str, Any], exc: Exception) -> bool:
+        """Record a fix for ``exc`` and apply it to ``kwargs`` in place.
+        False when the error isn't one we can adapt to."""
+        if not self.enabled:
+            return False
+        fix = self._fixer(exc, kwargs)
+        if fix is None:
+            return False
+        param, action = fix
+        old = kwargs.get(param)
+        model = str(kwargs.get("model"))
+        self.learned.setdefault(model, {})[param] = action
+        _apply_action(kwargs, param, action)
+        logger.warning(
+            f"{self.provider} model {model!r} rejected a request parameter; "
+            f"{_describe(param, action, old)} and retried. Remembered for this "
+            f"model. (Provider said: {_error_text(exc)[:200]})"
+        )
+        return True
+
+    def call(self, fn, kwargs: Dict[str, Any]):
+        kwargs = self.apply(kwargs)
+        for _ in range(_MAX_PARAM_FIXES):
+            try:
+                return fn(**kwargs)
+            except Exception as e:
+                if not self.learn(kwargs, e):
+                    raise
+        return fn(**kwargs)
+
+    async def acall(self, fn, kwargs: Dict[str, Any]):
+        kwargs = self.apply(kwargs)
+        for _ in range(_MAX_PARAM_FIXES):
+            try:
+                return await fn(**kwargs)
+            except Exception as e:
+                if not self.learn(kwargs, e):
+                    raise
+        return await fn(**kwargs)
+
+
+def _anthropic_text(response: Any) -> str:
+    """Join the text blocks of a Messages response.
+
+    ``response.content[0].text`` breaks on any response whose first block
+    isn't text -- with extended thinking the first block is a ``thinking``
+    block, so the old accessor raised or returned the wrong thing."""
+    parts = [getattr(b, "text", "") for b in (getattr(response, "content", None) or [])
+             if getattr(b, "type", None) == "text"]
+    return "".join(parts)
+
+
+def _system_text(content: Any) -> str:
+    if isinstance(content, list):
+        return "\n".join(str(b.get("text", "")) for b in content
+                         if isinstance(b, dict) and b.get("type") == "text")
+    return str(content or "")
+
+
 def _normalize_tool_spec_for_openai(spec: Dict[str, Any]) -> Dict[str, Any]:
     """Accept either a generic ``to_tool_spec`` dict or a pre-built OpenAI tool dict."""
     if spec.get("type") == "function" and "function" in spec:
@@ -376,6 +607,11 @@ def _messages_for_openai(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             continue
         # Defensive copy so the runner's history isn't mutated by the SDK.
         copy = {k: v for k, v in m.items()}
+        # Media parts (Media objects, canonical blocks, or Anthropic
+        # blocks) become OpenAI image_url / file / input_audio parts.
+        if isinstance(copy.get("content"), list) or not isinstance(
+                copy.get("content"), (str, type(None))):
+            copy["content"] = content_for_openai(copy["content"])
         out.append(copy)
     return out
 
@@ -432,8 +668,11 @@ def _messages_for_anthropic(messages: List[Dict[str, Any]]) -> List[Dict[str, An
             })
             continue
 
-        # Everything else — pass through.
-        out.append({"role": m.get("role"), "content": m.get("content", "")})
+        # Everything else — pass through, rendering any media parts
+        # (Media objects, canonical blocks, or OpenAI-native parts) as
+        # Anthropic image / document blocks.
+        out.append({"role": m.get("role"),
+                    "content": content_for_anthropic(m.get("content", ""))})
     return out
 
 
@@ -876,8 +1115,23 @@ class GPT(BaseChatModel):
         metadata: Dict[str, str] | NotGiven = NOT_GIVEN,
         store: bool | NotGiven = NOT_GIVEN,
         parallel_tool_calls: bool | NotGiven = NOT_GIVEN,
-        reasoning_effort: Literal["none", "low", "medium", "high"] | NotGiven = NOT_GIVEN,
+        reasoning_effort: str | NotGiven = NOT_GIVEN,
+        adapt_params: bool = True,
     ):
+        """
+        ``reasoning_effort`` accepts any value a model generation uses
+        ("none", "minimal", "low", "medium", "high", "xhigh"). If the
+        model rejects the value -- or the parameter -- the call adapts
+        (see ``adapt_params``) instead of failing.
+
+        ``adapt_params`` (default True): when the API rejects a request
+        parameter for this model (e.g. ``reasoning_effort="none"`` on a
+        model that only takes low/medium/high, ``max_tokens`` on a
+        reasoning model, ``temperature`` on a model that only allows
+        the default), make the smallest change the error asks for,
+        retry, and remember it for this model. Logged at WARNING. Set
+        False to surface the raw provider error instead.
+        """
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.client = OpenAI(
             api_key=self.api_key,
@@ -921,6 +1175,21 @@ class GPT(BaseChatModel):
         }
 
         self.timeout = timeout
+        self._params = _ParamAdapter("OpenAI", _openai_param_fix, adapt_params)
+
+    def _request_kwargs(self, exclude: Iterable[str] = ()) -> Dict[str, Any]:
+        """Defaults for one request, minus ``exclude``, with known
+        generation quirks pre-applied so the common case never costs a
+        rejected call: reasoning models take ``max_completion_tokens``."""
+        skip = set(exclude)
+        kw = {k: v for k, v in self.defaults.items() if k not in skip}
+        if (_is_openai_reasoning_model(kw.get("model")) and _is_set(kw, "max_tokens")
+                and not _is_set(kw, "max_completion_tokens")):
+            kw["max_completion_tokens"] = kw.pop("max_tokens")
+        return kw
+
+    def _create(self, **kwargs):
+        return self._params.call(self.client.chat.completions.create, kwargs)
 
     def Initialize(
         self,
@@ -934,9 +1203,9 @@ class GPT(BaseChatModel):
         logger.debug("Calling OpenAI chat.completions.create")
 
         def _call_and_record():
-            completion = self.client.chat.completions.create(
-                messages=messages,
-                **self.defaults,
+            completion = self._create(
+                messages=_messages_for_openai(list(messages)),
+                **self._request_kwargs(),
                 extra_headers=extra_headers,
                 extra_query=extra_query,
                 extra_body=extra_body,
@@ -972,10 +1241,9 @@ class GPT(BaseChatModel):
             tool_choice = "auto"
 
         # Strip conflicting defaults; the explicit args win.
-        call_defaults = {
-            k: v for k, v in self.defaults.items()
-            if k not in ("tools", "tool_choice", "functions", "function_call", "response_format")
-        }
+        call_defaults = self._request_kwargs(
+            ("tools", "tool_choice", "functions", "function_call", "response_format")
+        )
 
         # #15: translate any tool_use / tool_call_id messages to OpenAI's
         # native shape. Plain {role, content} dicts pass through unchanged.
@@ -983,7 +1251,7 @@ class GPT(BaseChatModel):
 
         try:
             response = self._with_retry(
-                lambda: self.client.chat.completions.create(
+                lambda: self._create(
                     messages=messages,
                     tools=normalized,
                     tool_choice=tool_choice,
@@ -1049,12 +1317,11 @@ class GPT(BaseChatModel):
         counting works for streamed responses too (was a bug — non-streaming
         responses recorded usage, streamed ones silently didn't).
         """
-        call_defaults = {
-            k: v for k, v in self.defaults.items()
-            if k not in ("tools", "tool_choice", "stream", "stream_options")
-        }
-        stream = self.client.chat.completions.create(
-            messages=messages,
+        call_defaults = self._request_kwargs(
+            ("tools", "tool_choice", "stream", "stream_options")
+        )
+        stream = self._create(
+            messages=_messages_for_openai(list(messages)),
             stream=True,
             stream_options={"include_usage": True},
             **call_defaults,
@@ -1080,16 +1347,15 @@ class GPT(BaseChatModel):
         as the sync sibling."""
         from openai import AsyncOpenAI
         async_client = AsyncOpenAI(api_key=self.api_key, timeout=self.timeout)
-        call_defaults = {
-            k: v for k, v in self.defaults.items()
-            if k not in ("tools", "tool_choice", "stream", "stream_options")
-        }
-        stream = await async_client.chat.completions.create(
-            messages=messages,
+        call_defaults = self._request_kwargs(
+            ("tools", "tool_choice", "stream", "stream_options")
+        )
+        stream = await self._params.acall(async_client.chat.completions.create, dict(
+            messages=_messages_for_openai(list(messages)),
             stream=True,
             stream_options={"include_usage": True},
             **call_defaults,
-        )
+        ))
         async for chunk in stream:
             u = getattr(chunk, "usage", None)
             if u is not None:
@@ -1132,11 +1398,16 @@ class Claude(BaseChatModel):
         api_key: Optional[str] = None,
         model: str = "claude-sonnet-4-6",
         max_tokens: int = 4096,
-        temperature: float = 1.0,
+        temperature: Optional[float] = None,
         timeout: float = 60.0,
         max_retries: int = 3,
         enable_prompt_cache: bool = False,
         cache_history_after: int = 4,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        thinking: Optional[Dict[str, Any]] = None,
+        stop_sequences: Optional[List[str]] = None,
+        adapt_params: bool = True,
     ):
         """
         Args (new in 3.1):
@@ -1154,6 +1425,24 @@ class Claude(BaseChatModel):
                 assistant message so long histories also benefit. Anthropic
                 allows up to 4 cache breakpoints; the framework uses at
                 most 3 (system, tools, history), leaving one for callers.
+
+        Args (new in 3.4):
+            temperature: Now defaults to None -- not sent, so the API
+                default (1.0, identical to the old default) applies. Sending
+                it unconditionally conflicted with ``top_p`` on newer models
+                and with extended thinking.
+            top_p, top_k, stop_sequences: Passed through when set.
+            thinking: Extended-thinking config passed through verbatim, e.g.
+                ``{"type": "enabled", "budget_tokens": 8000}``. Anthropic
+                requires the default temperature with thinking, so a
+                temperature/top_k set alongside it is not sent. Thinking with
+                native tool calling is not supported yet (the thinking blocks
+                are not replayed into later turns).
+            adapt_params: When the API rejects an optional parameter for
+                this model -- ``top_p`` next to ``temperature``, ``thinking``
+                on a model without it, ``max_tokens`` above the model's cap --
+                drop or clamp it, retry, and remember it for this model.
+                Logged at WARNING. Set False to surface the raw error.
         """
         import anthropic as _anthropic
         self._anthropic = _anthropic
@@ -1165,18 +1454,77 @@ class Claude(BaseChatModel):
         self._max_retries = max_retries
         self._enable_prompt_cache = bool(enable_prompt_cache)
         self._cache_history_after = int(cache_history_after)
+        self.top_p = top_p
+        self.top_k = top_k
+        self.thinking = thinking
+        self.stop_sequences = stop_sequences
+        self._params = _ParamAdapter("Anthropic", _anthropic_param_fix, adapt_params)
         self.client = _anthropic.Anthropic(
             api_key=self._api_key,
             timeout=timeout,
             max_retries=max_retries,
         )
 
+
+    def _request_kwargs(self, **extra) -> Dict[str, Any]:
+        """Base Messages kwargs: only parameters that are actually set, so
+        a model never receives one it wasn't asked to use."""
+        kw: Dict[str, Any] = {"model": self.model_name, "max_tokens": self.max_tokens}
+        thinking_on = bool(self.thinking) and str(
+            (self.thinking or {}).get("type", "enabled")) != "disabled"
+        if self.temperature is not None and not (thinking_on and self.temperature != 1):
+            kw["temperature"] = self.temperature
+        if self.top_p is not None:
+            kw["top_p"] = self.top_p
+        if self.top_k is not None and not thinking_on:
+            kw["top_k"] = self.top_k
+        if self.stop_sequences:
+            kw["stop_sequences"] = list(self.stop_sequences)
+        if self.thinking:
+            kw["thinking"] = self.thinking
+        kw.update(extra)
+        return kw
+
+    def _create(self, client, **kwargs):
+        return self._params.call(client.messages.create, kwargs)
+
+    async def _acreate(self, client, **kwargs):
+        return await self._params.acall(client.messages.create, kwargs)
+
+    def _open_stream(self, client, kwargs):
+        """Enter ``messages.stream`` with the same parameter adaptation as
+        ``_create``. The request is sent on ``__enter__``, so that's where a
+        rejected parameter surfaces."""
+        kwargs = self._params.apply(kwargs)
+        for _ in range(_MAX_PARAM_FIXES + 1):
+            manager = client.messages.stream(**kwargs)
+            try:
+                return manager, manager.__enter__()
+            except Exception as e:
+                if not self._params.learn(kwargs, e):
+                    raise
+        manager = client.messages.stream(**kwargs)
+        return manager, manager.__enter__()
+
+    async def _aopen_stream(self, client, kwargs):
+        kwargs = self._params.apply(kwargs)
+        for _ in range(_MAX_PARAM_FIXES + 1):
+            manager = client.messages.stream(**kwargs)
+            try:
+                return manager, await manager.__aenter__()
+            except Exception as e:
+                if not self._params.learn(kwargs, e):
+                    raise
+        manager = client.messages.stream(**kwargs)
+        return manager, await manager.__aenter__()
+
     def _split_messages(self, messages):
         # #15: first translate any tool_use / tool_call_id messages into
         # Anthropic's content-block format. Plain {role, content} dicts
         # pass through unchanged.
         translated = _messages_for_anthropic(messages)
-        system_parts = [m["content"] for m in translated if m.get("role") == "system"]
+        system_parts = [_system_text(m["content"]) for m in translated
+                        if m.get("role") == "system"]
         conversation = [
             {"role": m["role"], "content": m["content"]}
             for m in translated
@@ -1254,15 +1602,12 @@ class Claude(BaseChatModel):
         system_prompt, conversation = self._split_messages(messages)
         system_prompt = self._prepare_system_for_cache(system_prompt)
         conversation = self._prepare_conversation_for_cache(conversation)
-        response = self.client.messages.create(
-            model=self.model_name,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            system=system_prompt,
-            messages=conversation,
+        response = self._create(
+            self.client,
+            **self._request_kwargs(system=system_prompt, messages=conversation),
         )
         self._record_usage(response)
-        return response.content[0].text if response.content else ""
+        return _anthropic_text(response)
 
     async def async_initialize(self, messages) -> str:
         """Native async Claude call using the AsyncAnthropic client."""
@@ -1273,15 +1618,12 @@ class Claude(BaseChatModel):
         system_prompt, conversation = self._split_messages(messages)
         system_prompt = self._prepare_system_for_cache(system_prompt)
         conversation = self._prepare_conversation_for_cache(conversation)
-        response = await async_client.messages.create(
-            model=self.model_name,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            system=system_prompt,
-            messages=conversation,
+        response = await self._acreate(
+            async_client,
+            **self._request_kwargs(system=system_prompt, messages=conversation),
         )
         self._record_usage(response)
-        return response.content[0].text if response.content else ""
+        return _anthropic_text(response)
 
     def stream_text(self, messages: List[Dict[str, Any]]) -> Iterator[str]:
         """Anthropic native streaming via ``messages.stream`` context manager.
@@ -1292,13 +1634,10 @@ class Claude(BaseChatModel):
         token counting works for streamed Claude responses too.
         """
         system_prompt, conversation = self._split_messages(messages)
-        with self.client.messages.stream(
-            model=self.model_name,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            system=system_prompt,
-            messages=conversation,
-        ) as stream:
+        manager, stream = self._open_stream(
+            self.client, self._request_kwargs(system=system_prompt, messages=conversation),
+        )
+        try:
             for text in stream.text_stream:
                 if text:
                     yield text
@@ -1307,6 +1646,8 @@ class Claude(BaseChatModel):
                 self._record_usage(final)
             except Exception as e:
                 logger.warning(f"Failed to record streaming usage: {e}")
+        finally:
+            manager.__exit__(None, None, None)
 
     async def astream_text(self, messages: List[Dict[str, Any]]) -> AsyncIterator[str]:
         """Async Anthropic streaming. Same usage capture as the sync sibling."""
@@ -1315,13 +1656,10 @@ class Claude(BaseChatModel):
             timeout=self._timeout,
         )
         system_prompt, conversation = self._split_messages(messages)
-        async with async_client.messages.stream(
-            model=self.model_name,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            system=system_prompt,
-            messages=conversation,
-        ) as stream:
+        manager, stream = await self._aopen_stream(
+            async_client, self._request_kwargs(system=system_prompt, messages=conversation),
+        )
+        try:
             async for text in stream.text_stream:
                 if text:
                     yield text
@@ -1330,6 +1668,8 @@ class Claude(BaseChatModel):
                 self._record_usage(final)
             except Exception as e:
                 logger.warning(f"Failed to record streaming usage: {e}")
+        finally:
+            await manager.__aexit__(None, None, None)
 
     def call_with_tools(
         self,
@@ -1344,18 +1684,13 @@ class Claude(BaseChatModel):
         system_prompt = self._prepare_system_for_cache(system_prompt)
         conversation = self._prepare_conversation_for_cache(conversation)
 
-        kwargs: Dict[str, Any] = {
-            "model": self.model_name,
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-            "system": system_prompt,
-            "messages": conversation,
-            "tools": normalized,
-        }
+        kwargs: Dict[str, Any] = self._request_kwargs(
+            system=system_prompt, messages=conversation, tools=normalized,
+        )
         if force_tool:
             kwargs["tool_choice"] = {"type": "tool", "name": force_tool}
 
-        response = self.client.messages.create(**kwargs)
+        response = self._create(self.client, **kwargs)
         self._record_usage(response)
 
         tool_calls = [
@@ -1396,18 +1731,13 @@ class Claude(BaseChatModel):
         system_prompt = self._prepare_system_for_cache(system_prompt)
         conversation = self._prepare_conversation_for_cache(conversation)
 
-        kwargs: Dict[str, Any] = {
-            "model": self.model_name,
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-            "system": system_prompt,
-            "messages": conversation,
-            "tools": normalized,
-        }
+        kwargs: Dict[str, Any] = self._request_kwargs(
+            system=system_prompt, messages=conversation, tools=normalized,
+        )
         if force_tool:
             kwargs["tool_choice"] = {"type": "tool", "name": force_tool}
 
-        response = await async_client.messages.create(**kwargs)
+        response = await self._acreate(async_client, **kwargs)
         self._record_usage(response)
 
         tool_calls = [
@@ -1502,12 +1832,9 @@ class Claude(BaseChatModel):
                 system_prompt = _sep.join(system_parts) if system_parts else self._anthropic.NOT_GIVEN
                 system_prompt = self._prepare_system_for_cache(system_prompt)
                 custom_id = f"req_{idx}"
-                params = {
-                    "model": self.model_name,
-                    "max_tokens": self.max_tokens,
-                    "temperature": self.temperature,
-                    "messages": conversation,
-                }
+                params = self._request_kwargs(
+                    messages=_messages_for_anthropic(conversation),
+                )
                 if system_prompt is not self._anthropic.NOT_GIVEN:
                     params["system"] = system_prompt
             normalized.append({"custom_id": custom_id, "params": params})

@@ -18,6 +18,7 @@ from agentx_dev.Runner.AgentRun import (
     ToolRegistry,
     _is_terminal_action,
     _coerce_runner_input,
+    _coerce_runner_input_media,
     _text_turn_nudge_message,
     _tool_observation_message,
     _ACT_DONT_ANNOUNCE,
@@ -458,6 +459,7 @@ class AsyncAgentRunner:
         *,
         chat_history: Optional[List[Dict[str, str]]] = None,
         output_schema: Optional[Type[BaseModel]] = None,
+        media: Optional[List[Any]] = None,
     ) -> AgentCompletion:
         if ChatHistory is not None and chat_history is not None:
             raise TypeError("Pass either 'ChatHistory' or 'chat_history', not both.")
@@ -523,7 +525,9 @@ class AsyncAgentRunner:
                 if msg['content'] or msg.get('tool_calls') or role == 'tool':
                     working_history.append(msg)
 
-        working_history.append({"role": "user", "content": user_input})
+        from agentx_dev.Media import user_content
+        working_history.append({"role": "user",
+                                "content": user_content(user_input, media)})
 
         logger.info(">>>>> Entering AsyncAgentRunner Mode <<<<<")
         if not isinstance(self.model, BaseChatModel):
@@ -978,6 +982,7 @@ class AsyncAgentRunner:
         *,
         chat_history: Optional[List[Dict[str, str]]] = None,
         output_schema: Optional[Type[BaseModel]] = None,
+        media: Optional[List[Any]] = None,
     ) -> AgentCompletion:
         """Canonical async entry point. Alias for ``Initialize`` with the
         same shape normalization as ``AgentRunner.invoke`` — accepts a
@@ -986,15 +991,18 @@ class AsyncAgentRunner:
         if ChatHistory is not None and chat_history is not None:
             raise TypeError("Pass either 'ChatHistory' or 'chat_history', not both.")
         base_history = chat_history if chat_history is not None else ChatHistory
-        query, hist = _coerce_runner_input(user_input, base_history)
+        query, hist, parts = _coerce_runner_input_media(user_input, base_history, media)
         return await self.Initialize(
             query, None, stream, chat_history=hist, output_schema=output_schema,
+            media=parts,
         )
 
     async def astream(
         self,
         user_input: Any,
         chat_history: Optional[List[Dict[str, str]]] = None,
+        *,
+        media: Optional[List[Any]] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Async streaming. Yields the same step-event dicts as
         ``AgentRunner.stream`` — ``thought`` / ``tool_call`` / ``tool_result``
@@ -1019,8 +1027,8 @@ class AsyncAgentRunner:
         # uses. Easiest: capture the completion + tool_calls/steps and
         # synthesize the event stream from them so callers see the same
         # shape as sync stream().
-        query, hist = _coerce_runner_input(user_input, chat_history)
-        completion = await self.Initialize(query, chat_history=hist)
+        query, hist, parts = _coerce_runner_input_media(user_input, chat_history, media)
+        completion = await self.Initialize(query, chat_history=hist, media=parts)
         for step_desc in completion.steps:
             # Best-effort decode of "Step N: action with input"
             try:

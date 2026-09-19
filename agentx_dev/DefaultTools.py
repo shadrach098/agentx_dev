@@ -733,6 +733,25 @@ def _resolve_for_ops(target: str, perms: Permissions) -> Path:
     allowed = perms.effective_allowed_paths()
     p = Path(target)
 
+    # Workspace-rooted paths: "/bruce.jpeg" means the workspace's
+    # bruce.jpeg, not the filesystem root. That is how a caller
+    # naturally names a file inside a sandbox, and how models write
+    # paths when told "the file is at /bruce.jpeg". Without this the
+    # path fell through to the OS: on Windows a leading slash with no
+    # drive is the root of the CURRENT drive, so both the CWD and the
+    # workspace join resolved to C:\\bruce.jpeg (joining a rooted path
+    # onto a base discards the base) and the sandbox rejected it; on
+    # POSIX it was /bruce.jpeg, same result. A real absolute path that
+    # IS inside the sandbox keeps its literal meaning; only a rooted
+    # path that would otherwise escape it is re-rooted, and the
+    # re-rooted form still goes through the sandbox check.
+    if perms.workspace is not None and target[:1] in ("/", "\\") and not p.drive:
+        literal = p.resolve()
+        if not _is_inside_any(literal, allowed):
+            rerooted = (Path(perms.workspace) / target.lstrip("/\\")).resolve()
+            _assert_resolved_allowed(target, rerooted, allowed)
+            return rerooted
+
     if p.is_absolute():
         resolved = p.resolve()
         _assert_resolved_allowed(target, resolved, allowed)
@@ -1541,12 +1560,20 @@ def _build_run_python(perms: Permissions) -> StructuredTool:
             # rationale).
             if state_hmac_key is not None:
                 child_env["AGENTX_STATE_HMAC_KEY"] = state_hmac_key
+            # Start in the workspace so open("bruce.jpeg") finds the
+            # workspace's file. This passed no cwd before, so the child
+            # inherited wherever the host process was launched from and
+            # relative paths silently pointed somewhere else --
+            # run_shell has always defaulted to the workspace; now both
+            # tools agree.
+            py_cwd = str(Path(perms.workspace).resolve()) if perms.workspace else None
             proc = subprocess.run(
                 [sys.executable, "-c", code],
                 capture_output=True, text=True,
                 timeout=perms.python_timeout_sec,
                 encoding="utf-8", errors="replace",
                 env=child_env,
+                cwd=py_cwd,
             )
         except subprocess.TimeoutExpired:
             return f"ERROR: code execution timed out after {perms.python_timeout_sec}s"
