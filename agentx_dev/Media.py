@@ -60,6 +60,7 @@ __all__ = [
     "user_content",
     "split_text_and_media",
     "content_for_openai",
+    "content_for_openai_responses",
     "content_for_anthropic",
     "is_media_part",
 ]
@@ -440,6 +441,70 @@ def content_for_openai(content: Any) -> Any:
             if fmt is None:
                 raise ValueError(
                     f"GPT audio input supports wav and mp3 only; got {source.get('media_type')!r}"
+                )
+            out.append({"type": "input_audio",
+                        "input_audio": {"data": source.get("data", ""), "format": fmt}})
+    return out
+
+
+def content_for_openai_responses(content: Any) -> Any:
+    """Translate message content to OpenAI **Responses API** input parts.
+
+    Same inputs as :func:`content_for_openai`, different wire shapes:
+    ``input_text`` / ``input_image`` / ``input_file`` / ``input_audio``.
+    Unlike chat completions, the Responses API can fetch a document from
+    a URL (``file_url``), so that combination is allowed here."""
+    if isinstance(content, Media):
+        content = [content]
+    if not isinstance(content, list):
+        return content
+    out: List[Any] = []
+    for part in content:
+        if isinstance(part, str):
+            out.append({"type": "input_text", "text": part})
+            continue
+        if isinstance(part, Media):
+            part = part.to_part()
+        if not isinstance(part, dict):
+            out.append(part)
+            continue
+        ptype = part.get("type")
+        if ptype in ("text", "input_text"):
+            out.append({"type": "input_text", "text": str(part.get("text", ""))})
+            continue
+        if ptype in ("input_image", "input_file", "input_audio"):
+            out.append(part)                       # already Responses-native
+            continue
+        part = _canonicalise_part(part)
+        ptype = part.get("type")
+        if ptype == "file":
+            spec = part.get("file") or {}
+            if spec.get("file_id"):
+                out.append({"type": "input_file", "file_id": spec["file_id"]})
+                continue
+        if ptype not in _MEDIA_TYPES:
+            out.append(part)
+            continue
+        source = part.get("source") or {}
+        is_url = source.get("type") == "url"
+        if ptype == "image":
+            out.append({"type": "input_image",
+                        "image_url": source.get("url") if is_url else _data_uri(source),
+                        "detail": part.get("detail") or "auto"})
+        elif ptype == "document":
+            if is_url:
+                out.append({"type": "input_file", "file_url": source.get("url")})
+            else:
+                out.append({"type": "input_file",
+                            "filename": part.get("filename") or "document.pdf",
+                            "file_data": _data_uri(source)})
+        elif ptype == "audio":
+            if is_url:
+                raise ValueError("OpenAI audio input must be inline; use Media.audio(path_or_bytes).")
+            fmt = _AUDIO_FORMAT.get((source.get("media_type") or "").lower())
+            if fmt is None:
+                raise ValueError(
+                    f"OpenAI audio input supports wav and mp3 only; got {source.get('media_type')!r}"
                 )
             out.append({"type": "input_audio",
                         "input_audio": {"data": source.get("data", ""), "format": fmt}})

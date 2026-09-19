@@ -55,6 +55,14 @@ your `temperature`. Or set only one.
 **`400 max_tokens: 64000 > 4096, which is the maximum allowed ...`**
 The model has a lower output cap. 3.4 clamps `max_tokens` to it.
 
+**`400 Function tools with reasoning_effort are not supported for <model> in /v1/chat/completions`**
+The model can't take function tools together with reasoning on chat
+completions, and often rejects the `'none'` the message suggests. Since
+3.4.1, `GPT` switches that model's tool calls to the Responses API
+automatically and logs a WARNING. On 3.4.0, upgrade. If you set
+`use_responses_api=False`, the error is deliberate. Remove that, or pass
+`use_responses_api=True`.
+
 **A WARNING says my setting was changed, but I need the exact value**
 The model doesn't support it — no retry can make it. Choose a model that
 does, or pass `adapt_params=False` to fail instead of adjusting.
@@ -71,8 +79,10 @@ Claude has no audio input. Transcribe the audio first, or send it to an
 audio-capable GPT model.
 
 **`ValueError: GPT (chat completions) cannot fetch a document from a URL`**
-Download the PDF and pass the file: `Media.document("report.pdf")`.
-Claude can take a PDF URL; GPT can't.
+Since 3.4.1 `GPT` sends document URLs through the Responses API, so you
+only see this with `use_responses_api=False`, or when calling
+`content_for_openai` yourself. Pass the file inline instead:
+`Media.document("report.pdf")`.
 
 **`ValueError: Media from raw bytes needs media_type=`**
 Bytes carry no file type. Say what it is:

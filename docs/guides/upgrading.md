@@ -13,6 +13,15 @@ module stays imported until you do, which shows up as errors like
 
 ---
 
+## Upgrading to 3.4.1
+
+**Nothing breaks.** Tool calls on models that refuse tools plus
+reasoning on `/v1/chat/completions` (for example `gpt-6-astra`) now
+switch to the Responses API automatically, with a WARNING, instead of
+raising. Document URLs sent to `GPT` go the same way. To keep the old
+behaviour, pass `GPT(use_responses_api=False)`. See
+[Tools on models that need the Responses API](../concepts/models.md#tools-on-models-that-need-the-responses-api).
+
 ## Upgrading to 3.4
 
 **Nothing breaks.** No public signature was removed or renamed, and

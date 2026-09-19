@@ -6,7 +6,9 @@ from openai.types.chat.completion_create_params import (
 )
 from openai._types import NOT_GIVEN, NotGiven
 from pydantic import BaseModel
-from agentx_dev.Media import content_for_openai, content_for_anthropic
+from agentx_dev.Media import (
+    content_for_openai, content_for_anthropic, content_for_openai_responses,
+)
 import asyncio
 import json
 import re
@@ -432,6 +434,11 @@ def _openai_param_fix(exc: Exception, kwargs: Dict[str, Any]):
              or re.search(r"Unrecognized request argument supplied: (\w+)", text))
         if m:
             param = m.group(1)
+    # The Responses API nests it as reasoning.effort; the framework keeps it
+    # flat as reasoning_effort on both endpoints, so one learned fix
+    # covers both.
+    if param and param.startswith("reasoning"):
+        param = "reasoning_effort"
     if not param or param in _PROTECTED_PARAMS or not _is_set(kwargs, param):
         return None
 
@@ -575,6 +582,135 @@ def _system_text(content: Any) -> str:
         return "\n".join(str(b.get("text", "")) for b in content
                          if isinstance(b, dict) and b.get("type") == "text")
     return str(content or "")
+
+
+# ----------------------------------------------------------------------
+# OpenAI Responses API (/v1/responses)
+# ----------------------------------------------------------------------
+# Some OpenAI models refuse function tools combined with reasoning on
+# /v1/chat/completions and point at /v1/responses instead, e.g.
+#   "Function tools with reasoning_effort are not supported for gpt-6-astra
+#    in /v1/chat/completions. To use function tools, use /v1/responses or
+#    set reasoning_effort to 'none'."
+# When the model also rejects 'none', the Responses API is the ONLY way to
+# call tools on it. GPT therefore switches a model's tool calls to the
+# Responses API when the provider says to, remembers the switch, and keeps
+# the rest of the framework's chat-completions-shaped history unchanged --
+# the translation happens only at the wire.
+
+# Parameters that exist on responses.create; anything else from the chat
+# defaults (seed, stop, n, penalties, logit_bias, ...) has no Responses
+# equivalent and is left out, with one WARNING.
+_RESPONSES_PARAMS = frozenset({
+    "model", "input", "instructions", "tools", "tool_choice", "reasoning",
+    "max_output_tokens", "temperature", "top_p", "parallel_tool_calls",
+    "store", "metadata", "user", "service_tier", "top_logprobs",
+    "extra_headers", "extra_query", "extra_body", "timeout",
+})
+
+
+def _wants_responses_api(exc: Exception) -> bool:
+    """True when OpenAI says this request must go through /v1/responses."""
+    return getattr(exc, "status_code", None) == 400 and "/v1/responses" in _error_text(exc)
+
+
+def _normalize_tool_spec_for_openai_responses(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Chat-completions or generic tool spec -> Responses function tool.
+
+    Responses tools are flat (no nested ``function`` key). ``strict`` is
+    False because framework schemas aren't guaranteed to meet strict
+    mode's requirements (every property required, no extra keys)."""
+    if spec.get("type") == "function" and "function" in spec:
+        fn = spec["function"]
+        name, desc, params = fn["name"], fn.get("description", ""), fn.get("parameters", {})
+    elif spec.get("type") == "function" and "name" in spec and "function" not in spec:
+        return spec                                   # already Responses-shaped
+    else:
+        name = spec["name"]
+        desc = spec.get("description", "")
+        params = spec.get("parameters") or spec.get("input_schema") or {}
+    return {"type": "function", "name": name, "description": desc,
+            "parameters": params or {"type": "object", "properties": {}},
+            "strict": False}
+
+
+def _messages_for_openai_responses(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Framework (chat-completions-shaped) history -> Responses ``input`` items.
+
+    - assistant turns with ``tool_calls`` -> ``function_call`` items
+    - ``role="tool"`` results            -> ``function_call_output`` items
+    - everything else                    -> role/content messages, media
+                                            rendered as input_* parts
+
+    ``function_call`` items are sent WITHOUT an ``id``: an item that carries
+    the server-side ``fc_`` id must be accompanied by its reasoning item,
+    which a stateless client doesn't keep. ``call_id`` alone pairs each
+    call with its output."""
+    items: List[Dict[str, Any]] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        content = m.get("content")
+        if role == "assistant" and m.get("tool_calls"):
+            text = _system_text(content) if isinstance(content, list) else (content or "")
+            if text:
+                items.append({"role": "assistant", "content": text})
+            for call in m["tool_calls"]:
+                fn = call.get("function", {})
+                items.append({
+                    "type": "function_call",
+                    "call_id": call.get("id") or "call_unknown",
+                    "name": fn.get("name", ""),
+                    "arguments": fn.get("arguments") or "{}",
+                })
+            continue
+        if role in ("tool", "function") and m.get("tool_call_id"):
+            items.append({"type": "function_call_output",
+                          "call_id": m["tool_call_id"],
+                          "output": content if isinstance(content, str) else json.dumps(content, default=str)})
+            continue
+        if role not in ("system", "developer", "user", "assistant"):
+            # Legacy role="function" without an id: an observation for the model.
+            role = "user"
+        if role == "assistant":
+            # Assistant history is plain text on this endpoint.
+            text = _system_text(content) if isinstance(content, list) else (content or "")
+            if not text:
+                continue
+            items.append({"role": "assistant", "content": text})
+            continue
+        if content is None or content == "":
+            continue
+        items.append({"role": role, "content": content_for_openai_responses(content)})
+    return items
+
+
+def _parse_responses_output(response: Any) -> Dict[str, Any]:
+    """Responses output items -> the framework's call_with_tools result."""
+    tool_calls = []
+    texts = []
+    for item in getattr(response, "output", None) or []:
+        itype = getattr(item, "type", None)
+        if itype == "function_call":
+            raw = getattr(item, "arguments", "") or "{}"
+            args, arg_error = _parse_tool_arguments(raw)
+            call_id = getattr(item, "call_id", None) or getattr(item, "id", None)
+            if arg_error is not None:
+                logger.error(f"Model returned non-JSON tool arguments for "
+                             f"'{getattr(item, 'name', '')}': {raw!r}")
+                return {"type": "invalid_tool_args", "name": getattr(item, "name", ""),
+                        "id": call_id, "raw": raw, "error": arg_error}
+            tool_calls.append({"name": getattr(item, "name", ""), "input": args, "id": call_id})
+        elif itype == "message":
+            for part in getattr(item, "content", None) or []:
+                if getattr(part, "type", None) == "output_text":
+                    texts.append(getattr(part, "text", "") or "")
+    if tool_calls:
+        first = tool_calls[0]
+        return {"type": "tool_use", "name": first["name"], "input": first["input"],
+                "id": first["id"], "tool_calls": tool_calls}
+    return {"type": "text", "text": "".join(texts)}
 
 
 def _normalize_tool_spec_for_openai(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -1117,6 +1253,7 @@ class GPT(BaseChatModel):
         parallel_tool_calls: bool | NotGiven = NOT_GIVEN,
         reasoning_effort: str | NotGiven = NOT_GIVEN,
         adapt_params: bool = True,
+        use_responses_api: Optional[bool] = None,
     ):
         """
         ``reasoning_effort`` accepts any value a model generation uses
@@ -1131,6 +1268,15 @@ class GPT(BaseChatModel):
         the default), make the smallest change the error asks for,
         retry, and remember it for this model. Logged at WARNING. Set
         False to surface the raw provider error instead.
+
+        ``use_responses_api`` (default None = automatic): some models
+        refuse function tools with reasoning on /v1/chat/completions and
+        name /v1/responses as the fix. Automatic mode switches that
+        model's tool calls to the Responses API when the provider says
+        so, retries, and remembers it (logged at WARNING). True routes
+        every non-streaming call through the Responses API; False never
+        does and surfaces the provider error instead. Token streaming
+        (``stream_text``) always uses chat completions.
         """
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.client = OpenAI(
@@ -1176,6 +1322,10 @@ class GPT(BaseChatModel):
 
         self.timeout = timeout
         self._params = _ParamAdapter("OpenAI", _openai_param_fix, adapt_params)
+        self.use_responses_api = use_responses_api
+        # Models the provider told us need /v1/responses for tool calls.
+        self._responses_models: set = set()
+        self._warned_dropped: set = set()
 
     def _request_kwargs(self, exclude: Iterable[str] = ()) -> Dict[str, Any]:
         """Defaults for one request, minus ``exclude``, with known
@@ -1191,6 +1341,106 @@ class GPT(BaseChatModel):
     def _create(self, **kwargs):
         return self._params.call(self.client.chat.completions.create, kwargs)
 
+    def _responses_create_flat(self, **kw):
+        """Call responses.create from FLAT framework kwargs.
+
+        Parameter adaptation runs on the flat names (``reasoning_effort``,
+        ``max_tokens``), so a fix learned on either endpoint applies to
+        both; the nesting / renaming for the Responses API happens here,
+        at the wire."""
+        kw = dict(kw)
+        effort = kw.pop("reasoning_effort", NOT_GIVEN)
+        if effort is not NOT_GIVEN and effort is not None:
+            kw["reasoning"] = {"effort": effort}
+        tokens = NOT_GIVEN
+        for name in ("max_completion_tokens", "max_tokens"):
+            value = kw.pop(name, NOT_GIVEN)
+            if tokens is NOT_GIVEN and value is not NOT_GIVEN and value is not None:
+                tokens = value
+        if tokens is not NOT_GIVEN:
+            kw["max_output_tokens"] = tokens
+        dropped = sorted(k for k, v in kw.items()
+                         if k not in _RESPONSES_PARAMS and v is not NOT_GIVEN and v is not None)
+        for k in list(kw):
+            if k not in _RESPONSES_PARAMS:
+                kw.pop(k)
+        new_drops = [k for k in dropped if k not in self._warned_dropped]
+        if new_drops:
+            self._warned_dropped.update(new_drops)
+            logger.warning(
+                f"OpenAI Responses API has no equivalent for {new_drops}; "
+                "those settings are not sent on this endpoint."
+            )
+        # Responses stores requests server-side by default; chat completions
+        # does not. Keep the framework's behaviour the same on both.
+        if kw.get("store", NOT_GIVEN) in (NOT_GIVEN, None):
+            kw["store"] = False
+        kw = {k: v for k, v in kw.items() if v is not NOT_GIVEN}
+        return self.client.responses.create(**kw)
+
+    def _uses_responses(self, model: Any, *, for_tools: bool) -> bool:
+        if self.use_responses_api is True:
+            return True
+        if self.use_responses_api is False:
+            return False
+        return for_tools and str(model) in self._responses_models
+
+    def _switch_to_responses(self, model: Any, exc: Exception) -> bool:
+        """Record that ``model`` needs the Responses API for tool calls, if
+        the provider said so and automatic mode is on."""
+        if self.use_responses_api is not None or not _wants_responses_api(exc):
+            return False
+        self._responses_models.add(str(model))
+        logger.warning(
+            f"OpenAI model {str(model)!r} can't call tools on /v1/chat/completions "
+            "with the current settings; switching its tool calls to the Responses "
+            f"API (/v1/responses) and retrying. Remembered for this model. "
+            f"(Provider said: {_error_text(exc)[:200]})"
+        )
+        return True
+
+    def _record_responses_usage(self, response: Any) -> None:
+        u = getattr(response, "usage", None)
+        if u is not None:
+            self._record_usage_counts(
+                input_tokens=getattr(u, "input_tokens", 0) or 0,
+                output_tokens=getattr(u, "output_tokens", 0) or 0,
+            )
+
+    def _call_with_tools_responses(self, messages, tools, force_tool):
+        normalized = [_normalize_tool_spec_for_openai_responses(t) for t in tools]
+        tool_choice: Any = {"type": "function", "name": force_tool} if force_tool else "auto"
+        kwargs = self._request_kwargs(
+            ("tools", "tool_choice", "functions", "function_call", "response_format")
+        )
+        kwargs.update(input=_messages_for_openai_responses(list(messages)),
+                      tools=normalized, tool_choice=tool_choice)
+        try:
+            response = self._with_retry(
+                lambda: self._params.call(self._responses_create_flat, kwargs),
+                max_retries=3, base_delay=0.1,
+            )
+        except Exception as e:
+            logger.error(f"Error during Responses API call (tools): {e}")
+            raise
+        self._record_responses_usage(response)
+        return _parse_responses_output(response)
+
+    def _initialize_responses(self, messages, extra_headers, extra_query, extra_body, timeout):
+        kwargs = self._request_kwargs(
+            ("tools", "tool_choice", "functions", "function_call", "response_format")
+        )
+        kwargs.update(input=_messages_for_openai_responses(list(messages)),
+                      extra_headers=extra_headers, extra_query=extra_query,
+                      extra_body=extra_body, timeout=timeout or self.timeout)
+        response = self._with_retry(
+            lambda: self._params.call(self._responses_create_flat, kwargs),
+            max_retries=3, base_delay=0.1,
+        )
+        self._record_responses_usage(response)
+        parsed = _parse_responses_output(response)
+        return parsed.get("text", "") if parsed["type"] == "text" else ""
+
     def Initialize(
         self,
         messages: Iterable[ChatCompletionMessageParam],
@@ -1200,11 +1450,26 @@ class GPT(BaseChatModel):
         extra_body: Optional[Dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ):
+        if self._uses_responses(self.defaults.get("model"), for_tools=False):
+            try:
+                return self._initialize_responses(messages, extra_headers, extra_query,
+                                                  extra_body, timeout)
+            except Exception as e:
+                logger.error(f"Error during Responses API call: {e}")
+                raise
         logger.debug("Calling OpenAI chat.completions.create")
+        try:
+            chat_messages = _messages_for_openai(list(messages))
+        except ValueError:
+            # e.g. a document URL: chat completions can't express it.
+            if self.use_responses_api is False:
+                raise
+            return self._initialize_responses(messages, extra_headers, extra_query,
+                                              extra_body, timeout)
 
         def _call_and_record():
             completion = self._create(
-                messages=_messages_for_openai(list(messages)),
+                messages=chat_messages,
                 **self._request_kwargs(),
                 extra_headers=extra_headers,
                 extra_query=extra_query,
@@ -1234,6 +1499,10 @@ class GPT(BaseChatModel):
         *,
         force_tool: Optional[str] = None,
     ) -> Dict[str, Any]:
+        model = self.defaults.get("model")
+        if self._uses_responses(model, for_tools=True):
+            return self._call_with_tools_responses(messages, tools, force_tool)
+        original_messages = messages
         normalized = [_normalize_tool_spec_for_openai(t) for t in tools]
         if force_tool:
             tool_choice: Any = {"type": "function", "function": {"name": force_tool}}
@@ -1247,7 +1516,17 @@ class GPT(BaseChatModel):
 
         # #15: translate any tool_use / tool_call_id messages to OpenAI's
         # native shape. Plain {role, content} dicts pass through unchanged.
-        messages = _messages_for_openai(messages)
+        # Some inputs have no chat-completions form at all (a document
+        # URL); the Responses API can take them, so route there unless
+        # the caller pinned chat completions.
+        try:
+            messages = _messages_for_openai(messages)
+        except ValueError:
+            if self.use_responses_api is False:
+                raise
+            logger.info("Request needs the Responses API (chat completions "
+                        "can't express it); sending via /v1/responses.")
+            return self._call_with_tools_responses(original_messages, tools, force_tool)
 
         try:
             response = self._with_retry(
@@ -1261,6 +1540,8 @@ class GPT(BaseChatModel):
                 base_delay=0.1,
             )
         except Exception as e:
+            if self._switch_to_responses(model, e):
+                return self._call_with_tools_responses(original_messages, tools, force_tool)
             logger.error(f"Error during chat completion (tools): {e}")
             raise
 

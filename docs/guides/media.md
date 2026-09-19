@@ -92,18 +92,20 @@ runner.invoke("Where would a second bathroom fit?", chat_history=history)
 
 ## What each provider accepts
 
-| Kind | GPT (chat completions) | Claude (messages) |
+| Kind | GPT | Claude |
 |---|---|---|
 | image | inline + URL | inline + URL |
-| PDF | inline | inline + URL |
+| PDF | inline (URL via the Responses API) | inline + URL |
 | audio | inline wav / mp3 | not supported |
 
-Unsupported combinations fail fast with a `ValueError`:
+Two combinations need care:
 
-- **Audio to Claude** — Claude has no audio input. Transcribe first, or
+- **Audio to Claude** fails fast with a `ValueError`: Claude has no audio input. Transcribe first, or
   use an audio-capable GPT model.
-- **A document URL to GPT** — chat completions can't fetch documents.
-  Use `Media.document(path_or_bytes)` so it's sent inline.
+- **A document URL to GPT** — chat completions can't fetch documents,
+  so since 3.4.1 `GPT` sends that request through the Responses API,
+  which can. With `use_responses_api=False` it raises instead; use
+  `Media.document(path_or_bytes)` to send the file inline.
 
 Whether a specific *model* accepts a modality is still up to the
 provider — audio, for example, needs an audio-capable GPT model.

@@ -4,6 +4,31 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Tool calls failed on models that need the Responses API.** Some
+  OpenAI models (e.g. `gpt-6-astra`) reject function tools combined with
+  reasoning on `/v1/chat/completions`, and the error's suggested fix --
+  `reasoning_effort='none'` -- is itself rejected by those models, so
+  3.4.0's parameter adaptation had nowhere to go. `GPT` now switches a
+  model's tool calls to `/v1/responses` when the provider says to,
+  retries, and remembers it (WARNING-logged). History is translated only
+  at the wire (`function_call` / `function_call_output` items paired by
+  `call_id`), so agents, `tool_calls`, and completions are unchanged.
+  Learned parameter fixes carry across endpoints (`reasoning.effort` maps
+  to `reasoning_effort`). Requests are sent with `store=False`, matching
+  chat completions. Plain text calls and streaming stay on chat
+  completions.
+- Requests chat completions can't express (a document URL) go to the
+  Responses API, which accepts `file_url`, instead of raising.
+
+### Added
+
+- `GPT(use_responses_api=None | True | False)`: automatic (default),
+  always, or never.
+
 ## [3.4.0] - 2026-09-18
 
 Media input for GPT and Claude, models that adapt to each generation's

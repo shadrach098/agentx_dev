@@ -132,6 +132,42 @@ GPT(model="gpt-5.4", reasoning_effort="none", adapt_params=False)
 Claude(temperature=0.3, top_p=0.9, adapt_params=False)
 ```
 
+### Tools on models that need the Responses API
+
+Some OpenAI models refuse function tools combined with reasoning on
+`/v1/chat/completions`:
+
+```
+Function tools with reasoning_effort are not supported for gpt-6-astra in
+/v1/chat/completions. To use function tools, use /v1/responses or set
+reasoning_effort to 'none'.
+```
+
+When the model also rejects `'none'`, the Responses API is the only way to
+give it tools. `GPT` switches that model's tool calls to `/v1/responses`
+when the provider says so, retries, and remembers it:
+
+```
+WARNING  OpenAI model 'gpt-6-astra' can't call tools on /v1/chat/completions
+         with the current settings; switching its tool calls to the Responses
+         API (/v1/responses) and retrying. Remembered for this model.
+```
+
+Everything else stays the same: the agent's history, `tool_calls`, and
+`completion` look identical, learned parameter fixes (like `'none'` →
+`'low'`) carry over, and plain text calls and token streaming stay on
+chat completions. Requests go out with `store=False`, since the Responses
+API stores requests on OpenAI's side by default and chat completions
+doesn't. Chat-only settings with no Responses equivalent (`seed`, `stop`,
+`n`, penalties, `logit_bias`) aren't sent on that endpoint; a WARNING
+names them once.
+
+```python
+GPT(model="gpt-6-astra")                           # automatic (default)
+GPT(model="gpt-6-astra", use_responses_api=True)   # always use /v1/responses
+GPT(model="gpt-6-astra", use_responses_api=False)  # never; raise the provider error
+```
+
 ## Images, PDFs, audio
 
 Both models accept media in a message's `content` list — a `Media`

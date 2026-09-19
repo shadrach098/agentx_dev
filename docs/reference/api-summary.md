@@ -11,7 +11,7 @@ from agentx_dev import X
 | Symbol | Kind | Doc |
 |---|---|---|
 | `BaseChatModel` | ABC | [concepts/models](../concepts/models.md) |
-| `GPT` | class | OpenAI Chat Completions wrapper (3.4: `adapt_params` — adapts to per-model parameter support, e.g. `reasoning_effort` values) |
+| `GPT` | class | OpenAI Chat Completions wrapper (3.4: `adapt_params` — adapts to per-model parameter support, e.g. `reasoning_effort` values; 3.4.1: `use_responses_api` — tool calls move to `/v1/responses` when a model requires it) |
 | `Claude` | class | Anthropic Messages wrapper (3.1: `enable_prompt_cache`; 3.4: `top_p`, `top_k`, `thinking`, `stop_sequences`, `adapt_params`; `temperature` defaults to unset) |
 | `Media` *(3.4)* | class | Image / PDF / audio input, rendered per provider. `Media.image()`, `.document()`, `.audio()`, `.from_path()`, `.from_url()`, `.from_bytes()` |
 | `StructuredOutputRunnable` | class | Result of `.with_structured_output(schema)` |
