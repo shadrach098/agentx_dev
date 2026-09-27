@@ -69,3 +69,58 @@ def test_run_python_starts_in_the_workspace(scenario):
     lines = [l.strip() for l in str(out).strip().splitlines()]
     assert any(_same(l, ws) for l in lines), out
     assert "True" in lines, out
+
+
+class TestRootedSandboxRoot:
+    r"""Defining the sandbox itself with a rooted path.
+
+    User report: ``Permissions.full_access(["/workspace"])`` was launched
+    from a project that holds ``workspace/spam.csv``. On Windows a rooted
+    path with no drive letter is the root of the current drive, so the
+    sandbox became ``C:\workspace`` -- an empty directory the framework
+    created itself. The agent searched it, found nothing, and reported the
+    file missing. A leading slash already means "rooted at the workspace"
+    for tool arguments, so it must mean "rooted at the project" here.
+    """
+
+    @pytest.fixture
+    def project(self, tmp_path, monkeypatch):
+        (tmp_path / "workspace").mkdir()
+        (tmp_path / "workspace" / "spam.csv").write_text("region,total\nNorth,1\n")
+        monkeypatch.chdir(tmp_path)
+        return tmp_path
+
+    @pytest.mark.skipif(os.name != "nt", reason="drive-relative rooted paths are Windows-only")
+    def test_rooted_path_means_the_project_folder(self, project):
+        perms = Permissions.full_access(["/workspace"])
+        assert _same(perms.workspace, project / "workspace")
+        assert _same(perms.allowed_paths[0], project / "workspace")
+
+    @pytest.mark.skipif(os.name != "nt", reason="drive-relative rooted paths are Windows-only")
+    @pytest.mark.parametrize("form", ["spam.csv", "/spam.csv", "./workspace/spam.csv",
+                                      "workspace/spam.csv"])
+    def test_the_agent_finds_the_file(self, project, form):
+        perms = Permissions.full_access(["/workspace"])
+        assert _same(_resolve_for_ops(form, perms), project / "workspace" / "spam.csv")
+
+    @pytest.mark.skipif(os.name != "nt", reason="drive-relative rooted paths are Windows-only")
+    def test_nothing_is_created_at_the_drive_root(self, project):
+        Permissions.full_access(["/agentx_probe_dir"])
+        assert not os.path.exists(os.path.join(os.path.splitdrive(os.getcwd())[0] + os.sep,
+                                               "agentx_probe_dir"))
+
+    def test_drive_qualified_path_is_left_alone(self, project, tmp_path):
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        perms = Permissions.full_access([str(target)])
+        assert _same(perms.workspace, target)
+
+    def test_explicit_relative_path_still_works(self, project):
+        perms = Permissions.full_access(["./workspace"])
+        assert _same(_resolve_for_ops("spam.csv", perms), project / "workspace" / "spam.csv")
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX absolute paths keep their meaning")
+    def test_posix_absolute_path_is_not_rerooted(self, project):
+        perms = Permissions(workspace="/workspace", allowed_paths=["/workspace"],
+                            auto_create_paths=False)
+        assert perms.workspace == "/workspace"

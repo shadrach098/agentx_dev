@@ -51,6 +51,7 @@ What this does NOT defend against:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -62,6 +63,8 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from agentx_dev.Tools import StructuredTool
+
+logger = logging.getLogger(__name__)
 
 
 # Convention matches Claude Code's .claude/settings.local.json — project-local
@@ -254,15 +257,62 @@ class Permissions:
     subprocess_env_passthrough: Optional[List[str]] = None
 
     def __post_init__(self):
-        """Create workspace + allowed_paths directories that don't yet
-        exist. Runs after every constructor path (positional, keyword,
-        classmethod, from_file). Silently ignores paths that already
-        exist as files (that's an error for later — mkdir would raise
-        the wrong exception). Paths that fail to create (permissions,
-        readonly fs) are left alone — the first tool call will surface
-        a clean error instead of blowing up construction."""
+        """Normalise drive-relative sandbox roots, then create workspace +
+        allowed_paths directories that don't yet exist. Runs after every
+        constructor path (positional, keyword, classmethod, from_file).
+        Silently ignores paths that already exist as files (that's an
+        error for later — mkdir would raise the wrong exception). Paths
+        that fail to create (permissions, readonly fs) are left alone —
+        the first tool call will surface a clean error instead of blowing
+        up construction."""
+        self._reroot_drive_relative_paths()
         if not self.auto_create_paths:
             return
+        self._create_sandbox_dirs()
+
+    def _reroot_drive_relative_paths(self) -> None:
+        r"""On Windows, re-root ``workspace`` / ``allowed_paths`` entries
+        that start with a slash but carry no drive letter.
+
+        ``full_access(["/workspace"])`` reads as "the workspace folder of
+        this project" — that is already what a leading slash means for
+        tool arguments (see ``_resolve_for_ops``). Windows disagrees: a
+        rooted path with no drive is the root of the CURRENT drive, so
+        ``Path("/workspace").resolve()`` is ``C:\workspace``. The sandbox
+        then pointed at a directory beside Program Files that this class
+        had just created itself, and an agent asked to read
+        ``workspace/spam.csv`` correctly reported it missing.
+
+        Only ``nt`` is touched. On POSIX ``/workspace`` is a genuine
+        absolute path (and the conventional Docker mount point), so
+        re-rooting it there would break containers that mean it
+        literally. Drive-qualified (``C:/data``), UNC (``//host/share``)
+        and relative (``./workspace``) paths are left alone everywhere.
+        """
+        if os.name != "nt":
+            return
+
+        def reroot(path: str) -> str:
+            if not path or path[:1] not in ("/", "\\") or Path(path).drive:
+                return path
+            return str(Path.cwd() / path.lstrip("/\\"))
+
+        if self.workspace:
+            moved = reroot(self.workspace)
+            if moved != self.workspace:
+                logger.info(
+                    "Permissions: workspace %r is drive-relative; using %s "
+                    "(the folder of the running project). Pass an absolute "
+                    "path like C:/... to mean the drive root.",
+                    self.workspace, moved,
+                )
+            self.workspace = moved
+        if self.allowed_paths:
+            self.allowed_paths = [reroot(p) for p in self.allowed_paths]
+
+    def _create_sandbox_dirs(self) -> None:
+        """Create the workspace / allowed_paths directories (see
+        ``auto_create_paths``)."""
         candidates: List[str] = []
         if self.workspace:
             candidates.append(self.workspace)
@@ -775,9 +825,26 @@ def _resolve_for_ops(target: str, perms: Permissions) -> Path:
             return cwd_resolved
 
     # Rule 3: short-name style — try workspace + target.
+    #
+    # Except when that form doesn't exist and the path as typed does:
+    # "workspace/spam.csv" with workspace "./workspace" would otherwise
+    # nest into "./workspace/workspace/spam.csv", which is inside the
+    # sandbox and so passed the check while pointing at nothing. Models
+    # name the workspace folder that way constantly (they see it in the
+    # task text), and the field docs promise it passes through. Existence
+    # is the tie-breaker rather than a name comparison, because it also
+    # covers deeper spellings like "workspace/sub/x.csv"; a brand-new
+    # file ("report.md") exists in neither form, so writes still land in
+    # the workspace.
     if workspace_resolved is not None and _is_inside_any(workspace_resolved, allowed):
-        _assert_resolved_allowed(target, workspace_resolved, allowed)
-        return workspace_resolved
+        typed_wins = (
+            not workspace_resolved.exists()
+            and cwd_resolved.exists()
+            and _is_inside_any(cwd_resolved, allowed)
+        )
+        if not typed_wins:
+            _assert_resolved_allowed(target, workspace_resolved, allowed)
+            return workspace_resolved
 
     # Rule 4: CWD form as last resort before sandbox rejection.
     if _is_inside_any(cwd_resolved, allowed):

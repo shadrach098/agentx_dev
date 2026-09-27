@@ -4,6 +4,27 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.4.3] - 2026-09-26
+
+Two path-resolution fixes for Windows sandboxes. Non-breaking.
+
+### Fixed
+
+- **`full_access(["/workspace"])` now means the project's workspace
+  folder, not the drive root.** On Windows a rooted path without a drive
+  letter resolves to the current drive, so the sandbox became
+  `C:\workspace`; `auto_create_paths` then created it, and an agent
+  asked for `workspace/spam.csv` searched an empty directory outside the
+  project and reported the file missing. Slash-rooted sandbox roots are
+  now re-rooted at the running project, matching what a leading slash
+  already meant for tool arguments. POSIX absolute paths (`/workspace`
+  as a Docker mount) and drive-qualified paths are untouched.
+- **`workspace/report.md` no longer nests into
+  `<workspace>/workspace/report.md`.** The `workspace` field documented
+  this pass-through, but only the `./workspace/...` spelling had it.
+  Models name the workspace folder constantly, so the missing case hit
+  often; new files still resolve into the workspace as before.
+
 ## [3.4.2] - 2026-09-19
 
 `media=` everywhere, CSV / text / Excel attachments, and structured output

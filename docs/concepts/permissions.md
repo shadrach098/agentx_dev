@@ -106,6 +106,7 @@ With a workspace set (explicitly, or inferred from a single
 | Path the model writes | Resolves to |
 |---|---|
 | `report.md` | `<workspace>/report.md` |
+| `workspace/report.md` *(3.4.3)* | `<workspace>/report.md` — the workspace folder named explicitly, no double-nesting |
 | `./report.md` | `<workspace>/report.md` |
 | `/report.md` *(3.4)* | `<workspace>/report.md` — the workspace root, not the drive root |
 | an absolute path inside the sandbox | itself |
@@ -116,6 +117,24 @@ drive means the root of the *current* drive, so `/bruce.jpeg` became
 workspace — and the re-rooted path still goes through the sandbox
 check, so `/../../etc/passwd` is rejected as before. Without a
 workspace, leading-slash paths keep their OS meaning.
+
+### Defining the sandbox with a leading slash (3.4.3)
+
+The same reading applies to the paths *you* pass in. On Windows,
+`Permissions.full_access(["/workspace"])` used to mean `C:\workspace`
+— the root of the current drive — and, because the directory is
+auto-created, the agent quietly searched an empty folder outside your
+project. A slash-rooted path with no drive letter is now read as the
+`workspace` folder of the running project:
+
+```python
+Permissions.full_access(["/workspace"])    # <project>/workspace on Windows
+Permissions.full_access(["./workspace"])   # the same folder, explicitly
+Permissions.full_access(["C:/workspace"])  # the drive root, if you mean it
+```
+
+On Linux and macOS `/workspace` stays absolute, since it's a real path
+there (and the usual Docker mount point).
 
 `run_python` and `run_shell` **start in the workspace** (3.4 for
 `run_python`, which previously inherited the host process's directory),
