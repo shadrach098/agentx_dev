@@ -13,6 +13,23 @@ module stays imported until you do, which shows up as errors like
 
 ---
 
+## Upgrading to 3.4.3
+
+**Nothing breaks.** Two Windows path fixes:
+
+- `Permissions.full_access(["/workspace"])` now means the `workspace`
+  folder of the running project. It used to mean `C:\workspace` (a
+  rooted path with no drive letter is the current drive's root), and
+  since sandbox directories are auto-created, agents searched an empty
+  folder outside the project. `./workspace` behaved correctly all
+  along, and still does; on Linux and macOS `/workspace` stays
+  absolute. Write `C:/workspace` if you really mean the drive root.
+- `workspace/report.md` no longer nests into
+  `<workspace>/workspace/report.md`. See
+  [Workspace paths](../concepts/permissions.md#workspace-paths).
+
+---
+
 ## Upgrading to 3.4.2
 
 **Nothing breaks.**
