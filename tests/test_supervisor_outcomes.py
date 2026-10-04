@@ -5,7 +5,9 @@ import json
 from types import SimpleNamespace
 
 from agentx_dev import AgentRunner, AgentType, StandardTool
-from agentx_dev.Supervisor import AsyncSupervisor, Supervisor
+from agentx_dev.Supervisor import (
+    AsyncSupervisor, Supervisor, SubtaskResult, _result_done, _result_failed, _supervisor_outcome,
+)
 from tests.conftest import MockModel, make_react_response
 
 
@@ -122,3 +124,56 @@ class TestAsync:
     def test_no_plan_is_stuck(self):
         result = asyncio.run(asup(MockModel(script=["not json"]), {"worker": AsyncScripted()}).run("task"))
         assert result.outcome == "stuck"
+
+
+def res(agent="a", **kw):
+    return SubtaskResult(agent=agent, query="q", content="c", **kw)
+
+
+class TestResultPredicates:
+    def test_a_plain_done_step_is_done_and_not_failed(self):
+        r = res()
+        assert _result_done(r) and not _result_failed(r)
+
+    def test_an_unfinished_outcome_or_an_error_is_failed_and_not_done(self):
+        for r in (res(outcome="stuck"), res(error="boom"), res(outcome="out_of_time")):
+            assert _result_failed(r) and not _result_done(r)
+
+    def test_spawn_bookkeeping_is_excluded_from_both(self):
+        for r in (res("__spawn__"), res("__spawn__", error="spawn refused"), res("__spawn__", outcome="stuck")):
+            assert not _result_failed(r) and not _result_done(r)
+
+    def test_a_superseded_step_is_excluded_from_both(self):
+        for r in (res(outcome="stuck", superseded=True), res(superseded=True)):
+            assert not _result_failed(r) and not _result_done(r)
+
+    def test_a_condition_skipped_step_is_neither_failed_nor_done(self):
+        r = res(skipped=True)                      # skip_when matched: no error
+        assert not _result_failed(r) and not _result_done(r)
+
+    def test_a_dependency_skipped_step_is_failed(self):
+        r = res(skipped=True, error="skipped: dependency s1 failed")
+        assert _result_failed(r) and not _result_done(r)
+
+
+class TestSupervisorOutcome:
+    def test_nothing_unresolved_is_done_even_with_a_budget_reason(self):
+        assert _supervisor_outcome([res()]) == "done"
+        assert _supervisor_outcome([res()], "out_of_time") == "done"
+        assert _supervisor_outcome([]) == "done"
+
+    def test_spawn_steps_and_superseded_failures_do_not_make_it_unresolved(self):
+        results = [res("__spawn__", error="x"), res(outcome="stuck", superseded=True), res()]
+        assert _supervisor_outcome(results, "out_of_budget") == "done"
+
+    def test_something_unresolved_with_a_budget_reason_reports_the_reason(self):
+        results = [res(), res(outcome="stuck")]
+        assert _supervisor_outcome(results, "out_of_time") == "out_of_time"
+        assert _supervisor_outcome([res(outcome="stuck")], "out_of_budget") == "out_of_budget"
+
+    def test_partial_when_some_step_is_done_and_stuck_when_none_is(self):
+        assert _supervisor_outcome([res(), res(outcome="stuck")]) == "partial"
+        assert _supervisor_outcome([res(outcome="stuck"), res(error="boom")]) == "stuck"
+
+    def test_a_condition_skipped_step_alone_does_not_count_as_done(self):
+        assert _supervisor_outcome([res(skipped=True), res(outcome="stuck")]) == "stuck"

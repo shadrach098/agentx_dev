@@ -22,7 +22,7 @@ import asyncio
 import json
 import sys
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Set, Tuple, Union, Any
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union, Any
 
 from pydantic import BaseModel, Field
 
@@ -519,6 +519,82 @@ def _supervisor_outcome(results: List["SubtaskResult"], budget_reason: Optional[
     return OUTCOME_PARTIAL if any(_result_done(r) for r in results) else OUTCOME_STUCK
 
 
+def _budget_reason(budget: Optional[RunBudget], results: List["SubtaskResult"]) -> Optional[str]:
+    """Why the run must stop trying: a specialist hit the cost cap, or time is up."""
+    if any(r.outcome == OUTCOME_OUT_OF_BUDGET for r in results):
+        return OUTCOME_OUT_OF_BUDGET
+    if (budget is not None and budget.expired()) or any(r.outcome == OUTCOME_OUT_OF_TIME for r in results):
+        return OUTCOME_OUT_OF_TIME
+    return None
+
+
+def _count_done(results: List["SubtaskResult"]) -> int:
+    return sum(1 for r in results if _result_done(r))
+
+
+def _recovery_note(results: List["SubtaskResult"], round_no: int) -> str:
+    """Text appended to the planner prompt for a recovery round: what is kept,
+    what did not finish and why, and what was already tried."""
+    done = [r for r in results if _result_done(r) and r.step_id]
+    failed = [r for r in results if _result_failed(r)]
+    lines = [
+        "", "",
+        f"── RECOVERY ROUND {round_no} ──",
+        "Some steps of the earlier plan did not finish. Do NOT repeat the approach that failed.",
+        "Produce a NEW plan, in the same JSON format, containing ONLY the work that is still needed.",
+        "",
+    ]
+    if done:
+        lines.append("Completed steps (their results are kept; do not redo them; "
+                     "list their ids in depends_on to use their output):")
+        lines += [f"  - [{r.step_id}] {r.agent}: {_clip(r.content, 300)}" for r in done]
+        lines.append("")
+    lines.append("Steps that did NOT finish:")
+    for r in failed:
+        why = r.error or f"ended with outcome '{r.outcome}'"
+        lines.append(f"  - [{r.step_id}] {r.agent}: {_clip(r.query, 200)}")
+        lines.append(f"      why: {_clip(why, 300)}")
+        tried = (r.progress or {}).get("failed") or []
+        if tried:
+            lines.append("      attempts that failed:")
+            lines += [f"        * {t}" for t in tried[-5:]]
+    lines += ["", "Give every new step a NEW id. Pick a different specialist or method, or spawn one if the "
+                  "catalog cannot do it. Only reference completed step ids in depends_on."]
+    return "\n".join(lines)
+
+
+def _rename_colliding_ids(plan: List[dict], prior_ids: Iterable[str], round_no: int) -> List[dict]:
+    """Ids defined by a recovery plan shadow earlier ones: a step whose id was
+    already used gets ``r<round>_<id>``, and references to it inside the plan
+    follow. References to earlier steps the plan does not redefine are kept."""
+    prior = set(prior_ids)
+    mapping = {s["id"]: f"r{round_no}_{s['id']}" for s in plan if s["id"] in prior}
+    if not mapping:
+        return plan
+    out: List[dict] = []
+    for step in plan:
+        s = dict(step)
+        s["id"] = mapping.get(s["id"], s["id"])
+        if s.get("depends_on"):
+            s["depends_on"] = [mapping.get(d, d) for d in s["depends_on"]]
+        out.append(s)
+    return out
+
+
+def _unresolved_note(unresolved: List["SubtaskResult"]) -> str:
+    lines = ["", "",
+             "IMPORTANT: the following steps did NOT finish. State plainly which parts of the task were "
+             "not completed and why. Never present data from them as established, and never claim the "
+             "task is complete:"]
+    lines += [f"- [{r.step_id}] {r.agent}: {r.error or r.outcome}" for r in unresolved]
+    return "\n".join(lines)
+
+
+def _log_replan(round_no: int, unresolved: List["SubtaskResult"]) -> None:
+    ids = ", ".join(str(r.step_id) for r in unresolved)
+    print(f"{_C_PLAN}[supervisor.replan] round {round_no}: recovering {ids}{_C_RESET}")
+
+
 def _build_augmented_query(
     sub_query: str,
     prior_results: List[SubtaskResult],
@@ -697,7 +773,9 @@ def _plan_uses_deps(plan: List[dict]) -> bool:
     )
 
 
-def _sanitize_plan(plan: List[dict], verbose: bool = False) -> Tuple[List[dict], List[str]]:
+def _sanitize_plan(
+    plan: List[dict], verbose: bool = False, known_ids: Iterable[str] = (),
+) -> Tuple[List[dict], List[str]]:
     """Normalize a planner-emitted plan into a valid DAG. Deterministic;
     never raises. Returns ``(plan, repairs)`` where ``repairs`` lists
     every fix made (empty = the plan was already clean). The list feeds
@@ -709,6 +787,10 @@ def _sanitize_plan(plan: List[dict], verbose: bool = False) -> Tuple[List[dict],
       3. drop self-dependencies
       4. break cycles by dropping the back-edge in plan order
       5. spawn steps cannot be depended on (such deps are dropped)
+
+    ``known_ids`` are step ids finished in earlier recovery rounds; a
+    dependency on one is valid and kept (it is simply not an edge in this
+    plan's graph).
     """
     repairs: List[str] = []
     plan = [dict(step) for step in plan if isinstance(step, dict)]
@@ -732,6 +814,8 @@ def _sanitize_plan(plan: List[dict], verbose: bool = False) -> Tuple[List[dict],
     id_pos = {sid: i for i, sid in enumerate(ids)}
     spawn_ids = {s["id"] for s in plan if s.get("agent") == "__spawn__"}
 
+    known = set(known_ids)
+
     # -- 2/3/5. dep validation ----------------------------------------------
     for step in plan:
         deps = step.get("depends_on") or []
@@ -743,7 +827,7 @@ def _sanitize_plan(plan: List[dict], verbose: bool = False) -> Tuple[List[dict],
         for d in deps:
             if d == step["id"]:
                 repairs.append(f"step {step['id']!r}: self-dependency dropped")
-            elif d not in id_pos:
+            elif d not in id_pos and d not in known:
                 repairs.append(f"step {step['id']!r}: unknown dependency {d!r} dropped")
             elif d in spawn_ids:
                 repairs.append(
@@ -760,6 +844,8 @@ def _sanitize_plan(plan: List[dict], verbose: bool = False) -> Tuple[List[dict],
         dependents: Dict[str, List[str]] = {sid: [] for sid in ids}
         for step in plan:
             for d in step["depends_on"]:
+                if d not in id_pos:      # an earlier round's step: not part of this graph
+                    continue
                 indeg[step["id"]] += 1
                 dependents[d].append(step["id"])
         queue = [sid for sid in ids if indeg[sid] == 0]
@@ -811,11 +897,14 @@ def _topo_order(plan: List[dict]) -> List[int]:
     has been through ``_sanitize_plan`` (acyclic, valid ids)."""
     ids = [s["id"] for s in plan]
     id_idx = {sid: i for i, sid in enumerate(ids)}
-    indeg = [len(s.get("depends_on") or []) for s in plan]
+    # Dependencies outside this plan (a finished step from an earlier recovery
+    # round) are already satisfied and are not part of this graph.
+    indeg = [sum(1 for d in (s.get("depends_on") or []) if d in id_idx) for s in plan]
     dependents: List[List[int]] = [[] for _ in plan]
     for i, step in enumerate(plan):
         for d in step.get("depends_on") or []:
-            dependents[id_idx[d]].append(i)
+            if d in id_idx:
+                dependents[id_idx[d]].append(i)
 
     import heapq
     ready = [i for i, deg in enumerate(indeg) if deg == 0]
@@ -938,6 +1027,7 @@ class Supervisor:
         max_subtask_retries: int = 1,
         subtask_success_check: Optional[Callable[[SubtaskResult], Any]] = None,
         max_plan_retries: int = 1,
+        persistence: Optional[Persistence] = None,
     ):
         """
         Args:
@@ -955,18 +1045,20 @@ class Supervisor:
                 spawning is disabled and the planner can only use the
                 specialists passed in ``agents``. See SpawnConfig for the
                 auto_spawn / approver knobs.
-            max_subtask_retries: How many times a sub-task that RAISES is
-                re-dispatched before the Supervisor gives up on it.
+            max_subtask_retries: How many times a sub-task that RAISES (or
+                returns an outcome other than "done") is re-dispatched
+                before the Supervisor gives up on it.
                 Default 1 (so a specialist that hits a transient or
                 self-correctable failure — a malformed tool call, a bad
                 escape — gets a second chance instead of the whole
                 sub-task being abandoned on the first error). Each retry
                 appends the prior error to the query so the specialist
                 knows what to fix. Set to 0 to restore the old
-                quit-on-first-failure behavior. Only errors trigger a
-                retry; a sub-task that returns content (even thin content)
-                is accepted as-is — unless you also pass
-                ``subtask_success_check`` (below).
+                quit-on-first-failure behavior. Errors and non-"done"
+                outcomes trigger a retry (stopping early once the shared
+                budget is spent); a sub-task that returns "done" content
+                (even thin content) is accepted as-is — unless you also
+                pass ``subtask_success_check`` (below).
             subtask_success_check: Optional predicate
                 ``(SubtaskResult) -> bool | str`` deciding whether a
                 *returned* (non-raised) result is acceptable. Catches the
@@ -986,6 +1078,14 @@ class Supervisor:
                 with the repair warnings appended to the prompt. The
                 sanitized plan is kept as fallback if the retry is no
                 better. ``0`` disables replanning.
+            persistence: (3.5) Opt-in ``Persistence(...)``. When a step does
+                not finish, the Supervisor replans around it (completed
+                steps are kept), bounded by ``max_replans`` per stuck
+                episode and by one shared ``max_minutes`` deadline that
+                every specialist inherits. It is applied to specialist
+                runners that have none, for the duration of the run.
+                ``None`` (default) keeps the one-shot plan/run/synthesize
+                behaviour.
         """
         self.model = model
         # Normalize (and copy) so run-time spawns don't mutate the
@@ -1000,6 +1100,7 @@ class Supervisor:
         self.max_subtask_retries = max(0, int(max_subtask_retries))
         self.subtask_success_check = subtask_success_check
         self.max_plan_retries = max(0, int(max_plan_retries))
+        self.persistence = persistence
 
     # -- internal helpers ----------------------------------------------------
 
@@ -1073,6 +1174,23 @@ class Supervisor:
             else:
                 break   # retry was no better; keep the sanitized original
         return sane
+
+    def _plan_recovery(self, user_task: str, results: List[SubtaskResult], round_no: int) -> List[dict]:
+        """Ask the planner for a recovery plan covering only the unfinished
+        work. Returns ``[]`` when it cannot (the caller then synthesizes with
+        what it has)."""
+        try:
+            raw = self._plan_once(user_task, repair_note=_recovery_note(results, round_no))
+        except Exception as e:
+            logger.warning(f"recovery planning failed: {e}")
+            return []
+        if not raw:
+            return []
+        known = {r.step_id for r in results
+                 if r.step_id and r.agent != "__spawn__" and not _result_failed(r) and not r.superseded}
+        sane, _ = _sanitize_plan(raw, verbose=self.verbose, known_ids=known)
+        prior = {r.step_id for r in results if r.step_id}
+        return _rename_colliding_ids(sane, prior, round_no)
 
     # Map from SpawnRequest capability keyword -> the concrete tool names
     # a spawn would install. Kept in sync with _build_spawned_agent's
@@ -1224,6 +1342,8 @@ class Supervisor:
             req, model=self.model, allowed_paths=cfg.allowed_paths,
         )
         self.agents[req.name] = Specialist(description=description, runner=runner)
+        if self.persistence is not None:
+            runner.persistence = self.persistence
         self._spawns_this_run += 1
         return req.name, None
 
@@ -1233,18 +1353,27 @@ class Supervisor:
         agent_name: str,
         sub_query: str,
         dispatched_query: str,
+        budget: Optional[RunBudget] = None,
     ) -> SubtaskResult:
         """Run one sub-task, retrying up to ``max_subtask_retries`` times.
 
-        Two kinds of failure are retried, each feeding context back into
+        Three kinds of failure are retried, each feeding context back into
         the query:
-          - a RAISED exception (crash, unrecoverable tool error), and
-          - a returned result that ``subtask_success_check`` rejects
-            (ran fine but produced nothing useful).
+          - a RAISED exception (crash, unrecoverable tool error),
+          - a returned completion whose ``outcome`` is not "done" (the
+            specialist gave up: stuck, out of time, out of budget,
+            iteration limit), with or without a success check, and
+          - a returned "done" result that ``subtask_success_check``
+            rejects (ran fine but produced nothing useful).
 
-        Without a success check, only raised exceptions retry — a
-        sub-task that returns is accepted even if thin, since the
-        Supervisor can't tell "terse but correct" from "wrong" on its own.
+        Without a success check, a "done" result is accepted even if thin,
+        since the Supervisor can't tell "terse but correct" from "wrong"
+        on its own.
+
+        The retry loop stops early when the shared run budget is spent (a
+        result with outcome ``out_of_time`` or ``out_of_budget``): another
+        attempt cannot help. ``budget`` is the shared ``RunBudget`` handed
+        to specialists that accept one (persistent mode); ``None`` otherwise.
 
         On exhaustion: returns the last result with ``error`` set (content
         preserved) if we got one, else an empty errored SubtaskResult."""
@@ -1254,7 +1383,10 @@ class Supervisor:
         last_result: Optional[SubtaskResult] = None
         for attempt in range(1, attempts + 1):
             try:
-                completion = agent_runner.Initialize(query)
+                if budget is not None and accepts_budget(agent_runner.Initialize):
+                    completion = agent_runner.Initialize(query, _budget=budget)
+                else:
+                    completion = agent_runner.Initialize(query)
                 result = SubtaskResult(
                     agent=agent_name, query=sub_query, content=completion.content,
                     # Preserve the runner's validated Pydantic instance so
@@ -1287,6 +1419,8 @@ class Supervisor:
                 return result
             last_result = result
             last_error = f"did not meet success criteria: {reason}"
+            if result.outcome in (OUTCOME_OUT_OF_TIME, OUTCOME_OUT_OF_BUDGET):
+                break          # the shared budget is spent; another attempt cannot help
             if self.verbose:
                 print(
                     f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
@@ -1306,14 +1440,26 @@ class Supervisor:
             agent=agent_name, query=sub_query, content="", error=last_error,
         )
 
-    def _synthesize(self, user_task: str, subtask_results: List[SubtaskResult]) -> str:
+    def _synthesize(
+        self,
+        user_task: str,
+        subtask_results: List[SubtaskResult],
+        unresolved: Optional[List[SubtaskResult]] = None,
+    ) -> str:
         results_block = _format_results_block(subtask_results)
         prompt = SUPERVISOR_SYNTHESIZE_PROMPT.format(
             user_task=user_task,
             results_block=results_block,
         )
+        if unresolved:
+            prompt += _unresolved_note(unresolved)
         messages = [{"role": "user", "content": prompt}]
-        return self.model.Initialize(messages=messages)
+        try:
+            return self.model.Initialize(messages=messages)
+        except CostBudgetExceeded:
+            if self.persistence is None:
+                raise
+            return f"Stopped: the cost budget was reached.\n\n{results_block}"
 
     # -- public API ----------------------------------------------------------
 
@@ -1323,6 +1469,7 @@ class Supervisor:
         subtask_results: List[SubtaskResult],
         results_by_id: Dict[str, SubtaskResult],
         spawn_rewrites: Dict[str, str],
+        budget: Optional[RunBudget] = None,
     ):
         """Execute ``plan``: dispatch each step (spawning specialists, cascading
         failures, evaluating ``skip_when``) and yield ``dispatch`` / ``spawn`` /
@@ -1468,12 +1615,24 @@ class Supervisor:
                 dispatched_query = _build_augmented_query(sub_query, dep_results)
             else:
                 dispatched_query = _build_augmented_query(sub_query, subtask_results)
+            if budget is not None and budget.expired():
+                sub_result = SubtaskResult(
+                    agent=agent_name, query=sub_query, content="",
+                    error="skipped: the time limit was reached",
+                    outcome=OUTCOME_OUT_OF_TIME, skipped=True,
+                    step_id=step_id, depends_on=step_deps,
+                )
+                subtask_results.append(sub_result)
+                results_by_id[step_id] = sub_result
+                yield {"type": "subtask_result", "result": sub_result,
+                       "step": step_idx, "step_id": step_id}
+                continue
             yield {"type": "dispatch", "agent": agent_name, "query": sub_query,
                    "step": step_idx, "step_id": step_id}
             if self.verbose:
                 _log_dispatch(agent_name, sub_query)
             sub_result = self._dispatch_with_retry(
-                agent_runner, agent_name, sub_query, dispatched_query,
+                agent_runner, agent_name, sub_query, dispatched_query, budget,
             )
             sub_result.step_id = step_id
             sub_result.depends_on = step_deps
@@ -1503,6 +1662,7 @@ class Supervisor:
         the intermediate events.
         """
         self._spawns_this_run = 0
+        budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
 
         yield {"type": "plan_start"}
         plan = self._plan(user_task)
@@ -1528,17 +1688,47 @@ class Supervisor:
         subtask_results: List[SubtaskResult] = []
         results_by_id: Dict[str, SubtaskResult] = {}
         spawn_rewrites: Dict[str, str] = {}
-        yield from self._run_plan(plan, subtask_results, results_by_id, spawn_rewrites)
+        budget_reason: Optional[str] = None
+        with apply_persistence([s.runner for s in self.agents.values()], self.persistence):
+            yield from self._run_plan(plan, subtask_results, results_by_id, spawn_rewrites, budget)
+            if self.persistence is not None:
+                stagnant = 0
+                round_no = 1
+                while True:
+                    unresolved = [r for r in subtask_results if _result_failed(r)]
+                    if not unresolved:
+                        break
+                    budget_reason = _budget_reason(budget, subtask_results)
+                    if budget_reason or stagnant >= self.persistence.max_replans:
+                        break
+                    recovery = self._plan_recovery(user_task, subtask_results, round_no + 1)
+                    if not recovery:
+                        break
+                    round_no += 1
+                    for r in unresolved:
+                        r.superseded = True
+                    done_before = _count_done(subtask_results)
+                    yield {"type": "replan", "round": round_no,
+                           "unresolved": [r.step_id for r in unresolved], "plan": recovery}
+                    if self.verbose:
+                        _log_replan(round_no, unresolved)
+                    plan.extend(recovery)
+                    yield from self._run_plan(recovery, subtask_results, results_by_id,
+                                              spawn_rewrites, budget)
+                    stagnant = 0 if _count_done(subtask_results) > done_before else stagnant + 1
 
         yield {"type": "synthesize_start"}
-        final = self._synthesize(user_task, subtask_results)
+        persistent = self.persistence is not None
+        unresolved = [r for r in subtask_results if _result_failed(r)] if persistent else []
+        shown = [r for r in subtask_results if not r.superseded] if persistent else subtask_results
+        final = self._synthesize(user_task, shown, unresolved=unresolved)
         if self.verbose:
             _log_final(final)
 
         result = SupervisorResult(
             query=user_task, content=final,
             subtasks=subtask_results, plan=plan,
-            outcome=_supervisor_outcome(subtask_results),
+            outcome=_supervisor_outcome(subtask_results, budget_reason),
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
@@ -1725,6 +1915,15 @@ class AsyncSupervisor:
         sub_query: str,
         prior_results: Optional[List[SubtaskResult]] = None,
     ) -> SubtaskResult:
+        """Run one sub-task, retrying up to ``max_subtask_retries`` times.
+
+        Three kinds of failure are retried, each feeding context back into
+        the query: a RAISED exception, a returned completion whose
+        ``outcome`` is not "done" (with or without a success check), and a
+        returned "done" result that ``subtask_success_check`` rejects. On
+        exhaustion the last result is returned with ``error`` set (content
+        preserved). (The async supervisor has no persistent mode yet, so
+        there is no shared budget to stop the loop early.)"""
         _, runner = self.agents[agent_name]
         # In sequential mode the caller passes findings-so-far; in
         # concurrent mode there's nothing to thread and the specialist
