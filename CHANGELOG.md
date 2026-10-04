@@ -25,7 +25,10 @@ Agents that keep working through errors. Opt-in; one default change (below).
   and invalid-request errors still raise at once.
 - **Supervisors replan**: a step that does not finish is replanned
   around under one shared deadline; finished steps are kept and can be
-  depended on. New `replan`, `reflect` and `compact` stream events.
+  depended on. A recovery step names the steps it redoes
+  (`"replaces": [...]`); a failed step counts as resolved only when its
+  replacement finishes. New `replan`, `reflect`, `compact` and `budget`
+  stream events.
 - **Outcomes**: every completion has `.outcome` and (persistent runs)
   `.progress`; `SubtaskResult` and `SupervisorResult` have `.outcome`.
 - New guide: Long-running agents.
@@ -36,7 +39,11 @@ Agents that keep working through errors. Opt-in; one default change (below).
   with an outcome other than `done` (for example `iteration_limit`) as a
   failed attempt: it retries up to `max_subtask_retries` with the reason
   fed back, then flags the step. Previously such a result was accepted
-  as a success. This applies without `persistence`.
+  as a success. This applies without `persistence`. Consequences: each
+  give-up costs one extra attempt by default (`max_subtask_retries=1`);
+  the flagged step's recap is no longer passed to downstream
+  specialists; steps that `depends_on` it are skipped; and
+  `SupervisorResult.outcome` is `partial` or `stuck`.
 - While `persistence` is set the tool-result cache is off, and the
   iteration cap is `persistence.max_turns`.
 

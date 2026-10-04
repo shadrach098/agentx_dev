@@ -24,12 +24,26 @@ module stays imported until you do, which shows up as errors like
   `out_of_time`, `out_of_budget`, `iteration_limit`) and `.progress`
   (set only by persistent runs). `SubtaskResult` and `SupervisorResult`
   have `.outcome` too.
-- **Changed, even without `persistence`:** a `Supervisor` used to accept
-  a specialist that gave up ("Hit max_iterations ...", "Terminated: ...")
-  as a normal answer. It now treats any outcome other than `done` as a
-  failed attempt: it retries up to `max_subtask_retries` (default 1) with
-  the reason fed back, then returns the step with `error` set. If a test
-  of yours expected the old behavior, that is why.
+- **Changed, even without `persistence`:** a `Supervisor` (and
+  `AsyncSupervisor`) used to accept a specialist that gave up ("Hit
+  max_iterations ...", "Terminated: ...") as a normal answer. It now
+  treats any outcome other than `done` as a failed attempt: it retries up
+  to `max_subtask_retries` (default 1) with the reason fed back, then
+  returns the step with `error` set. In practice:
+  - **Each give-up costs an extra attempt.** With the default
+    `max_subtask_retries=1` a specialist that gives up runs twice, so
+    expect more model calls (and cost) on runs that hit it. Pass
+    `max_subtask_retries=0` to keep a single attempt.
+  - **The flagged step's recap no longer reaches later specialists.**
+    Steps with `error` set are left out of the "prior sub-task findings"
+    handed to downstream specialists, as errored steps always were.
+  - **Its dependents are skipped.** In a plan that uses `depends_on`,
+    steps that depend on the flagged step are not run; they come back
+    with `skipped=True` and `error` "skipped: dependency '...' failed".
+  - `SupervisorResult.outcome` says `partial` or `stuck` instead of
+    `done` when this happens.
+
+  If a test of yours expected the old behavior, that is why.
 - **While persistence is set**, the runner's tool-result cache is off
   and the iteration cap is `max_turns` (default 1000); clearing
   `runner.persistence` restores both.
