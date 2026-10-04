@@ -810,3 +810,45 @@ Things to know:
   unchanged.
 - **Only parameter errors are adjusted.** Context overflows, auth
   failures and bad requests of any other kind raise as usual.
+
+---
+
+## 28. A fixer that works through failures *(3.5)*
+
+A task where the first attempts usually fail: run the tests, read the
+failure, change the code, run again. Persistent mode lets the agent
+keep going, and tells you honestly how it ended.
+
+```python
+from agentx_dev import AgentRunner, AgentType, GPT, Permissions, Persistence
+
+model = GPT(model="gpt-5.4").configure_limits(
+    budget_usd=3.00, input_price_per_1k=0.0025, output_price_per_1k=0.01)
+
+fixer = AgentRunner(
+    model=model,
+    agent=AgentType.ReAct,
+    permissions=Permissions.full_access(["./project"]),
+    system_addendum="Run the tests with run_python (subprocess + pytest). "
+                    "Do not say you are done until the tests pass.",
+    persistence=Persistence(max_minutes=30),
+)
+
+result = fixer.invoke("Make the tests in ./project pass")
+if result.outcome == "done":
+    print(result.content)
+else:
+    print(f"Stopped ({result.outcome}):")
+    print(result.content)              # what was done, what failed, what was next
+    print(result.progress["failed"])   # the failed attempts, as data
+```
+
+Things to know:
+
+- **Tell it how to check its own work.** Persistence keeps the agent
+  going; the instruction to run the tests is what makes "done" mean
+  something.
+- **A stuck run is still useful.** The report lists what was tried, so
+  you can fix the task or the tools and run it again.
+- **Watch it:** `for event in fixer.stream(task)` includes `reflect`
+  events when the agent changes approach.

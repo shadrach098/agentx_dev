@@ -26,10 +26,11 @@ from agentx_dev import X
 |---|---|---|
 | `AgentRunner` | class | Sync runner (3.1: `bind_tools_natively`, `parallel_tool_workers`; 3.2: constructor `output_schema=` — typed output coerced via native FC after the loop, on `completion.output`; 3.4: `invoke` / `stream` take `media=[...]`) |
 | `AsyncAgentRunner` | class | Async runner with concurrent tool dispatch (3.2: constructor `output_schema=` too; 3.4: `ainvoke` / `astream` take `media=[...]`) |
+| `Persistence` *(3.5)* | dataclass | Opt-in settings for runs that keep working through errors: `max_minutes`, `reflect_after`, `max_reflections`, `compact_at_tokens`, `keep_recent_turns`, `max_replans`, `max_turns`, `patient_retries`. Pass as `persistence=` to a runner or Supervisor |
 | `AgentType` | enum | `ReAct` / `Chain_of_Thought` / `Zero_Shot` / `Few_Shot` / `Instruction_Tuned` |
 | `AgentFormatter` | class | Custom prompt template + parser pair |
 | `AgentFormattor` | class | Legacy alias (typo kept for BC) |
-| `AgentCompletion` | class | Result of `runner.invoke` |
+| `AgentCompletion` | class | Result of `runner.invoke` (3.5: `.outcome`, `.progress`) |
 | `ToolCall` | class | One dispatched call inside a completion |
 | `ToolError` | class | Tool dispatch failure |
 | `StandardParser` | class | Default parser |
@@ -122,9 +123,9 @@ CLI: `python -m agentx_dev.Evals run <dir> --config <yaml>`
 
 | Symbol | Kind | Doc |
 |---|---|---|
-| `Supervisor` | class | Sync decompose + dispatch + synthesize (3.3: `depends_on` DAG plans, `skip_when` conditional steps, `max_plan_retries`) |
+| `Supervisor` | class | Sync decompose + dispatch + synthesize (3.3: `depends_on` DAG plans, `skip_when` conditional steps, `max_plan_retries`) (3.5: `persistence=` replans unfinished steps under one shared deadline) |
 | `AsyncSupervisor` | class | Async concurrent dispatch (3.3: completion-driven DAG scheduler, `max_parallel=` cap) |
-| `SupervisorResult` | dataclass | Plan + subtask results + final |
+| `SupervisorResult` | dataclass | Plan + subtask results + final (3.5: `.outcome`) |
 | `SubtaskResult` | dataclass | One specialist's contribution. *(3.2)* `.output` carries the validated Pydantic instance when the runner declared an `output_schema` |
 | `SpawnConfig` | dataclass | Dynamic specialist spawning settings |
 | `SpawnRequest` | dataclass | One planner-issued spawn ask |

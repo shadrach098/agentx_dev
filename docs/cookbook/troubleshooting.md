@@ -163,6 +163,35 @@ cases and otherwise feeds the error back for the model to resend — it no
 longer crashes the run. If you still hit it, you're on a build older than
 3.1.4; upgrade.
 
+## Long runs and stuck agents *(3.5)*
+
+**`result.outcome == "stuck"`**
+The agent tried every recovery step and the same trouble came back.
+`result.content` says what it was; `result.progress["failed"]` lists the
+failed calls. Usually the task or a tool needs changing (a missing
+permission, an unclear instruction). Raise `max_reflections` only if the
+failed attempts show it was making different attempts each time.
+
+**`result.outcome == "out_of_time"`**
+`max_minutes` passed. Raise it, or split the task. The report shows how
+far it got.
+
+**`result.outcome == "out_of_budget"`**
+The model's cost cap was reached. The cap is cumulative per model object
+(everything that object has spent, not just this run), so a model reused
+across runs may be nearly spent before the run starts. Use a fresh model
+object, or raise `budget_usd`.
+
+**A Supervisor step ends `iteration_limit` or `stuck`**
+Since 3.5 a specialist that gave up is retried once with feedback (see
+`max_subtask_retries`) and then flagged in `result.subtasks[i].error`
+instead of being reported as a success. To make the Supervisor replan
+around it instead, pass `persistence=Persistence(...)`.
+
+**My tool ran once, but the agent called it twice**
+That's persistent mode doing its job: the tool-result cache is off while
+`persistence` is set, so every call executes.
+
 ## Tool errors
 
 **Model calls the wrong tool**

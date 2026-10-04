@@ -9,6 +9,43 @@ you can paste and run.
 
 ---
 
+## What's new in 3.5 — agents that keep working
+
+Long jobs no longer end at the first wall. Turn on persistent mode and
+an agent that gets stuck changes approach, a long history is compacted
+instead of overflowing, and a run stops when it's done or out of time
+or budget — with an honest report either way.
+
+```python
+from agentx_dev import AgentRunner, AgentType, Persistence
+
+runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=tools,
+                     persistence=Persistence(max_minutes=60))
+result = runner.invoke("Get the failing tests passing")
+print(result.outcome)       # done | stuck | out_of_time | out_of_budget | iteration_limit
+```
+
+| Feature | What you get |
+|---|---|
+| **Recover, don't quit** | After a few failing or repeated turns the agent is asked to name the root cause, then to try a different approach, then to probe its assumptions, before it's allowed to give up. Real progress resets the ladder. |
+| **Honest outcomes** | Every run reports `outcome`. A specialist that gave up is no longer reported as a success. |
+| **Long histories** | Old turns are summarized into notes; the task, attached files and recent turns stay as they were. |
+| **Supervisors that replan** | A failed step is replanned around, completed steps are kept, and every specialist shares one deadline. |
+| **Limits** | `max_minutes` plus the model's cost cap (`configure_limits(budget_usd=...)`). Transient provider errors (429, 5xx, timeouts) are retried until the deadline. |
+
+[Guide](docs/guides/long-running-agents.md).
+
+### Upgrade notes
+
+- Persistence is opt-in; nothing changes unless you pass `persistence=`.
+- A `Supervisor` now treats a specialist that ended with an outcome
+  other than `done` (for example `iteration_limit`) as a failed attempt:
+  it retries once with feedback, then flags the step instead of
+  reporting success.
+- While persistence is set, the tool-result cache is off.
+
+Full notes: [docs/guides/upgrading.md](docs/guides/upgrading.md).
+
 ## What's new in 3.4 — media input and models that adapt
 
 Send images, PDFs and audio to GPT or Claude with one type. The model

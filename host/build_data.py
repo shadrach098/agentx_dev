@@ -37,6 +37,7 @@ NAV = [
         ("guides/structured-output", DOCS_DIR / "guides" / "structured-output.md", None),
         ("guides/streaming", DOCS_DIR / "guides" / "streaming.md", None),
         ("guides/sessions", DOCS_DIR / "guides" / "sessions.md", None),
+        ("guides/long-running-agents", DOCS_DIR / "guides" / "long-running-agents.md", "Long-running agents"),
         ("guides/mcp", DOCS_DIR / "guides" / "mcp.md", None),
         ("guides/yaml-config", DOCS_DIR / "guides" / "yaml-config.md", None),
         ("guides/custom-tools", DOCS_DIR / "guides" / "custom-tools.md", None),

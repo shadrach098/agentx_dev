@@ -437,8 +437,12 @@ result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"
           </a>`).join("")}
       </div>
 
-      <h2 class="section-title">What's new in 3.4</h2>
+      <h2 class="section-title">What's new in 3.5</h2>
       <ul class="whats-new-list">
+        <li>
+          <strong>Agents that keep working</strong>
+          <div class="desc"><code>persistence=Persistence(max_minutes=60)</code> on a runner or Supervisor: it reflects and changes approach when stuck, compacts long histories, waits out transient provider errors, and stops only when done or out of time or budget. Every run now reports an <code>outcome</code>. <a href="#guides/long-running-agents">Guide</a>.</div>
+        </li>
         <li>
           <strong>Images, PDFs &amp; audio</strong>
           <div class="desc"><code>runner.invoke("Describe this", media=["photo.jpg"])</code>. One <code>Media</code> type, rendered for whichever model receives it -- the same code runs on <code>GPT()</code> and <code>Claude()</code>.</div>

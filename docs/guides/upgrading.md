@@ -13,6 +13,29 @@ module stays imported until you do, which shows up as errors like
 
 ---
 
+## Upgrading to 3.5.0
+
+**Nothing breaks, with one behavior change.** Persistent mode is opt-in.
+
+- **New:** `Persistence(...)` on `AgentRunner`, `AsyncAgentRunner`,
+  `Supervisor` and `AsyncSupervisor`. See
+  [Long-running agents](long-running-agents.md).
+- **New:** every completion has `.outcome` (`done`, `stuck`,
+  `out_of_time`, `out_of_budget`, `iteration_limit`) and `.progress`
+  (set only by persistent runs). `SubtaskResult` and `SupervisorResult`
+  have `.outcome` too.
+- **Changed, even without `persistence`:** a `Supervisor` used to accept
+  a specialist that gave up ("Hit max_iterations ...", "Terminated: ...")
+  as a normal answer. It now treats any outcome other than `done` as a
+  failed attempt: it retries up to `max_subtask_retries` (default 1) with
+  the reason fed back, then returns the step with `error` set. If a test
+  of yours expected the old behavior, that is why.
+- **While persistence is set**, the runner's tool-result cache is off
+  and the iteration cap is `max_turns` (default 1000); clearing
+  `runner.persistence` restores both.
+
+---
+
 ## Upgrading to 3.4.3
 
 **Nothing breaks.** Two Windows path fixes:

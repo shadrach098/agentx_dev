@@ -72,6 +72,17 @@ the workspace, so `open("notes.txt")` works there too. For images and
 PDFs the model should *look at*, attach them with `media=` instead of
 asking the agent to read them.
 
+## My agent gives up after a few steps. How do I make it keep going? *(3.5)*
+
+Turn on persistent mode: `AgentRunner(..., persistence=Persistence(max_minutes=60))`,
+or pass `persistence=` to a `Supervisor`. The agent then recovers when
+it's stuck (it's asked to find the root cause and try something
+different) instead of stopping, and runs until it's done or a time or
+cost limit is reached. Set a cost cap with
+`model.configure_limits(budget_usd=..., input_price_per_1k=...,
+output_price_per_1k=...)` too. See
+[Long-running agents](../guides/long-running-agents.md).
+
 ## When should I use ReAct vs. function-calling vs. native binding?
 
 | Mode | When |

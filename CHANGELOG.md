@@ -4,6 +4,44 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.5.0] - 2026-10-04
+
+Agents that keep working through errors. Opt-in; one default change (below).
+
+### Added
+
+- **Persistent mode** (`persistence=Persistence(...)`) for `AgentRunner`,
+  `AsyncAgentRunner`, `Supervisor` and `AsyncSupervisor`. When a run gets
+  stuck (the same call repeated, or tool errors in a row) it is
+  asked, in four escalating steps, to find the root cause, try a
+  different approach, probe its assumptions, and say what blocks it,
+  before it may stop; real progress resets the ladder. Runs stop on
+  `max_minutes` or the model's cost cap, not a step count.
+- **Context compaction** for long runs: old turns become notes, the task
+  (with its attachments) and recent turns are untouched, and the failed
+  attempts are kept word for word.
+- **Patient retries**: transient provider errors (429, 5xx, timeouts,
+  connection errors) are retried with backoff until the deadline; auth
+  and invalid-request errors still raise at once.
+- **Supervisors replan**: a step that does not finish is replanned
+  around under one shared deadline; finished steps are kept and can be
+  depended on. New `replan`, `reflect` and `compact` stream events.
+- **Outcomes**: every completion has `.outcome` and (persistent runs)
+  `.progress`; `SubtaskResult` and `SupervisorResult` have `.outcome`.
+- New guide: Long-running agents.
+
+### Changed
+
+- A `Supervisor`/`AsyncSupervisor` now treats a specialist that finished
+  with an outcome other than `done` (for example `iteration_limit`) as a
+  failed attempt: it retries up to `max_subtask_retries` with the reason
+  fed back, then flags the step. Previously such a result was accepted
+  as a success. This applies without `persistence`.
+- While `persistence` is set the tool-result cache is off, and the
+  iteration cap is `persistence.max_turns`.
+
+```
+
 ## [3.4.3] - 2026-09-26
 
 Two path-resolution fixes for Windows sandboxes. Non-breaking.
