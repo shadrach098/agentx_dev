@@ -1780,6 +1780,7 @@ class AsyncSupervisor:
         subtask_success_check: Optional[Callable[[SubtaskResult], Any]] = None,
         max_parallel: Optional[int] = None,
         max_plan_retries: int = 1,
+        persistence: Optional[Persistence] = None,
     ):
         """
         Args:
@@ -1812,6 +1813,10 @@ class AsyncSupervisor:
                 rate limits. ``sequential=True`` forces this to 1.
             max_plan_retries: (3.3) Replans after sanitization repairs;
                 see :class:`Supervisor`.
+            persistence: (3.5) Opt-in ``Persistence(...)``; see
+                :class:`Supervisor`. Recovery plans cannot spawn new
+                specialists here (the async supervisor has no
+                ``spawn_config``).
         """
         self.model = model
         self.agents = _normalize_agents(agents)
@@ -1824,6 +1829,7 @@ class AsyncSupervisor:
             max(1, int(max_parallel)) if max_parallel is not None else None
         )
         self.max_plan_retries = max(0, int(max_plan_retries))
+        self.persistence = persistence
 
     def _evaluate_success(self, result: SubtaskResult) -> tuple:
         """See ``Supervisor._evaluate_success``."""
@@ -1898,22 +1904,48 @@ class AsyncSupervisor:
                 break
         return sane
 
+    async def _plan_recovery(self, user_task: str, results: List[SubtaskResult], round_no: int) -> List[dict]:
+        """Async twin of :meth:`Supervisor._plan_recovery`."""
+        try:
+            raw = await self._plan_once(user_task, repair_note=_recovery_note(results, round_no))
+        except Exception as e:
+            logger.warning(f"recovery planning failed: {e}")
+            return []
+        if not raw:
+            return []
+        known = {r.step_id for r in results
+                 if r.step_id and r.agent != "__spawn__" and not _result_failed(r) and not r.superseded}
+        sane, _ = _sanitize_plan(raw, verbose=self.verbose, known_ids=known)
+        prior = {r.step_id for r in results if r.step_id}
+        return _rename_colliding_ids(sane, prior, round_no)
+
     async def _synthesize(
-        self, user_task: str, subtask_results: List[SubtaskResult]
+        self,
+        user_task: str,
+        subtask_results: List[SubtaskResult],
+        unresolved: Optional[List[SubtaskResult]] = None,
     ) -> str:
         results_block = _format_results_block(subtask_results)
         prompt = SUPERVISOR_SYNTHESIZE_PROMPT.format(
             user_task=user_task,
             results_block=results_block,
         )
+        if unresolved:
+            prompt += _unresolved_note(unresolved)
         messages = [{"role": "user", "content": prompt}]
-        return await self._call_model(messages)
+        try:
+            return await self._call_model(messages)
+        except CostBudgetExceeded:
+            if self.persistence is None:
+                raise
+            return f"Stopped: the cost budget was reached.\n\n{results_block}"
 
     async def _run_subtask(
         self,
         agent_name: str,
         sub_query: str,
         prior_results: Optional[List[SubtaskResult]] = None,
+        budget: Optional[RunBudget] = None,
     ) -> SubtaskResult:
         """Run one sub-task, retrying up to ``max_subtask_retries`` times.
 
@@ -1922,8 +1954,12 @@ class AsyncSupervisor:
         ``outcome`` is not "done" (with or without a success check), and a
         returned "done" result that ``subtask_success_check`` rejects. On
         exhaustion the last result is returned with ``error`` set (content
-        preserved). (The async supervisor has no persistent mode yet, so
-        there is no shared budget to stop the loop early.)"""
+        preserved).
+
+        The retry loop stops early when the shared run budget is spent (a
+        result with outcome ``out_of_time`` or ``out_of_budget``): another
+        attempt cannot help. ``budget`` is the shared ``RunBudget`` handed
+        to specialists that accept one (persistent mode); ``None`` otherwise."""
         _, runner = self.agents[agent_name]
         # In sequential mode the caller passes findings-so-far; in
         # concurrent mode there's nothing to thread and the specialist
@@ -1954,10 +1990,11 @@ class AsyncSupervisor:
         last_result: Optional[SubtaskResult] = None
         for attempt in range(1, attempts + 1):
             try:
+                budget_kw = {"_budget": budget} if budget is not None and accepts_budget(initialize) else {}
                 if asyncio.iscoroutinefunction(initialize):
-                    completion = await initialize(query)
+                    completion = await initialize(query, **budget_kw)
                 else:
-                    completion = await asyncio.to_thread(initialize, query)
+                    completion = await asyncio.to_thread(initialize, query, **budget_kw)
                 candidate = SubtaskResult(
                     agent=agent_name, query=sub_query, content=completion.content,
                     output=getattr(completion, "output", None),
@@ -1988,6 +2025,8 @@ class AsyncSupervisor:
                 break
             last_result = candidate
             last_error = f"did not meet success criteria: {reason}"
+            if candidate.outcome in (OUTCOME_OUT_OF_TIME, OUTCOME_OUT_OF_BUDGET):
+                break          # the shared budget is spent; another attempt cannot help
             if self.verbose:
                 print(
                     f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
@@ -2017,6 +2056,7 @@ class AsyncSupervisor:
         plan: List[dict],
         subtask_results: List[SubtaskResult],
         results_by_id: Dict[str, SubtaskResult],
+        budget: Optional[RunBudget] = None,
     ):
         """Execute ``plan`` with the completion-driven scheduler and yield
         ``dispatch`` / ``subtask_result`` events. Results are appended to the
@@ -2122,6 +2162,20 @@ class AsyncSupervisor:
                                    "step": i, "step_id": step_ids[i]}
                             progressed = True
                             continue
+                    if budget is not None and budget.expired():
+                        launched.add(i)
+                        r = _record(i, SubtaskResult(
+                            agent=plan[i].get("agent", "<none>"),
+                            query=plan[i].get("query", ""),
+                            content="",
+                            error="skipped: the time limit was reached",
+                            outcome=OUTCOME_OUT_OF_TIME,
+                            skipped=True,
+                        ))
+                        yield {"type": "subtask_result", "result": r,
+                               "step": i, "step_id": step_ids[i]}
+                        progressed = True
+                        continue
                     if self.max_parallel is not None and len(running) >= self.max_parallel:
                         break
                     launched.add(i)
@@ -2131,6 +2185,7 @@ class AsyncSupervisor:
                     task = asyncio.create_task(self._run_subtask(
                         plan[i]["agent"], plan[i]["query"],
                         prior_results=dep_results if dep_results else None,
+                        budget=budget,
                     ))
                     running[task] = i
                     progressed = True
@@ -2168,6 +2223,7 @@ class AsyncSupervisor:
         ``subtask_result`` events as each sub-task finishes -- so the
         UI sees whichever completes first, not the plan order.
         """
+        budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
         yield {"type": "plan_start"}
         plan = await self._plan(user_task)
 
@@ -2190,25 +2246,56 @@ class AsyncSupervisor:
 
         subtask_results: List[SubtaskResult] = []
         results_by_id: Dict[str, SubtaskResult] = {}
-        # `async for` does not close the inner async generator when this one is closed early, so
-        # close it explicitly: _run_plan's `finally:` (cancel and await the running sub-tasks)
-        # must complete before aclose() of astream returns.
-        plan_run = self._run_plan(plan, subtask_results, results_by_id)
-        try:
-            async for event in plan_run:
-                yield event
-        finally:
-            await plan_run.aclose()
+        budget_reason: Optional[str] = None
+        with apply_persistence([s.runner for s in self.agents.values()], self.persistence):
+            plan_run = self._run_plan(plan, subtask_results, results_by_id, budget)
+            try:
+                async for event in plan_run:
+                    yield event
+            finally:
+                await plan_run.aclose()
+            if self.persistence is not None:
+                stagnant = 0
+                round_no = 1
+                while True:
+                    unresolved = [r for r in subtask_results if _result_failed(r)]
+                    if not unresolved:
+                        break
+                    budget_reason = _budget_reason(budget, subtask_results)
+                    if budget_reason or stagnant >= self.persistence.max_replans:
+                        break
+                    recovery = await self._plan_recovery(user_task, subtask_results, round_no + 1)
+                    if not recovery:
+                        break
+                    round_no += 1
+                    for r in unresolved:
+                        r.superseded = True
+                    done_before = _count_done(subtask_results)
+                    yield {"type": "replan", "round": round_no,
+                           "unresolved": [r.step_id for r in unresolved], "plan": recovery}
+                    if self.verbose:
+                        _log_replan(round_no, unresolved)
+                    plan.extend(recovery)
+                    plan_run = self._run_plan(recovery, subtask_results, results_by_id, budget)
+                    try:
+                        async for event in plan_run:
+                            yield event
+                    finally:
+                        await plan_run.aclose()
+                    stagnant = 0 if _count_done(subtask_results) > done_before else stagnant + 1
 
         yield {"type": "synthesize_start"}
-        final = await self._synthesize(user_task, list(subtask_results))
+        persistent = self.persistence is not None
+        unresolved = [r for r in subtask_results if _result_failed(r)] if persistent else []
+        shown = [r for r in subtask_results if not r.superseded] if persistent else list(subtask_results)
+        final = await self._synthesize(user_task, shown, unresolved=unresolved)
         if self.verbose:
             _log_final(final)
 
         result = SupervisorResult(
             query=user_task, content=final,
             subtasks=list(subtask_results), plan=plan,
-            outcome=_supervisor_outcome(subtask_results),
+            outcome=_supervisor_outcome(subtask_results, budget_reason),
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
