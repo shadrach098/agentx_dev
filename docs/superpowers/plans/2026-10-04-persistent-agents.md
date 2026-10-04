@@ -185,7 +185,6 @@ Everything here is opt-in. ``AgentRunner(persistence=Persistence(...))`` and
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import inspect
 import json
 import logging
@@ -363,9 +362,9 @@ git commit -m "feat(persistence): Persistence config, RunBudget, and completion 
 **Interfaces:**
 - Consumes: Task 1 imports already at the top of `Persistence.py` (`hashlib`, `json`, `dataclass`, `field`).
 - Produces:
-  - `_clip(text, n) -> str`, `_first_line(text, n=120) -> str`, `_short_args(args, n=80) -> str`, `_signature(name, args) -> str`, `_obs_hash(text) -> str`
+  - `_clip(text, n) -> str`, `_first_line(text, n=120) -> str`, `_short_args(args, n=80) -> str`, `_signature(name, args) -> str`
   - `ProgressLedger(goal="", done=[], failed=[], next="", max_entries=40)` with `.record(name, args, result, is_error, rung=0)`, `.note_plan(thought)`, `.to_dict() -> dict`, `.render_failed() -> str`, `.render() -> str`
-  - `StuckTracker(reflect_after)` with `.observe(sig, obs, is_error) -> (reason: Optional[str], progressed: bool)` and `.reset()`
+  - `StuckTracker(reflect_after)` with `.observe(sig, is_error) -> (reason: Optional[str], progressed: bool)` and `.reset()`
   - `REFLECTION_RUNGS` (4-tuple of str), `reflection_message(rung, reason, failed_text) -> str`
 
 - [ ] **Step 1: Write the failing tests**
@@ -374,7 +373,7 @@ Create `tests/test_persistence_tracker.py`:
 
 ```python
 from agentx_dev.Runner.Persistence import (
-    ProgressLedger, REFLECTION_RUNGS, StuckTracker, _obs_hash, _signature,
+    ProgressLedger, REFLECTION_RUNGS, StuckTracker, _signature,
     reflection_message,
 )
 
@@ -412,47 +411,55 @@ class TestLedger:
         d = led.to_dict()
         assert d == {"goal": "g", "done": ["t({}) -> ok"], "failed": [], "next": ""}
 
+    def test_the_report_counts_every_call_even_past_the_cap(self):
+        led = ProgressLedger(max_entries=3)
+        for i in range(10):
+            led.record("t", {"i": i}, "ok", False)
+        for i in range(7):
+            led.record("u", {"i": i}, "boom", True)
+        text = led.render()
+        assert len(led.done) == 3 and len(led.failed) == 3
+        assert "Done (10 calls" in text and "Failed (7 calls" in text
+
 
 class TestTracker:
     def test_three_errors_in_a_row_fire_even_with_different_calls(self):
         t = StuckTracker(3)
-        assert t.observe("a", "e1", True) == (None, False)
-        assert t.observe("b", "e2", True) == (None, False)
-        reason, progressed = t.observe("c", "e3", True)
+        assert t.observe("a", True) == (None, False)
+        assert t.observe("b", True) == (None, False)
+        reason, progressed = t.observe("c", True)
         assert reason == "3 tool errors in a row" and not progressed
 
     def test_three_identical_calls_fire(self):
         t = StuckTracker(3)
-        assert t.observe("a", "1", False) == (None, True)
-        assert t.observe("b", "2", False) == (None, True)
-        assert t.observe("b", "2", False) == (None, False)
-        reason, progressed = t.observe("b", "2", False)
+        assert t.observe("a", False) == (None, True)
+        assert t.observe("b", False) == (None, True)
+        assert t.observe("b", False) == (None, False)
+        reason, progressed = t.observe("b", False)
         assert reason == "the same call repeated 3 times" and not progressed
 
-    def test_identical_results_from_different_calls_fire(self):
+    def test_distinct_successful_calls_never_fire_however_many(self):
+        """Identical *results* are not a signal: a tool that always answers "ok" is healthy."""
         t = StuckTracker(3)
-        assert t.observe("a", "o", False) == (None, True)
-        assert t.observe("b", "o", False) == (None, False)
-        reason, _ = t.observe("c", "o", False)
-        assert reason == "3 identical results in a row"
+        for i in range(50):
+            assert t.observe(f"write::{i}", False) == (None, True)
 
     def test_success_resets_the_error_streak(self):
         t = StuckTracker(3)
-        t.observe("a", "e1", True)
-        t.observe("b", "e2", True)
-        assert t.observe("c", "fine", False) == (None, True)
-        assert t.observe("d", "e3", True) == (None, False)      # streak restarted at 1
+        t.observe("a", True)
+        t.observe("b", True)
+        assert t.observe("c", False) == (None, True)
+        assert t.observe("d", True) == (None, False)      # streak restarted at 1
 
     def test_reset_clears_the_counters(self):
         t = StuckTracker(3)
-        t.observe("a", "e1", True)
-        t.observe("b", "e2", True)
+        t.observe("a", True)
+        t.observe("b", True)
         t.reset()
-        assert t.observe("c", "e3", True) == (None, False)
+        assert t.observe("c", True) == (None, False)
 
-    def test_signature_and_hash_are_stable(self):
+    def test_signature_is_stable(self):
         assert _signature("t", {"b": 1, "a": 2}) == _signature("t", {"a": 2, "b": 1})
-        assert _obs_hash("x") == _obs_hash("x") and _obs_hash("x") != _obs_hash("y")
 
 
 class TestReflectionLadder:
@@ -511,10 +518,6 @@ def _signature(name: str, args: Any) -> str:
         return f"{name}::{args!r}"
 
 
-def _obs_hash(text: Any) -> str:
-    return hashlib.sha1(str(text).encode("utf-8", "replace")).hexdigest()
-
-
 # ---------------------------------------------------------------------------
 # Progress ledger (kept by the framework, not the model)
 # ---------------------------------------------------------------------------
@@ -529,13 +532,17 @@ class ProgressLedger:
     failed: List[str] = field(default_factory=list)
     next: str = ""
     max_entries: int = 40
+    done_count: int = 0       # totals; the lists above keep only the last ``max_entries``
+    failed_count: int = 0
 
     def record(self, name: str, args: Any, result: Any, is_error: bool, rung: int = 0) -> None:
         line = f"{name}({_short_args(args)}) -> {_first_line(result)}"
         if is_error:
+            self.failed_count += 1
             self.failed.append(f"{line} [rung {rung}]")
             del self.failed[: -self.max_entries]
         else:
+            self.done_count += 1
             self.done.append(line)
             del self.done[: -self.max_entries]
 
@@ -555,8 +562,8 @@ class ProgressLedger:
         done = "\n".join(f"  - {x}" for x in self.done[-10:]) or "  (nothing yet)"
         return (
             f"Goal: {_clip(self.goal, 300)}\n"
-            f"Done ({len(self.done)} calls, last 10 shown):\n{done}\n"
-            f"Failed ({len(self.failed)} calls):\n{self.render_failed()}\n"
+            f"Done ({self.done_count} calls, last 10 shown):\n{done}\n"
+            f"Failed ({self.failed_count} calls):\n{self.render_failed()}\n"
             f"Next: {self.next or '(not stated)'}"
         )
 
@@ -566,41 +573,37 @@ class ProgressLedger:
 # ---------------------------------------------------------------------------
 
 class StuckTracker:
-    """Counts consecutive bad turns. A stuck signal fires when any streak
-    reaches ``reflect_after``; a successful call that is neither a repeat nor
-    a repeated result is progress and clears every streak."""
+    """Counts consecutive bad turns. A stuck signal fires when the same call
+    repeats ``reflect_after`` times or ``reflect_after`` tool errors come in a
+    row; a successful call that is not a repeat is progress and clears both
+    streaks. Identical *results* are deliberately not a signal: constant
+    success strings ("ok") are normal for write/delete tools in a healthy run."""
 
     def __init__(self, reflect_after: int):
         self.n = reflect_after
         self._last_sig: Optional[str] = None
-        self._last_obs: Optional[str] = None
         self.reset()
 
     def reset(self) -> None:
         self.same = 0
         self.errors = 0
-        self.same_obs = 0
 
-    def observe(self, sig: str, obs: str, is_error: bool) -> Tuple[Optional[str], bool]:
+    def observe(self, sig: str, is_error: bool) -> Tuple[Optional[str], bool]:
         """Returns ``(reason, progressed)``; ``reason`` is None unless a streak fired."""
         same_sig = sig == self._last_sig
-        same_obs = obs == self._last_obs
-        self._last_sig, self._last_obs = sig, obs
+        self._last_sig = sig
         self.same = self.same + 1 if same_sig else 1
-        self.same_obs = self.same_obs + 1 if same_obs else 1
         self.errors = self.errors + 1 if is_error else 0
-        if (not is_error) and (not same_sig) and (not same_obs):
+        if (not is_error) and (not same_sig):
             # Progress. This call is occurrence #1 of its own streak, which
             # keeps "3 identical calls" meaning three calls, as before.
-            self.same = self.same_obs = 1
+            self.same = 1
             self.errors = 0
             return None, True
         if self.errors >= self.n:
             return f"{self.errors} tool errors in a row", False
         if self.same >= self.n:
             return f"the same call repeated {self.same} times", False
-        if self.same_obs >= self.n:
-            return f"{self.same_obs} identical results in a row", False
         return None, False
 
 
@@ -753,6 +756,20 @@ class TestApply:
         roles = [m["role"] for m in h]
         assert all(a != b for a, b in zip(roles, roles[1:])), roles
 
+    def test_a_media_only_task_message_keeps_a_single_notes_block(self):
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+        h = [{"role": "user", "content": [img]}]
+        for i in range(5):
+            h.append({"role": "assistant", "content": f"a{i}"})
+            h.append({"role": "user", "content": f"obs{i}"})
+        apply_compaction(h, 0, plan_compaction(h, 0, 2)[0], "N1")
+        for i in range(5, 9):
+            h.append({"role": "assistant", "content": f"a{i}"})
+            h.append({"role": "user", "content": f"obs{i}"})
+        apply_compaction(h, 0, plan_compaction(h, 0, 2)[0], "N2")
+        text = "".join(p.get("text", "") for p in h[0]["content"] if isinstance(p, dict))
+        assert text.count(NOTES_MARK) == 1 and "N2" in text and "N1" not in text
+
     def test_split_notes_round_trip(self):
         base, prior = _split_notes("TASK\n\n" + NOTES_MARK + "\nold notes")
         assert base == "TASK" and prior == "old notes"
@@ -898,7 +915,7 @@ def _with_notes(content: Any, notes: str) -> Any:
         if isinstance(p, dict) and p.get("type") == "text":
             out[i] = {**p, "text": str(p.get("text", "")) + block}
             return out
-    return out + [{"type": "text", "text": block.lstrip()}]
+    return out + [{"type": "text", "text": block}]    # keep the separator so a later compaction can split it off
 
 
 def plan_compaction(
@@ -1617,7 +1634,7 @@ class PersistentRun:
         progressed = False
         for name, args, text, is_error in calls:
             self.ledger.record(name, args, text, is_error, self.rung)
-            r, p = self.tracker.observe(_signature(name, args), _obs_hash(text), is_error)
+            r, p = self.tracker.observe(_signature(name, args), is_error)
             reason = reason or r
             progressed = progressed or p
         if reason is None:
@@ -4630,7 +4647,7 @@ def test_context_stays_bounded_over_thousands_of_turns():
 
     assert result.outcome == "done" and result.content == "finished"
     assert len(sizes) == TURNS
-    # Each call returns different text: identical results in a row would (correctly) read as stuck.
+    # Each call returns different text only to keep the history realistic; identical results are not a stuck signal.
     # Without compaction the history would reach hundreds of thousands of tokens.
     assert max(sizes) < 20_000, max(sizes)
     assert len(summaries) > 10
@@ -4704,9 +4721,9 @@ cost limit.
 
 ## How it recovers
 
-The loop watches for three kinds of trouble, each counted over
+The loop watches for two kinds of trouble, each counted over
 `reflect_after` turns in a row (default 3): the same call repeated,
-tool errors, or identical results. When one fires it doesn't give up.
+or tool errors. When one fires it doesn't give up.
 It adds a note to the last tool result and carries on, a little firmer
 each time:
 

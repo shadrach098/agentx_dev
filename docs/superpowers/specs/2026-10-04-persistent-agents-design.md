@@ -151,15 +151,18 @@ A tool call already in flight when the deadline passes is allowed to finish
 `StuckTracker` keeps independent consecutive counters:
 
 - same `(action, args)` signature as the previous call;
-- tool result is an error, or a circuit breaker is open;
-- tool observation identical to the previous observation.
+- tool result is an error, or a circuit breaker is open.
+
+Identical *results* are deliberately not a signal: tools that return a constant
+success string ("ok", "created") are normal in a healthy run, and the genuinely
+stuck cases (the same call again, or failing calls) are already covered above.
 
 A signal fires when any counter reaches `reflect_after`. This replaces the
 hard `LOOP_FORCE_STOP = 3` abort in persistent mode (the existing
 tool-layer duplicate-call guard still refuses the repeated call itself).
 
-**Progress** is a successful tool result whose signature and observation
-both differ from the previous call. Progress resets all counters and the
+**Progress** is a successful tool result whose signature differs from the
+previous call. Progress resets all counters and the
 ladder position.
 
 On a signal the runner appends a recovery message and continues. The
