@@ -236,8 +236,9 @@ count for this episode is below `max_replans`, the Supervisor replans:
   approach. It may choose a different specialist or spawn one (for example
   a code specialist to debug a failing step) under the existing
   `spawn_config`.
-- The recovery plan uses the existing schema. New step ids are prefixed
-  per round (`r2_step_1`). `depends_on` may reference completed step ids
+- The recovery plan uses the existing schema. A step whose id was already
+  used in an earlier round gets a round prefix (`r2_step_1`); ids the planner
+  chose that are new are kept as written. `depends_on` may reference completed step ids
   from earlier rounds; `_sanitize_plan` gains a `known_ids` argument for
   this. The 3.3 DAG semantics are otherwise unchanged.
 - A round that produces at least one newly `done` step resets the replan
