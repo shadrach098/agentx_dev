@@ -567,6 +567,7 @@ class PersistentRun:
         self.rung = 0
         self.outcome = OUTCOME_DONE
         self.detail = ""
+        self.headline = ""
         self.working_history: List[Dict[str, Any]] = []
         self.tool_calls: List[Any] = []
         self.steps: List[str] = []
@@ -724,12 +725,15 @@ class PersistentRun:
 
     # -- exit ---------------------------------------------------------------
 
-    def finish(self, outcome: str, detail: str = "") -> None:
+    def finish(self, outcome: str, detail: str = "", headline: str = "") -> None:
+        """Record how the run ended. ``headline`` replaces the outcome's
+        standard first line of the report (for exits the ladder did not cause)."""
         self.outcome = outcome
         self.detail = detail
+        self.headline = headline
 
     def report(self) -> str:
-        head = {
+        head = self.headline or {
             OUTCOME_STUCK: f"Stopped: stuck after {self.cfg.max_reflections} recovery attempts ({self.detail}).",
             OUTCOME_OUT_OF_TIME: f"Stopped: the {self.cfg.max_minutes:g}-minute time limit was reached.",
             OUTCOME_OUT_OF_BUDGET: f"Stopped: the cost budget was reached ({self.detail}).",
@@ -754,6 +758,14 @@ class PersistentRun:
 # ---------------------------------------------------------------------------
 # Entry points the runners call
 # ---------------------------------------------------------------------------
+
+def unrecognized_action_headline(action: Any) -> str:
+    """Report headline for a persistent run whose model emitted an action that
+    is neither a tool nor a final answer, with no answer text to fall back on."""
+    shown = (str(action or "") or "<empty>")[:60]
+    return (f"Stopped: stuck: the agent emitted an unrecognized action ({shown!r}) "
+            f"and no answer text.")
+
 
 def _remember(runner: Any, user_input: str, content: str) -> None:
     """Mirror the runner's normal end-of-run memory write for early exits."""

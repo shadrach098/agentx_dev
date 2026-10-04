@@ -380,3 +380,28 @@ class TestRepeatedBatches:
         assert result.outcome == "done" and result.content == "read them all"
         assert not [e for e in events if e["type"] == "reflect"]
         assert "recovery step" not in text_of(result.history)
+
+
+class TestUnknownTools:
+    def test_strict_retry_of_an_unknown_tool_climbs_the_ladder_and_ends_stuck(self):
+        model = MockModel(script=lambda m: make_react_response("nonexistent_tool", "q"))
+        r = runner(model, tools=(STEADY,), strict_tool_dispatch=True,
+                   persistence=Persistence(max_minutes=5, max_turns=60))
+        events = list(r.stream("go"))
+        result = events[-1]["completion"]
+        assert result.outcome == "stuck" and result.content.startswith("Stopped: stuck after 4")
+        assert [e["rung"] for e in events if e["type"] == "reflect"] == [1, 2, 3, 4]
+        assert len(model.calls) < 20
+        assert result.progress["failed"] and "nonexistent_tool" in result.progress["failed"][0]
+
+    def test_the_unrecognized_action_placeholder_is_not_done_when_persistent(self):
+        model = MockModel(script=lambda m: make_react_response("search", ""))
+        result = runner(model, tools=(STEADY,)).invoke("go")
+        assert result.outcome == "stuck" and result.content.startswith("Stopped: stuck")
+        assert "unrecognized action" in result.content and result.progress["goal"] == "go"
+
+    def test_default_mode_keeps_the_placeholder_answer(self):
+        model = MockModel(script=lambda m: make_react_response("search", ""))
+        r = AgentRunner(model=model, agent=AgentType.ReAct, tools=[STEADY], verbose=False)
+        result = r.invoke("go")
+        assert result.outcome == "done" and result.content.startswith("(agent emitted an unrecognized action")

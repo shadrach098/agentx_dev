@@ -11,7 +11,8 @@ Set ``use_function_calling=True`` to route the AgentType parser through
 from agentx_dev.Agents import AgentFormattor, AgentCompletion, AgentPrompt
 from agentx_dev.ChatModel import BaseChatModel
 from agentx_dev.Runner.Persistence import (
-    OUTCOME_ITERATION_LIMIT, Persistence, PersistenceMixin, RunBudget, run_persistent_async,
+    OUTCOME_ITERATION_LIMIT, OUTCOME_STUCK, Persistence, PersistenceMixin, RunBudget,
+    run_persistent_async, unrecognized_action_headline,
 )
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
@@ -607,6 +608,8 @@ class AsyncAgentRunner(PersistenceMixin):
         steps: List[str] = []
         final_answer: Optional[str] = None
         hit_turn_limit = False
+        # Set when the loop ends a persistent run itself with a non-"done" outcome.
+        forced_outcome: Optional[str] = None
         if state is not None:
             state.bind(working_history, tool_calls, steps, task_index)
 
@@ -965,6 +968,11 @@ class AsyncAgentRunner(PersistenceMixin):
                             f"back so the model can retry\x1B[0m"
                         )
                     self._last_function_call_id = None
+                    if state is not None:
+                        # An unknown tool is a failed call: feed the stuck tracker, or a
+                        # model that keeps calling it would retry until the turn limit.
+                        state.after_turn(working_history, [(action, action_input, error_content, True)])
+                        state.drain()
                     count += 1
                     continue
 
@@ -973,6 +981,12 @@ class AsyncAgentRunner(PersistenceMixin):
                     final_answer = str(action_input)
                 elif action and action.strip() and " " in action:
                     final_answer = str(action)
+                elif state is not None:
+                    # A persistent run never reports a non-answer as done: end it
+                    # stuck, with the ledger report.
+                    forced_outcome = OUTCOME_STUCK
+                    state.finish(OUTCOME_STUCK, headline=unrecognized_action_headline(action))
+                    final_answer = state.report()
                 else:
                     final_answer = (
                         "(agent emitted an unrecognized action and no "
@@ -1045,7 +1059,7 @@ class AsyncAgentRunner(PersistenceMixin):
                 "tool_calls": len(tool_calls),
             })
 
-        outcome = "iteration_limit" if hit_turn_limit or final_answer is None else "done"
+        outcome = forced_outcome or ("iteration_limit" if hit_turn_limit or final_answer is None else "done")
         completion = AgentCompletion.from_agent(
             model_name=self.model.__class__.__name__,
             query=user_input,
