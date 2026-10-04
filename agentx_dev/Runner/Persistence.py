@@ -718,3 +718,35 @@ class PersistentRun:
         completion = self.exit_completion(model_name, user_input)
         yield {"type": "final", "content": completion.content}
         yield {"type": "completion", "completion": completion}
+
+# ---------------------------------------------------------------------------
+# Entry points the runners call
+# ---------------------------------------------------------------------------
+
+def _remember(runner: Any, user_input: str, content: str) -> None:
+    """Mirror the runner's normal end-of-run memory write for early exits."""
+    if getattr(runner, "auto_memory", False) and getattr(runner, "_memory", None):
+        runner._memory.add_message("user", user_input)
+        runner._memory.add_message("assistant", content)
+
+
+def run_persistent(runner, user_input, chat_history, stream_tokens, media, budget):
+    """Generator wrapper for ``AgentRunner._iter_run``. Runs the loop under a
+    ``PersistentRun`` and turns the exceptions that legitimately end a
+    persistent run (deadline, exhausted ladder, cost limit) into a normal
+    ``completion`` event whose ``outcome`` says why. Anything else
+    (authentication errors, programming errors) propagates."""
+    state = PersistentRun(runner.persistence, user_input, budget=budget, verbose=runner.verbose)
+    try:
+        yield from runner._iter_run_core(user_input, chat_history, stream_tokens, media, state)
+        return
+    except BudgetExpired:
+        state.finish(OUTCOME_OUT_OF_TIME)
+    except RunStuck as e:
+        state.finish(OUTCOME_STUCK, str(e))
+    except CostBudgetExceeded as e:
+        state.finish(OUTCOME_OUT_OF_BUDGET, str(e))
+    yield from state.drain()
+    events = list(state.exit_events(runner.model.__class__.__name__, user_input))
+    _remember(runner, user_input, events[-1]["completion"].content)
+    yield from events

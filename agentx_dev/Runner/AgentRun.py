@@ -1,5 +1,6 @@
 from agentx_dev.Agents import AgentFormattor, AgentCompletion, AgentPrompt
 from agentx_dev.ChatModel import BaseChatModel
+from agentx_dev.Runner.Persistence import Persistence, PersistenceMixin, RunBudget, run_persistent
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
 from typing import Dict, Callable, List, Type, Optional, Any
@@ -1332,7 +1333,7 @@ def _read_action_input(parser_instance: BaseModel):
     )
 
 
-class AgentRunner:
+class AgentRunner(PersistenceMixin):
     """Sync agent runner. Connects a chat model, a prompt template, and a
     set of tools into a reason-act loop.
 
@@ -1387,6 +1388,7 @@ class AgentRunner:
         strict_tool_dispatch: bool = False,
         text_turn_nudges: int = 1,
         output_schema: Optional[Type[BaseModel]] = None,
+        persistence: Optional[Persistence] = None,
     ):
         """Construct an ``AgentRunner``.
 
@@ -1519,6 +1521,14 @@ class AgentRunner:
                 behavior (first text turn always terminates the loop).
                 Ignored when no tools are registered — there, prose
                 genuinely is the answer.
+            persistence: Opt-in ``Persistence(...)`` that keeps the run
+                working through errors: it reflects and changes approach
+                when stuck, compacts a long history, retries transient
+                provider errors, and stops on ``max_minutes`` or the
+                model's cost cap (``configure_limits(budget_usd=...)``) instead of ``max_iterations``
+                (``max_turns`` is the backstop). The completion's
+                ``outcome`` says how the run ended. Default ``None``
+                keeps the ordinary loop.
 
         Raises:
             TypeError: If both ``Agent`` and ``agent`` are passed, if
@@ -1668,6 +1678,9 @@ class AgentRunner:
         # runner.args keeps working. New code should go through self.registry.
         self.registry = ToolRegistry(self.tools)
         self.registry.configure_cache(self._cache, cache_ttl=config.cache_ttl)
+        # After max_iterations and the registry exist: persistent runs override the
+        # iteration cap and suspend the tool-result cache (see PersistenceMixin).
+        self.persistence = persistence
         self.func: Dict[str, Callable] = self.registry.sync_std
         self.args: Dict[str, Dict] = self.registry.sync_struct
         self._tool_prompt_block = self.registry.prompt_block()
@@ -1827,6 +1840,25 @@ class AgentRunner:
         chat_history: Optional[List[Dict[str, str]]] = None,
         stream_tokens: bool = False,
         media: Optional[List[Any]] = None,
+        _budget: Optional[RunBudget] = None,
+    ):
+        """Run the agent loop as a generator of step events (event types are
+        listed in ``_iter_run_core``). With ``persistence`` set the loop runs
+        under a ``PersistentRun``: a time or cost limit, or an exhausted
+        reflection ladder, ends the run with a normal completion whose
+        ``outcome`` says why."""
+        if self.persistence is None:
+            yield from self._iter_run_core(user_input, chat_history, stream_tokens, media, None)
+            return
+        yield from run_persistent(self, user_input, chat_history, stream_tokens, media, _budget)
+
+    def _iter_run_core(
+        self,
+        user_input: str,
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        stream_tokens: bool = False,
+        media: Optional[List[Any]] = None,
+        state: Any = None,
     ):
         """Run the agent loop as a generator of step events.
 
@@ -1936,6 +1968,7 @@ class AgentRunner:
         from agentx_dev.Media import user_content
         working_history.append({"role": "user",
                                 "content": user_content(user_input, media)})
+        task_index = len(working_history) - 1
 
         if not isinstance(self.model, BaseChatModel):
             raise TypeError(
@@ -1971,6 +2004,12 @@ class AgentRunner:
         steps: List[str] = []
         final_answer: Optional[str] = None
         outcome = "done"
+        if state is not None:
+            state.bind(working_history, tool_calls, steps, task_index)
+
+        def _model_call(fn):
+            # Persistent runs wait out transient provider errors (429/5xx/timeouts).
+            return state.patient(fn) if state is not None else fn()
 
         # Loop-level circuit breaker. The tool-layer dup-guard refuses
         # on the 5th identical call, but a stubborn model (gpt-4o-mini
@@ -1984,21 +2023,25 @@ class AgentRunner:
         # results.
         last_action_sig: Optional[str] = None
         consecutive_identical_actions = 0
-        LOOP_FORCE_STOP = 3   # 3 identical calls in a row → abort
+        # Persistent runs use the stuck tracker (reflect, then end) instead of this abort.
+        LOOP_FORCE_STOP = 3 if state is None else 10 ** 9
 
         # Remaining re-prompts for turns that produce prose but no action.
         nudge_budget = self.text_turn_nudges
 
         while count <= self.max_iterations:
+            if state is not None:
+                state.before_turn(self.model)
+                yield from state.drain()
             if self.bind_tools_natively:
                 # Native mode: LLM picks from the user's tools directly.
                 # Multiple tool_use blocks in one turn → concurrent dispatch
                 # via ThreadPoolExecutor. Synthetic "respond" tool ends the loop.
-                call_result = self.model.call_with_tools(
+                call_result = _model_call(lambda: self.model.call_with_tools(
                     messages=working_history,
                     tools=native_tool_specs,
                     force_tool=None,
-                )
+                ))
 
                 if call_result.get("type") == "invalid_tool_args":
                     self._feed_back_invalid_tool_args(working_history, call_result)
@@ -2165,6 +2208,7 @@ class AgentRunner:
                                     tool=c["name"], cause=e,
                                 )
 
+                turn_obs: List[Any] = []
                 for call, result in zip(non_respond, results):
                     is_error = isinstance(result, ToolError)
                     # Verbose trace parity with text/FC mode: the
@@ -2206,15 +2250,19 @@ class AgentRunner:
                         "tool_call_id": call["id"],
                         "content": f"Error: {result}" if is_error else str(result),
                     })
+                    turn_obs.append((call["name"], call["input"], str(result), is_error))
+                if state is not None:
+                    state.after_turn(working_history, turn_obs)
+                    yield from state.drain()
                 count += 1
                 continue
 
             if self.use_function_calling:
-                call_result = self.model.call_with_tools(
+                call_result = _model_call(lambda: self.model.call_with_tools(
                     messages=working_history,
                     tools=[parser_tool_spec],
                     force_tool=parser_tool_name,
-                )
+                ))
 
                 if call_result.get("type") == "invalid_tool_args":
                     self._feed_back_invalid_tool_args(working_history, call_result)
@@ -2270,7 +2318,7 @@ class AgentRunner:
                         yield {"type": "text_delta", "content": chunk}
                     response = "".join(parts)
                 else:
-                    response = self.model.Initialize(messages=working_history)
+                    response = _model_call(lambda: self.model.Initialize(messages=working_history))
                 working_history.append({"role": "assistant", "content": response})
                 try:
                     parser_instance = self._resolve_parser_step(response)
@@ -2332,6 +2380,8 @@ class AgentRunner:
 
             thought = getattr(parser_instance, "Thought", None)
             if thought:
+                if state is not None:
+                    state.note_thought(thought)
                 yield {"type": "thought", "content": thought}
                 if self.verbose:
                     print(f"\x1B[36m[thought] {thought}\x1B[0m")
@@ -2557,6 +2607,11 @@ class AgentRunner:
                 ))
             self._last_function_call_id = None
 
+            if state is not None:
+                state.after_turn(working_history,
+                                 [(action, action_input, str(tool_response), is_error)])
+                yield from state.drain()
+
             count += 1
 
         # If we exited the loop without a Final_Answer (hit max_iterations),
@@ -2612,6 +2667,7 @@ class AgentRunner:
             steps=steps,
             history=working_history,
             outcome=outcome,
+            progress=state.ledger.to_dict() if state is not None else None,
         )
         yield {"type": "completion", "completion": completion}
 
@@ -2623,6 +2679,7 @@ class AgentRunner:
         chat_history: Optional[List[Dict[str, str]]] = None,
         output_schema: Optional[Type[BaseModel]] = None,
         media: Optional[List[Any]] = None,
+        _budget: Optional[RunBudget] = None,
     ) -> AgentCompletion:
         """The main agent execution loop. Returns the final AgentCompletion.
 
@@ -2651,7 +2708,7 @@ class AgentRunner:
             ChatHistory = chat_history
 
         completion: Optional[AgentCompletion] = None
-        for event in self._iter_run(user_input, ChatHistory, media=media):
+        for event in self._iter_run(user_input, ChatHistory, media=media, _budget=_budget):
             if event["type"] == "completion":
                 completion = event["completion"]
         assert completion is not None, "Loop exited without yielding completion"
@@ -2660,7 +2717,8 @@ class AgentRunner:
         # no coercion at all and completion.output stays None (unchanged
         # pre-3.2 behaviour).
         schema = output_schema if output_schema is not None else self.output_schema
-        if schema is not None:
+        # A persistent run that ended early has a report, not an answer: don't try to parse it.
+        if schema is not None and not (self.persistence is not None and completion.outcome != "done"):
             completion.output = self._coerce_to_schema(
                 completion.content, schema, user_input
             )
