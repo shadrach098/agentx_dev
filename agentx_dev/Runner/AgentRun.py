@@ -1,6 +1,8 @@
 from agentx_dev.Agents import AgentFormattor, AgentCompletion, AgentPrompt
 from agentx_dev.ChatModel import BaseChatModel
-from agentx_dev.Runner.Persistence import Persistence, PersistenceMixin, RunBudget, run_persistent
+from agentx_dev.Runner.Persistence import (
+    OUTCOME_ITERATION_LIMIT, Persistence, PersistenceMixin, RunBudget, run_persistent,
+)
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
 from typing import Dict, Callable, List, Type, Optional, Any
@@ -1527,7 +1529,8 @@ class AgentRunner(PersistenceMixin):
                 provider errors, and stops on ``max_minutes`` or the
                 model's cost cap (``configure_limits(budget_usd=...)``) instead of ``max_iterations``
                 (``max_turns`` is the backstop). The completion's
-                ``outcome`` says how the run ended. Default ``None``
+                ``outcome`` says how the run ended. Streamed responses
+                (``stream_tokens``) are not retried. Default ``None``
                 keeps the ordinary loop.
 
         Raises:
@@ -1889,6 +1892,9 @@ class AgentRunner(PersistenceMixin):
                 EventType.AGENT_START,
                 data={"query": user_input[:100]}
             )
+        if state is not None:
+            # So run_persistent can end the event when an early exit unwinds this generator.
+            state.agent_event = agent_event
 
         self.Query = user_input
 
@@ -2045,6 +2051,14 @@ class AgentRunner(PersistenceMixin):
 
                 if call_result.get("type") == "invalid_tool_args":
                     self._feed_back_invalid_tool_args(working_history, call_result)
+                    if state is not None:
+                        # Malformed calls feed the stuck tracker too, or a model that keeps
+                        # sending them would spin until the deadline.
+                        state.after_turn(working_history, [(
+                            call_result.get("name") or "_invalid_args",
+                            str(call_result.get("raw", ""))[:200],
+                            str(working_history[-1]["content"]), True)])
+                        yield from state.drain()
                     count += 1
                     continue
 
@@ -2266,6 +2280,14 @@ class AgentRunner(PersistenceMixin):
 
                 if call_result.get("type") == "invalid_tool_args":
                     self._feed_back_invalid_tool_args(working_history, call_result)
+                    if state is not None:
+                        # Malformed calls feed the stuck tracker too, or a model that keeps
+                        # sending them would spin until the deadline.
+                        state.after_turn(working_history, [(
+                            call_result.get("name") or "_invalid_args",
+                            str(call_result.get("raw", ""))[:200],
+                            str(working_history[-1]["content"]), True)])
+                        yield from state.drain()
                     count += 1
                     continue
 
@@ -2311,7 +2333,8 @@ class AgentRunner(PersistenceMixin):
                     # LLM emits chunks; accumulate into the full response so
                     # the rest of the loop (parser + tool dispatch) sees a
                     # complete string. Non-streaming models yield once via
-                    # the default stream_text fallback.
+                    # the default stream_text fallback. Streamed responses are
+                    # not retried (a response cannot be replayed half-way).
                     parts: List[str] = []
                     for chunk in self.model.stream_text(working_history):
                         parts.append(chunk)
@@ -2343,6 +2366,10 @@ class AgentRunner(PersistenceMixin):
                     working_history.append({"role": "user", "content": err_msg})
                     yield {"type": "tool_result", "name": "_parser",
                            "result": err_msg, "is_error": True}
+                    if state is not None:
+                        state.after_turn(working_history,
+                                         [("_parser", parse_err.raw_text[:200], err_msg, True)])
+                        yield from state.drain()
                     if self.verbose:
                         print(
                             f"\x1B[1;33m[loop] parser JSON malformed at "
@@ -2619,7 +2646,13 @@ class AgentRunner(PersistenceMixin):
         # 'No final answer returned.' string was useless — the caller had
         # no idea what the agent tried, which tools ran, or where it
         # got stuck. Now they get a compact recap.
-        if final_answer is None:
+        if final_answer is None and state is not None:
+            # Persistent run out of turns: the same deterministic ledger report as every
+            # other early exit, not the "raise max_iterations" recap below.
+            outcome = "iteration_limit"
+            state.finish(OUTCOME_ITERATION_LIMIT)
+            final_answer = state.report()
+        elif final_answer is None:
             outcome = "iteration_limit"
             summary_lines = [
                 f"Hit max_iterations ({self.max_iterations}) without returning a Final_Answer. "

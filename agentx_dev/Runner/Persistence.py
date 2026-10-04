@@ -549,6 +549,7 @@ class PersistentRun:
         self.task_index = 0
         self._events: List[Dict[str, Any]] = []
         self._floor = 0
+        self.agent_event: Any = None   # observability AGENT_START event, set by the sync loop
 
     # -- wiring ------------------------------------------------------------
 
@@ -748,7 +749,17 @@ def run_persistent(runner, user_input, chat_history, stream_tokens, media, budge
         state.finish(OUTCOME_OUT_OF_BUDGET, str(e))
     yield from state.drain()
     events = list(state.exit_events(runner.model.__class__.__name__, user_input))
-    _remember(runner, user_input, events[-1]["completion"].content)
+    content = events[-1]["completion"].content
+    if state.agent_event is not None:
+        # The core was unwound before it could end its AGENT_START event.
+        from agentx_dev.Observability import observability
+        observability.end_event(state.agent_event, data={
+            "final_answer": str(content)[:100],
+            "iterations": len(state.steps),
+            "tool_calls": len(state.tool_calls),
+            "outcome": state.outcome,
+        })
+    _remember(runner, user_input, content)
     yield from events
 
 
