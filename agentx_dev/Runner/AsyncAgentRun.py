@@ -10,7 +10,9 @@ Set ``use_function_calling=True`` to route the AgentType parser through
 
 from agentx_dev.Agents import AgentFormattor, AgentCompletion, AgentPrompt
 from agentx_dev.ChatModel import BaseChatModel
-from agentx_dev.Runner.Persistence import Persistence, PersistenceMixin, RunBudget, run_persistent_async
+from agentx_dev.Runner.Persistence import (
+    OUTCOME_ITERATION_LIMIT, Persistence, PersistenceMixin, RunBudget, run_persistent_async,
+)
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
 from agentx_dev.AsyncTools import AsyncStandardTool, AsyncStructuredTool
@@ -170,6 +172,14 @@ class AsyncAgentRunner(PersistenceMixin):
             text_turn_nudges: Re-prompts allowed per run when the model
                 ends a turn with plain text and no tool call. Default
                 1. See ``AgentRunner`` for the full rationale.
+            persistence: Opt-in ``Persistence(...)`` that keeps the run
+                working through errors: it reflects and changes approach
+                when stuck, compacts a long history, retries transient
+                provider errors, and stops on ``max_minutes`` or the
+                model's cost cap (``configure_limits(budget_usd=...)``) instead of ``max_iterations``
+                (``max_turns`` is the backstop). The completion's
+                ``outcome`` says how the run ended. Default ``None``
+                keeps the ordinary loop.
 
         Raises:
             TypeError: On missing / duplicate ``Agent``/``agent`` or
@@ -500,6 +510,9 @@ class AsyncAgentRunner(PersistenceMixin):
                 EventType.AGENT_START,
                 data={"query": user_input[:100]}
             )
+        if state is not None:
+            # So run_persistent_async can end the event when an early exit unwinds this coroutine.
+            state.agent_event = agent_event
 
         self.Query = user_input
 
@@ -593,6 +606,7 @@ class AsyncAgentRunner(PersistenceMixin):
         tool_calls: List[ToolCall] = []
         steps: List[str] = []
         final_answer: Optional[str] = None
+        hit_turn_limit = False
         if state is not None:
             state.bind(working_history, tool_calls, steps, task_index)
 
@@ -621,6 +635,14 @@ class AsyncAgentRunner(PersistenceMixin):
 
                 if call_result.get("type") == "invalid_tool_args":
                     self._feed_back_invalid_tool_args(working_history, call_result)
+                    if state is not None:
+                        # Malformed calls feed the stuck tracker too, or a model that keeps
+                        # sending them would spin until the deadline.
+                        state.after_turn(working_history, [(
+                            call_result.get("name") or "_invalid_args",
+                            str(call_result.get("raw", ""))[:200],
+                            str(working_history[-1]["content"]), True)])
+                        state.drain()
                     count += 1
                     continue
 
@@ -760,6 +782,14 @@ class AsyncAgentRunner(PersistenceMixin):
 
                 if call_result.get("type") == "invalid_tool_args":
                     self._feed_back_invalid_tool_args(working_history, call_result)
+                    if state is not None:
+                        # Malformed calls feed the stuck tracker too, or a model that keeps
+                        # sending them would spin until the deadline.
+                        state.after_turn(working_history, [(
+                            call_result.get("name") or "_invalid_args",
+                            str(call_result.get("raw", ""))[:200],
+                            str(working_history[-1]["content"]), True)])
+                        state.drain()
                     count += 1
                     continue
 
@@ -827,6 +857,10 @@ class AsyncAgentRunner(PersistenceMixin):
                         f'"action": "Final_Answer" if you are done.'
                     )
                     working_history.append({"role": "user", "content": err_msg})
+                    if state is not None:
+                        state.after_turn(working_history,
+                                         [("_parser", parse_err.raw_text[:200], err_msg, True)])
+                        state.drain()
                     if self.verbose:
                         logger.info(
                             f"[loop] parser JSON malformed at iter {count}; "
@@ -989,6 +1023,12 @@ class AsyncAgentRunner(PersistenceMixin):
 
             count += 1
 
+        if final_answer is None and state is not None:
+            # Persistent run out of turns: the deterministic ledger report, like every early exit.
+            state.finish(OUTCOME_ITERATION_LIMIT)
+            final_answer = state.report()
+            hit_turn_limit = True
+
         if self.verbose:
             print(f"\x1B[32m[final] {final_answer}\x1B[0m")
         else:
@@ -1005,7 +1045,7 @@ class AsyncAgentRunner(PersistenceMixin):
                 "tool_calls": len(tool_calls),
             })
 
-        outcome = "done" if final_answer is not None else "iteration_limit"
+        outcome = "iteration_limit" if hit_turn_limit or final_answer is None else "done"
         completion = AgentCompletion.from_agent(
             model_name=self.model.__class__.__name__,
             query=user_input,

@@ -731,6 +731,20 @@ def _remember(runner: Any, user_input: str, content: str) -> None:
         runner._memory.add_message("assistant", content)
 
 
+def _end_agent_event(state: "PersistentRun", content: str) -> None:
+    """End the observability AGENT_START event a loop left open when an early exit
+    (deadline, exhausted ladder, cost limit) unwound it before its own end_event."""
+    if state.agent_event is None:
+        return
+    from agentx_dev.Observability import observability
+    observability.end_event(state.agent_event, data={
+        "final_answer": str(content)[:100],
+        "iterations": len(state.steps),
+        "tool_calls": len(state.tool_calls),
+        "outcome": state.outcome,
+    })
+
+
 def run_persistent(runner, user_input, chat_history, stream_tokens, media, budget):
     """Generator wrapper for ``AgentRunner._iter_run``. Runs the loop under a
     ``PersistentRun`` and turns the exceptions that legitimately end a
@@ -750,15 +764,7 @@ def run_persistent(runner, user_input, chat_history, stream_tokens, media, budge
     yield from state.drain()
     events = list(state.exit_events(runner.model.__class__.__name__, user_input))
     content = events[-1]["completion"].content
-    if state.agent_event is not None:
-        # The core was unwound before it could end its AGENT_START event.
-        from agentx_dev.Observability import observability
-        observability.end_event(state.agent_event, data={
-            "final_answer": str(content)[:100],
-            "iterations": len(state.steps),
-            "tool_calls": len(state.tool_calls),
-            "outcome": state.outcome,
-        })
+    _end_agent_event(state, content)
     _remember(runner, user_input, content)
     yield from events
 
@@ -776,5 +782,6 @@ async def run_persistent_async(runner, user_input, budget, run):
     except CostBudgetExceeded as e:
         state.finish(OUTCOME_OUT_OF_BUDGET, str(e))
     completion = state.exit_completion(runner.model.__class__.__name__, user_input)
+    _end_agent_event(state, completion.content)
     _remember(runner, user_input, completion.content)
     return completion
