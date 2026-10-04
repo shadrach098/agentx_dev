@@ -53,8 +53,11 @@ Four causes, all in the current code:
 ```python
 from agentx_dev import AgentRunner, Persistence
 
+model = GPT(model="gpt-5.4").configure_limits(           # the existing cost cap
+    budget_usd=5.00, input_price_per_1k=0.0025, output_price_per_1k=0.01)   # your provider's prices
+
 runner = AgentRunner(
-    model=GPT(model="gpt-5.4", cost_budget_usd=5.00),   # existing cost cap
+    model=model,
     agent=AgentType.ReAct,
     permissions=Permissions.full_access(["./workspace"]),
     persistence=Persistence(max_minutes=60),
@@ -84,9 +87,12 @@ package root.
 | `max_turns` | `1000` | Backstop on total model turns (outcome `iteration_limit`). |
 | `patient_retries` | `True` | Keep retrying transient provider errors with backoff until the deadline. |
 
-The cost limit is not a field: it is the model's existing
-`cost_budget_usd`. `CostBudgetExceeded` raised during a persistent run is
-caught and ends the run as `out_of_budget`.
+The cost limit is not a field: it is the model's existing cap, set with
+`model.configure_limits(budget_usd=..., input_price_per_1k=..., output_price_per_1k=...)`
+(both prices are required). It is cumulative per model object: it counts
+everything that object has spent, not just this run, so use a fresh model
+object for a per-run cap. `CostBudgetExceeded` raised during a persistent
+run is caught and ends the run as `out_of_budget`.
 
 ### 3.2 Outcomes
 
@@ -301,7 +307,7 @@ Scripted models, every scenario on both sync and async runners.
 
 - **Cost:** a persistent run can spend up to its limits. Defaults are 30
   minutes and the model's cost cap; the guide recommends setting
-  `cost_budget_usd` whenever `Persistence` is used.
+  `model.configure_limits(budget_usd=...)` whenever `Persistence` is used.
 - **Compaction loses detail:** mitigated by the verbatim recent tail, the
   verbatim failed-attempts list, and the ledger fallback.
 - **Reflection messages vs structured output:** reflections are ordinary
