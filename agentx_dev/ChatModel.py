@@ -2008,6 +2008,10 @@ class Claude(BaseChatModel):
             try:
                 final = stream.get_final_message()
                 self._record_usage(final)
+            except CostBudgetExceeded:
+                # The cap is a control signal, not a bookkeeping hiccup --
+                # swallowing it here meant a streaming run never hit it.
+                raise
             except Exception as e:
                 logger.warning(f"Failed to record streaming usage: {e}")
         finally:
@@ -2030,6 +2034,10 @@ class Claude(BaseChatModel):
             try:
                 final = await stream.get_final_message()
                 self._record_usage(final)
+            except CostBudgetExceeded:
+                # The cap is a control signal, not a bookkeeping hiccup --
+                # swallowing it here meant a streaming run never hit it.
+                raise
             except Exception as e:
                 logger.warning(f"Failed to record streaming usage: {e}")
         finally:
