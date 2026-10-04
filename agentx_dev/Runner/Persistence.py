@@ -750,3 +750,20 @@ def run_persistent(runner, user_input, chat_history, stream_tokens, media, budge
     events = list(state.exit_events(runner.model.__class__.__name__, user_input))
     _remember(runner, user_input, events[-1]["completion"].content)
     yield from events
+
+
+async def run_persistent_async(runner, user_input, budget, run):
+    """Async twin of :func:`run_persistent`. ``run`` is ``lambda state: <coroutine>``
+    that runs the loop with the given ``PersistentRun``."""
+    state = PersistentRun(runner.persistence, user_input, budget=budget, verbose=runner.verbose)
+    try:
+        return await run(state)
+    except BudgetExpired:
+        state.finish(OUTCOME_OUT_OF_TIME)
+    except RunStuck as e:
+        state.finish(OUTCOME_STUCK, str(e))
+    except CostBudgetExceeded as e:
+        state.finish(OUTCOME_OUT_OF_BUDGET, str(e))
+    completion = state.exit_completion(runner.model.__class__.__name__, user_input)
+    _remember(runner, user_input, completion.content)
+    return completion

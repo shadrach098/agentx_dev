@@ -10,6 +10,7 @@ Set ``use_function_calling=True`` to route the AgentType parser through
 
 from agentx_dev.Agents import AgentFormattor, AgentCompletion, AgentPrompt
 from agentx_dev.ChatModel import BaseChatModel
+from agentx_dev.Runner.Persistence import Persistence, PersistenceMixin, RunBudget, run_persistent_async
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
 from agentx_dev.AsyncTools import AsyncStandardTool, AsyncStructuredTool
@@ -76,7 +77,7 @@ def _read_action_input(parser_instance: BaseModel):
     )
 
 
-class AsyncAgentRunner:
+class AsyncAgentRunner(PersistenceMixin):
     """Async agent runner. Same reason-act loop as :class:`AgentRunner`
     but every I/O path is awaitable.
 
@@ -118,6 +119,7 @@ class AsyncAgentRunner:
         strict_tool_dispatch: bool = False,
         text_turn_nudges: int = 1,
         output_schema: Optional[Type[BaseModel]] = None,
+        persistence: Optional[Persistence] = None,
     ):
         """Construct an ``AsyncAgentRunner``. Parameters mirror
         :class:`AgentRunner` -- see that docstring for the full details;
@@ -259,6 +261,9 @@ class AsyncAgentRunner:
         # self.registry.
         self.registry = ToolRegistry(self.tools)
         self.registry.configure_cache(self._cache, cache_ttl=config.cache_ttl)
+        # After max_iterations and the registry exist: persistent runs override the
+        # iteration cap and suspend the tool-result cache (see PersistenceMixin).
+        self.persistence = persistence
         self.func: Dict[str, Callable] = self.registry.sync_std
         self.args: Dict[str, Dict] = self.registry.sync_struct
         self.async_func: Dict[str, Callable] = self.registry.async_std
@@ -460,6 +465,28 @@ class AsyncAgentRunner:
         chat_history: Optional[List[Dict[str, str]]] = None,
         output_schema: Optional[Type[BaseModel]] = None,
         media: Optional[List[Any]] = None,
+        _budget: Optional[RunBudget] = None,
+    ) -> AgentCompletion:
+        if self.persistence is None:
+            return await self._initialize_core(
+                user_input, ChatHistory, stream, chat_history=chat_history,
+                output_schema=output_schema, media=media, state=None)
+        return await run_persistent_async(
+            self, user_input, _budget,
+            lambda state: self._initialize_core(
+                user_input, ChatHistory, stream, chat_history=chat_history,
+                output_schema=output_schema, media=media, state=state))
+
+    async def _initialize_core(
+        self,
+        user_input: str,
+        ChatHistory: Optional[List[Dict[str, str]]] = None,
+        stream: bool = False,
+        *,
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        output_schema: Optional[Type[BaseModel]] = None,
+        media: Optional[List[Any]] = None,
+        state: Any = None,
     ) -> AgentCompletion:
         if ChatHistory is not None and chat_history is not None:
             raise TypeError("Pass either 'ChatHistory' or 'chat_history', not both.")
@@ -528,6 +555,7 @@ class AsyncAgentRunner:
         from agentx_dev.Media import user_content
         working_history.append({"role": "user",
                                 "content": user_content(user_input, media)})
+        task_index = len(working_history) - 1
 
         logger.info(">>>>> Entering AsyncAgentRunner Mode <<<<<")
         if not isinstance(self.model, BaseChatModel):
@@ -565,20 +593,31 @@ class AsyncAgentRunner:
         tool_calls: List[ToolCall] = []
         steps: List[str] = []
         final_answer: Optional[str] = None
+        if state is not None:
+            state.bind(working_history, tool_calls, steps, task_index)
+
+        async def _model_call(factory):
+            # Persistent runs wait out transient provider errors (429/5xx/timeouts).
+            if state is None:
+                return await factory()
+            return await state.apatient(factory)
 
         # Remaining re-prompts for turns that produce prose but no action.
         nudge_budget = self.text_turn_nudges
 
         while count <= self.max_iterations:
+            if state is not None:
+                await state.abefore_turn(self.model)
+                state.drain()          # the async runner has no event stream; drop them
             if self.bind_tools_natively:
                 # Native mode: LLM picks from user tools directly. Multiple
                 # tool calls in one turn → dispatched concurrently via
                 # asyncio.gather. The synthetic "respond" tool signals done.
-                call_result = await self.model.async_call_with_tools(
+                call_result = await _model_call(lambda: self.model.async_call_with_tools(
                     messages=working_history,
                     tools=native_tool_specs,
                     force_tool=None,
-                )
+                ))
 
                 if call_result.get("type") == "invalid_tool_args":
                     self._feed_back_invalid_tool_args(working_history, call_result)
@@ -662,6 +701,7 @@ class AsyncAgentRunner:
                 )
 
                 # Record each tool result with its tool_call_id correlation.
+                turn_obs: List[Any] = []
                 for call, result in zip(non_respond, results):
                     if isinstance(result, BaseException):
                         # Promote the raised exception to a ToolError so the
@@ -702,16 +742,21 @@ class AsyncAgentRunner:
                         "tool_call_id": call["id"],
                         "content": f"Error: {result}" if is_error else str(result),
                     })
+                    turn_obs.append((call["name"], call["input"], str(result), is_error))
+
+                if state is not None:
+                    state.after_turn(working_history, turn_obs)
+                    state.drain()
 
                 count += 1
                 continue  # Skip the legacy single-action handling below.
 
             if self.use_function_calling:
-                call_result = await self.model.async_call_with_tools(
+                call_result = await _model_call(lambda: self.model.async_call_with_tools(
                     messages=working_history,
                     tools=[parser_tool_spec],
                     force_tool=parser_tool_name,
-                )
+                ))
 
                 if call_result.get("type") == "invalid_tool_args":
                     self._feed_back_invalid_tool_args(working_history, call_result)
@@ -760,7 +805,7 @@ class AsyncAgentRunner:
                 })
                 self._last_function_call_id = tool_call_id
             else:
-                response = await self.model.async_initialize(messages=working_history)
+                response = await _model_call(lambda: self.model.async_initialize(messages=working_history))
                 working_history.append({"role": "assistant", "content": response})
                 try:
                     parser_instance = self._resolve_parser_step(response)
@@ -823,6 +868,8 @@ class AsyncAgentRunner:
                 break
 
             thought = getattr(parser_instance, "Thought", None)
+            if thought and state is not None:
+                state.note_thought(thought)
             if thought and self.verbose:
                 print(f"\x1B[36m[thought] {thought}\x1B[0m")
             elif thought:
@@ -935,6 +982,11 @@ class AsyncAgentRunner:
                     result=str(tool_response),
                 ))
 
+            if state is not None:
+                state.after_turn(working_history, [
+                    (action, action_input, str(tool_response), isinstance(tool_response, ToolError))])
+                state.drain()
+
             count += 1
 
         if self.verbose:
@@ -953,6 +1005,7 @@ class AsyncAgentRunner:
                 "tool_calls": len(tool_calls),
             })
 
+        outcome = "done" if final_answer is not None else "iteration_limit"
         completion = AgentCompletion.from_agent(
             model_name=self.model.__class__.__name__,
             query=user_input,
@@ -960,8 +1013,11 @@ class AsyncAgentRunner:
             tool_calls=tool_calls,
             steps=steps,
             history=working_history,
+            outcome=outcome,
+            progress=state.ledger.to_dict() if state is not None else None,
         )
-        if _schema is not None:
+        # A persistent run that ended early has a report, not an answer: don't try to parse it.
+        if _schema is not None and not (state is not None and outcome != "done"):
             # Reuse the sync coercer: strategy resolution (native FC vs
             # JSON-parse fallback) is identical; the single blocking model
             # call runs on the default executor so the event loop stays
