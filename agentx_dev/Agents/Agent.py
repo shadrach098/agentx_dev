@@ -506,11 +506,17 @@ class AgentCompletion(BaseModel):
     # passed or if parsing failed (the parse error surfaces as an exception
     # at invoke time, not silently).
     output: Optional[Any] = None
+    # How the run ended: "done" | "stuck" | "out_of_time" | "out_of_budget" |
+    # "iteration_limit". Every run sets this; "done" means a final answer.
+    outcome: str = "done"
+    # Persistent runs attach the progress ledger as a plain dict
+    # (goal / done / failed / next). None for ordinary runs.
+    progress: Optional[Dict[str, Any]] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @classmethod
-    def from_agent(cls, *, model_name: str, query: str, content: Union[str, Dict[str, Any], List[Dict[str, Any]]], tool_calls: Optional[List[ToolCall]] = None, steps: Optional[List[str]] = None, history: List[Dict[str, str]]):
+    def from_agent(cls, *, model_name: str, query: str, content: Union[str, Dict[str, Any], List[Dict[str, Any]]], tool_calls: Optional[List[ToolCall]] = None, steps: Optional[List[str]] = None, history: List[Dict[str, str]], outcome: str = "done", progress: Optional[Dict[str, Any]] = None):
         if isinstance(content, (dict, list)):
             content_str = json.dumps(content, ensure_ascii=False)
         else:
@@ -523,5 +529,7 @@ class AgentCompletion(BaseModel):
             content=content_str,
             tool_calls=tool_calls,
             steps=steps,
-            history=history
+            history=history,
+            outcome=outcome,
+            progress=progress,
         )

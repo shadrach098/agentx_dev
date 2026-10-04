@@ -6,6 +6,7 @@ from .Agents.Agent import (
 )
 from .Runner.AgentRun import AgentRunner, ToolRegistry, CircuitBreaker, CircuitBreakerConfig
 from .Runner.AsyncAgentRun import AsyncAgentRunner
+from .Runner.Persistence import Persistence
 from .ChatModel import (
     BaseChatModel, GPT, Claude,
     StructuredOutputRunnable,
@@ -87,6 +88,7 @@ __all__ = [
     "AgentFormattor",   # legacy typo'd name, kept for backward compat
     "AgentRunner",
     "AsyncAgentRunner",
+    "Persistence",
     "AgentCompletion",
     "ToolCall",
     "ToolError",

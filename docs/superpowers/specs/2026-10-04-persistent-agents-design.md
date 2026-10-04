@@ -211,9 +211,10 @@ message:
 
 ### 4.6 Provider errors
 
-With `patient_retries=True`, a transient error from the model call (the
-existing `ChatModel._is_non_retryable` returns False for it: 408, 429,
-5xx, timeouts, connection errors) is retried with exponential backoff
+With `patient_retries=True`, a transient error from the model call (HTTP
+408, 429 or 5xx; timeouts; connection errors; rate-limit and overloaded
+errors. Anything else, including programming errors, raises immediately)
+is retried with exponential backoff
 (capped at 60 s per wait) until the deadline. Non-retryable errors (auth,
 invalid request) still raise immediately: retrying them would hide a real
 problem. `CostBudgetExceeded` ends the run as `out_of_budget`. No
@@ -266,6 +267,15 @@ New stream events on runners and supervisors:
 `{"type": "budget", "reason": "time" | "cost"}`, and on supervisors
 `{"type": "replan", "round": int, "unresolved": [step ids]}`. `verbose=True`
 prints matching one-line logs. Existing event types are unchanged.
+
+### 4.9 Tool-result cache (addendum, 2026-10-04)
+
+The framework's default tool-result cache (`auto_cache=True`) is keyed on the tool function and its
+arguments only. A cache hit returns before the tool runs, so a repeated call is not a retry, and a
+cached "write succeeded" can be false. Persistent mode depends on retries and re-probing actually
+executing, so a runner with `persistence` set suspends its registry's tool-result cache for as long
+as persistence is set and restores it when cleared. This does not fix the cache's cross-runner and
+side-effect hazards in default mode; those are tracked as a separate fix.
 
 ## 5. Files
 
