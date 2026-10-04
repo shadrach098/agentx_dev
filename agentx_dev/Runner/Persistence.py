@@ -198,11 +198,13 @@ class StuckTracker:
     def __init__(self, reflect_after: int):
         self.n = reflect_after
         self._last_sig: Optional[str] = None
+        self._last_turn: Optional[str] = None
         self.reset()
 
     def reset(self) -> None:
         self.same = 0
         self.errors = 0
+        self.same_turns = 0
 
     def observe(self, sig: str, is_error: bool) -> Tuple[Optional[str], bool]:
         """Returns ``(reason, progressed)``; ``reason`` is None unless a streak fired."""
@@ -222,6 +224,23 @@ class StuckTracker:
             return f"the same call repeated {self.same} times", False
         return None, False
 
+    def observe_turn(self, turn_sig: Optional[str]) -> Tuple[Optional[str], bool]:
+        """Turn-level check for multi-call batches, which the per-call streaks
+        cannot see: in ``[read(a), read(b)]`` every call differs from the one
+        before it. Pass the batch's signature, or None for a single-call turn
+        (that clears the turn streak). Returns ``(reason, repeated)``:
+        ``repeated`` means the batch equals the previous turn's, so it is not
+        progress."""
+        repeated = turn_sig is not None and turn_sig == self._last_turn
+        self._last_turn = turn_sig
+        if turn_sig is None:
+            self.same_turns = 0
+            return None, False
+        self.same_turns = self.same_turns + 1 if repeated else 1
+        if self.same_turns >= self.n:
+            return f"the same batch of calls repeated {self.same_turns} times", True
+        return None, repeated
+
 
 REFLECTION_RUNGS: Tuple[str, ...] = (
     "State the root cause of the failure in one sentence, then do NOT repeat the call that failed.",
@@ -231,6 +250,11 @@ REFLECTION_RUNGS: Tuple[str, ...] = (
     "If you are still blocked, say exactly what is blocking you and what you would need to "
     "continue, and give that as your final answer.",
 )
+
+
+def _turn_signature(calls: List[Tuple[str, Any, str, bool]]) -> str:
+    """Order-independent signature of a whole turn (sorted name + args)."""
+    return json.dumps(sorted(_signature(name, args) for name, args, _, _ in calls))
 
 
 def reflection_message(rung: int, reason: str, failed_text: str) -> str:
@@ -679,6 +703,13 @@ class PersistentRun:
             r, p = self.tracker.observe(_signature(name, args), is_error)
             reason = reason or r
             progressed = progressed or p
+        # A batch of calls is progress only if it differs from the previous turn;
+        # single-call turns are judged by the per-call streaks above alone.
+        turn_reason, repeated = self.tracker.observe_turn(
+            _turn_signature(calls) if len(calls) > 1 else None)
+        if repeated:
+            progressed = False
+        reason = reason or turn_reason
         if reason is None:
             if progressed:
                 self.rung = 0

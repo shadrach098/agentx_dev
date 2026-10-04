@@ -172,6 +172,32 @@ class TestAfterTurn:
         assert run.rung == 1
         assert "recovery step 1" in h[-1]["content"] and "recovery step" not in h[-2]["content"]
 
+    def test_a_repeated_batch_is_not_progress_and_fires_a_signal(self):
+        run, _, _ = make_run(Persistence(max_minutes=10, reflect_after=3))
+        h = bind(run, history(0))
+        batch = [("read", {"p": "a"}, "A", False), ("read", {"p": "b"}, "B", False)]
+        run.after_turn(h, batch)
+        run.after_turn(h, list(reversed(batch)))         # same calls, other order: same turn
+        assert run.rung == 0 and run.drain() == []
+        run.after_turn(h, batch)
+        assert run.rung == 1
+        assert run.drain() == [{"type": "reflect", "rung": 1,
+                                "reason": "the same batch of calls repeated 3 times"}]
+
+    def test_a_repeated_batch_does_not_reset_the_ladder(self):
+        run, _, _ = make_run(Persistence(max_minutes=10, reflect_after=3))
+        h = bind(run, history(0))
+        batch = [("read", {"p": "a"}, "A", False), ("read", {"p": "b"}, "B", False)]
+        run.after_turn(h, batch)
+        self.errors(run, h, 3)
+        assert run.rung == 1
+        run.after_turn(h, batch)                          # differs from the previous turn: progress
+        assert run.rung == 0
+        self.errors(run, h, 3, start=10)
+        run.after_turn(h, [("read", {"p": "c"}, "C", False), ("read", {"p": "d"}, "D", False)])
+        run.after_turn(h, [("read", {"p": "c"}, "C", False), ("read", {"p": "d"}, "D", False)])
+        assert run.rung == 0                              # the first one was progress
+
     def test_the_ledger_sees_every_call(self):
         run, _, _ = make_run()
         h = bind(run, history(0))

@@ -347,3 +347,36 @@ class TestMalformedCallsAreTracked:
         result = runner(model, use_function_calling=True,
                         persistence=Persistence(max_minutes=5, max_reflections=2)).invoke("go")
         assert result.outcome == "stuck" and len(model.tool_calls_made) < 20
+
+
+READ = StandardTool(func=lambda x: f"contents of {x}", name="read", description="read a file")
+
+
+def _batch(turn, *inputs):
+    """One native turn that calls ``read`` once per input."""
+    return {"type": "tool_use", "name": "read", "input": {"input": inputs[0]},
+            "tool_calls": [{"name": "read", "input": {"input": x}, "id": f"c{turn}_{j}"}
+                           for j, x in enumerate(inputs)]}
+
+
+class TestRepeatedBatches:
+    """A multi-call turn is progress only if it differs from the previous turn."""
+
+    def test_a_repeated_batch_reflects_then_ends_stuck(self):
+        model = MockModel(tool_script=[_batch(i, "a", "b") for i in range(200)])
+        r = runner(model, tools=(READ,), bind_tools_natively=True,
+                   persistence=Persistence(max_minutes=5, max_turns=200))
+        events = list(r.stream("go"))
+        result = events[-1]["completion"]
+        assert result.outcome == "stuck"
+        assert [e["rung"] for e in events if e["type"] == "reflect"] == [1, 2, 3, 4]
+        assert len(model.tool_calls_made) < 20            # far fewer than max_turns
+
+    def test_varying_batches_do_not_reflect(self):
+        script = [_batch(i, f"a{i}", f"b{i}") for i in range(12)]
+        script.append({"type": "tool_use", "name": "respond", "id": "r", "input": {"answer": "read them all"}})
+        events = list(runner(MockModel(tool_script=script), tools=(READ,), bind_tools_natively=True).stream("go"))
+        result = events[-1]["completion"]
+        assert result.outcome == "done" and result.content == "read them all"
+        assert not [e for e in events if e["type"] == "reflect"]
+        assert "recovery step" not in text_of(result.history)

@@ -350,3 +350,31 @@ class TestMalformedCallsAreTracked:
         result = asyncio.run(runner(model, use_function_calling=True,
                                     persistence=Persistence(max_minutes=5, max_reflections=2)).ainvoke("go"))
         assert result.outcome == "stuck" and len(model.tool_calls_made) < 20
+
+
+READ = StandardTool(func=lambda x: f"contents of {x}", name="read", description="read a file")
+
+
+def _batch(turn, *inputs):
+    return {"type": "tool_use", "name": "read", "input": {"input": inputs[0]},
+            "tool_calls": [{"name": "read", "input": {"input": x}, "id": f"c{turn}_{j}"}
+                           for j, x in enumerate(inputs)]}
+
+
+class TestRepeatedBatches:
+    def test_a_repeated_batch_reflects_then_ends_stuck(self):
+        model = MockModel(tool_script=[_batch(i, "a", "b") for i in range(200)])
+        r = runner(model, tools=(READ,), bind_tools_natively=True,
+                   persistence=Persistence(max_minutes=5, max_turns=200))
+        result = asyncio.run(r.ainvoke("go"))
+        assert result.outcome == "stuck"
+        assert all(f"recovery step {n}" in text_of(result.history) for n in (1, 2, 3, 4))
+        assert len(model.tool_calls_made) < 20
+
+    def test_varying_batches_do_not_reflect(self):
+        script = [_batch(i, f"a{i}", f"b{i}") for i in range(12)]
+        script.append({"type": "tool_use", "name": "respond", "id": "r", "input": {"answer": "read them all"}})
+        r = runner(MockModel(tool_script=script), tools=(READ,), bind_tools_natively=True)
+        result = asyncio.run(r.ainvoke("go"))
+        assert result.outcome == "done" and result.content == "read them all"
+        assert "recovery step" not in text_of(result.history)
