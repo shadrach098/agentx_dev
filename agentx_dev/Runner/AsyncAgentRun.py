@@ -871,11 +871,16 @@ class AsyncAgentRunner(PersistenceMixin):
                         )
                     count += 1
                     if count > self.max_iterations:
+                        hit_turn_limit = True       # the loop ran out of turns: iteration_limit, not done
                         final_answer = (
                             "(framework: exhausted max_iterations after "
                             "repeated malformed-JSON responses; last raw "
                             f"text: {parse_err.raw_text[:400]!r})"
                         )
+                        if state is not None:
+                            # Persistent: the ledger report, like every other non-done exit.
+                            state.finish(OUTCOME_ITERATION_LIMIT)
+                            final_answer = state.report()
                         break
                     continue
 

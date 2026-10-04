@@ -402,3 +402,12 @@ class TestUnknownTools:
         r = AsyncAgentRunner(model=model, agent=AgentType.ReAct, tools=[STEADY], verbose=False)
         result = asyncio.run(r.ainvoke("go"))
         assert result.outcome == "done" and result.content.startswith("(agent emitted an unrecognized action")
+
+
+class TestMalformedJsonTurnLimit:
+    def test_running_out_of_turns_on_malformed_json_gets_the_ledger_report(self):
+        model = MockModel(script=lambda m: '{"action": }')
+        cfg = Persistence(max_minutes=5, max_turns=2, reflect_after=50, max_reflections=10)
+        result = asyncio.run(runner(model, tools=(STEADY,), persistence=cfg).ainvoke("go"))
+        assert result.outcome == "iteration_limit"
+        assert result.content.startswith("Stopped: the 2-turn limit was reached.")

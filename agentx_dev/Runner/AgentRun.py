@@ -2385,6 +2385,10 @@ class AgentRunner(PersistenceMixin):
                             "repeated malformed-JSON responses; last raw "
                             f"text: {parse_err.raw_text[:400]!r})"
                         )
+                        if state is not None:
+                            # Persistent: the ledger report, like every other non-done exit.
+                            state.finish(OUTCOME_ITERATION_LIMIT)
+                            final_answer = state.report()
                         yield {"type": "final", "content": final_answer}
                         break
                     continue
