@@ -33,7 +33,8 @@ from agentx_dev.Agents.Agent import AgentType
 from agentx_dev.Tools import logger
 from agentx_dev.Runner.Persistence import (
     OUTCOME_DONE, OUTCOME_OUT_OF_BUDGET, OUTCOME_OUT_OF_TIME, OUTCOME_PARTIAL, OUTCOME_STUCK,
-    Persistence, RunBudget, _clip, accepts_budget, apply_persistence, budget_event,
+    BudgetExpired, Persistence, PersistentRun, RunBudget, _clip, accepts_budget,
+    apply_persistence, budget_event,
 )
 
 
@@ -619,6 +620,19 @@ def _log_budget(event: Dict[str, Any]) -> None:
     print(f"{_C_ERROR}[supervisor.budget] the {event['reason']} limit ended the run{_C_RESET}")
 
 
+def _budget_outcome_of(exc: BaseException) -> str:
+    """``out_of_budget`` for a cost-cap error, ``out_of_time`` for a deadline."""
+    return OUTCOME_OUT_OF_BUDGET if isinstance(exc, CostBudgetExceeded) else OUTCOME_OUT_OF_TIME
+
+
+def _stopped_before_planning(user_task: str, exc: BaseException) -> "SupervisorResult":
+    """Persistent mode: the budget ran out while the first plan was being made."""
+    outcome = _budget_outcome_of(exc)
+    what = "cost budget" if outcome == OUTCOME_OUT_OF_BUDGET else "time limit"
+    return SupervisorResult(query=user_task, content=f"Stopped: the {what} was reached before a plan was made.",
+                            plan=[], subtasks=[], outcome=outcome)
+
+
 def _build_augmented_query(
     sub_query: str,
     prior_results: List[SubtaskResult],
@@ -1149,8 +1163,18 @@ class Supervisor:
         self.subtask_success_check = subtask_success_check
         self.max_plan_retries = max(0, int(max_plan_retries))
         self.persistence = persistence
+        # Persistent runs only: waits out transient planner/synthesis errors until the deadline.
+        self._patience: Optional[PersistentRun] = None
 
     # -- internal helpers ----------------------------------------------------
+
+    def _call_model(self, messages: List[Dict[str, str]]) -> str:
+        """One planner or synthesis call. In persistent mode a transient provider
+        error (429, 5xx, timeout) is retried with backoff until the deadline."""
+        patience = getattr(self, "_patience", None)
+        if patience is None:
+            return self.model.Initialize(messages=messages)
+        return patience.patient(lambda: self.model.Initialize(messages=messages))
 
     def _evaluate_success(self, result: SubtaskResult) -> tuple:
         """Run ``subtask_success_check`` against a returned result.
@@ -1181,7 +1205,7 @@ class Supervisor:
         if repair_note:
             prompt = prompt + repair_note
         messages = [{"role": "user", "content": prompt}]
-        response = self.model.Initialize(messages=messages)
+        response = self._call_model(messages)
 
         cleaned = _strip_code_fences(response)
 
@@ -1226,9 +1250,11 @@ class Supervisor:
     def _plan_recovery(self, user_task: str, results: List[SubtaskResult], round_no: int) -> List[dict]:
         """Ask the planner for a recovery plan covering only the unfinished
         work. Returns ``[]`` when it cannot (the caller then synthesizes with
-        what it has)."""
+        what it has). A spent budget propagates so the caller can say so."""
         try:
             raw = self._plan_once(user_task, repair_note=_recovery_note(results, round_no))
+        except (CostBudgetExceeded, BudgetExpired):
+            raise
         except Exception as e:
             logger.warning(f"recovery planning failed: {e}")
             return []
@@ -1504,11 +1530,12 @@ class Supervisor:
             prompt += _unresolved_note(unresolved)
         messages = [{"role": "user", "content": prompt}]
         try:
-            return self.model.Initialize(messages=messages)
-        except CostBudgetExceeded:
+            return self._call_model(messages)
+        except (CostBudgetExceeded, BudgetExpired) as e:
             if self.persistence is None:
                 raise
-            return f"Stopped: the cost budget was reached.\n\n{results_block}"
+            what = "cost budget" if isinstance(e, CostBudgetExceeded) else "time limit"
+            return f"Stopped: the {what} was reached.\n\n{results_block}"
 
     # -- public API ----------------------------------------------------------
 
@@ -1714,9 +1741,23 @@ class Supervisor:
         """
         self._spawns_this_run = 0
         budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
+        self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
+                          if budget is not None else None)
 
         yield {"type": "plan_start"}
-        plan = self._plan(user_task)
+        try:
+            plan = self._plan(user_task)
+        except (CostBudgetExceeded, BudgetExpired) as e:
+            if self.persistence is None:
+                raise
+            stopped = _stopped_before_planning(user_task, e)
+            spent = budget_event(stopped.outcome)
+            yield spent
+            if self.verbose:
+                _log_budget(spent)
+            yield {"type": "final", "content": stopped.content}
+            yield {"type": "completion", "result": stopped}
+            return
 
         if not plan:
             if self.verbose:
@@ -1752,7 +1793,11 @@ class Supervisor:
                     budget_reason = _budget_reason(budget, subtask_results)
                     if budget_reason or stagnant >= self.persistence.max_replans:
                         break
-                    recovery = self._plan_recovery(user_task, subtask_results, round_no + 1)
+                    try:
+                        recovery = self._plan_recovery(user_task, subtask_results, round_no + 1)
+                    except (CostBudgetExceeded, BudgetExpired) as e:
+                        budget_reason = _budget_outcome_of(e)
+                        break
                     if not recovery:
                         break
                     round_no += 1
@@ -1885,6 +1930,8 @@ class AsyncSupervisor:
         )
         self.max_plan_retries = max(0, int(max_plan_retries))
         self.persistence = persistence
+        # Persistent runs only: waits out transient planner/synthesis errors until the deadline.
+        self._patience: Optional[PersistentRun] = None
 
     def _evaluate_success(self, result: SubtaskResult) -> tuple:
         """See ``Supervisor._evaluate_success``."""
@@ -1903,6 +1950,14 @@ class AsyncSupervisor:
         return _render_agent_catalog(self.agents)
 
     async def _call_model(self, messages: List[Dict[str, str]]) -> str:
+        """One planner or synthesis call. In persistent mode a transient provider
+        error (429, 5xx, timeout) is retried with backoff until the deadline."""
+        patience = getattr(self, "_patience", None)
+        if patience is None:
+            return await self._call_model_once(messages)
+        return await patience.apatient(lambda: self._call_model_once(messages))
+
+    async def _call_model_once(self, messages: List[Dict[str, str]]) -> str:
         """Invoke the planning/synthesis model, preferring an async method."""
         if hasattr(self.model, "async_initialize") and asyncio.iscoroutinefunction(
             self.model.async_initialize
@@ -1963,6 +2018,8 @@ class AsyncSupervisor:
         """Async twin of :meth:`Supervisor._plan_recovery`."""
         try:
             raw = await self._plan_once(user_task, repair_note=_recovery_note(results, round_no))
+        except (CostBudgetExceeded, BudgetExpired):
+            raise
         except Exception as e:
             logger.warning(f"recovery planning failed: {e}")
             return []
@@ -1991,10 +2048,11 @@ class AsyncSupervisor:
         messages = [{"role": "user", "content": prompt}]
         try:
             return await self._call_model(messages)
-        except CostBudgetExceeded:
+        except (CostBudgetExceeded, BudgetExpired) as e:
             if self.persistence is None:
                 raise
-            return f"Stopped: the cost budget was reached.\n\n{results_block}"
+            what = "cost budget" if isinstance(e, CostBudgetExceeded) else "time limit"
+            return f"Stopped: the {what} was reached.\n\n{results_block}"
 
     async def _run_subtask(
         self,
@@ -2280,8 +2338,22 @@ class AsyncSupervisor:
         UI sees whichever completes first, not the plan order.
         """
         budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
+        self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
+                          if budget is not None else None)
         yield {"type": "plan_start"}
-        plan = await self._plan(user_task)
+        try:
+            plan = await self._plan(user_task)
+        except (CostBudgetExceeded, BudgetExpired) as e:
+            if self.persistence is None:
+                raise
+            stopped = _stopped_before_planning(user_task, e)
+            spent = budget_event(stopped.outcome)
+            yield spent
+            if self.verbose:
+                _log_budget(spent)
+            yield {"type": "final", "content": stopped.content}
+            yield {"type": "completion", "result": stopped}
+            return
 
         if not plan:
             if self.verbose:
@@ -2320,7 +2392,11 @@ class AsyncSupervisor:
                     budget_reason = _budget_reason(budget, subtask_results)
                     if budget_reason or stagnant >= self.persistence.max_replans:
                         break
-                    recovery = await self._plan_recovery(user_task, subtask_results, round_no + 1)
+                    try:
+                        recovery = await self._plan_recovery(user_task, subtask_results, round_no + 1)
+                    except (CostBudgetExceeded, BudgetExpired) as e:
+                        budget_reason = _budget_outcome_of(e)
+                        break
                     if not recovery:
                         break
                     round_no += 1

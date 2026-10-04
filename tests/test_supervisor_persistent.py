@@ -329,3 +329,66 @@ class TestBudgetEvent:
         model = MockModel(script=[plan(step("s1", "worker")), "Done."])
         events = list(supervisor(model, {"worker": ScriptedRunner(("ok", "done"))}).stream("task"))
         assert not [e for e in events if e["type"] == "budget"]
+
+
+class RateLimited(Exception):
+    status_code = 429
+
+
+def _over_cost(messages):
+    raise CostBudgetExceeded(spent_usd=2.0, limit_usd=1.0)
+
+
+class TestPlannerBudget:
+    """Spec 4.6: no exception from budget or deadline reaches the caller in persistent mode."""
+
+    def test_a_cost_cap_hit_while_planning_ends_out_of_budget(self):
+        events = list(supervisor(MockModel(script=_over_cost), {"worker": ScriptedRunner()}).stream("task"))
+        result = events[-1]["result"]
+        assert result.outcome == "out_of_budget" and result.content.startswith("Stopped: the cost budget")
+        assert {"type": "budget", "reason": "cost"} in events
+
+    def test_a_deadline_hit_while_planning_ends_out_of_time(self, monkeypatch):
+        # Less time left than the first backoff wait: patient retries give up with BudgetExpired.
+        monkeypatch.setattr(RunBudget, "start",
+                            classmethod(lambda cls, minutes, clock=None: cls(0.5, lambda: 0.0)))
+
+        def rate_limited(messages):
+            raise RateLimited("slow down")
+
+        result = supervisor(MockModel(script=rate_limited), {"worker": ScriptedRunner()}).run("task")
+        assert result.outcome == "out_of_time" and result.content.startswith("Stopped: the time limit")
+
+    def test_a_transient_planner_error_is_retried(self, monkeypatch):
+        monkeypatch.setattr("time.sleep", lambda s: None)
+        n = []
+
+        def script(messages):
+            n.append(1)
+            if len(n) == 1:
+                raise RateLimited("slow down")
+            return plan(step("s1", "worker")) if len(n) == 2 else "Done."
+
+        worker = ScriptedRunner(("ok", "done"))
+        result = supervisor(MockModel(script=script), {"worker": worker}).run("task")
+        assert result.outcome == "done" and len(worker.calls) == 1 and len(n) == 3
+
+    def test_a_cost_cap_hit_while_planning_a_recovery_ends_out_of_budget(self):
+        n = []
+
+        def script(messages):
+            n.append(1)
+            if len(n) == 1:
+                return plan(step("s1", "worker"))
+            if len(n) == 2:
+                raise CostBudgetExceeded(spent_usd=2.0, limit_usd=1.0)
+            return "Stopped."
+
+        result = supervisor(MockModel(script=script), {"worker": ScriptedRunner(("gave up", "stuck"))}).run("task")
+        assert result.outcome == "out_of_budget" and result.content == "Stopped."
+
+    def test_default_mode_still_raises_a_cost_error_from_planning(self):
+        sup = Supervisor(model=MockModel(script=_over_cost), agents={"worker": ("w", ScriptedRunner())},
+                         verbose=False)
+        with pytest.raises(CostBudgetExceeded):
+            sup.run("task")
