@@ -138,8 +138,9 @@ computed in default mode too (`done`, `partial` or `stuck`).
 | `{"type": "replan", "round": 2, "unresolved": [...], "plan": [...]}` | A Supervisor started a recovery round. |
 
 With `verbose=True` the same moments print as `[persist]` lines. The
-async runner has no event stream, but `result.progress` and the log
-lines are the same.
+`AsyncAgentRunner.astream` replays its events after the run and does not
+emit `reflect` or `compact`, but `result.progress` and the log lines are
+the same.
 
 ## Settings
 

@@ -40,8 +40,6 @@ Agents that keep working through errors. Opt-in; one default change (below).
 - While `persistence` is set the tool-result cache is off, and the
   iteration cap is `persistence.max_turns`.
 
-```
-
 ## [3.4.3] - 2026-09-26
 
 Two path-resolution fixes for Windows sandboxes. Non-breaking.
