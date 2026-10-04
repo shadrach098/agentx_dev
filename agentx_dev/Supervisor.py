@@ -1317,56 +1317,24 @@ class Supervisor:
 
     # -- public API ----------------------------------------------------------
 
-    def stream(self, user_task: str):
-        """Yield structured events as the supervisor plans, dispatches,
-        and synthesizes.
-
-        Event shapes:
-          - {"type": "plan_start"}
-          - {"type": "plan",           "plan": <list of steps>}
-          - {"type": "spawn",          "name": str, "capabilities": list}
-          - {"type": "dispatch",       "agent": str, "query": str, "step": int}
-          - {"type": "subtask_result", "result": SubtaskResult, "step": int}
-          - {"type": "synthesize_start"}
-          - {"type": "final",          "content": str}
-          - {"type": "completion",     "result": SupervisorResult}   (last)
-
-        The last event is always ``completion`` so ``run()`` can build
-        on top of this and callers who want live UI updates can consume
-        the intermediate events.
-        """
-        self._spawns_this_run = 0
-
-        yield {"type": "plan_start"}
-        plan = self._plan(user_task)
-
-        if not plan:
-            if self.verbose:
-                _log_no_plan()
-            result = SupervisorResult(
-                query=user_task,
-                content="Supervisor failed to produce a valid plan.",
-                plan=[],
-                subtasks=[],
-                outcome=OUTCOME_STUCK,
-            )
-            yield {"type": "final", "content": result.content}
-            yield {"type": "completion", "result": result}
-            return
-
-        yield {"type": "plan", "plan": plan}
-        if self.verbose:
-            _log_plan(plan)
-
+    def _run_plan(
+        self,
+        plan: List[dict],
+        subtask_results: List[SubtaskResult],
+        results_by_id: Dict[str, SubtaskResult],
+        spawn_rewrites: Dict[str, str],
+    ):
+        """Execute ``plan``: dispatch each step (spawning specialists, cascading
+        failures, evaluating ``skip_when``) and yield ``dispatch`` / ``spawn`` /
+        ``subtask_result`` events. Results are appended to the shared
+        ``subtask_results`` / ``results_by_id`` so several rounds can build on
+        one another."""
         # 3.3: DAG mode fires when ANY step declares depends_on. Dep-free
         # plans keep byte-identical legacy semantics (plan order, every
         # step sees ALL prior results).
         dag_mode = _plan_uses_deps(plan)
         order = _topo_order(plan) if dag_mode else list(range(len(plan)))
 
-        subtask_results: List[SubtaskResult] = []
-        results_by_id: Dict[str, SubtaskResult] = {}
-        spawn_rewrites: Dict[str, str] = {}
         for step_idx in order:
             item = plan[step_idx]
             agent_name = item.get("agent")
@@ -1515,6 +1483,52 @@ class Supervisor:
                    "step": step_idx, "step_id": step_id}
             if self.verbose:
                 _log_result(sub_result)
+
+    def stream(self, user_task: str):
+        """Yield structured events as the supervisor plans, dispatches,
+        and synthesizes.
+
+        Event shapes:
+          - {"type": "plan_start"}
+          - {"type": "plan",           "plan": <list of steps>}
+          - {"type": "spawn",          "name": str, "capabilities": list}
+          - {"type": "dispatch",       "agent": str, "query": str, "step": int}
+          - {"type": "subtask_result", "result": SubtaskResult, "step": int}
+          - {"type": "synthesize_start"}
+          - {"type": "final",          "content": str}
+          - {"type": "completion",     "result": SupervisorResult}   (last)
+
+        The last event is always ``completion`` so ``run()`` can build
+        on top of this and callers who want live UI updates can consume
+        the intermediate events.
+        """
+        self._spawns_this_run = 0
+
+        yield {"type": "plan_start"}
+        plan = self._plan(user_task)
+
+        if not plan:
+            if self.verbose:
+                _log_no_plan()
+            result = SupervisorResult(
+                query=user_task,
+                content="Supervisor failed to produce a valid plan.",
+                plan=[],
+                subtasks=[],
+                outcome=OUTCOME_STUCK,
+            )
+            yield {"type": "final", "content": result.content}
+            yield {"type": "completion", "result": result}
+            return
+
+        yield {"type": "plan", "plan": plan}
+        if self.verbose:
+            _log_plan(plan)
+
+        subtask_results: List[SubtaskResult] = []
+        results_by_id: Dict[str, SubtaskResult] = {}
+        spawn_rewrites: Dict[str, str] = {}
+        yield from self._run_plan(plan, subtask_results, results_by_id, spawn_rewrites)
 
         yield {"type": "synthesize_start"}
         final = self._synthesize(user_task, subtask_results)
@@ -1799,33 +1813,16 @@ class AsyncSupervisor:
 
     # -- public API ----------------------------------------------------------
 
-    async def astream(self, user_task: str):
-        """Async event stream. Same event shapes as ``Supervisor.stream``.
-
-        Concurrent-dispatch mode (``sequential=False``) yields
-        ``subtask_result`` events as each sub-task finishes -- so the
-        UI sees whichever completes first, not the plan order.
-        """
-        yield {"type": "plan_start"}
-        plan = await self._plan(user_task)
-
-        if not plan:
-            if self.verbose:
-                _log_no_plan()
-            result = SupervisorResult(
-                query=user_task,
-                content="Supervisor failed to produce a valid plan.",
-                plan=[], subtasks=[],
-                outcome=OUTCOME_STUCK,
-            )
-            yield {"type": "final", "content": result.content}
-            yield {"type": "completion", "result": result}
-            return
-
-        yield {"type": "plan", "plan": plan}
-        if self.verbose:
-            _log_plan(plan)
-
+    async def _run_plan(
+        self,
+        plan: List[dict],
+        subtask_results: List[SubtaskResult],
+        results_by_id: Dict[str, SubtaskResult],
+    ):
+        """Execute ``plan`` with the completion-driven scheduler and yield
+        ``dispatch`` / ``subtask_result`` events. Results are appended to the
+        shared ``subtask_results`` / ``results_by_id`` so several rounds can
+        build on one another."""
         # Emit a `dispatch` event for every step up-front so UIs can
         # render the plan as a "task list" before results start landing.
         for step_idx, item in enumerate(plan):
@@ -1855,8 +1852,6 @@ class AsyncSupervisor:
         else:
             deps_of = [[] for _ in plan]
 
-        subtask_results: List[SubtaskResult] = []
-        results_by_id: Dict[str, SubtaskResult] = {}
         done_ids: set = set()
         launched: set = set()
         running: Dict[asyncio.Task, int] = {}
@@ -1966,6 +1961,38 @@ class AsyncSupervisor:
             if running:
                 await asyncio.gather(*running, return_exceptions=True)
             running.clear()
+
+    async def astream(self, user_task: str):
+        """Async event stream. Same event shapes as ``Supervisor.stream``.
+
+        Concurrent-dispatch mode (``sequential=False``) yields
+        ``subtask_result`` events as each sub-task finishes -- so the
+        UI sees whichever completes first, not the plan order.
+        """
+        yield {"type": "plan_start"}
+        plan = await self._plan(user_task)
+
+        if not plan:
+            if self.verbose:
+                _log_no_plan()
+            result = SupervisorResult(
+                query=user_task,
+                content="Supervisor failed to produce a valid plan.",
+                plan=[], subtasks=[],
+                outcome=OUTCOME_STUCK,
+            )
+            yield {"type": "final", "content": result.content}
+            yield {"type": "completion", "result": result}
+            return
+
+        yield {"type": "plan", "plan": plan}
+        if self.verbose:
+            _log_plan(plan)
+
+        subtask_results: List[SubtaskResult] = []
+        results_by_id: Dict[str, SubtaskResult] = {}
+        async for event in self._run_plan(plan, subtask_results, results_by_id):
+            yield event
 
         yield {"type": "synthesize_start"}
         final = await self._synthesize(user_task, list(subtask_results))
