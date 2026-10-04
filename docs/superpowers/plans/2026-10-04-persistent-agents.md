@@ -3439,6 +3439,49 @@ def test_sync_run_plan_streams_events_and_fills_the_shared_containers():
     assert [r.step_id for r in results] == ["a"] and by_id["a"].content == "scraped"
 
 
+def test_async_early_exit_cancels_running_subtasks_before_aclose_returns():
+    """Closing astream early must cancel and await in-flight sub-tasks (no deferred GC cleanup)."""
+    import asyncio as _asyncio
+    from tests.conftest import MockModel as _Model
+    import json as _json
+
+    started = []
+    finished = []
+
+    class Fast:
+        tools = []
+
+        async def Initialize(self, query):
+            return SimpleNamespace(content="fast")
+
+    class Slow:
+        tools = []
+
+        async def Initialize(self, query):
+            started.append(1)
+            try:
+                await _asyncio.sleep(30)
+            except _asyncio.CancelledError:
+                finished.append("cancelled")
+                raise
+            return SimpleNamespace(content="slow")
+
+    plan = _json.dumps({"plan": [{"id": "a", "agent": "fast", "query": "q"},
+                                 {"id": "b", "agent": "slow", "query": "q"}]})
+    sup = AsyncSupervisor(model=_Model(script=[plan, "final"]),
+                          agents={"fast": ("f", Fast()), "slow": ("s", Slow())}, verbose=False)
+
+    async def scenario():
+        gen = sup.astream("task")
+        async for event in gen:
+            if event["type"] == "subtask_result":
+                break
+        await gen.aclose()
+        return list(finished)          # must already be populated when aclose() returns
+
+    assert asyncio.run(scenario()) == ["cancelled"]
+
+
 def test_async_run_plan_streams_events_and_fills_the_shared_containers():
     sup = AsyncSupervisor(model=MockModel(script=[]), agents={"worker": ("w", AsyncRunner())}, verbose=False)
     results, by_id = [], {}
@@ -3518,8 +3561,15 @@ In `AsyncSupervisor.astream`:
 ```python
         subtask_results: List[SubtaskResult] = []
         results_by_id: Dict[str, SubtaskResult] = {}
-        async for event in self._run_plan(plan, subtask_results, results_by_id):
-            yield event
+        # `async for` does not close the inner async generator when this one is closed early, so
+        # close it explicitly: _run_plan's `finally:` (cancel and await the running sub-tasks)
+        # must complete before aclose() of astream returns.
+        plan_run = self._run_plan(plan, subtask_results, results_by_id)
+        try:
+            async for event in plan_run:
+                yield event
+        finally:
+            await plan_run.aclose()
 
 ```
 
@@ -4520,8 +4570,15 @@ and replace the region Task 9 left at the end of `astream`, i.e.
 ```python
         subtask_results: List[SubtaskResult] = []
         results_by_id: Dict[str, SubtaskResult] = {}
-        async for event in self._run_plan(plan, subtask_results, results_by_id):
-            yield event
+        # `async for` does not close the inner async generator when this one is closed early, so
+        # close it explicitly: _run_plan's `finally:` (cancel and await the running sub-tasks)
+        # must complete before aclose() of astream returns.
+        plan_run = self._run_plan(plan, subtask_results, results_by_id)
+        try:
+            async for event in plan_run:
+                yield event
+        finally:
+            await plan_run.aclose()
 
         yield {"type": "synthesize_start"}
         final = await self._synthesize(user_task, list(subtask_results))
@@ -4540,8 +4597,12 @@ with
         results_by_id: Dict[str, SubtaskResult] = {}
         budget_reason: Optional[str] = None
         with apply_persistence([s.runner for s in self.agents.values()], self.persistence):
-            async for event in self._run_plan(plan, subtask_results, results_by_id, budget):
-                yield event
+            plan_run = self._run_plan(plan, subtask_results, results_by_id, budget)
+            try:
+                async for event in plan_run:
+                    yield event
+            finally:
+                await plan_run.aclose()
             if self.persistence is not None:
                 stagnant = 0
                 round_no = 1
@@ -4564,8 +4625,12 @@ with
                     if self.verbose:
                         _log_replan(round_no, unresolved)
                     plan.extend(recovery)
-                    async for event in self._run_plan(recovery, subtask_results, results_by_id, budget):
-                        yield event
+                    plan_run = self._run_plan(recovery, subtask_results, results_by_id, budget)
+                    try:
+                        async for event in plan_run:
+                            yield event
+                    finally:
+                        await plan_run.aclose()
                     stagnant = 0 if _count_done(subtask_results) > done_before else stagnant + 1
 
         yield {"type": "synthesize_start"}
