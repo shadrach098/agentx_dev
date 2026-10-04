@@ -112,6 +112,7 @@ class TestRecovery:
         events = list(supervisor(model, {"worker": worker, "fixer": fixer}).stream("task"))
         replans = [e for e in events if e["type"] == "replan"]
         assert len(replans) == 1 and replans[0]["round"] == 2 and replans[0]["unresolved"] == ["s1"]
+        assert replans[0]["plan"][0]["id"] == "fix"
         assert [e["type"] for e in events if e["type"] in ("plan", "completion")] == ["plan", "completion"]
 
 
@@ -159,6 +160,45 @@ class TestSharedBudget:
 
         result = supervisor(MockModel(script=script), {"worker": ScriptedRunner(("fine", "done"))}).run("task")
         assert result.content.startswith("Stopped: the cost budget was reached") and "A: fine" in result.content
+
+
+class TestRetriesAndCleanup:
+    @pytest.mark.parametrize("outcome", ["out_of_budget", "out_of_time"])
+    def test_a_spent_budget_outcome_is_not_retried(self, outcome):
+        worker = ScriptedRunner(*[("partial", outcome)] * 5)
+        model = MockModel(script=[plan(step("s1", "worker")), "Stopped."])
+        supervisor(model, {"worker": worker}, max_subtask_retries=2).run("task")
+        assert len(worker.calls) == 1
+
+    def test_other_unfinished_outcomes_still_use_the_retries(self):
+        worker = ScriptedRunner(*[("x", "stuck")] * 5)
+        model = MockModel(script=[plan(step("s1", "worker")), "not json", "Final."])
+        supervisor(model, {"worker": worker}, max_subtask_retries=2).run("task")
+        assert len(worker.calls) == 3
+
+    def test_closing_the_stream_early_restores_the_runner_persistence(self):
+        worker = ScriptedRunner(("gave up", "stuck"))
+        fixer = ScriptedRunner(("fixed", "done"))
+        model = MockModel(script=[plan(step("s1", "worker")), plan(step("fix", "fixer")), "Done."])
+        gen = supervisor(model, {"worker": worker, "fixer": fixer}).stream("task")
+        for event in gen:
+            if event["type"] == "replan":
+                assert worker.persistence is P       # applied while the run is live
+                break
+        gen.close()
+        assert worker.persistence is None and fixer.persistence is None
+
+    def test_a_runner_without_a_budget_parameter_still_works_in_persistent_mode(self):
+        class Plain:
+            tools = []
+            persistence = None
+
+            def Initialize(self, query):
+                return SimpleNamespace(content="plain result", outcome="done", output=None, progress=None)
+
+        model = MockModel(script=[plan(step("s1", "plain")), "Final."])
+        result = supervisor(model, {"plain": Plain()}).run("task")
+        assert result.outcome == "done" and result.subtasks[0].content == "plain result"
 
 
 class TestDefaultModeUntouched:
