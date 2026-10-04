@@ -59,8 +59,11 @@ cost limit.
 ## How it recovers
 
 The loop watches for two kinds of trouble, each counted over
-`reflect_after` turns in a row (default 3): the same call repeated,
-or tool errors. When one fires it doesn't give up.
+`reflect_after` tool calls in a row (default 3): the same call
+repeated, or tool errors. Streaks are counted per call, not per turn:
+a turn that makes three failing calls at once is three errors in a row.
+A turn that repeats the previous turn's whole batch of calls counts as
+a repeat too. When one fires it doesn't give up.
 It adds a note to the last tool result and carries on, a little firmer
 each time:
 
@@ -83,9 +86,10 @@ history passes `compact_at_tokens` (default 60,000, estimated), the
 turns in the middle are replaced by a short set of notes: one extra
 model call summarizes what was learned and what's left, and the list of
 failed attempts is kept word for word. The task itself (including any
-images or files you attached) and the most recent turns
+images or files you attached) and the most recent messages
 (`keep_recent_turns`, default 6) are never touched. If the summary call
-fails, the failed-attempts list is used on its own.
+fails, the failed-attempts list is used on its own. The notes are
+marked as data taken from earlier tool output, not instructions.
 
 ## Time, cost, and provider errors
 
@@ -96,10 +100,14 @@ fails, the failed-attempts list is used on its own.
   output_price_per_1k=...)`. It counts everything that model object has
   spent, not just this run: use a fresh model object for a per-run cap.
 - **Transient provider errors** (HTTP 429 and 5xx, timeouts,
-  connection errors) are retried with growing waits until the deadline.
-  Errors that won't fix themselves — a bad API key, an invalid request,
-  a bug in your tool — still raise straight away. A run with
-  `stream_tokens=True` isn't retried mid-response.
+  connection errors) are retried with growing waits until the deadline,
+  including a Supervisor's planning and synthesis calls. Model-call
+  errors that won't fix themselves — a bad API key, an invalid request —
+  still raise straight away. A run with `stream_tokens=True` isn't
+  retried mid-response.
+- **Tool errors** never end the run: an exception raised inside your
+  tool comes back to the agent as an error result, like any failed
+  call, and counts toward the error streak above.
 
 ## Supervisors
 
@@ -146,16 +154,21 @@ With `verbose=True` the same moments print as `[persist]` lines. The
 emit `reflect` or `compact` (it does emit `budget`), but `result.progress`
 and the log lines are the same.
 
+`supervisor.stream(...)` does not pass on its specialists' own `reflect`
+and `compact` events: it emits its own `replan` and `budget` events, and
+each step's ledger is on `SubtaskResult.progress`. Set `verbose=True` on
+a specialist runner to see its `[persist]` lines as they happen.
+
 ## Settings
 
 | `Persistence(...)` | Default | What it does |
 |---|---|---|
 | `max_minutes` | `30` | Wall-clock limit for the run. |
-| `reflect_after` | `3` | Bad turns in a row before a recovery step. |
+| `reflect_after` | `3` | Bad tool calls in a row (repeats or errors) before a recovery step. |
 | `max_reflections` | `4` | Recovery steps before the run ends `stuck`. |
 | `compact_at_tokens` | `60000` | History size that triggers compaction. |
 | `keep_recent_turns` | `6` | Messages kept word for word when compacting. |
-| `max_replans` | `3` | Supervisor recovery rounds without progress. |
+| `max_replans` | `3` | Supervisor recovery rounds in a row that resolve no failed step. |
 | `max_turns` | `1000` | Backstop on total model turns. |
 | `patient_retries` | `True` | Wait out transient provider errors. |
 
