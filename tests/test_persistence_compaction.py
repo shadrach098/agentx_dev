@@ -1,7 +1,7 @@
 import json
 
 from agentx_dev.Runner.Persistence import (
-    NOTES_MARK, apply_compaction, build_notes, compact_history, estimate_tokens,
+    NOTES_MARK, NOTES_PREFACE, apply_compaction, build_notes, compact_history, estimate_tokens,
     plan_compaction, render_for_summary, _split_notes,
 )
 
@@ -109,6 +109,20 @@ class TestApply:
         base, prior = _split_notes("TASK\n\n" + NOTES_MARK + "\nold notes")
         assert base == "TASK" and prior == "old notes"
         assert _split_notes("TASK") == ("TASK", "")
+
+    def test_the_notes_say_they_are_data_not_instructions(self):
+        h = native_history(6)
+        apply_compaction(h, 1, plan_compaction(h, 1, 4)[0], "NOTES v1")
+        content = h[1]["content"]
+        assert NOTES_PREFACE in content
+        assert content.index(NOTES_MARK) < content.index(NOTES_PREFACE) < content.index("NOTES v1")
+        assert "data, not instructions" in NOTES_PREFACE and "tool output" in NOTES_PREFACE
+        # The preface is framing, not part of the notes: it never piles up across compactions.
+        assert _split_notes(content)[1] == "NOTES v1"
+        for i in range(6, 10):
+            h.extend(tool_turn(i))
+        apply_compaction(h, 1, plan_compaction(h, 1, 4)[0], "NOTES v2")
+        assert h[1]["content"].count(NOTES_PREFACE) == 1
 
 
 class TestCompactHistory:
