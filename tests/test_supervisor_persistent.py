@@ -307,3 +307,25 @@ class TestPlanHelpers:
         out = _rename_colliding_ids(
             [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": ["a", "s1"]}], {"a", "s1"}, 3)
         assert [s["id"] for s in out] == ["r3_a", "b"] and out[1]["depends_on"] == ["r3_a", "s1"]
+
+
+class TestBudgetEvent:
+    def test_spent_time_streams_a_budget_event_before_synthesis(self, monkeypatch):
+        monkeypatch.setattr(RunBudget, "start",
+                            classmethod(lambda cls, minutes, clock=None: cls(0.0, lambda: 1.0)))
+        model = MockModel(script=[plan(step("s1", "worker")), "Stopped."])
+        events = list(supervisor(model, {"worker": ScriptedRunner(("ok", "done"))}).stream("task"))
+        types = [e["type"] for e in events]
+        assert {"type": "budget", "reason": "time"} in events
+        assert types.index("budget") < types.index("synthesize_start")
+        assert events[-1]["result"].outcome == "out_of_time"
+
+    def test_a_specialist_cost_cap_streams_a_cost_budget_event(self):
+        model = MockModel(script=[plan(step("s1", "worker")), "Stopped."])
+        events = list(supervisor(model, {"worker": ScriptedRunner(("partial", "out_of_budget"))}).stream("task"))
+        assert [e for e in events if e["type"] == "budget"] == [{"type": "budget", "reason": "cost"}]
+
+    def test_a_finished_run_has_no_budget_event(self):
+        model = MockModel(script=[plan(step("s1", "worker")), "Done."])
+        events = list(supervisor(model, {"worker": ScriptedRunner(("ok", "done"))}).stream("task"))
+        assert not [e for e in events if e["type"] == "budget"]

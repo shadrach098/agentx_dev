@@ -759,6 +759,16 @@ class PersistentRun:
 # Entry points the runners call
 # ---------------------------------------------------------------------------
 
+_BUDGET_REASONS = {OUTCOME_OUT_OF_TIME: "time", OUTCOME_OUT_OF_BUDGET: "cost"}
+
+
+def budget_event(outcome: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The ``{"type": "budget", "reason": "time" | "cost"}`` stream event for an
+    outcome caused by a spent budget; None for any other outcome."""
+    reason = _BUDGET_REASONS.get(outcome or "")
+    return {"type": "budget", "reason": reason} if reason else None
+
+
 def unrecognized_action_headline(action: Any) -> str:
     """Report headline for a persistent run whose model emitted an action that
     is neither a tool nor a final answer, with no answer text to fall back on."""
@@ -804,6 +814,10 @@ def run_persistent(runner, user_input, chat_history, stream_tokens, media, budge
         state.finish(OUTCOME_STUCK, str(e))
     except CostBudgetExceeded as e:
         state.finish(OUTCOME_OUT_OF_BUDGET, str(e))
+    event = budget_event(state.outcome)
+    if event is not None:
+        state.emit(event)
+        state._say(f"budget: the {event['reason']} limit ended the run")
     yield from state.drain()
     events = list(state.exit_events(runner.model.__class__.__name__, user_input))
     content = events[-1]["completion"].content
@@ -824,6 +838,11 @@ async def run_persistent_async(runner, user_input, budget, run):
         state.finish(OUTCOME_STUCK, str(e))
     except CostBudgetExceeded as e:
         state.finish(OUTCOME_OUT_OF_BUDGET, str(e))
+    event = budget_event(state.outcome)
+    if event is not None:
+        # The async runner has no live event stream: astream() derives this
+        # event from the completion's outcome. Log it here like the sync path.
+        state._say(f"budget: the {event['reason']} limit ended the run")
     completion = state.exit_completion(runner.model.__class__.__name__, user_input)
     _end_agent_event(state, completion.content)
     _remember(runner, user_input, completion.content)

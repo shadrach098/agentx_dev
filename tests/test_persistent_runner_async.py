@@ -411,3 +411,35 @@ class TestMalformedJsonTurnLimit:
         result = asyncio.run(runner(model, tools=(STEADY,), persistence=cfg).ainvoke("go"))
         assert result.outcome == "iteration_limit"
         assert result.content.startswith("Stopped: the 2-turn limit was reached.")
+
+
+def _spend_the_time(monkeypatch):
+    monkeypatch.setattr(RunBudget, "start",
+                        classmethod(lambda cls, minutes, clock=None: cls(0.0, lambda: 1.0)))
+
+
+def _over_cost(messages):
+    raise CostBudgetExceeded(spent_usd=1.0, limit_usd=0.5)
+
+
+def _astream(r, query="go"):
+    async def collect():
+        return [e async for e in r.astream(query)]
+    return asyncio.run(collect())
+
+
+class TestBudgetEvent:
+    def test_a_time_limit_streams_a_budget_event_before_the_exit_events(self, monkeypatch):
+        _spend_the_time(monkeypatch)
+        events = _astream(runner(MockModel(script=[make_final("x")])))
+        assert [e["type"] for e in events][-3:] == ["budget", "final", "completion"]
+        assert events[-3] == {"type": "budget", "reason": "time"}
+
+    def test_a_cost_limit_streams_a_budget_event_before_the_exit_events(self):
+        events = _astream(runner(MockModel(script=_over_cost)))
+        assert [e["type"] for e in events][-3:] == ["budget", "final", "completion"]
+        assert events[-3] == {"type": "budget", "reason": "cost"}
+
+    def test_a_finished_run_has_no_budget_event(self):
+        events = _astream(runner(MockModel(script=[make_final("x")])))
+        assert not [e for e in events if e["type"] == "budget"]

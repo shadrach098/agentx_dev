@@ -414,3 +414,29 @@ class TestMalformedJsonTurnLimit:
         result = runner(model, tools=(STEADY,), persistence=cfg).invoke("go")
         assert result.outcome == "iteration_limit"
         assert result.content.startswith("Stopped: the 2-turn limit was reached.")
+
+
+def _spend_the_time(monkeypatch):
+    monkeypatch.setattr(RunBudget, "start",
+                        classmethod(lambda cls, minutes, clock=None: cls(0.0, lambda: 1.0)))
+
+
+def _over_cost(messages):
+    raise CostBudgetExceeded(spent_usd=1.0, limit_usd=0.5)
+
+
+class TestBudgetEvent:
+    def test_a_time_limit_streams_a_budget_event_before_the_exit_events(self, monkeypatch):
+        _spend_the_time(monkeypatch)
+        events = list(runner(MockModel(script=[make_final("x")])).stream("go"))
+        assert [e["type"] for e in events][-3:] == ["budget", "final", "completion"]
+        assert events[-3] == {"type": "budget", "reason": "time"}
+
+    def test_a_cost_limit_streams_a_budget_event_before_the_exit_events(self):
+        events = list(runner(MockModel(script=_over_cost)).stream("go"))
+        assert [e["type"] for e in events][-3:] == ["budget", "final", "completion"]
+        assert events[-3] == {"type": "budget", "reason": "cost"}
+
+    def test_a_finished_run_has_no_budget_event(self):
+        events = list(runner(MockModel(script=[make_final("x")])).stream("go"))
+        assert not [e for e in events if e["type"] == "budget"]

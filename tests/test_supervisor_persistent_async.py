@@ -232,3 +232,31 @@ def test_without_persistence_a_failure_is_not_replanned():
     result = asyncio.run(AsyncSupervisor(model=model, agents={"worker": ("w", worker)}, verbose=False,
                                          max_subtask_retries=0).run("task"))
     assert len(model.calls) == 2 and result.outcome == "stuck" and worker.calls[0][1] is None
+
+
+def _astream(sup, task="task"):
+    async def collect():
+        return [e async for e in sup.astream(task)]
+    return asyncio.run(collect())
+
+
+class TestBudgetEvent:
+    def test_spent_time_streams_a_budget_event_before_synthesis(self, monkeypatch):
+        monkeypatch.setattr(RunBudget, "start",
+                            classmethod(lambda cls, minutes, clock=None: cls(0.0, lambda: 1.0)))
+        model = MockModel(script=[plan(step("s1", "worker")), "Stopped."])
+        events = _astream(supervisor(model, {"worker": AsyncScriptedRunner(("ok", "done"))}))
+        types = [e["type"] for e in events]
+        assert {"type": "budget", "reason": "time"} in events
+        assert types.index("budget") < types.index("synthesize_start")
+        assert events[-1]["result"].outcome == "out_of_time"
+
+    def test_a_specialist_cost_cap_streams_a_cost_budget_event(self):
+        model = MockModel(script=[plan(step("s1", "worker")), "Stopped."])
+        events = _astream(supervisor(model, {"worker": AsyncScriptedRunner(("partial", "out_of_budget"))}))
+        assert [e for e in events if e["type"] == "budget"] == [{"type": "budget", "reason": "cost"}]
+
+    def test_a_finished_run_has_no_budget_event(self):
+        model = MockModel(script=[plan(step("s1", "worker")), "Done."])
+        events = _astream(supervisor(model, {"worker": AsyncScriptedRunner(("ok", "done"))}))
+        assert not [e for e in events if e["type"] == "budget"]

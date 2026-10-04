@@ -33,7 +33,7 @@ from agentx_dev.Agents.Agent import AgentType
 from agentx_dev.Tools import logger
 from agentx_dev.Runner.Persistence import (
     OUTCOME_DONE, OUTCOME_OUT_OF_BUDGET, OUTCOME_OUT_OF_TIME, OUTCOME_PARTIAL, OUTCOME_STUCK,
-    Persistence, RunBudget, _clip, accepts_budget, apply_persistence,
+    Persistence, RunBudget, _clip, accepts_budget, apply_persistence, budget_event,
 )
 
 
@@ -613,6 +613,10 @@ def _unresolved_note(unresolved: List["SubtaskResult"]) -> str:
 def _log_replan(round_no: int, unresolved: List["SubtaskResult"]) -> None:
     ids = ", ".join(str(r.step_id) for r in unresolved)
     print(f"{_C_PLAN}[supervisor.replan] round {round_no}: recovering {ids}{_C_RESET}")
+
+
+def _log_budget(event: Dict[str, Any]) -> None:
+    print(f"{_C_ERROR}[supervisor.budget] the {event['reason']} limit ended the run{_C_RESET}")
 
 
 def _build_augmented_query(
@@ -1698,6 +1702,8 @@ class Supervisor:
           - {"type": "spawn",          "name": str, "capabilities": list}
           - {"type": "dispatch",       "agent": str, "query": str, "step": int}
           - {"type": "subtask_result", "result": SubtaskResult, "step": int}
+          - {"type": "replan",         "round": int, "unresolved": list, "plan": list}  (persistent)
+          - {"type": "budget",         "reason": "time" | "cost"}  (persistent; before synthesis)
           - {"type": "synthesize_start"}
           - {"type": "final",          "content": str}
           - {"type": "completion",     "result": SupervisorResult}   (last)
@@ -1761,6 +1767,11 @@ class Supervisor:
                     # a round that resolves nothing counts toward max_replans.
                     stagnant = 0 if _resolve_replaced(recovery, subtask_results) else stagnant + 1
 
+        spent = budget_event(budget_reason)
+        if spent is not None:
+            yield spent
+            if self.verbose:
+                _log_budget(spent)
         yield {"type": "synthesize_start"}
         persistent = self.persistence is not None
         unresolved = [r for r in subtask_results if _result_failed(r)] if persistent else []
@@ -2326,6 +2337,11 @@ class AsyncSupervisor:
                         await plan_run.aclose()
                     stagnant = 0 if _resolve_replaced(recovery, subtask_results) else stagnant + 1
 
+        spent = budget_event(budget_reason)
+        if spent is not None:
+            yield spent
+            if self.verbose:
+                _log_budget(spent)
         yield {"type": "synthesize_start"}
         persistent = self.persistence is not None
         unresolved = [r for r in subtask_results if _result_failed(r)] if persistent else []

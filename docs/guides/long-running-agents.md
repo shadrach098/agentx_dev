@@ -139,11 +139,12 @@ computed in default mode too (`done`, `partial` or `stuck`).
 | `{"type": "reflect", "rung": 2, "reason": "..."}` | A recovery step was added. |
 | `{"type": "compact", "before_tokens": ..., "after_tokens": ...}` | History was compacted. |
 | `{"type": "replan", "round": 2, "unresolved": [...], "plan": [...]}` | A Supervisor started a recovery round. |
+| `{"type": "budget", "reason": "time"}` | The time (`"time"`) or cost (`"cost"`) limit ended the run. Comes just before the closing events (a Supervisor's: before synthesis). |
 
 With `verbose=True` the same moments print as `[persist]` lines. The
 `AsyncAgentRunner.astream` replays its events after the run and does not
-emit `reflect` or `compact`, but `result.progress` and the log lines are
-the same.
+emit `reflect` or `compact` (it does emit `budget`), but `result.progress`
+and the log lines are the same.
 
 ## Settings
 

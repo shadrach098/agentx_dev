@@ -12,7 +12,7 @@ from agentx_dev.Agents import AgentFormattor, AgentCompletion, AgentPrompt
 from agentx_dev.ChatModel import BaseChatModel
 from agentx_dev.Runner.Persistence import (
     OUTCOME_ITERATION_LIMIT, OUTCOME_STUCK, Persistence, PersistenceMixin, RunBudget,
-    run_persistent_async, unrecognized_action_headline,
+    budget_event, run_persistent_async, unrecognized_action_headline,
 )
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
@@ -1159,6 +1159,9 @@ class AsyncAgentRunner(PersistenceMixin):
                 "result": tc.result,
                 "is_error": False,
             })
+        spent = budget_event(completion.outcome)
+        if spent is not None:
+            events.append(spent)       # a time or cost limit ended a persistent run
         events.append({"type": "final", "content": completion.content})
         events.append({"type": "completion", "completion": completion})
         for event in events:
