@@ -2190,8 +2190,15 @@ class AsyncSupervisor:
 
         subtask_results: List[SubtaskResult] = []
         results_by_id: Dict[str, SubtaskResult] = {}
-        async for event in self._run_plan(plan, subtask_results, results_by_id):
-            yield event
+        # `async for` does not close the inner async generator when this one is closed early, so
+        # close it explicitly: _run_plan's `finally:` (cancel and await the running sub-tasks)
+        # must complete before aclose() of astream returns.
+        plan_run = self._run_plan(plan, subtask_results, results_by_id)
+        try:
+            async for event in plan_run:
+                yield event
+        finally:
+            await plan_run.aclose()
 
         yield {"type": "synthesize_start"}
         final = await self._synthesize(user_task, list(subtask_results))
