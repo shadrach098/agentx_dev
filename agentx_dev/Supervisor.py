@@ -26,11 +26,15 @@ from typing import Callable, Dict, List, Optional, Set, Tuple, Union, Any
 
 from pydantic import BaseModel, Field
 
-from agentx_dev.ChatModel import BaseChatModel
+from agentx_dev.ChatModel import BaseChatModel, CostBudgetExceeded
 from agentx_dev.Runner.AgentRun import AgentRunner
 from agentx_dev.Runner.AsyncAgentRun import AsyncAgentRunner
 from agentx_dev.Agents.Agent import AgentType
 from agentx_dev.Tools import logger
+from agentx_dev.Runner.Persistence import (
+    OUTCOME_DONE, OUTCOME_OUT_OF_BUDGET, OUTCOME_OUT_OF_TIME, OUTCOME_PARTIAL, OUTCOME_STUCK,
+    Persistence, RunBudget, _clip, accepts_budget, apply_persistence,
+)
 
 
 # ----------------------------------------------------------------------------
@@ -237,6 +241,13 @@ class SubtaskResult(BaseModel):
     step_id: Optional[str] = None
     depends_on: List[str] = Field(default_factory=list)
     skipped: bool = False
+    # How the specialist's run ended: "done", "stuck", "iteration_limit",
+    # "out_of_time", "out_of_budget". Anything but "done" is a failed attempt.
+    outcome: str = "done"
+    # Persistent specialists attach their progress ledger (goal/done/failed/next).
+    progress: Optional[Dict[str, Any]] = None
+    # Set when a recovery round replaced this failed step; superseded failures no longer count.
+    superseded: bool = False
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -298,6 +309,8 @@ class SupervisorResult(BaseModel):
     content: str  # final synthesized answer
     subtasks: List[SubtaskResult] = Field(default_factory=list)
     plan: List[dict] = Field(default_factory=list)  # the decomposed plan
+    # "done" | "partial" | "stuck" | "out_of_time" | "out_of_budget"
+    outcome: str = "done"
 
 
 # ----------------------------------------------------------------------------
@@ -467,6 +480,43 @@ def _format_results_block(subtask_results: List[SubtaskResult]) -> str:
         + (f"\n  ERROR: {r.error}" if r.error else "")
         for r in subtask_results
     )
+
+
+def _outcome_of(completion: Any) -> str:
+    """The completion's ``outcome``; completions from custom runners that don't set one are "done"."""
+    value = getattr(completion, "outcome", OUTCOME_DONE)
+    return value if isinstance(value, str) else OUTCOME_DONE
+
+
+def _progress_of(completion: Any) -> Optional[dict]:
+    value = getattr(completion, "progress", None)
+    return value if isinstance(value, dict) else None
+
+
+def _unfinished_reason(outcome: str) -> str:
+    return f"the specialist ended with outcome '{outcome}' instead of finishing"
+
+
+def _result_failed(r: "SubtaskResult") -> bool:
+    """A real step that did not finish: it errored, or its specialist ended
+    with an outcome other than "done". Spawn bookkeeping and steps already
+    replaced by a recovery round do not count."""
+    return r.agent != "__spawn__" and not r.superseded and (bool(r.error) or r.outcome != OUTCOME_DONE)
+
+
+def _result_done(r: "SubtaskResult") -> bool:
+    return r.agent != "__spawn__" and not r.skipped and not r.superseded and not _result_failed(r)
+
+
+def _supervisor_outcome(results: List["SubtaskResult"], budget_reason: Optional[str] = None) -> str:
+    """``done`` when nothing is unresolved, ``partial`` when some steps
+    finished and some did not, ``stuck`` when none finished. A spent budget
+    (``budget_reason``) names why the unresolved work was left."""
+    if not any(_result_failed(r) for r in results):
+        return OUTCOME_DONE
+    if budget_reason:
+        return budget_reason
+    return OUTCOME_PARTIAL if any(_result_done(r) for r in results) else OUTCOME_STUCK
 
 
 def _build_augmented_query(
@@ -1210,6 +1260,8 @@ class Supervisor:
                     # Preserve the runner's validated Pydantic instance so
                     # downstream steps get typed data, not just prose.
                     output=getattr(completion, "output", None),
+                    outcome=_outcome_of(completion),
+                    progress=_progress_of(completion),
                 )
             except Exception as e:
                 last_error = str(e)
@@ -1227,7 +1279,10 @@ class Supervisor:
                 continue
 
             # No exception — now apply the caller's success criteria.
-            ok, reason = self._evaluate_success(result)
+            if result.outcome != OUTCOME_DONE:
+                ok, reason = False, _unfinished_reason(result.outcome)
+            else:
+                ok, reason = self._evaluate_success(result)
             if ok:
                 return result
             last_result = result
@@ -1293,6 +1348,7 @@ class Supervisor:
                 content="Supervisor failed to produce a valid plan.",
                 plan=[],
                 subtasks=[],
+                outcome=OUTCOME_STUCK,
             )
             yield {"type": "final", "content": result.content}
             yield {"type": "completion", "result": result}
@@ -1468,6 +1524,7 @@ class Supervisor:
         result = SupervisorResult(
             query=user_task, content=final,
             subtasks=subtask_results, plan=plan,
+            outcome=_supervisor_outcome(subtask_results),
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
@@ -1691,6 +1748,8 @@ class AsyncSupervisor:
                 candidate = SubtaskResult(
                     agent=agent_name, query=sub_query, content=completion.content,
                     output=getattr(completion, "output", None),
+                    outcome=_outcome_of(completion),
+                    progress=_progress_of(completion),
                 )
             except Exception as e:
                 last_error = str(e)
@@ -1707,7 +1766,10 @@ class AsyncSupervisor:
                     )
                 continue
 
-            ok, reason = self._evaluate_success(candidate)
+            if candidate.outcome != OUTCOME_DONE:
+                ok, reason = False, _unfinished_reason(candidate.outcome)
+            else:
+                ok, reason = self._evaluate_success(candidate)
             if ok:
                 result = candidate
                 break
@@ -1754,6 +1816,7 @@ class AsyncSupervisor:
                 query=user_task,
                 content="Supervisor failed to produce a valid plan.",
                 plan=[], subtasks=[],
+                outcome=OUTCOME_STUCK,
             )
             yield {"type": "final", "content": result.content}
             yield {"type": "completion", "result": result}
@@ -1912,6 +1975,7 @@ class AsyncSupervisor:
         result = SupervisorResult(
             query=user_task, content=final,
             subtasks=list(subtask_results), plan=plan,
+            outcome=_supervisor_outcome(subtask_results),
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
