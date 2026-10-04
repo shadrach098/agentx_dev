@@ -119,9 +119,12 @@ When a step doesn't finish, the Supervisor asks the planner for a
 recovery plan: steps that did finish are kept (never re-run) and can be
 used as inputs; the failed approach is described so it isn't repeated;
 the planner may pick a different specialist or, if you enabled
-spawning, create one. It keeps going while rounds make progress and
-stops after `max_replans` (default 3) rounds in a row that don't. The
-final answer says plainly which parts weren't completed.
+spawning, create one. A recovery step names the failed steps it redoes
+(`"replaces": [...]`); a failed step counts as resolved only once a step
+that replaces it finishes, so a recovery plan can't hide failed work by
+leaving it out. The Supervisor keeps going while rounds resolve failed
+steps and stops after `max_replans` (default 3) rounds in a row that
+don't. The final answer says plainly which parts weren't completed.
 
 `Persistence` is applied to specialist runners that don't have their
 own, for the duration of the run. `SupervisorResult.outcome` is

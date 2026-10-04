@@ -26,6 +26,11 @@ def plan(*steps):
     return json.dumps({"plan": list(steps)})
 
 
+def fix(id_, agent, replaces, query="q", deps=None):
+    """A recovery step that redoes the work of the steps in ``replaces``."""
+    return {**step(id_, agent, query, deps), "replaces": list(replaces)}
+
+
 class ScriptedRunner:
     """Fake specialist. Each call returns the next (content, outcome)."""
 
@@ -54,7 +59,8 @@ class TestRecovery:
     def test_replans_a_failing_step_and_finishes_in_round_two(self):
         worker = ScriptedRunner(("gave up", "stuck"))
         fixer = ScriptedRunner(("fixed", "done"))
-        model = MockModel(script=[plan(step("s1", "worker")), plan(step("fix", "fixer", "another way")), "All done."])
+        model = MockModel(script=[plan(step("s1", "worker")),
+                                  plan(fix("fix", "fixer", ["s1"], "another way")), "All done."])
         result = supervisor(model, {"worker": worker, "fixer": fixer}).run("task")
         assert result.outcome == "done" and result.content == "All done."
         assert [(s.step_id, s.superseded, s.outcome) for s in result.subtasks] == [
@@ -68,7 +74,7 @@ class TestRecovery:
         b = ScriptedRunner(("nope", "stuck"))
         fixer = ScriptedRunner(("fixed with A", "done"))
         model = MockModel(script=[plan(step("s1", "a"), step("s2", "b")),
-                                  plan(step("fix", "fixer", "use A", deps=["s1"])), "Done."])
+                                  plan(fix("fix", "fixer", ["s2"], "use A", deps=["s1"])), "Done."])
         result = supervisor(model, {"a": a, "b": b, "fixer": fixer}).run("task")
         assert len(a.calls) == 1
         assert "A-RESULT" in fixer.calls[0][0]
@@ -77,9 +83,11 @@ class TestRecovery:
     def test_a_recovery_step_reusing_an_old_id_gets_a_new_one(self):
         worker = ScriptedRunner(("gave up", "stuck"))
         fixer = ScriptedRunner(("fixed", "done"))
-        model = MockModel(script=[plan(step("s1", "worker")), plan(step("s1", "fixer")), "Done."])
+        model = MockModel(script=[plan(step("s1", "worker")), plan(fix("s1", "fixer", ["s1"])), "Done."])
         result = supervisor(model, {"worker": worker, "fixer": fixer}).run("task")
         assert [s.step_id for s in result.subtasks] == ["s1", "r2_s1"]
+        # "replaces" names the earlier step, so the renaming leaves it alone.
+        assert result.subtasks[0].superseded and result.outcome == "done"
 
     def test_stops_after_max_replans_without_progress(self):
         worker = ScriptedRunner(("x", "stuck"))
@@ -108,12 +116,78 @@ class TestRecovery:
     def test_stream_emits_a_replan_event(self):
         worker = ScriptedRunner(("gave up", "stuck"))
         fixer = ScriptedRunner(("fixed", "done"))
-        model = MockModel(script=[plan(step("s1", "worker")), plan(step("fix", "fixer")), "Done."])
+        model = MockModel(script=[plan(step("s1", "worker")), plan(fix("fix", "fixer", ["s1"])), "Done."])
         events = list(supervisor(model, {"worker": worker, "fixer": fixer}).stream("task"))
         replans = [e for e in events if e["type"] == "replan"]
         assert len(replans) == 1 and replans[0]["round"] == 2 and replans[0]["unresolved"] == ["s1"]
         assert replans[0]["plan"][0]["id"] == "fix"
         assert [e["type"] for e in events if e["type"] in ("plan", "completion")] == ["plan", "completion"]
+
+
+class TestReplaces:
+    """A failed step stays unresolved until a recovery step that replaces it finishes."""
+
+    def test_a_recovery_plan_that_omits_a_failed_step_does_not_hide_it(self):
+        fetch = ScriptedRunner(("gave up", "stuck"))
+        writer = ScriptedRunner(("Here is the report based on what we have.", "done"))
+        model = MockModel(script=[
+            plan(step("fetch", "fetch", "download the dataset"),
+                 step("write", "writer", "write the report", ["fetch"])),
+            plan(step("summary", "writer", "summarize whatever is available")),
+            "not json",
+            "FINAL",
+        ])
+        result = supervisor(model, {"fetch": fetch, "writer": writer}).run("download and report")
+        assert result.outcome == "partial"
+        by_id = {s.step_id: s for s in result.subtasks}
+        assert not by_id["fetch"].superseded and not by_id["write"].superseded
+        synth_prompt = model.calls[-1][0]["content"]
+        assert "did NOT finish" in synth_prompt
+        assert "[fetch] fetch" in synth_prompt and "[write] writer" in synth_prompt
+
+    def test_a_replacement_that_succeeds_supersedes_the_failed_step(self):
+        worker = ScriptedRunner(("gave up", "stuck"))
+        fixer = ScriptedRunner(("fixed", "done"))
+        model = MockModel(script=[plan(step("s1", "worker")), plan(fix("fix", "fixer", ["s1"])), "Done."])
+        result = supervisor(model, {"worker": worker, "fixer": fixer}).run("task")
+        assert result.outcome == "done" and len(model.calls) == 3
+        assert [(s.step_id, s.superseded) for s in result.subtasks] == [("s1", True), ("fix", False)]
+
+    def test_a_replacement_that_fails_leaves_the_original_unresolved(self):
+        worker = ScriptedRunner(("gave up", "stuck"))
+        fixer = ScriptedRunner(("also gave up", "stuck"))
+        model = MockModel(script=[plan(step("s1", "worker")), plan(fix("fix", "fixer", ["s1"])),
+                                  "not json", "Could not finish."])
+        result = supervisor(model, {"worker": worker, "fixer": fixer}).run("task")
+        assert result.outcome == "stuck"
+        assert [(s.step_id, s.superseded) for s in result.subtasks] == [("s1", False), ("fix", False)]
+        synth_prompt = model.calls[-1][0]["content"]
+        assert "[s1] worker" in synth_prompt and "[fix] fixer" in synth_prompt
+        # The next recovery round is told about both.
+        assert "[s1] worker" in model.calls[2][0]["content"] and "[fix] fixer" in model.calls[2][0]["content"]
+
+    def test_a_round_that_resolves_nothing_counts_toward_max_replans(self):
+        worker = ScriptedRunner(("gave up", "stuck"))
+        extra = ScriptedRunner(("side result", "done"))
+        model = MockModel(script=[plan(step("s1", "worker")), plan(step("side", "extra")), "Partial."])
+        result = supervisor(model, {"worker": worker, "extra": extra},
+                            persistence=Persistence(max_minutes=5, max_replans=1)).run("task")
+        assert len(model.calls) == 3                     # plan, one recovery round, synthesis
+        assert result.outcome == "partial" and result.content == "Partial."
+
+    def test_the_recovery_note_explains_replaces(self):
+        worker = ScriptedRunner(("gave up", "stuck"))
+        model = MockModel(script=[plan(step("s1", "worker")), "not json", "Partial."])
+        supervisor(model, {"worker": worker}).run("task")
+        assert '"replaces"' in model.calls[1][0]["content"]
+
+    def test_sanitize_keeps_only_replaceable_ids(self):
+        sane, repairs = _sanitize_plan(
+            [{"id": "fix", "agent": "x", "query": "q", "replaces": ["s1", "ghost", "s1"]},
+             {"id": "other", "agent": "x", "query": "q", "replaces": "s1"}],
+            replaceable={"s1"})
+        assert sane[0]["replaces"] == ["s1"] and "replaces" not in sane[1]
+        assert any("ghost" in r for r in repairs)
 
 
 class TestSharedBudget:

@@ -10,7 +10,7 @@ from agentx_dev import CostBudgetExceeded, Persistence
 from agentx_dev.Runner.Persistence import RunBudget
 from agentx_dev.Supervisor import AsyncSupervisor
 from tests.conftest import MockModel
-from tests.test_supervisor_persistent import ScriptedRunner, plan, step
+from tests.test_supervisor_persistent import ScriptedRunner, fix, plan, step
 
 P = Persistence(max_minutes=5)
 
@@ -30,11 +30,62 @@ def run(sup, task="task"):
     return asyncio.run(sup.run(task))
 
 
+class TestReplaces:
+    """Async twins of the sync ``replaces`` scenarios."""
+
+    def test_a_recovery_plan_that_omits_a_failed_step_does_not_hide_it(self):
+        fetch = AsyncScriptedRunner(("gave up", "stuck"))
+        writer = AsyncScriptedRunner(("Here is the report based on what we have.", "done"))
+        model = MockModel(script=[
+            plan(step("fetch", "fetch", "download the dataset"),
+                 step("write", "writer", "write the report", ["fetch"])),
+            plan(step("summary", "writer", "summarize whatever is available")),
+            "not json",
+            "FINAL",
+        ])
+        result = run(supervisor(model, {"fetch": fetch, "writer": writer}), "download and report")
+        assert result.outcome == "partial"
+        by_id = {s.step_id: s for s in result.subtasks}
+        assert not by_id["fetch"].superseded and not by_id["write"].superseded
+        synth_prompt = model.calls[-1][0]["content"]
+        assert "did NOT finish" in synth_prompt
+        assert "[fetch] fetch" in synth_prompt and "[write] writer" in synth_prompt
+
+    def test_a_replacement_that_succeeds_supersedes_the_failed_step(self):
+        worker = AsyncScriptedRunner(("gave up", "stuck"))
+        fixer = AsyncScriptedRunner(("fixed", "done"))
+        model = MockModel(script=[plan(step("s1", "worker")), plan(fix("fix", "fixer", ["s1"])), "Done."])
+        result = run(supervisor(model, {"worker": worker, "fixer": fixer}))
+        assert result.outcome == "done" and len(model.calls) == 3
+        assert [(s.step_id, s.superseded) for s in result.subtasks] == [("s1", True), ("fix", False)]
+
+    def test_a_replacement_that_fails_leaves_the_original_unresolved(self):
+        worker = AsyncScriptedRunner(("gave up", "stuck"))
+        fixer = AsyncScriptedRunner(("also gave up", "stuck"))
+        model = MockModel(script=[plan(step("s1", "worker")), plan(fix("fix", "fixer", ["s1"])),
+                                  "not json", "Could not finish."])
+        result = run(supervisor(model, {"worker": worker, "fixer": fixer}))
+        assert result.outcome == "stuck"
+        assert [(s.step_id, s.superseded) for s in result.subtasks] == [("s1", False), ("fix", False)]
+        synth_prompt = model.calls[-1][0]["content"]
+        assert "[s1] worker" in synth_prompt and "[fix] fixer" in synth_prompt
+
+    def test_a_round_that_resolves_nothing_counts_toward_max_replans(self):
+        worker = AsyncScriptedRunner(("gave up", "stuck"))
+        extra = AsyncScriptedRunner(("side result", "done"))
+        model = MockModel(script=[plan(step("s1", "worker")), plan(step("side", "extra")), "Partial."])
+        result = run(supervisor(model, {"worker": worker, "extra": extra},
+                                persistence=Persistence(max_minutes=5, max_replans=1)))
+        assert len(model.calls) == 3
+        assert result.outcome == "partial" and result.content == "Partial."
+
+
 class TestRecovery:
     def test_replans_a_failing_step_and_finishes_in_round_two(self):
         worker = AsyncScriptedRunner(("gave up", "stuck"))
         fixer = AsyncScriptedRunner(("fixed", "done"))
-        model = MockModel(script=[plan(step("s1", "worker")), plan(step("fix", "fixer", "another way")), "All done."])
+        model = MockModel(script=[plan(step("s1", "worker")),
+                                  plan(fix("fix", "fixer", ["s1"], "another way")), "All done."])
         result = run(supervisor(model, {"worker": worker, "fixer": fixer}))
         assert result.outcome == "done" and result.content == "All done."
         assert [(s.step_id, s.superseded) for s in result.subtasks] == [("s1", True), ("fix", False)]
@@ -46,7 +97,7 @@ class TestRecovery:
         b = AsyncScriptedRunner(("nope", "stuck"))
         fixer = AsyncScriptedRunner(("fixed with A", "done"))
         model = MockModel(script=[plan(step("s1", "a"), step("s2", "b")),
-                                  plan(step("fix", "fixer", "use A", deps=["s1"])), "Done."])
+                                  plan(fix("fix", "fixer", ["s2"], "use A", deps=["s1"])), "Done."])
         result = run(supervisor(model, {"a": a, "b": b, "fixer": fixer}))
         assert len(a.calls) == 1 and "A-RESULT" in fixer.calls[0][0] and result.outcome == "done"
 
@@ -68,7 +119,7 @@ class TestRecovery:
     def test_astream_emits_a_replan_event(self):
         worker = AsyncScriptedRunner(("gave up", "stuck"))
         fixer = AsyncScriptedRunner(("fixed", "done"))
-        model = MockModel(script=[plan(step("s1", "worker")), plan(step("fix", "fixer")), "Done."])
+        model = MockModel(script=[plan(step("s1", "worker")), plan(fix("fix", "fixer", ["s1"])), "Done."])
 
         async def collect():
             return [e async for e in supervisor(model, {"worker": worker, "fixer": fixer}).astream("task")]

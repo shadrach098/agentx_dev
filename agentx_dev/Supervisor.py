@@ -246,7 +246,8 @@ class SubtaskResult(BaseModel):
     outcome: str = "done"
     # Persistent specialists attach their progress ledger (goal/done/failed/next).
     progress: Optional[Dict[str, Any]] = None
-    # Set when a recovery round replaced this failed step; superseded failures no longer count.
+    # Set when a recovery step that "replaces" this failed step finished "done";
+    # superseded failures no longer count.
     superseded: bool = False
 
     model_config = {"arbitrary_types_allowed": True}
@@ -528,8 +529,23 @@ def _budget_reason(budget: Optional[RunBudget], results: List["SubtaskResult"]) 
     return None
 
 
-def _count_done(results: List["SubtaskResult"]) -> int:
-    return sum(1 for r in results if _result_done(r))
+def _resolve_replaced(recovery: List[dict], results: List["SubtaskResult"]) -> int:
+    """After a recovery round: mark each unresolved step that a recovery step
+    ``replaces`` as superseded, but only when that recovery step finished
+    ``done``. Steps nothing replaced, or whose replacement failed, stay
+    unresolved. Returns how many steps were resolved (the round's progress)."""
+    by_id = {r.step_id: r for r in results if r.step_id and r.agent != "__spawn__"}
+    resolved = 0
+    for step in recovery:
+        new = by_id.get(step.get("id"))
+        if new is None or not _result_done(new):
+            continue
+        for old_id in step.get("replaces") or []:
+            old = by_id.get(old_id)
+            if old is not None and _result_failed(old):
+                old.superseded = True
+                resolved += 1
+    return resolved
 
 
 def _recovery_note(results: List["SubtaskResult"], round_no: int) -> str:
@@ -559,7 +575,11 @@ def _recovery_note(results: List["SubtaskResult"], round_no: int) -> str:
             lines.append("      attempts that failed:")
             lines += [f"        * {t}" for t in tried[-5:]]
     lines += ["", "Give every new step a NEW id. Pick a different specialist or method, or spawn one if the "
-                  "catalog cannot do it. Only reference completed step ids in depends_on."]
+                  "catalog cannot do it. Only reference completed step ids in depends_on.",
+              "When a new step redoes the work of a step that did not finish, list that step's id in the "
+              "new step's \"replaces\" field, for example \"replaces\": [\"step_2\"]. A step that did not "
+              "finish stays unresolved (and the task cannot be reported complete) unless a step that "
+              "replaces it finishes."]
     return "\n".join(lines)
 
 
@@ -775,6 +795,7 @@ def _plan_uses_deps(plan: List[dict]) -> bool:
 
 def _sanitize_plan(
     plan: List[dict], verbose: bool = False, known_ids: Iterable[str] = (),
+    replaceable: Optional[Iterable[str]] = None,
 ) -> Tuple[List[dict], List[str]]:
     """Normalize a planner-emitted plan into a valid DAG. Deterministic;
     never raises. Returns ``(plan, repairs)`` where ``repairs`` lists
@@ -787,6 +808,9 @@ def _sanitize_plan(
       3. drop self-dependencies
       4. break cycles by dropping the back-edge in plan order
       5. spawn steps cannot be depended on (such deps are dropped)
+      6. (recovery plans, when ``replaceable`` is given) ``replaces`` keeps
+         only ids of steps that are currently unresolved; anything else is
+         dropped, and an empty or malformed ``replaces`` is removed
 
     ``known_ids`` are step ids finished in earlier recovery rounds; a
     dependency on one is valid and kept (it is simply not an edge in this
@@ -884,6 +908,26 @@ def _sanitize_plan(
         src, tgt = back_edge
         plan[[s["id"] for s in plan].index(tgt)]["depends_on"].remove(src)
         repairs.append(f"cycle broken: dropped dependency {src!r} from step {tgt!r}")
+
+    # -- 6. replaces (recovery plans only) ----------------------------------
+    if replaceable is not None:
+        allowed = set(replaceable)
+        for step in plan:
+            if "replaces" not in step:
+                continue
+            raw = step.pop("replaces")
+            if not isinstance(raw, list):
+                repairs.append(f"step {step['id']!r}: replaces was not a list -- dropped")
+                continue
+            kept: List[str] = []
+            for rid in raw:
+                if rid in allowed:
+                    if rid not in kept:
+                        kept.append(rid)
+                else:
+                    repairs.append(f"step {step['id']!r}: replaces unknown or finished step {rid!r} -- dropped")
+            if kept:
+                step["replaces"] = kept
 
     if repairs and verbose:
         for r in repairs:
@@ -1188,7 +1232,8 @@ class Supervisor:
             return []
         known = {r.step_id for r in results
                  if r.step_id and r.agent != "__spawn__" and not _result_failed(r) and not r.superseded}
-        sane, _ = _sanitize_plan(raw, verbose=self.verbose, known_ids=known)
+        replaceable = {r.step_id for r in results if r.step_id and _result_failed(r)}
+        sane, _ = _sanitize_plan(raw, verbose=self.verbose, known_ids=known, replaceable=replaceable)
         prior = {r.step_id for r in results if r.step_id}
         return _rename_colliding_ids(sane, prior, round_no)
 
@@ -1705,9 +1750,6 @@ class Supervisor:
                     if not recovery:
                         break
                     round_no += 1
-                    for r in unresolved:
-                        r.superseded = True
-                    done_before = _count_done(subtask_results)
                     yield {"type": "replan", "round": round_no,
                            "unresolved": [r.step_id for r in unresolved], "plan": recovery}
                     if self.verbose:
@@ -1715,7 +1757,9 @@ class Supervisor:
                     plan.extend(recovery)
                     yield from self._run_plan(recovery, subtask_results, results_by_id,
                                               spawn_rewrites, budget)
-                    stagnant = 0 if _count_done(subtask_results) > done_before else stagnant + 1
+                    # Progress is an unresolved step resolved by a replacement that finished;
+                    # a round that resolves nothing counts toward max_replans.
+                    stagnant = 0 if _resolve_replaced(recovery, subtask_results) else stagnant + 1
 
         yield {"type": "synthesize_start"}
         persistent = self.persistence is not None
@@ -1915,7 +1959,8 @@ class AsyncSupervisor:
             return []
         known = {r.step_id for r in results
                  if r.step_id and r.agent != "__spawn__" and not _result_failed(r) and not r.superseded}
-        sane, _ = _sanitize_plan(raw, verbose=self.verbose, known_ids=known)
+        replaceable = {r.step_id for r in results if r.step_id and _result_failed(r)}
+        sane, _ = _sanitize_plan(raw, verbose=self.verbose, known_ids=known, replaceable=replaceable)
         prior = {r.step_id for r in results if r.step_id}
         return _rename_colliding_ids(sane, prior, round_no)
 
@@ -2268,9 +2313,6 @@ class AsyncSupervisor:
                     if not recovery:
                         break
                     round_no += 1
-                    for r in unresolved:
-                        r.superseded = True
-                    done_before = _count_done(subtask_results)
                     yield {"type": "replan", "round": round_no,
                            "unresolved": [r.step_id for r in unresolved], "plan": recovery}
                     if self.verbose:
@@ -2282,7 +2324,7 @@ class AsyncSupervisor:
                             yield event
                     finally:
                         await plan_run.aclose()
-                    stagnant = 0 if _count_done(subtask_results) > done_before else stagnant + 1
+                    stagnant = 0 if _resolve_replaced(recovery, subtask_results) else stagnant + 1
 
         yield {"type": "synthesize_start"}
         persistent = self.persistence is not None

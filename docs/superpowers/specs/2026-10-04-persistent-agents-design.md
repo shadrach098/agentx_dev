@@ -241,8 +241,19 @@ count for this episode is below `max_replans`, the Supervisor replans:
   chose that are new are kept as written. `depends_on` may reference completed step ids
   from earlier rounds; `_sanitize_plan` gains a `known_ids` argument for
   this. The 3.3 DAG semantics are otherwise unchanged.
-- A round that produces at least one newly `done` step resets the replan
-  count (progress). Otherwise the count increments.
+- **`replaces`.** A recovery step may carry `"replaces": [step ids]` naming
+  the unresolved steps whose work it redoes. The recovery note given to the
+  planner describes the field. `_sanitize_plan` (its `replaceable`
+  argument) keeps only ids of currently unresolved steps and drops the
+  rest; the ids name the earlier steps, so they are never round-prefixed.
+  An unresolved step is marked superseded only when a recovery step that
+  replaces it finishes `done`. A step that nothing replaced, or whose
+  replacement failed, stays unresolved: it is offered to the next recovery
+  round, listed in the synthesis prompt, and keeps the outcome from being
+  `done`. A recovery plan cannot hide failed work by leaving it out.
+- A round that resolves at least one unresolved step (a replacing step
+  finished `done`) resets the replan count (progress). Otherwise, even if
+  some other recovery step finished, the count increments.
 - The loop ends when there are no unresolved steps, the budget is spent,
   the replan count is exhausted, or the planner returns an empty plan. A
   planner failure keeps all results so far and proceeds to synthesis.
