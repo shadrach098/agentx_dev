@@ -1,5 +1,5 @@
 from agentx_dev.Runner.Persistence import (
-    ProgressLedger, REFLECTION_RUNGS, StuckTracker, _obs_hash, _signature,
+    ProgressLedger, REFLECTION_RUNGS, StuckTracker, _signature,
     reflection_message,
 )
 
@@ -37,47 +37,55 @@ class TestLedger:
         d = led.to_dict()
         assert d == {"goal": "g", "done": ["t({}) -> ok"], "failed": [], "next": ""}
 
+    def test_the_report_counts_every_call_even_past_the_cap(self):
+        led = ProgressLedger(max_entries=3)
+        for i in range(10):
+            led.record("t", {"i": i}, "ok", False)
+        for i in range(7):
+            led.record("u", {"i": i}, "boom", True)
+        text = led.render()
+        assert len(led.done) == 3 and len(led.failed) == 3
+        assert "Done (10 calls" in text and "Failed (7 calls" in text
+
 
 class TestTracker:
     def test_three_errors_in_a_row_fire_even_with_different_calls(self):
         t = StuckTracker(3)
-        assert t.observe("a", "e1", True) == (None, False)
-        assert t.observe("b", "e2", True) == (None, False)
-        reason, progressed = t.observe("c", "e3", True)
+        assert t.observe("a", True) == (None, False)
+        assert t.observe("b", True) == (None, False)
+        reason, progressed = t.observe("c", True)
         assert reason == "3 tool errors in a row" and not progressed
 
     def test_three_identical_calls_fire(self):
         t = StuckTracker(3)
-        assert t.observe("a", "1", False) == (None, True)
-        assert t.observe("b", "2", False) == (None, True)
-        assert t.observe("b", "2", False) == (None, False)
-        reason, progressed = t.observe("b", "2", False)
+        assert t.observe("a", False) == (None, True)
+        assert t.observe("b", False) == (None, True)
+        assert t.observe("b", False) == (None, False)
+        reason, progressed = t.observe("b", False)
         assert reason == "the same call repeated 3 times" and not progressed
 
-    def test_identical_results_from_different_calls_fire(self):
+    def test_distinct_successful_calls_never_fire_however_many(self):
+        """Identical *results* are not a signal: a tool that always answers "ok" is healthy."""
         t = StuckTracker(3)
-        assert t.observe("a", "o", False) == (None, True)
-        assert t.observe("b", "o", False) == (None, False)
-        reason, _ = t.observe("c", "o", False)
-        assert reason == "3 identical results in a row"
+        for i in range(50):
+            assert t.observe(f"write::{i}", False) == (None, True)
 
     def test_success_resets_the_error_streak(self):
         t = StuckTracker(3)
-        t.observe("a", "e1", True)
-        t.observe("b", "e2", True)
-        assert t.observe("c", "fine", False) == (None, True)
-        assert t.observe("d", "e3", True) == (None, False)      # streak restarted at 1
+        t.observe("a", True)
+        t.observe("b", True)
+        assert t.observe("c", False) == (None, True)
+        assert t.observe("d", True) == (None, False)      # streak restarted at 1
 
     def test_reset_clears_the_counters(self):
         t = StuckTracker(3)
-        t.observe("a", "e1", True)
-        t.observe("b", "e2", True)
+        t.observe("a", True)
+        t.observe("b", True)
         t.reset()
-        assert t.observe("c", "e3", True) == (None, False)
+        assert t.observe("c", True) == (None, False)
 
-    def test_signature_and_hash_are_stable(self):
+    def test_signature_is_stable(self):
         assert _signature("t", {"b": 1, "a": 2}) == _signature("t", {"a": 2, "b": 1})
-        assert _obs_hash("x") == _obs_hash("x") and _obs_hash("x") != _obs_hash("y")
 
 
 class TestReflectionLadder:

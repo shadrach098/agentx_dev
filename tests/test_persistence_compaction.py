@@ -91,6 +91,20 @@ class TestApply:
         roles = [m["role"] for m in h]
         assert all(a != b for a, b in zip(roles, roles[1:])), roles
 
+    def test_a_media_only_task_message_keeps_a_single_notes_block(self):
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+        h = [{"role": "user", "content": [img]}]
+        for i in range(5):
+            h.append({"role": "assistant", "content": f"a{i}"})
+            h.append({"role": "user", "content": f"obs{i}"})
+        apply_compaction(h, 0, plan_compaction(h, 0, 2)[0], "N1")
+        for i in range(5, 9):
+            h.append({"role": "assistant", "content": f"a{i}"})
+            h.append({"role": "user", "content": f"obs{i}"})
+        apply_compaction(h, 0, plan_compaction(h, 0, 2)[0], "N2")
+        text = "".join(p.get("text", "") for p in h[0]["content"] if isinstance(p, dict))
+        assert text.count(NOTES_MARK) == 1 and "N2" in text and "N1" not in text
+
     def test_split_notes_round_trip(self):
         base, prior = _split_notes("TASK\n\n" + NOTES_MARK + "\nold notes")
         assert base == "TASK" and prior == "old notes"

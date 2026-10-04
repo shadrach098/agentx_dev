@@ -10,7 +10,6 @@ Everything here is opt-in. ``AgentRunner(persistence=Persistence(...))`` and
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import inspect
 import json
 import logging
@@ -135,10 +134,6 @@ def _signature(name: str, args: Any) -> str:
         return f"{name}::{args!r}"
 
 
-def _obs_hash(text: Any) -> str:
-    return hashlib.sha1(str(text).encode("utf-8", "replace")).hexdigest()
-
-
 # ---------------------------------------------------------------------------
 # Progress ledger (kept by the framework, not the model)
 # ---------------------------------------------------------------------------
@@ -153,13 +148,17 @@ class ProgressLedger:
     failed: List[str] = field(default_factory=list)
     next: str = ""
     max_entries: int = 40
+    done_count: int = 0       # totals; the lists above keep only the last ``max_entries``
+    failed_count: int = 0
 
     def record(self, name: str, args: Any, result: Any, is_error: bool, rung: int = 0) -> None:
         line = f"{name}({_short_args(args)}) -> {_first_line(result)}"
         if is_error:
+            self.failed_count += 1
             self.failed.append(f"{line} [rung {rung}]")
             del self.failed[: -self.max_entries]
         else:
+            self.done_count += 1
             self.done.append(line)
             del self.done[: -self.max_entries]
 
@@ -179,8 +178,8 @@ class ProgressLedger:
         done = "\n".join(f"  - {x}" for x in self.done[-10:]) or "  (nothing yet)"
         return (
             f"Goal: {_clip(self.goal, 300)}\n"
-            f"Done ({len(self.done)} calls, last 10 shown):\n{done}\n"
-            f"Failed ({len(self.failed)} calls):\n{self.render_failed()}\n"
+            f"Done ({self.done_count} calls, last 10 shown):\n{done}\n"
+            f"Failed ({self.failed_count} calls):\n{self.render_failed()}\n"
             f"Next: {self.next or '(not stated)'}"
         )
 
@@ -190,41 +189,37 @@ class ProgressLedger:
 # ---------------------------------------------------------------------------
 
 class StuckTracker:
-    """Counts consecutive bad turns. A stuck signal fires when any streak
-    reaches ``reflect_after``; a successful call that is neither a repeat nor
-    a repeated result is progress and clears every streak."""
+    """Counts consecutive bad turns. A stuck signal fires when the same call
+    repeats ``reflect_after`` times or ``reflect_after`` tool errors come in a
+    row; a successful call that is not a repeat is progress and clears both
+    streaks. Identical *results* are deliberately not a signal: constant
+    success strings ("ok") are normal for write/delete tools in a healthy run."""
 
     def __init__(self, reflect_after: int):
         self.n = reflect_after
         self._last_sig: Optional[str] = None
-        self._last_obs: Optional[str] = None
         self.reset()
 
     def reset(self) -> None:
         self.same = 0
         self.errors = 0
-        self.same_obs = 0
 
-    def observe(self, sig: str, obs: str, is_error: bool) -> Tuple[Optional[str], bool]:
+    def observe(self, sig: str, is_error: bool) -> Tuple[Optional[str], bool]:
         """Returns ``(reason, progressed)``; ``reason`` is None unless a streak fired."""
         same_sig = sig == self._last_sig
-        same_obs = obs == self._last_obs
-        self._last_sig, self._last_obs = sig, obs
+        self._last_sig = sig
         self.same = self.same + 1 if same_sig else 1
-        self.same_obs = self.same_obs + 1 if same_obs else 1
         self.errors = self.errors + 1 if is_error else 0
-        if (not is_error) and (not same_sig) and (not same_obs):
+        if (not is_error) and (not same_sig):
             # Progress. This call is occurrence #1 of its own streak, which
             # keeps "3 identical calls" meaning three calls, as before.
-            self.same = self.same_obs = 1
+            self.same = 1
             self.errors = 0
             return None, True
         if self.errors >= self.n:
             return f"{self.errors} tool errors in a row", False
         if self.same >= self.n:
             return f"the same call repeated {self.same} times", False
-        if self.same_obs >= self.n:
-            return f"{self.same_obs} identical results in a row", False
         return None, False
 
 
@@ -337,7 +332,7 @@ def _with_notes(content: Any, notes: str) -> Any:
         if isinstance(p, dict) and p.get("type") == "text":
             out[i] = {**p, "text": str(p.get("text", "")) + block}
             return out
-    return out + [{"type": "text", "text": block.lstrip()}]
+    return out + [{"type": "text", "text": block}]
 
 
 def plan_compaction(
@@ -680,7 +675,7 @@ class PersistentRun:
         progressed = False
         for name, args, text, is_error in calls:
             self.ledger.record(name, args, text, is_error, self.rung)
-            r, p = self.tracker.observe(_signature(name, args), _obs_hash(text), is_error)
+            r, p = self.tracker.observe(_signature(name, args), is_error)
             reason = reason or r
             progressed = progressed or p
         if reason is None:
