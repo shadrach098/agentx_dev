@@ -243,3 +243,163 @@ def reflection_message(rung: int, reason: str, failed_text: str) -> str:
     Rungs past the last reuse the last one."""
     body = REFLECTION_RUNGS[min(rung, len(REFLECTION_RUNGS)) - 1].format(failed=failed_text)
     return f"\n\n[framework] You appear to be stuck ({reason}); recovery step {rung}. {body}"
+
+
+# ---------------------------------------------------------------------------
+# History compaction
+# ---------------------------------------------------------------------------
+
+NOTES_MARK = "[Progress notes -- earlier turns were compacted]"
+
+NOTES_PROMPT = (
+    "You are compacting the working notes of an autonomous agent that is partway through a task.\n"
+    "Write notes the agent will rely on to continue without the earlier turns: facts and values it "
+    "learned, file paths and identifiers, what is already done, and what remains. Do not include "
+    "failed attempts (they are tracked separately). Be concrete and keep it under 400 words.\n\n"
+    "{prior}EARLIER TURNS TO COMPACT:\n{middle}"
+)
+
+
+def estimate_tokens(history: List[Dict[str, Any]]) -> int:
+    """Cheap size estimate (no tokenizer): characters / 4, with each media part
+    counted as a flat 1,500 tokens."""
+    chars = 0
+    media = 0
+    for m in history:
+        c = m.get("content")
+        if isinstance(c, str):
+            chars += len(c)
+        elif isinstance(c, list):
+            for p in c:
+                if not isinstance(p, dict):
+                    chars += len(str(p))
+                    continue
+                kind = p.get("type")
+                src = p.get("source") or {}
+                if kind == "text":
+                    chars += len(str(p.get("text", "")))
+                elif kind == "document" and src.get("type") == "text":
+                    chars += len(str(src.get("data", "")))
+                else:
+                    media += 1
+        if m.get("tool_calls"):
+            chars += len(json.dumps(m["tool_calls"], default=str))
+    return chars // 4 + media * 1500
+
+
+def _render_message(m: Dict[str, Any]) -> str:
+    role = m.get("role", "?")
+    c = m.get("content")
+    if isinstance(c, list):
+        c = " ".join(str(p.get("text", "[media]")) if isinstance(p, dict) else str(p) for p in c)
+    lines = [f"{role}: {_clip(c or '', 1500)}"]
+    for tc in m.get("tool_calls") or []:
+        fn = tc.get("function", {})
+        lines.append(f"  -> {fn.get('name')}({_clip(fn.get('arguments', ''), 300)})")
+    return "\n".join(lines)
+
+
+def render_for_summary(middle: List[Dict[str, Any]], prior_notes: str = "", cap: int = 40_000) -> str:
+    rendered = "\n".join(_render_message(m) for m in middle)
+    if len(rendered) > cap:
+        rendered = "[... oldest turns dropped ...]\n" + rendered[-cap:]
+    prior = f"NOTES SO FAR:\n{prior_notes}\n\n" if prior_notes else ""
+    return NOTES_PROMPT.format(prior=prior, middle=rendered)
+
+
+_NOTES_SEP = "\n\n" + NOTES_MARK + "\n"
+
+
+def _split_notes(content: Any) -> Tuple[Any, str]:
+    """``(content_without_notes, prior_notes_text)`` for a task message's content."""
+    if isinstance(content, str):
+        base, _, notes = content.partition(_NOTES_SEP)
+        return base, notes
+    if isinstance(content, list):
+        out: List[Any] = []
+        notes = ""
+        for p in content:
+            if isinstance(p, dict) and p.get("type") == "text" and NOTES_MARK in str(p.get("text", "")):
+                base, _, notes = str(p["text"]).partition(_NOTES_SEP)
+                out.append({**p, "text": base})
+            else:
+                out.append(p)
+        return out, notes
+    return content, ""
+
+
+def _with_notes(content: Any, notes: str) -> Any:
+    block = _NOTES_SEP + notes
+    if isinstance(content, str):
+        return content + block
+    out = list(content)
+    for i, p in enumerate(out):
+        if isinstance(p, dict) and p.get("type") == "text":
+            out[i] = {**p, "text": str(p.get("text", "")) + block}
+            return out
+    return out + [{"type": "text", "text": block.lstrip()}]
+
+
+def plan_compaction(
+    history: List[Dict[str, Any]], task_index: int, keep_recent: int,
+) -> Optional[Tuple[int, List[Dict[str, Any]]]]:
+    """Decide what to compact. Returns ``(tail_start, middle_messages)`` or
+    None when there is nothing worth compacting.
+
+    The kept tail starts at an ``assistant`` message: the task message before
+    it stays a user turn (valid alternation for both providers), and an
+    assistant turn's tool results follow it, so a native tool call is never
+    separated from its result."""
+    n = len(history)
+    tail = max(task_index + 1, n - keep_recent)
+    while tail > task_index + 1 and (tail >= n or history[tail].get("role") != "assistant"):
+        tail -= 1
+    if tail >= n or history[tail].get("role") != "assistant":
+        return None
+    middle = history[task_index + 1: tail]
+    if len(middle) < 2:
+        return None
+    return tail, middle
+
+
+def apply_compaction(history: List[Dict[str, Any]], task_index: int, tail: int, notes: str) -> None:
+    """Replace ``history[task_index+1:tail]`` with ``notes`` attached to the task message (in place)."""
+    msg = history[task_index]
+    base, _ = _split_notes(msg.get("content"))
+    history[task_index] = {**msg, "content": _with_notes(base, notes)}
+    del history[task_index + 1: tail]
+
+
+def build_notes(summary: Optional[str], prior: str, failed_text: str) -> str:
+    """The notes block: the model's summary (or, failing that, the previous
+    notes) plus the ledger's failed attempts, verbatim."""
+    body = (summary or "").strip()
+    if not body:
+        body = prior.split("\n\nFailed attempts so far:")[0].strip()
+    if not body:
+        body = "(earlier turns were compacted; no summary was available)"
+    return f"{body}\n\nFailed attempts so far:\n{failed_text or '  (none)'}"
+
+
+def compact_history(
+    history: List[Dict[str, Any]],
+    *,
+    task_index: int,
+    keep_recent: int,
+    summarize: Callable[[str], str],
+    failed_text: str = "",
+) -> bool:
+    """Plan, summarize, and apply one compaction. Returns False when there was
+    nothing to compact. A failing ``summarize`` falls back to the ledger alone."""
+    plan = plan_compaction(history, task_index, keep_recent)
+    if plan is None:
+        return False
+    tail, middle = plan
+    _, prior = _split_notes(history[task_index].get("content"))
+    summary: Optional[str] = None
+    try:
+        summary = summarize(render_for_summary(middle, prior))
+    except Exception as e:
+        logger.warning("compaction summary failed (%s); using the ledger alone", e)
+    apply_compaction(history, task_index, tail, build_notes(summary, prior, failed_text))
+    return True
