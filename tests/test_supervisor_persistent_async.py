@@ -4,6 +4,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from agentx_dev import CostBudgetExceeded, Persistence
 from agentx_dev.Runner.Persistence import RunBudget
 from agentx_dev.Supervisor import AsyncSupervisor
@@ -156,6 +158,21 @@ class TestSharedBudget:
 
         result = run(supervisor(MockModel(script=script), {"worker": AsyncScriptedRunner(("fine", "done"))}))
         assert result.content.startswith("Stopped: the cost budget was reached") and "A: fine" in result.content
+
+
+class TestRetriesStopWhenTheBudgetIsSpent:
+    @pytest.mark.parametrize("outcome", ["out_of_budget", "out_of_time"])
+    def test_a_spent_budget_outcome_is_not_retried(self, outcome):
+        worker = AsyncScriptedRunner(*[("partial", outcome)] * 5)
+        model = MockModel(script=[plan(step("s1", "worker")), "Stopped."])
+        run(supervisor(model, {"worker": worker}, max_subtask_retries=2))
+        assert len(worker.calls) == 1
+
+    def test_other_unfinished_outcomes_still_use_the_retries(self):
+        worker = AsyncScriptedRunner(*[("x", "stuck")] * 5)
+        model = MockModel(script=[plan(step("s1", "worker")), "not json", "Final."])
+        run(supervisor(model, {"worker": worker}, max_subtask_retries=2))
+        assert len(worker.calls) == 3
 
 
 def test_without_persistence_a_failure_is_not_replanned():
