@@ -403,3 +403,323 @@ def compact_history(
         logger.warning("compaction summary failed (%s); using the ledger alone", e)
     apply_compaction(history, task_index, tail, build_notes(summary, prior, failed_text))
     return True
+
+
+# ---------------------------------------------------------------------------
+# Transient errors, budget plumbing, runner configuration helpers
+# ---------------------------------------------------------------------------
+
+_TRANSIENT_NAME = re.compile(r"Timeout|Connection|RateLimit|Overloaded|ServiceUnavailable|InternalServer")
+
+
+def is_transient(exc: BaseException) -> bool:
+    """True for errors worth waiting out: HTTP 408/429/5xx, timeouts,
+    connection errors, rate-limit and overloaded errors. Everything else
+    (auth, invalid request, programming errors) is not transient."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in (408, 429) or status >= 500
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    return bool(_TRANSIENT_NAME.search(type(exc).__name__))
+
+
+def accepts_budget(fn: Callable[..., Any]) -> bool:
+    """Whether ``fn`` can be called with the internal ``_budget=`` keyword."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "_budget" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+@contextmanager
+def apply_persistence(runners: Iterable[Any], persistence: Optional[Persistence]):
+    """Give each runner that has a ``persistence`` attribute set to None the
+    supervisor's settings for the duration of the block, then restore it.
+    Runners with their own settings, and objects without the attribute, are untouched."""
+    touched: List[Any] = []
+    if persistence is not None:
+        for r in runners:
+            if hasattr(r, "persistence") and getattr(r, "persistence") is None:
+                r.persistence = persistence
+                touched.append(r)
+    try:
+        yield
+    finally:
+        for r in touched:
+            r.persistence = None
+
+
+class PersistenceMixin:
+    """Gives a runner a validated ``persistence`` property.
+
+    While persistence is set:
+
+    - the runner's ``max_iterations`` is ``persistence.max_turns`` (persistent
+      runs are bounded by the deadline and the budget, not a small step count);
+    - the runner's tool-result cache is suspended, because a retry answered
+      from the cache is not a retry and a cached "write succeeded" can be
+      false (spec 4.9).
+
+    Clearing it restores both. This is what lets a Supervisor switch
+    persistence on for runners that were built without it. Runners must have
+    set ``max_iterations`` and built ``self.registry`` before the first
+    assignment."""
+
+    _persistence: Optional[Persistence] = None
+    _base_max_iterations: int = 4
+    _saved_cache: Tuple[Any, Any] = (None, None)
+
+    @property
+    def persistence(self) -> Optional[Persistence]:
+        return self._persistence
+
+    @persistence.setter
+    def persistence(self, value: Optional[Persistence]) -> None:
+        if value is not None and not isinstance(value, Persistence):
+            raise TypeError(f"persistence= must be a Persistence instance, got {type(value).__name__}")
+        was = self._persistence
+        registry = getattr(self, "registry", None)
+        if value is not None and was is None:
+            self._base_max_iterations = self.max_iterations
+            if registry is not None:
+                self._saved_cache = (getattr(registry, "cache", None), getattr(registry, "_cache_ttl", None))
+                registry.configure_cache(None, None)
+        elif value is None and was is not None:
+            self.max_iterations = self._base_max_iterations
+            if registry is not None:
+                registry.configure_cache(*self._saved_cache)
+        self._persistence = value
+        if value is not None:
+            self.max_iterations = value.max_turns
+
+
+def _append_to_last(history: List[Dict[str, Any]], text: str) -> None:
+    """Attach framework text to the last message (an observation), so no
+    extra turn is added and role alternation stays valid."""
+    last = history[-1]
+    c = last.get("content")
+    if isinstance(c, str):
+        last["content"] = c + text
+    elif isinstance(c, list):
+        last["content"] = list(c) + [{"type": "text", "text": text.lstrip()}]
+    else:
+        last["content"] = (str(c) if c else "") + text
+
+
+# ---------------------------------------------------------------------------
+# The per-run state the loops talk to
+# ---------------------------------------------------------------------------
+
+class PersistentRun:
+    """State and hooks for one persistent run: the deadline, the ledger, the
+    stuck tracker, compaction, and patient retries. The runner loops call:
+
+    - ``before_turn`` / ``abefore_turn``: before each model call;
+    - ``patient`` / ``apatient``: around each model call;
+    - ``after_turn``: after each batch of tool results;
+    - ``bind``: once, to hand over the history lists;
+    - ``drain``: to collect the events to stream.
+    """
+
+    def __init__(
+        self,
+        cfg: Persistence,
+        goal: str,
+        *,
+        budget: Optional[RunBudget] = None,
+        verbose: bool = False,
+        clock: Optional[Callable[[], float]] = None,
+        sleep: Optional[Callable[[float], None]] = None,
+        asleep: Optional[Callable[[float], Any]] = None,
+    ):
+        self.cfg = cfg
+        self.verbose = verbose
+        clock = clock or time.monotonic
+        self._sleep = sleep or time.sleep
+        self._asleep = asleep or asyncio.sleep
+        self.budget = (
+            budget.capped(cfg.max_minutes) if budget is not None
+            else RunBudget.start(cfg.max_minutes, clock)
+        )
+        self.ledger = ProgressLedger(goal=goal)
+        self.tracker = StuckTracker(cfg.reflect_after)
+        self.rung = 0
+        self.outcome = OUTCOME_DONE
+        self.detail = ""
+        self.working_history: List[Dict[str, Any]] = []
+        self.tool_calls: List[Any] = []
+        self.steps: List[str] = []
+        self.task_index = 0
+        self._events: List[Dict[str, Any]] = []
+        self._floor = 0
+
+    # -- wiring ------------------------------------------------------------
+
+    def bind(self, working_history, tool_calls, steps, task_index: int) -> None:
+        """Hand over the loop's own lists (they are mutated in place by the
+        loop, and compaction edits ``working_history`` in place)."""
+        self.working_history = working_history
+        self.tool_calls = tool_calls
+        self.steps = steps
+        self.task_index = task_index
+
+    def emit(self, event: Dict[str, Any]) -> None:
+        self._events.append(event)
+
+    def drain(self) -> List[Dict[str, Any]]:
+        events, self._events = self._events, []
+        return events
+
+    def _say(self, text: str) -> None:
+        if self.verbose:
+            print(f"\x1B[1;33m[persist] {text}\x1B[0m")
+        else:
+            logger.info("persist: %s", text)
+
+    # -- hook: before each model call ---------------------------------------
+
+    def _compaction_job(self):
+        before = estimate_tokens(self.working_history)
+        if before <= max(self.cfg.compact_at_tokens, self._floor + self.cfg.compact_at_tokens // 4):
+            return None
+        plan = plan_compaction(self.working_history, self.task_index, self.cfg.keep_recent_turns)
+        if plan is None:
+            return None
+        tail, middle = plan
+        _, prior = _split_notes(self.working_history[self.task_index].get("content"))
+        return before, tail, middle, prior
+
+    def _finish_compaction(self, before: int, tail: int, summary: Optional[str], prior: str) -> None:
+        apply_compaction(self.working_history, self.task_index, tail,
+                         build_notes(summary, prior, self.ledger.render_failed()))
+        after = estimate_tokens(self.working_history)
+        self._floor = after
+        self.emit({"type": "compact", "before_tokens": before, "after_tokens": after})
+        self._say(f"compacted history: ~{before} -> ~{after} tokens")
+
+    def before_turn(self, model: Any) -> None:
+        """Raises ``BudgetExpired`` past the deadline; compacts an oversized history."""
+        self.budget.check()
+        job = self._compaction_job()
+        if job is None:
+            return
+        before, tail, middle, prior = job
+        summary: Optional[str] = None
+        try:
+            summary = self.patient(lambda: model.Initialize(
+                messages=[{"role": "user", "content": render_for_summary(middle, prior)}]))
+        except (CostBudgetExceeded, BudgetExpired):
+            raise
+        except Exception as e:
+            logger.warning("compaction summary failed (%s); using the ledger alone", e)
+        self._finish_compaction(before, tail, summary, prior)
+
+    async def abefore_turn(self, model: Any) -> None:
+        """Async twin of :meth:`before_turn` (the summary call is awaited)."""
+        self.budget.check()
+        job = self._compaction_job()
+        if job is None:
+            return
+        before, tail, middle, prior = job
+        summary: Optional[str] = None
+        try:
+            summary = await self.apatient(lambda: model.async_initialize(
+                messages=[{"role": "user", "content": render_for_summary(middle, prior)}]))
+        except (CostBudgetExceeded, BudgetExpired):
+            raise
+        except Exception as e:
+            logger.warning("compaction summary failed (%s); using the ledger alone", e)
+        self._finish_compaction(before, tail, summary, prior)
+
+    # -- hook: around each model call ---------------------------------------
+
+    def _backoff(self, exc: BaseException, attempt: int) -> float:
+        """Seconds to wait before retrying ``exc``; re-raises when it must not be retried."""
+        if not (self.cfg.patient_retries and is_transient(exc)):
+            raise exc
+        wait = min(60.0, 2.0 ** attempt)
+        if self.budget.remaining() <= wait:
+            raise BudgetExpired("time limit reached while retrying a provider error") from exc
+        self._say(f"transient provider error ({exc}); retrying in {wait:g}s")
+        return wait
+
+    def patient(self, fn: Callable[[], Any]) -> Any:
+        attempt = 0
+        while True:
+            try:
+                return fn()
+            except Exception as e:
+                wait = self._backoff(e, attempt)
+            self._sleep(wait)
+            attempt += 1
+
+    async def apatient(self, factory: Callable[[], Any]) -> Any:
+        """``factory`` is a zero-argument callable returning an awaitable."""
+        attempt = 0
+        while True:
+            try:
+                return await factory()
+            except Exception as e:
+                wait = self._backoff(e, attempt)
+            await self._asleep(wait)
+            attempt += 1
+
+    # -- hook: after each batch of tool results ----------------------------
+
+    def note_thought(self, thought: Any) -> None:
+        if thought:
+            self.ledger.note_plan(thought)
+
+    def after_turn(self, history: List[Dict[str, Any]], calls: List[Tuple[str, Any, str, bool]]) -> None:
+        """Feed the ledger and the stuck tracker. On a stuck signal, append the
+        next rung's recovery message to the last observation, or raise
+        ``RunStuck`` when the ladder is exhausted."""
+        reason: Optional[str] = None
+        progressed = False
+        for name, args, text, is_error in calls:
+            self.ledger.record(name, args, text, is_error, self.rung)
+            r, p = self.tracker.observe(_signature(name, args), _obs_hash(text), is_error)
+            reason = reason or r
+            progressed = progressed or p
+        if reason is None:
+            if progressed:
+                self.rung = 0
+            return
+        self.rung += 1
+        if self.rung > self.cfg.max_reflections:
+            raise RunStuck(reason)
+        self.tracker.reset()
+        _append_to_last(history, reflection_message(self.rung, reason, self.ledger.render_failed()))
+        self.emit({"type": "reflect", "rung": self.rung, "reason": reason})
+        self._say(f"reflect: recovery step {self.rung} ({reason})")
+
+    # -- exit ---------------------------------------------------------------
+
+    def finish(self, outcome: str, detail: str = "") -> None:
+        self.outcome = outcome
+        self.detail = detail
+
+    def report(self) -> str:
+        head = {
+            OUTCOME_STUCK: f"Stopped: stuck after {self.cfg.max_reflections} recovery attempts ({self.detail}).",
+            OUTCOME_OUT_OF_TIME: f"Stopped: the {self.cfg.max_minutes:g}-minute time limit was reached.",
+            OUTCOME_OUT_OF_BUDGET: f"Stopped: the cost budget was reached ({self.detail}).",
+            OUTCOME_ITERATION_LIMIT: f"Stopped: the {self.cfg.max_turns}-turn limit was reached.",
+        }.get(self.outcome, "Stopped.")
+        return f"{head}\n\n{self.ledger.render()}"
+
+    def exit_completion(self, model_name: str, user_input: str):
+        from agentx_dev.Agents import AgentCompletion
+        return AgentCompletion.from_agent(
+            model_name=model_name, query=user_input, content=self.report(),
+            tool_calls=list(self.tool_calls), steps=list(self.steps),
+            history=self.working_history, outcome=self.outcome,
+            progress=self.ledger.to_dict(),
+        )
+
+    def exit_events(self, model_name: str, user_input: str):
+        completion = self.exit_completion(model_name, user_input)
+        yield {"type": "final", "content": completion.content}
+        yield {"type": "completion", "completion": completion}
