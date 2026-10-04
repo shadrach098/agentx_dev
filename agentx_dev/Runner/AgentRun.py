@@ -1970,6 +1970,7 @@ class AgentRunner:
         tool_calls: List[ToolCall] = []
         steps: List[str] = []
         final_answer: Optional[str] = None
+        outcome = "done"
 
         # Loop-level circuit breaker. The tool-layer dup-guard refuses
         # on the 5th identical call, but a stubborn model (gpt-4o-mini
@@ -2086,6 +2087,7 @@ class AgentRunner:
                     last_action_sig = turn_sig
                     consecutive_identical_actions = 1
                 if consecutive_identical_actions >= LOOP_FORCE_STOP:
+                    outcome = "stuck"
                     names = ", ".join(sorted({c["name"] for c in non_respond})) or "<none>"
                     if tool_calls:
                         last = tool_calls[-1]
@@ -2301,6 +2303,7 @@ class AgentRunner:
                         )
                     count += 1
                     if count > self.max_iterations:
+                        outcome = "iteration_limit"
                         final_answer = (
                             "(framework: exhausted max_iterations after "
                             "repeated malformed-JSON responses; last raw "
@@ -2380,6 +2383,7 @@ class AgentRunner:
                 last_action_sig = action_sig
                 consecutive_identical_actions = 1
             if consecutive_identical_actions >= LOOP_FORCE_STOP:
+                outcome = "stuck"
                 if tool_calls:
                     last = tool_calls[-1]
                     forced = (
@@ -2561,6 +2565,7 @@ class AgentRunner:
         # no idea what the agent tried, which tools ran, or where it
         # got stuck. Now they get a compact recap.
         if final_answer is None:
+            outcome = "iteration_limit"
             summary_lines = [
                 f"Hit max_iterations ({self.max_iterations}) without returning a Final_Answer. "
                 f"Here's what the agent completed before running out of turns:"
@@ -2606,6 +2611,7 @@ class AgentRunner:
             tool_calls=tool_calls,
             steps=steps,
             history=working_history,
+            outcome=outcome,
         )
         yield {"type": "completion", "completion": completion}
 
