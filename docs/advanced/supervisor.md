@@ -189,9 +189,11 @@ supervisor = Supervisor(
 **Recognized capability keywords the planner can request:**
 
 - `"web"` — installs `web_search` + `web_fetch`.
+- `"files_read"` — read / list / find / grep inside the sandbox (read-only).
 - `"files"` — read / write / edit / list inside the sandbox.
 - `"code"` — `run_python`.
-- `"delete"` — adds delete permission on top of `files`.
+- `"delete"` — grants `delete_files` only (the `delete_path` tool inside the
+  sandbox); it adds no read or write access.
 
 **Overlap (3.6):** a spawn is no longer refused because a specialist you
 registered has the same tools: a spawned agent can carry its own

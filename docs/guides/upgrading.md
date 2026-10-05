@@ -15,12 +15,14 @@ module stays imported until you do, which shows up as errors like
 
 ## Upgrading to 3.6.0
 
-**Nothing breaks.** Sub-agents are opt-in, with three behavior changes for code that already used spawning.
+**Nothing breaks unless you imported `SUPERVISOR_SPAWN_INSTRUCTION` or relied on spawned agents staying on the supervisor.** Sub-agents are opt-in, with five behavior changes (the **Changed** bullets below) for code that already used spawning or a persistent supervisor.
 
-- **New:** a plan step can define a helper inline (`new_agent`), specialists get a `delegate` tool, and `SpawnConfig(capabilities=..., tools=...)` sets a ceiling that needs no per-spawn approval. `AsyncSupervisor(spawn_config=...)` and `AgentRunner(delegation=...)` are new. See [Sub-agents](sub-agents.md).
+- **New:** a plan step can define a helper inline (`new_agent`), specialists get a `delegate` tool when a ceiling is set, and `SpawnConfig(capabilities=..., tools=...)` sets a ceiling that needs no per-spawn approval. `AsyncSupervisor(spawn_config=...)` and `AgentRunner(delegation=...)` are new. See [Sub-agents](sub-agents.md).
 - **Changed:** a spawned agent no longer stays registered on the supervisor after the run. Previously `supervisor.agents` kept it, and a later run could see it.
 - **Changed:** a spawn is no longer refused because an existing specialist has the same tools, so follow-up dispatches are not rerouted (`rerouted_from` in the `spawn` event is always `None`). The `spawn` event gained `origin`, `tools`, `dropped`, `reused`, `refused`.
 - **Changed:** a `Supervisor` or `AsyncSupervisor` with `persistence=` and no `spawn_config` now allows helpers with web and read-only file access (`SpawnConfig(enabled=True, capabilities={"web", "files_read"}, max_spawns=6)`), and its specialists get the `delegate` tool for the run. Pass `spawn_config=SpawnConfig(enabled=False)` to keep the 3.5 behavior.
+- **Changed:** with a 3.5-style config (`enabled=True` and neither `capabilities` nor `tools`), spawns keep their approval flow (`auto_spawn`, `auto_spawn_allowed_caps`, `approver`) and specialists do **not** get `delegate`; set `capabilities=` or `tools=` to turn delegation on. The planner prompt now teaches `new_agent` instead of `{"agent": "__spawn__", ...}`; old `__spawn__` steps still work.
+- **Changed:** the `name` of a legacy `__spawn__` step must now match `[A-Za-z0-9_-]{1,40}` (and must not look like `delegate_1`); a malformed one is refused. `new_agent` names starting with `__` or of the form `delegate_<N>` are reserved.
 - **Small:** `SpawnConfig.max_spawns` is now `Optional[int]` (unset means 3, or 6 in ceiling mode); `AsyncAgentRunner` accepts `system_addendum=` like `AgentRunner`; the old `SUPERVISOR_SPAWN_INSTRUCTION` constant is gone (the planner prompt is built by `spawn_instruction`).
 
 ---

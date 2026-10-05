@@ -39,6 +39,14 @@ Sub-agents: the Supervisor can create its own helpers. Opt-in, with the behavior
   now allows helpers with web and read-only file access (`max_spawns=6`) and
   gives its specialists the `delegate` tool. Pass
   `spawn_config=SpawnConfig(enabled=False)` to opt out.
+- A legacy spawn config (`enabled=True` with neither `capabilities` nor
+  `tools`) keeps the 3.5 approval flow and gives specialists no `delegate`
+  tool; set a ceiling to turn delegation on.
+- The planner prompt teaches `new_agent` instead of the `__spawn__` step; old
+  `__spawn__` steps still work, but their `name` must now match
+  `[A-Za-z0-9_-]{1,40}`.
+- Agent names starting with `__` and names of the form `delegate_<N>` are
+  reserved: a `new_agent` that uses one is dropped by plan sanitization.
 - `SpawnConfig.max_spawns` is `Optional[int]` (unset: 3, or 6 in ceiling mode).
   `SUPERVISOR_SPAWN_INSTRUCTION` was removed.
 

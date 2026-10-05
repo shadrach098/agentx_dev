@@ -400,9 +400,10 @@ def run_supervised():
         # the framework will prompt on stdin for each spawn request.
         # Capability keywords the spawn handler recognizes today:
         #   "web"    → web_search_tool + web_fetch_tool
+        #   "files_read" → read/list/find/grep + ./workspace sandbox (read-only)
         #   "files"  → read/write/edit/list + ./workspace sandbox
-        #   "code"   → execute_python + read/write + sandbox
-        #   "delete" → adds delete permission on top of "files"
+        #   "code"   → run_python (execute_python permission only) + sandbox
+        #   "delete" → delete_files only (the delete_path tool) + sandbox
         spawn_config=SpawnConfig(
             enabled=True,
             auto_spawn=True,

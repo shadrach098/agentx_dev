@@ -45,6 +45,7 @@ A plan step can carry its own agent instead of naming one:
 - `tools` name tools the ceiling allows. Anything else is dropped and the planner is told what was dropped.
 - Later steps reuse the helper by name (`{"agent": "pricing_analyst", ...}`) without defining it again. Repeating an identical definition also reuses it for free. A different definition under the same name gets a suffix (`pricing_analyst_2`).
 - A name that matches a specialist you registered runs that specialist and ignores the definition.
+- Names starting with `__` and names like `delegate_1` are reserved; a definition that uses one is dropped and the planner is asked to fix the plan.
 - A helper exists for one run. When the run ends, your supervisor's registry is exactly as it was.
 
 ## The ceiling
@@ -78,14 +79,15 @@ config = SpawnConfig(enabled=True, tools=[lookup_tool], capabilities={"web"})
 
 ## Delegation
 
-Every specialist of a Supervisor with spawning on gets a `delegate` tool for the duration of the run (it is removed afterwards, so your runners are untouched):
+Every specialist of a Supervisor with a ceiling set (`capabilities=` or `tools=`, or the persistent default below) gets a `delegate` tool for the duration of the run (it is removed afterwards, so your runners are untouched). A legacy config with neither (the 3.5 `auto_spawn`/`approver` flow) gives specialists no `delegate`; the planner can still define helpers, through that approval flow.
 
 ```
 delegate(task, instructions="", tools=[])  ->  the sub-agent's answer
 ```
 
 - The helper sees only `task`, not the specialist's conversation. A thin `task` gives a thin result, so the specialist is told to put every needed fact in it.
-- The answer comes back as the tool result, cut at 4,000 characters with a `[truncated]` marker. Only the outcome and size are kept on the run record (`result.spawned`); the answer itself is the tool result, so read it from the stream or the specialist's history if you need it.
+- The answer comes back as the tool result, cut at 4,000 characters with a `[truncated]` marker. Only the outcome and size are kept on the run record (`result.spawned`); the answer is returned to the specialist, so it appears in that specialist's own output.
+- When the ceiling clipped some of the requested tools, the tool result ends with `[note: these tools were not granted: ...]`, so the specialist knows what the helper could not use.
 - A refusal comes back as plain text (`delegation refused: spawn limit reached; do this yourself`). It is information, not an error.
 - A helper that gives up or crashes comes back as a tool error that starts `[delegate failed: stuck]` (or `error`, `out_of_time`, ...). The specialist's own stuck logic sees it and can retry with different instructions or do the work itself. A failed delegation never ends the specialist's run.
 
