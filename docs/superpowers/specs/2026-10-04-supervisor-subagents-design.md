@@ -207,10 +207,9 @@ refusal.
 2. Run the sub-agent on `task` with a fresh context: it sees only `task`; the
    caller's history is not passed.
 3. Return the sub-agent's final answer as the tool result, truncated to 4,000
-   characters with a trailing `[truncated]` marker. The full text and the sub-agent's
-   progress ledger are recorded on the run record (`SupervisorResult` gains
-   `spawned: List[Dict]` with name, origin, tools, dropped, outcome, and sizes) and are
-   not put into the caller's context.
+   characters with a trailing `[truncated]` marker. The run record (`SupervisorResult.spawned`, a
+   `List[Dict]` with name, origin, tools, dropped, outcome and chars) keeps only the
+   outcome and size; the answer itself is the tool result and is not stored a second time.
 4. Refusals return plain tool results: `delegation refused: spawn limit reached; do
    this yourself` / `no usable tools` / `delegation is disabled`. They are not
    errors.

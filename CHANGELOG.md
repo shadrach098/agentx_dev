@@ -4,6 +4,44 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.6.0] - 2026-10-04
+
+Sub-agents: the Supervisor can create its own helpers. Opt-in, with the behavior changes listed below.
+
+### Added
+
+- **Inline helpers**: a plan step can carry `new_agent` (name, free-form
+  instructions, tools). The helper runs the step, is reused by name, and is
+  discarded when the run ends. Recovery plans can define a replacement for a
+  stuck step.
+- **`delegate` tool**: specialists hand a side job to a fresh sub-agent (clean
+  context) and get a short summary back; refusals are plain text and a helper
+  that fails comes back as a tool error the caller's stuck logic sees.
+  `AgentRunner(..., delegation=SpawnConfig(...))` gives a standalone runner the
+  same tool; `runner.spawned` lists what it created.
+- **One ceiling**: `SpawnConfig(capabilities=..., tools=..., max_spawns=...,
+  max_depth=...)` bounds every helper; spawns inside it need no approval and
+  over-asks are clipped, not fatal. New read-only `files_read` preset.
+- **`AsyncSupervisor(spawn_config=...)`**: async parity; spawned steps run in
+  parallel. `AsyncAgentRunner` gained `system_addendum=`.
+- `SupervisorResult.spawned`, `spawn` and `delegate_result` stream events,
+  `AgentSpec`, `ToolRegistry.unregister`, `AgentRunner.add_tool` /
+  `remove_tool`.
+- New guide: Sub-agents.
+
+### Changed
+
+- A spawned agent no longer stays on the supervisor after the run.
+- A spawn is no longer refused (or rerouted) because an existing specialist
+  has the same tools. The `spawn` event gained `origin`, `tools`, `dropped`,
+  `reused` and `refused`; `rerouted_from` is always `None`.
+- A `Supervisor` / `AsyncSupervisor` with `persistence=` and no `spawn_config`
+  now allows helpers with web and read-only file access (`max_spawns=6`) and
+  gives its specialists the `delegate` tool. Pass
+  `spawn_config=SpawnConfig(enabled=False)` to opt out.
+- `SpawnConfig.max_spawns` is `Optional[int]` (unset: 3, or 6 in ceiling mode).
+  `SUPERVISOR_SPAWN_INSTRUCTION` was removed.
+
 ## [3.5.0] - 2026-10-04
 
 Agents that keep working through errors. Opt-in; one default change (below).

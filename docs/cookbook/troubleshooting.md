@@ -192,6 +192,26 @@ around it instead, pass `persistence=Persistence(...)`.
 That's persistent mode doing its job: the tool-result cache is off while
 `persistence` is set, so every call executes.
 
+**`spawn refused: no usable tools`**
+A helper asked for tools and none are inside the ceiling. Add the preset
+(for example `"files"` or `"code"`) to `SpawnConfig(capabilities=...)` or
+put your tool in `SpawnConfig(tools=[...])`. The persistent default
+allows only `web` and read-only files.
+
+**`delegation refused: spawn limit reached; do this yourself`**
+`max_spawns` counts planner-created helpers and `delegate` calls
+together, per run. Raise it in `SpawnConfig`, or have the specialist do
+the work itself.
+
+**A helper I spawned isn't on the supervisor after the run**
+Helpers last for one run (since 3.6). The record is in
+`result.spawned`; to keep an agent, register it in `agents=`.
+
+**A delegated helper keeps coming back `[delegate failed: ...]`**
+It gave up or crashed; the message after the colon says how, and
+`runner.spawned` / `result.spawned` hold its outcome. Give it a clearer
+`task` (it sees nothing else) or different `instructions`.
+
 ## Tool errors
 
 **Model calls the wrong tool**

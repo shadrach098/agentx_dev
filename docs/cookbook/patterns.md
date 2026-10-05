@@ -852,3 +852,41 @@ Things to know:
   you can fix the task or the tools and run it again.
 - **Watch it:** `for event in fixer.stream(task)` includes `reflect`
   events when the agent changes approach.
+
+---
+
+## 29. A supervisor that hires its own helpers *(3.6)*
+
+The task decides which specialists it needs, and you decide the most any of them may do.
+
+```python
+from agentx_dev import Persistence, SpawnConfig, Supervisor
+
+supervisor = Supervisor(
+    model=model,
+    agents={"writer": ("Drafts the final brief", writer)},      # the one specialist you know you need
+    persistence=Persistence(max_minutes=45),
+    spawn_config=SpawnConfig(
+        enabled=True,
+        capabilities={"web", "files_read"},     # helpers may search the web and read files, nothing else
+        allowed_paths=["./workspace"],
+        max_spawns=6,
+    ),
+)
+
+result = supervisor.run(
+    "Research our three closest competitors' pricing, then write a one-page brief."
+)
+print(result.content)
+for sub in result.spawned:
+    print(sub["name"], sub["origin"], sub["outcome"])
+```
+
+What happens: the planner defines a `pricing_researcher` helper with its own instructions and the `web` tool, runs it for each competitor, and hands the findings to `writer`. If a research step gets stuck, the recovery plan can define a differently-instructed replacement.
+
+Things to know:
+
+- **Say what to return.** The planner writes the helper's instructions; the framework adds "return the real data, don't invent it". Your task text should say what the brief must contain.
+- **The ceiling is yours.** Without `code`, `files` or `delete` in `capabilities`, no plan can give a helper those, however the task is worded.
+- **Helpers are for one run.** `supervisor.agents` is unchanged afterwards; `result.spawned` is the record.
+- **A specialist can do this itself** with the `delegate` tool, to keep its own context small. See [Sub-agents](../guides/sub-agents.md).

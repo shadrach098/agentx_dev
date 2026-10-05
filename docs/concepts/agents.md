@@ -327,7 +327,10 @@ result = supervisor.run(
 **Dynamic spawning:** `SpawnConfig(enabled=True)` lets the supervisor
 create new specialists mid-plan when the initial catalog doesn't
 cover a capability. Recognized capability keywords: `"web"`,
-`"files"`, `"code"`, `"delete"`.
+`"files"`, `"code"`, `"delete"` (3.6 adds read-only `"files_read"`). Since 3.6
+the planner can also give a spawned agent its own instructions and tools,
+and specialists can `delegate` a side job to a fresh sub-agent: see
+[Sub-agents](../guides/sub-agents.md).
 
 **Streaming:** `supervisor.stream(task)` yields `plan_start` / `plan` /
 `dispatch` / `subtask_result` / `synthesize_start` / `final` /

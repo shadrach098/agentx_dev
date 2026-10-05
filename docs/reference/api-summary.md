@@ -127,7 +127,8 @@ CLI: `python -m agentx_dev.Evals run <dir> --config <yaml>`
 | `AsyncSupervisor` | class | Async concurrent dispatch (3.3: completion-driven DAG scheduler, `max_parallel=` cap) |
 | `SupervisorResult` | dataclass | Plan + subtask results + final (3.5: `.outcome`) |
 | `SubtaskResult` | dataclass | One specialist's contribution. *(3.2)* `.output` carries the validated Pydantic instance when the runner declared an `output_schema` |
-| `SpawnConfig` | dataclass | Dynamic specialist spawning settings |
+| `SpawnConfig` | dataclass | Sub-agent settings: `enabled`, `capabilities` / `tools` (the ceiling), `allowed_paths`, `max_spawns`, `max_depth`, `approver` (3.6: ceiling mode; `AsyncSupervisor` and `AgentRunner(delegation=)` accept it) |
+| `AgentSpec` *(3.6)* | dataclass | One sub-agent to build: `name`, `instructions`, `tools`, `origin` |
 | `SpawnRequest` | dataclass | One planner-issued spawn ask |
 | `Specialist` *(3.3)* | dataclass | Registry entry with planner metadata: `depends_on` hints, `output_schema` display, `when_to_use` |
 

@@ -83,6 +83,17 @@ cost limit is reached. Set a cost cap with
 output_price_per_1k=...)` too. See
 [Long-running agents](../guides/long-running-agents.md).
 
+## Can the supervisor create its own sub-agents, like Claude Code's Task tool? *(3.6)*
+
+Yes. Give the Supervisor a `spawn_config`:
+`Supervisor(..., spawn_config=SpawnConfig(enabled=True, capabilities={"web", "files_read"}))`.
+The planner can then define a helper inline (its own instructions and
+tools), and your specialists get a `delegate` tool to hand a side job to
+a fresh agent and get a short summary back. You set the most a helper may
+do (`capabilities=`, `tools=`, `max_spawns=`); nothing the model writes
+can exceed it. With `persistence=` set and no `spawn_config`, this is on
+with web plus read-only files. See [Sub-agents](../guides/sub-agents.md).
+
 ## When should I use ReAct vs. function-calling vs. native binding?
 
 | Mode | When |

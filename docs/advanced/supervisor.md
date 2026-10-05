@@ -193,10 +193,13 @@ supervisor = Supervisor(
 - `"code"` — `run_python`.
 - `"delete"` — adds delete permission on top of `files`.
 
-**Capability-overlap guard:** the framework refuses duplicate spawns.
-If you already registered a specialist with those tools and the planner
-tries to spawn another, the spawn is refused AND follow-up dispatches
-to the refused name auto-reroute to the existing specialist.
+**Overlap (3.6):** a spawn is no longer refused because a specialist you
+registered has the same tools: a spawned agent can carry its own
+instructions, so two agents with the same tools can still be different
+specialists. The planner can now write those instructions itself
+(`new_agent` in a plan step), specialists can `delegate` side jobs, and
+`SpawnConfig(capabilities=..., tools=...)` sets a ceiling that replaces
+per-spawn approval. See [Sub-agents](../guides/sub-agents.md).
 
 **`auto_spawn_allowed_caps` (3.0.6)** — a security allowlist. When
 `auto_spawn=True`, only these capabilities silently spawn. A

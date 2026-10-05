@@ -141,7 +141,7 @@ def build_explorer(llm):
 
 
 # NOTE: no build_analyst() here — the analyst-equivalent gets SPAWNED
-# by the Supervisor. Look at _build_spawned_agent in Supervisor.py to
+# by the Supervisor. Look at SpawnPolicy in agentx_dev/SubAgents.py to
 # see the AgentRunner it materializes when the planner emits a
 # __spawn__ step with capabilities=["code", "files"] — same shape
 # as the explorer/reporter above, but constructed at run time from

@@ -9,6 +9,42 @@ you can paste and run.
 
 ---
 
+## What's new in 3.6 — sub-agents
+
+A Supervisor can now create its own helpers, like Claude Code's Task tool.
+The planner defines a helper inline (its own instructions and tools), and a
+specialist can hand a side job to a fresh agent and get a short summary back.
+You set the most a helper may ever do, once.
+
+```python
+from agentx_dev import Supervisor, SpawnConfig
+
+supervisor = Supervisor(
+    model=model, agents=my_specialists,
+    spawn_config=SpawnConfig(enabled=True, capabilities={"web", "files_read"}),
+)
+result = supervisor.run("Compare the pricing pages of our three competitors")
+print(result.spawned)       # the helpers it created, with outcomes
+```
+
+| Feature | What you get |
+|---|---|
+| **Inline helpers** | A plan step can carry `new_agent` (name, instructions, tools). Reused by name, discarded when the run ends. |
+| **`delegate` tool** | A specialist hands part of its work to a fresh sub-agent (clean context) and gets a summary back. |
+| **One ceiling** | `SpawnConfig(capabilities=..., tools=..., max_spawns=..., max_depth=...)` bounds every helper. Over-asks are clipped, not fatal. |
+| **Sync and async** | `AsyncSupervisor` takes `spawn_config=` too; spawned steps run in parallel. |
+| **Persistent mode** | On by default with a safe ceiling (web plus read-only files); helpers share the run deadline; recovery plans can spawn a replacement. |
+
+[Guide](docs/guides/sub-agents.md).
+
+### Upgrade notes
+
+- Nothing is on unless you configure it, except persistent supervisors (`persistence=` with no `spawn_config`), which now allow web and read-only file helpers. Pass `spawn_config=SpawnConfig(enabled=False)` to opt out.
+- Helpers a Supervisor spawns no longer stay on it after the run.
+- A spawn is no longer refused because an existing specialist has the same tools.
+
+Full notes: [docs/guides/upgrading.md](docs/guides/upgrading.md).
+
 ## What's new in 3.5 — agents that keep working
 
 Long jobs no longer end at the first wall. Turn on persistent mode and
@@ -775,10 +811,10 @@ Recognized capability keywords the planner can request:
 - `"code"` — `run_python`.
 - `"delete"` — adds delete permission on top of `files`.
 
-The framework's capability-overlap guard refuses duplicate spawns
-(you already registered a specialist with those tools? planner tries
-to spawn another one? refused, and any follow-up dispatches to the
-refused name auto-reroute to the existing specialist).
+Since 3.6 a spawn is not refused because an existing specialist has the
+same tools (a helper can carry its own instructions), the planner can
+write those instructions inline, and a `capabilities=` / `tools=` ceiling
+replaces per-spawn approval. See [Sub-agents](docs/guides/sub-agents.md).
 
 ### AsyncSupervisor
 

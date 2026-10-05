@@ -437,8 +437,12 @@ result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"
           </a>`).join("")}
       </div>
 
-      <h2 class="section-title">What's new in 3.5</h2>
+      <h2 class="section-title">What's new in 3.6</h2>
       <ul class="whats-new-list">
+        <li>
+          <strong>Sub-agents</strong>
+          <div class="desc">The planner can define a helper inline (<code>new_agent</code>: name, instructions, tools) and specialists can <code>delegate</code> a side job to a fresh agent and get a summary back. One ceiling you set bounds every helper: <code>SpawnConfig(capabilities={"web", "files_read"})</code>. <a href="#guides/sub-agents">Guide</a>.</div>
+        </li>
         <li>
           <strong>Agents that keep working</strong>
           <div class="desc"><code>persistence=Persistence(max_minutes=60)</code> on a runner or Supervisor: it reflects and changes approach when stuck, compacts long histories, waits out transient provider errors, and stops only when done or out of time or budget. Every run now reports an <code>outcome</code>. <a href="#guides/long-running-agents">Guide</a>.</div>
