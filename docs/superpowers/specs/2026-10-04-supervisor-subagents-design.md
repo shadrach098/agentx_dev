@@ -79,7 +79,7 @@ max_depth: int = 1                           # 1 = a sub-agent cannot spawn
 ```
 
 - Preset capability words: `web`, `files`, `code`, `delete` (as today) plus the new
-  `files_read` (read-only: `read_path`, `list_directory`). A preset expands to the
+  `files_read` (read-only: `read_path`, `list_directory`, `find_files`, `grep`). A preset expands to the
   tools it already expands to today (`SpawnConfig._CAP_TO_TOOLS`, moved to the policy).
 - **Ceiling mode** applies when `tools` or `capabilities` is not `None`. Spawns inside
   the ceiling need no approval. If an `approver` is set it is still called.

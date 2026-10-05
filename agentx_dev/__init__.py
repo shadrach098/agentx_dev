@@ -69,6 +69,7 @@ from .Supervisor import (
     SpawnConfig, SpawnRequest, Specialist,
     SupervisorResult, SubtaskResult,
 )
+from .SubAgents import AgentSpec
 
 # MCP is an optional dependency — only re-export the names if the module imports cleanly.
 try:
@@ -89,6 +90,7 @@ __all__ = [
     "AgentRunner",
     "AsyncAgentRunner",
     "Persistence",
+    "AgentSpec",
     "AgentCompletion",
     "ToolCall",
     "ToolError",

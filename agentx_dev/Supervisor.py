@@ -31,185 +31,16 @@ from agentx_dev.Runner.AgentRun import AgentRunner
 from agentx_dev.Runner.AsyncAgentRun import AsyncAgentRunner
 from agentx_dev.Agents.Agent import AgentType
 from agentx_dev.Tools import logger
+from agentx_dev.SubAgents import (   # noqa: F401  (SpawnConfig/SpawnRequest are re-exported)
+    AgentSpec, SpawnConfig, SpawnPolicy, SpawnRefused, SpawnRequest, SpecError,
+    _default_interactive_approver, attach_delegation, parse_agent_spec, spawn_instruction,
+    spec_from_legacy_spawn,
+)
 from agentx_dev.Runner.Persistence import (
     OUTCOME_DONE, OUTCOME_OUT_OF_BUDGET, OUTCOME_OUT_OF_TIME, OUTCOME_PARTIAL, OUTCOME_STUCK,
     BudgetExpired, Persistence, PersistentRun, RunBudget, _clip, accepts_budget,
     apply_persistence, budget_event,
 )
-
-
-# ----------------------------------------------------------------------------
-# Dynamic sub-agent spawning
-# ----------------------------------------------------------------------------
-
-@dataclass
-class SpawnRequest:
-    """Planner-emitted request for a NEW specialist that doesn't exist
-    in the current registry.
-
-    Attributes:
-        name: Short identifier the planner wants to use going forward.
-        description: What the specialist should do — copied into the
-            agent catalog for future planning turns.
-        capabilities: List of capability keywords the planner needs.
-            Recognized: 'web' (search + fetch), 'files' (read/write/edit
-            inside sandbox), 'code' (Python execution), 'delete'
-            (delete_files under sandbox). Unknown keywords are dropped
-            with a note.
-        rationale: Why the planner asked for this specialist. Shown to
-            the approver so they can decide whether it's justified.
-    """
-    name: str
-    description: str
-    capabilities: List[str] = field(default_factory=list)
-    rationale: str = ""
-
-
-@dataclass
-class SpawnConfig:
-    """How a Supervisor should handle dynamic-spawn requests.
-
-    Attributes:
-        enabled: Master switch. If False, the planner is not told about
-            the spawn feature and can only use existing specialists.
-        auto_spawn: When True, requests are approved silently. When
-            False (default), each request goes through ``approver``
-            (which defaults to a terminal ``input()`` prompt).
-        approver: Optional callback ``(SpawnRequest) -> bool``. Return
-            True to approve. Only called when auto_spawn=False.
-        allowed_paths: File-system sandbox for spawned specialists that
-            request ``files`` / ``code`` / ``delete`` capabilities.
-            Defaults to ["./workspace"].
-        max_spawns: Upper bound on how many new specialists can be
-            added during one Supervisor run (guards against runaway).
-        auto_spawn_allowed_caps: SECURITY GATE for auto_spawn=True.
-            When set (e.g. {"web"}), a planner-emitted spawn is
-            AUTO-approved only if EVERY requested capability is in this
-            set — anything else falls through to ``approver`` (or is
-            refused if none is set). ``None`` means "no restriction, any
-            cap the planner asks for is auto-granted" — the historical
-            behaviour, kept for backward compat but explicitly opt-out.
-            Rationale: the planner's JSON is downstream of user text, so
-            a prompt-injected task could ask for ``capabilities:["code"]``
-            or ``["delete"]`` and get silent RCE / file destruction under
-            auto_spawn. Recommended defaults: ``{"web"}`` for research
-            agents, ``set()`` (empty) to disable auto-spawn entirely
-            without unsetting the flag, ``None`` only when you trust the
-            planner's source.
-    """
-    enabled: bool = False
-    auto_spawn: bool = False
-    approver: Optional[Callable[[SpawnRequest], bool]] = None
-    allowed_paths: List[str] = field(default_factory=lambda: ["./workspace"])
-    max_spawns: int = 3
-    auto_spawn_allowed_caps: Optional[Set[str]] = None
-
-
-def _default_interactive_approver(request: SpawnRequest) -> bool:
-    """Terminal-based approver used when SpawnConfig.approver is None.
-    Returns False if there's no TTY (e.g. running headless) so a
-    supervisor without an explicit callback won't silently spawn."""
-    if not sys.stdin.isatty():
-        print(
-            f"[supervisor.spawn] REQUEST '{request.name}' — no TTY, refusing "
-            f"(set SpawnConfig.approver=<callable> or auto_spawn=True)"
-        )
-        return False
-    print(
-        f"\n[supervisor.spawn] The planner wants to create a new specialist.\n"
-        f"  name         : {request.name}\n"
-        f"  description  : {request.description}\n"
-        f"  capabilities : {', '.join(request.capabilities) or '(none)'}\n"
-        f"  rationale    : {request.rationale or '(none)'}"
-    )
-    answer = input("Approve? [y/N] ").strip().lower()
-    return answer in ("y", "yes")
-
-
-_SPAWNED_SPECIALIST_ADDENDUM = """You were spawned by a Supervisor to handle a specific sub-task. The Supervisor will synthesize your reply into the user's final answer. To make that possible:
-
-- INCLUDE THE ACTUAL DATA IN YOUR FINAL ANSWER. Do not just report a status like "the file was written" or "task complete". If you extracted a title, list it. If you found 3 competitors, name them + positioning + URL in your reply. If you saved a report, include a concise summary of its contents. The Supervisor cannot read your files — it can only read your reply.
-- Do NOT invent data. If a fetch failed or a page didn't contain the field asked for, say so plainly ("no phone numbers were found on the page"). Say it explicitly rather than guess.
-- Keep the reply structured (bullet lists, tables, key: value lines) so the Supervisor's synthesis step can lift verbatim facts out.
-- For any STRUCTURAL CODE METRIC — class counts, method counts per class, function names, duplicate-function detection, cyclomatic complexity, call-graph analysis — USE the `ast` module inside run_python. Parse the file with `ast.parse(source)` and walk `ast.ClassDef` / `ast.FunctionDef` / `ast.AsyncFunctionDef` nodes. Do NOT use regex or `line.startswith('def ')` for these — that approach misses nested defs, counts strings-that-happen-to-contain-'class' as classes, treats keywords like `for`/`while` inside a function body as CC contributors for the wrong function, and produces obviously-wrong numbers (functions with CC=400, "function names" that are actually Python keywords). If you find yourself computing a per-function metric via string heuristics, stop and rewrite using ast."""
-
-
-def _build_spawned_agent(
-    request: SpawnRequest,
-    model: BaseChatModel,
-    allowed_paths: List[str],
-) -> Tuple[str, AgentRunner]:
-    """Turn a SpawnRequest into a (description, AgentRunner) pair ready
-    to register with the Supervisor.
-
-    The permission set is derived conservatively from ``capabilities``:
-    only what was explicitly requested gets granted, and file ops are
-    always sandboxed to ``allowed_paths``. Unknown capability keywords
-    are ignored (with a returned note in the description).
-
-    The spawned runner always carries the "include findings verbatim"
-    system addendum so the Supervisor's synthesis step has real data
-    to synthesize from (a specialist that returns "task complete"
-    leaves the synthesizer with nothing but its imagination).
-    """
-    from agentx_dev.DefaultTools import Permissions
-    from agentx_dev.WebTools import web_fetch_tool, web_search_tool
-
-    caps = {c.lower() for c in request.capabilities}
-    perms_kwargs: Dict[str, Any] = {"allowed_paths": list(allowed_paths)}
-    tools: List[Any] = []
-    granted: List[str] = []
-    unknown: List[str] = []
-
-    # Pick a cache directory for web_fetch: the first allowed path,
-    # unless the spec doesn't have any file-side capability at all
-    # (no "files"/"code"/"delete") — then caching would be dead disk
-    # writes the agent can't read anyway.
-    file_caps = {"files", "code", "delete"} & caps
-    cache_dir = str(allowed_paths[0]) if (allowed_paths and file_caps) else None
-
-    for cap in caps:
-        if cap == "web":
-            tools.extend([web_search_tool(), web_fetch_tool(cache_dir=cache_dir)])
-            granted.append(
-                "web (search+fetch"
-                + (f", cached to {cache_dir}" if cache_dir else "")
-                + ")"
-            )
-        elif cap == "files":
-            perms_kwargs.update(
-                read_files=True, write_files=True, edit_files=True,
-                list_directories=True,
-            )
-            granted.append("files (read/write/edit/list)")
-        elif cap == "delete":
-            perms_kwargs["delete_files"] = True
-            granted.append("delete")
-        elif cap == "code":
-            perms_kwargs["execute_python"] = True
-            granted.append("code (run_python)")
-        else:
-            unknown.append(cap)
-
-    perms = Permissions(**perms_kwargs)
-
-    runner = AgentRunner(
-        model=model,
-        agent=AgentType.ReAct,
-        tools=tools,
-        permissions=perms if any(v for k, v in perms_kwargs.items()
-                                 if k not in ("allowed_paths",)) else None,
-        max_iterations=15,
-        use_function_calling=True,
-        verbose=False,
-        system_addendum=_SPAWNED_SPECIALIST_ADDENDUM,
-    )
-    note = f" (granted: {', '.join(granted) or 'none'}"
-    if unknown:
-        note += f"; unknown skipped: {', '.join(unknown)}"
-    note += ")"
-    description = request.description + note
-    return description, runner
 
 
 # ----------------------------------------------------------------------------
@@ -289,6 +120,15 @@ class Specialist:
         # Tuple-compat: `desc, runner = specialist` and
         # `for name, (desc, _) in agents.items()` both keep working.
         return iter((self.description, self.runner))
+
+
+def _build_spawned_agent(request, model, allowed_paths):
+    """Bridge for ``Supervisor._handle_spawn`` until Task 4 rewrites it: builds the 3.5
+    capability-word specialist through the policy (approval already happened there)."""
+    cfg = SpawnConfig(enabled=True, auto_spawn=True, allowed_paths=list(allowed_paths))
+    built = SpawnPolicy(cfg, model).build(
+        AgentSpec(request.name, request.description, tuple(request.capabilities)))
+    return built.description, built.runner
 
 
 def _normalize_agents(agents: Dict[str, Any]) -> Dict[str, Specialist]:
@@ -1324,10 +1164,10 @@ class Supervisor:
                 print(f"{_C_ERROR}[supervisor.spawn] request ignored — "
                       f"spawn_config.enabled=False{_C_RESET}")
             return None, None
-        if self._spawns_this_run >= cfg.max_spawns:
+        if self._spawns_this_run >= cfg.effective_max_spawns:
             if self.verbose:
                 print(f"{_C_ERROR}[supervisor.spawn] refused — max_spawns "
-                      f"({cfg.max_spawns}) already reached{_C_RESET}")
+                      f"({cfg.effective_max_spawns}) already reached{_C_RESET}")
             return None, None
 
         req = SpawnRequest(
