@@ -27,7 +27,7 @@ PLAN = [{"id": "a", "agent": "worker", "query": "q"}]
 def test_sync_run_plan_streams_events_and_fills_the_shared_containers():
     sup = Supervisor(model=MockModel(script=[]), agents={"worker": ("w", Runner())}, verbose=False)
     results, by_id = [], {}
-    events = list(sup._run_plan(PLAN, results, by_id, {}))
+    events = list(sup._run_plan(PLAN, results, by_id))
     assert [e["type"] for e in events] == ["dispatch", "subtask_result"]
     assert [r.step_id for r in results] == ["a"] and by_id["a"].content == "scraped"
 

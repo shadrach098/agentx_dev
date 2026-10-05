@@ -3,7 +3,8 @@
 import pytest
 
 from agentx_dev import AgentRunner, AgentType, Persistence, Supervisor
-from agentx_dev.Supervisor import SpawnConfig, _sanitize_plan
+from agentx_dev.Runner.Persistence import RunBudget
+from agentx_dev.Supervisor import SpawnConfig, _plan_repair_note, _sanitize_plan
 from tests.conftest import make_final, make_react_response
 from tests.subagent_helpers import (
     ScriptedRunner, new_agent_step, plan_json, router, step,
@@ -53,6 +54,17 @@ class TestSanitizer:
         sane, repairs = _sanitize_plan(plan)
         assert [s["id"] for s in sane] == ["s2"]
         assert repairs == ["step 's1': new_agent invalid (name is reserved) -- dropped"]
+
+    def test_a_null_new_agent_beside_an_agent_counts_as_absent(self):
+        sane, repairs = _sanitize_plan([{"id": "s1", "agent": "worker", "query": "q", "new_agent": None}])
+        assert repairs == []
+        assert sane[0]["agent"] == "worker" and "new_agent" not in sane[0]
+
+    def test_the_repair_note_mentions_new_agent_only_for_a_new_agent_repair(self):
+        deps_only = _plan_repair_note(["step 's2': unknown dependency 'x' -- dropped"])
+        assert "new_agent" not in deps_only and "depends_on" in deps_only
+        spawn = _plan_repair_note(["step 's1': new_agent invalid (instructions must be a non-empty string) -- dropped"])
+        assert "A new_agent needs a name" in spawn
 
     def test_agent_and_a_different_new_agent_name_together_keep_the_step_but_drop_the_definition(self):
         plan = [{"id": "s1", "agent": "worker", "query": "q",
@@ -172,6 +184,26 @@ class TestNewAgentSteps:
         assert "name is reserved" in model.planner_prompts()[1]
         assert result.content == "Supervisor failed to produce a valid plan."
         assert result.outcome == "stuck" and result.subtasks == [] and result.spawned == []
+
+    def test_a_step_past_the_deadline_does_not_spend_a_spawn(self):
+        s = sup(router(), persistence=Persistence(max_minutes=5))
+        expired = RunBudget(deadline=0.0, clock=lambda: 1.0)
+        plan, _ = _sanitize_plan([new_agent_step("s1", "a", "Be useful.", ["web"])])
+        results, by_id = [], {}
+        events = list(s._run_plan(plan, results, by_id, budget=expired))
+        assert [e["type"] for e in events] == ["subtask_result"]          # no spawn event
+        assert s._spawn_policy().run.count == 0 and s._spawn_policy().run.records == []
+        assert results[0].error == "skipped: the time limit was reached" and results[0].skipped
+        assert results[0].agent == "a" and results[0].outcome == "out_of_time"
+
+    def test_unhashable_names_in_a_plan_do_not_crash_the_run(self):
+        bad = plan_json({"id": "s1", "query": "q", "new_agent": {"name": ["a"], "instructions": "i"}},
+                        {"id": "s2", "agent": ["x"], "query": "q"},
+                        step("s3", "worker"))
+        model = router(plans=[bad, bad])
+        result = Supervisor(model=model, agents={"worker": ("w", ScriptedRunner())}, verbose=False,
+                            max_subtask_retries=0).run("task")
+        assert [r.agent for r in result.subtasks] == ["worker"] and result.outcome == "done"
 
     def test_a_malformed_definition_triggers_the_plan_repair_retry(self):
         bad = plan_json({"id": "s1", "query": "q", "new_agent": {"name": "a"}})

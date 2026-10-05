@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union, Any
@@ -570,16 +569,21 @@ def _plan_repair_note(repairs: List[str]) -> str:
     """Feedback block appended to the planning prompt on a replan after
     sanitization had to fix the previous attempt's graph."""
     bullet = "\n".join(f"- {r}" for r in repairs)
-    return (
+    note = (
         "\n\nYOUR PREVIOUS PLAN HAD DEPENDENCY ERRORS that were auto-repaired:\n"
         f"{bullet}\n"
         "Write the plan again with a valid dependency graph: every "
         "depends_on entry must name an existing step id, no step may "
         "depend on itself or on a __spawn__ step, and the graph must "
-        "contain no cycles. A new_agent needs a name (letters, digits, "
-        "_ or -, at most 40 characters), non-empty instructions, tools as "
-        "a list of names, and must not be combined with agent."
+        "contain no cycles."
     )
+    if any("new_agent" in r for r in repairs):
+        note += (
+            " A new_agent needs a name (letters, digits, "
+            "_ or -, at most 40 characters), non-empty instructions, tools as "
+            "a list of names, and must not be combined with agent."
+        )
+    return note
 
 
 def _plan_uses_deps(plan: List[dict]) -> bool:
@@ -609,6 +613,11 @@ def _sanitize_plan(
       6. (recovery plans, when ``replaceable`` is given) ``replaces`` keeps
          only ids of steps that are currently unresolved; anything else is
          dropped, and an empty or malformed ``replaces`` is removed
+      7. (3.6, applied right after rule 1) a ``new_agent`` is validated with
+         ``parse_agent_spec``: a valid one is normalized and names the step's
+         ``agent``; an invalid one (bad fields, a reserved name, or beside a
+         different ``agent``) is removed with a repair, and a step left with
+         nothing to run is dropped. ``"new_agent": null`` counts as absent.
 
     ``known_ids`` are step ids finished in earlier recovery rounds; a
     dependency on one is valid and kept (it is simply not an edge in this
@@ -637,7 +646,8 @@ def _sanitize_plan(
     # removed, and a step left with nothing to run is dropped (dependents lose the edge below).
     checked: List[dict] = []
     for step in plan:
-        if "new_agent" not in step:
+        if step.get("new_agent") is None:
+            step.pop("new_agent", None)          # absent, or an explicit null: nothing to validate
             checked.append(step)
             continue
         raw = step.pop("new_agent")
@@ -1112,6 +1122,7 @@ class Supervisor(_SpawnMixin):
         filtered = [
             item for item in plan
             if isinstance(item, dict)
+            and isinstance(item.get("agent"), (str, type(None)))   # a list/dict agent is unhashable
             and (item.get("agent") == "__spawn__" or item.get("agent") or item.get("query"))
         ]
         return filtered[: self.max_subtasks]
@@ -1280,7 +1291,6 @@ class Supervisor(_SpawnMixin):
         plan: List[dict],
         subtask_results: List[SubtaskResult],
         results_by_id: Dict[str, SubtaskResult],
-        spawn_rewrites: Dict[str, str],
         budget: Optional[RunBudget] = None,
     ):
         """Execute ``plan``: dispatch each step (spawning specialists, cascading
@@ -1377,6 +1387,20 @@ class Supervisor(_SpawnMixin):
                        "step": step_idx, "step_id": step_id}
                 continue
 
+            # Past the deadline: skip before spending a spawn on this step.
+            if budget is not None and budget.expired():
+                sub_result = SubtaskResult(
+                    agent=_step_agent_name(item) or "<none>", query=item.get("query", ""), content="",
+                    error="skipped: the time limit was reached",
+                    outcome=OUTCOME_OUT_OF_TIME, skipped=True,
+                    step_id=step_id, depends_on=step_deps,
+                )
+                subtask_results.append(sub_result)
+                results_by_id[step_id] = sub_result
+                yield {"type": "subtask_result", "result": sub_result,
+                       "step": step_idx, "step_id": step_id}
+                continue
+
             if item.get("new_agent"):
                 try:
                     spawned_name, reason = self._spawn_spec(parse_agent_spec(item["new_agent"]))
@@ -1396,14 +1420,6 @@ class Supervisor(_SpawnMixin):
                            "step": step_idx, "step_id": step_id}
                     continue
                 agent_name = spawned_name
-
-            if agent_name in spawn_rewrites:
-                original = agent_name
-                agent_name = spawn_rewrites[agent_name]
-                if self.verbose:
-                    print(f"{_C_DISPATCH}[supervisor.dispatch] rewriting "
-                          f"'{original}' -> '{agent_name}' (spawn was rerouted)"
-                          f"{_C_RESET}")
 
             if agent_name not in self.agents:
                 if self.verbose:
@@ -1435,18 +1451,6 @@ class Supervisor(_SpawnMixin):
                 dispatched_query = _build_augmented_query(sub_query, dep_results)
             else:
                 dispatched_query = _build_augmented_query(sub_query, subtask_results)
-            if budget is not None and budget.expired():
-                sub_result = SubtaskResult(
-                    agent=agent_name, query=sub_query, content="",
-                    error="skipped: the time limit was reached",
-                    outcome=OUTCOME_OUT_OF_TIME, skipped=True,
-                    step_id=step_id, depends_on=step_deps,
-                )
-                subtask_results.append(sub_result)
-                results_by_id[step_id] = sub_result
-                yield {"type": "subtask_result", "result": sub_result,
-                       "step": step_idx, "step_id": step_id}
-                continue
             yield {"type": "dispatch", "agent": agent_name, "query": sub_query,
                    "step": step_idx, "step_id": step_id}
             if self.verbose:
@@ -1531,12 +1535,11 @@ class Supervisor(_SpawnMixin):
 
         subtask_results: List[SubtaskResult] = []
         results_by_id: Dict[str, SubtaskResult] = {}
-        spawn_rewrites: Dict[str, str] = {}
         budget_reason: Optional[str] = None
         with _per_run_agents(self), \
                 attach_delegation([s.runner for s in self.agents.values()], self._spawn_policy()), \
                 apply_persistence([s.runner for s in self.agents.values()], self.persistence):
-            yield from self._run_plan(plan, subtask_results, results_by_id, spawn_rewrites, budget)
+            yield from self._run_plan(plan, subtask_results, results_by_id, budget)
             if self.persistence is not None:
                 stagnant = 0
                 round_no = 1
@@ -1560,8 +1563,7 @@ class Supervisor(_SpawnMixin):
                     if self.verbose:
                         _log_replan(round_no, unresolved)
                     plan.extend(recovery)
-                    yield from self._run_plan(recovery, subtask_results, results_by_id,
-                                              spawn_rewrites, budget)
+                    yield from self._run_plan(recovery, subtask_results, results_by_id, budget)
                     # Progress is an unresolved step resolved by a replacement that finished;
                     # a round that resolves nothing counts toward max_replans.
                     stagnant = 0 if _resolve_replaced(recovery, subtask_results) else stagnant + 1
@@ -1759,10 +1761,13 @@ class AsyncSupervisor(_SpawnMixin):
         plan = parsed.get("plan", []) or []
         # A step may name a registered agent, define one inline (new_agent), or use one an
         # earlier step defines; a legacy __spawn__ step carries no query.
+        # Only string names count: a list or dict here would be unhashable.
         defined = {s["new_agent"].get("name") for s in plan
-                   if isinstance(s, dict) and isinstance(s.get("new_agent"), dict)}
+                   if isinstance(s, dict) and isinstance(s.get("new_agent"), dict)
+                   and isinstance(s["new_agent"].get("name"), str)}
         defined |= {s.get("name") for s in plan
-                    if isinstance(s, dict) and s.get("agent") == "__spawn__"}
+                    if isinstance(s, dict) and s.get("agent") == "__spawn__"
+                    and isinstance(s.get("name"), str)}
         filtered = [
             item for item in plan
             if isinstance(item, dict)
@@ -1770,8 +1775,8 @@ class AsyncSupervisor(_SpawnMixin):
                 item.get("agent") == "__spawn__"
                 or (item.get("query") and (
                     isinstance(item.get("new_agent"), dict)
-                    or item.get("agent") in self.agents
-                    or item.get("agent") in defined
+                    or (isinstance(item.get("agent"), str)
+                        and (item.get("agent") in self.agents or item.get("agent") in defined))
                 ))
             )
         ]

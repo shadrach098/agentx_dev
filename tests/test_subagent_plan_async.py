@@ -124,6 +124,15 @@ class TestAsyncNewAgentSteps:
         assert len(model.planner_prompts()) == 2 and "new_agent invalid" in model.planner_prompts()[1]
         assert result.subtasks[0].agent == "a"
 
+    def test_unhashable_names_in_a_plan_do_not_crash_the_run(self):
+        bad = plan_json({"id": "s1", "query": "q", "new_agent": {"name": ["a"], "instructions": "i"}},
+                        {"id": "s2", "agent": ["x"], "query": "q"},
+                        step("s3", "worker"))
+        model = router(plans=[bad, bad])
+        result = run(AsyncSupervisor(model=model, agents={"worker": ("w", AsyncScripted())}, verbose=False,
+                                     max_subtask_retries=0))
+        assert [r.agent for r in result.subtasks] == ["worker"] and result.outcome == "done"
+
     def test_a_new_agent_named_spawn_fails_the_run_instead_of_vanishing(self):
         bad = plan_json({"id": "s1", "query": "q",
                          "new_agent": {"name": "__spawn__", "instructions": "Be useful.", "tools": ["web"]}})
