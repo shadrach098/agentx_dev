@@ -20,6 +20,7 @@ import asyncio
 import dataclasses
 import re
 import sys
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
@@ -286,6 +287,7 @@ class SpawnRun:
 
     def __init__(self) -> None:
         self.count = 0
+        self.reserved = 0                # slots held by builds still in progress (SpawnPolicy.build)
         self.built: Dict[str, Built] = {}
         self.records: List[Dict[str, Any]] = []
         self.events: List[Dict[str, Any]] = []
@@ -373,6 +375,7 @@ class SpawnPolicy:
         self.is_async = is_async
         self.verbose = verbose
         self.run = run or SpawnRun()
+        self._lock = threading.Lock()
         # The supervisor run's RunBudget (set by Supervisor.stream / AsyncSupervisor.astream).
         # ``delegate`` falls back to it when the calling runner's own _active_budget is gone,
         # e.g. a parallel step on the same specialist finished first and cleared it.
@@ -411,7 +414,10 @@ class SpawnPolicy:
         return "\n".join(lines) if lines else "  (none: new specialists can only reason)"
 
     def resolve(self, requested: Iterable[str]) -> Tuple[List[str], List[Any], List[str]]:
-        """Clip ``requested`` to the ceiling. Returns ``(granted presets, pool tools, dropped names)``."""
+        """Clip ``requested`` to the ceiling. Returns ``(granted presets, pool tools, dropped names)``.
+
+        The pool is checked first: a pool tool whose name is also a preset word or a preset's
+        tool name (a pool tool called ``web``, say) is granted as that pool tool."""
         pool = {t.name: t for t in (self.config.tools or []) if getattr(t, "name", None)}
         granted: List[str] = []
         tools: List[Any] = []
@@ -419,15 +425,15 @@ class SpawnPolicy:
         for raw in requested:
             word = str(raw).strip()
             low = word.lower()
-            if low in PRESET_TOOLS:
+            if word in pool:
+                if pool[word] not in tools:
+                    tools.append(pool[word])
+            elif low in PRESET_TOOLS:
                 if self._preset_allowed(low):
                     if low not in granted:
                         granted.append(low)
                 else:
                     dropped.append(word)
-            elif word in pool:
-                if pool[word] not in tools:
-                    tools.append(pool[word])
             elif word in TOOL_TO_PRESETS:
                 pick = next((p for p in TOOL_TO_PRESETS[word] if self._preset_allowed(p)), None)
                 if pick is None:
@@ -464,9 +470,11 @@ class SpawnPolicy:
 
     # -- building -------------------------------------------------------------
 
-    def _describe(self, spec: AgentSpec, granted: List[str]) -> str:
+    def _describe(self, spec: AgentSpec, granted: List[str], dropped: Iterable[str] = ()) -> str:
         first = spec.instructions.strip().splitlines()[0][:200]
-        return f"{first} (tools: {', '.join(granted) or 'none'})"
+        clipped = list(dropped)
+        not_granted = f"; not granted: {', '.join(clipped)}" if clipped else ""
+        return f"{first} (tools: {', '.join(granted) or 'none'}{not_granted})"
 
     def _make_runner(self, spec: AgentSpec, granted_presets: List[str], pool_tools: List[Any],
                      is_async: bool) -> Any:
@@ -498,29 +506,51 @@ class SpawnPolicy:
 
     def build(self, spec: AgentSpec, depth: int = 1, *, is_async: Optional[bool] = None) -> Built:
         """Build a runner for ``spec`` at ``depth`` or raise :class:`SpawnRefused`.
-        Emits the ``spawn`` event either way."""
+        Emits the ``spawn`` event either way.
+
+        Thread-safe with respect to ``max_spawns``: the slot is reserved under a lock before
+        the agent is built and given back if the build is refused."""
+        run = self.run
         try:
-            built = self._build(spec, depth, self.is_async if is_async is None else is_async)
+            self._reserve(run)
+            try:
+                built = self._build(spec, depth, self.is_async if is_async is None else is_async)
+            except BaseException:
+                self._settle(run, ok=False)
+                raise
         except SpawnRefused as e:
-            self.run.emit({"type": "spawn", "name": spec.name, "origin": spec.origin,
-                           "tools": [], "dropped": list(spec.tools), "reused": None,
-                           "refused": e.reason, "capabilities": [], "rerouted_from": None})
+            run.emit({"type": "spawn", "name": spec.name, "origin": spec.origin,
+                      "tools": [], "dropped": list(spec.tools), "reused": None,
+                      "refused": e.reason, "capabilities": [], "rerouted_from": None})
             self._say(f"refused '{spec.name}': {e.reason}")
             raise
-        self.run.count += 1
-        self.run.built[spec.name] = built
-        self.run.records.append({"name": spec.name, "origin": spec.origin,
-                                 "tools": list(built.granted), "dropped": list(built.dropped),
-                                 "outcome": None, "chars": None})
+        self._settle(run, ok=True)
+        run.built[spec.name] = built
+        run.records.append({"name": spec.name, "origin": spec.origin,
+                            "tools": list(built.granted), "dropped": list(built.dropped),
+                            "outcome": None, "chars": None})
         self._announce(built)
         return built
 
-    def _build(self, spec: AgentSpec, depth: int, is_async: bool) -> Built:
+    def _reserve(self, run: SpawnRun) -> None:
+        """Take one spawn slot in ``run`` or raise :class:`SpawnRefused`."""
         cfg = self.config
         if not cfg.enabled:
             raise SpawnRefused("spawning is disabled")
-        if self.run.count >= cfg.effective_max_spawns:
-            raise SpawnRefused("spawn limit reached")
+        with self._lock:
+            if run.count + run.reserved >= cfg.effective_max_spawns:
+                raise SpawnRefused("spawn limit reached")
+            run.reserved += 1
+
+    def _settle(self, run: SpawnRun, ok: bool) -> None:
+        """Turn a reserved slot into a spawn (``ok``) or give it back."""
+        with self._lock:
+            run.reserved -= 1
+            if ok:
+                run.count += 1
+
+    def _build(self, spec: AgentSpec, depth: int, is_async: bool) -> Built:
+        cfg = self.config
         presets, pool_tools, dropped = self.resolve(spec.tools)
         if spec.tools and not presets and not pool_tools:
             raise SpawnRefused("no usable tools")
@@ -538,7 +568,7 @@ class SpawnPolicy:
             except Exception as e:                   # e.g. a pool tool already named "delegate"
                 raise SpawnRefused(f"could not build the agent: {e}") from e
         granted = presets + [t.name for t in pool_tools]
-        return Built(spec=spec, runner=runner, description=self._describe(spec, granted),
+        return Built(spec=spec, runner=runner, description=self._describe(spec, granted, dropped),
                      granted=granted, dropped=dropped)
 
     def obtain(self, spec: AgentSpec, depth: int = 1, *, registered: Iterable[str] = (),
@@ -624,6 +654,7 @@ def _delegate_error(policy: SpawnPolicy, built: Built, exc: BaseException) -> De
     name = built.spec.name
     policy.run.finish(name, "error", 0)
     policy.run.emit({"type": "delegate_result", "name": name, "outcome": "error", "chars": 0})
+    policy._say(f"'{name}' returned: error ({exc})")
     return DelegationFailed(f"[delegate failed: error] {exc}")
 
 
@@ -634,6 +665,7 @@ def _delegate_result(policy: SpawnPolicy, built: Built, completion: Any) -> str:
     text = str(getattr(completion, "content", "") or "")
     policy.run.finish(name, outcome, len(text))
     policy.run.emit({"type": "delegate_result", "name": name, "outcome": outcome, "chars": len(text)})
+    policy._say(f"'{name}' returned: {outcome} ({len(text)} chars)")
     if outcome != "done":
         raise DelegationFailed(f"[delegate failed: {outcome}] {cap_summary(text)}")
     note = (f"\n[note: these tools were not granted: {', '.join(built.dropped)}]" if built.dropped else "")

@@ -110,6 +110,13 @@ class TestResolve:
         granted, pool, dropped = p.resolve(["lookup", "web"])
         assert granted == [] and pool == [mine] and dropped == ["web"]      # no presets allowed in this ceiling
 
+    def test_a_pool_tool_named_like_a_preset_word_is_granted_as_the_pool_tool(self):
+        mine = StandardTool(func=lambda x: x, name="web", description="my own web tool")
+        granted, pool, dropped = policy(tools=[mine], capabilities={"files_read"}).resolve(["web"])
+        assert granted == [] and pool == [mine] and dropped == []
+        granted, pool, dropped = policy(tools=[mine], capabilities={"web"}).resolve(["web"])
+        assert granted == [] and pool == [mine] and dropped == []     # the pool wins over the preset
+
     def test_legacy_mode_allows_every_preset_word(self):
         granted, _, dropped = policy().resolve(["web", "files", "code", "delete", "nope"])
         assert granted == ["web", "files", "code", "delete"] and dropped == ["nope"]
@@ -166,6 +173,61 @@ class TestBuild:
         with pytest.raises(SpawnRefused, match="spawn limit reached"):
             p.build(AgentSpec("c", "x", ("web",)))
         assert p.run.count == 2
+
+    def test_the_description_says_which_tools_were_not_granted(self):
+        p = policy(capabilities={"web"})
+        clipped = p.build(AgentSpec("a", "Find prices.\nmore", ("web", "code")))
+        assert clipped.description == "Find prices. (tools: web; not granted: code)"
+        clean = p.build(AgentSpec("b", "Find prices.", ("web",)))
+        assert clean.description == "Find prices. (tools: web)" and "not granted" not in clean.description
+
+    def test_concurrent_builds_never_exceed_the_spawn_limit(self):
+        import threading
+        n, cap = 6, 2
+        p = policy(max_spawns=cap, **CEILING)
+        cond = threading.Condition()
+        state = {"approving": 0, "refused": 0}
+        real_approve = p._approve
+
+        def approve(spec):
+            # Hold every build that got past the limit check until each thread has either
+            # reached this point or been refused, so a check-then-increment race shows up.
+            with cond:
+                state["approving"] += 1
+                cond.notify_all()
+                cond.wait_for(lambda: state["approving"] + state["refused"] >= n, timeout=5)
+            return real_approve(spec)
+
+        p._approve = approve
+        start = threading.Barrier(n)
+        built, errors = [], []
+
+        def worker(i):
+            start.wait(timeout=5)
+            try:
+                built.append(p.build(AgentSpec(f"a{i}", "x", ("web",))))
+            except SpawnRefused as e:
+                errors.append(e.reason)
+                with cond:
+                    state["refused"] += 1
+                    cond.notify_all()
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        assert len(built) == cap and p.run.count == cap
+        assert errors == ["spawn limit reached"] * (n - cap)
+        assert len(p.run.records) == cap
+
+    def test_a_refused_build_frees_its_slot(self):
+        p = policy(max_spawns=1, approver=lambda r: r.name != "no", **CEILING)
+        with pytest.raises(SpawnRefused, match="not approved"):
+            p.build(AgentSpec("no", "x", ("web",)))
+        with pytest.raises(SpawnRefused, match="no usable tools"):
+            p.build(AgentSpec("c", "x", ("code",)))
+        assert p.build(AgentSpec("yes", "x", ("web",))).spec.name == "yes" and p.run.count == 1
 
     def test_pool_tool_colliding_with_a_default_tool_is_refused(self):
         clash = StandardTool(func=lambda x: x, name="read_path", description="clashes")

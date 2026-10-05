@@ -81,6 +81,14 @@ class TestDelegateEndToEnd:
         out = parent(model).registry.dispatch("delegate", {"task": "t", "tools": ["web", "code"]})
         assert out.startswith("done") and "[note: these tools were not granted: code]" in out
 
+    def test_verbose_prints_the_delegate_result_too(self, capsys):
+        p = parent(router(sub=lambda m: make_final("ok")))
+        p._delegation.verbose = True
+        assert p.registry.dispatch("delegate", {"task": "t"}) == "ok"
+        out = capsys.readouterr().out
+        assert "[spawn] built 'delegate_1'" in out
+        assert "[spawn] 'delegate_1' returned: done (2 chars)" in out
+
     def test_events_and_the_spawn_count_reset_for_every_run(self):
         cfg = SpawnConfig(enabled=True, capabilities={"web"}, max_spawns=1)
         model = router(sub=lambda m: make_final("ok"))
