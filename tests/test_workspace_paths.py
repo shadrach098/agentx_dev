@@ -45,13 +45,27 @@ def test_real_absolute_path_inside_sandbox_is_unchanged(scenario):
 
 @pytest.mark.parametrize("evil", [
     "/../../etc/passwd",
-    "\\..\\..\\Windows\\win.ini",
     "/../launched_from_here/x.txt",
 ])
 def test_rerooting_cannot_escape_the_sandbox(scenario, evil):
     _, perms = scenario
     with pytest.raises(PermissionError):
         _resolve_for_ops(evil, perms)
+
+
+def test_a_backslash_traversal_cannot_escape_the_sandbox(scenario):
+    """On Windows a backslash separates folders, so the climb is refused. On POSIX a
+    backslash is an ordinary filename character: the path is just an odd file name
+    inside the workspace, which is not an escape either."""
+    ws, perms = scenario
+    evil = "\\..\\..\\Windows\\win.ini"
+    if os.name == "nt":
+        with pytest.raises(PermissionError):
+            _resolve_for_ops(evil, perms)
+    else:
+        resolved = os.path.realpath(str(_resolve_for_ops(evil, perms)))
+        root = os.path.realpath(str(ws))
+        assert os.path.commonpath([resolved, root]) == root
 
 
 def test_no_workspace_means_no_rerooting(tmp_path):
