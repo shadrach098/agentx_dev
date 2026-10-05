@@ -890,3 +890,61 @@ Things to know:
 - **The ceiling is yours.** Without `code`, `files` or `delete` in `capabilities`, no plan can give a helper those, however the task is worded.
 - **Helpers are for one run.** `supervisor.agents` is unchanged afterwards; `result.spawned` is the record.
 - **A specialist can do this itself** with the `delegate` tool, to keep its own context small. See [Sub-agents](../guides/sub-agents.md).
+
+---
+
+## 30. One agent that hands side jobs to helpers *(3.6)*
+
+You don't need a Supervisor to use sub-agents. Give a single runner `delegation=` and it gets a `delegate` tool: it can hand a self-contained piece of work to a fresh agent, which works in a clean context and sends back a short summary. The runner's own context stays small, however big the side job is.
+
+```python
+from agentx_dev import AgentRunner, AgentType, Persistence, SpawnConfig
+
+researcher = AgentRunner(
+    model=model,
+    agent=AgentType.ReAct,
+    tools=[],                                              # no tools of its own: it delegates the searching
+    system_addendum=(
+        "You write market briefs. For each competitor, call delegate(task=..., "
+        "instructions='Return their plans, prices and source URLs as a table.', tools=['web']). "
+        "Put everything the helper needs in `task`: it can't see this conversation. "
+        "Then combine the helpers' answers into one brief."
+    ),
+    persistence=Persistence(max_minutes=30),               # optional: helpers inherit it
+    delegation=SpawnConfig(
+        enabled=True,
+        capabilities={"web"},          # helpers may search and fetch, nothing else
+        max_spawns=5,                  # delegations per run
+    ),
+)
+
+result = researcher.invoke("Brief me on the pricing of Acme, Globex and Initech.")
+print(result.content)
+
+for helper in researcher.spawned:                          # this run's helpers
+    print(helper["name"], helper["tools"], helper["outcome"], helper["chars"])
+```
+
+Each helper is named `delegate_1`, `delegate_2`, ... and is gone when the run ends. `researcher.spawned` is reset at the start of every run.
+
+The async runner works the same way. Pass `bind_tools_natively=True` and a turn that makes several `delegate` calls runs them at the same time:
+
+```python
+from agentx_dev import AsyncAgentRunner, AgentType, SpawnConfig
+
+researcher = AsyncAgentRunner(
+    model=model, agent=AgentType.ReAct, tools=[], bind_tools_natively=True,
+    delegation=SpawnConfig(enabled=True, capabilities={"web"}),
+)
+result = await researcher.ainvoke("Brief me on Acme, Globex and Initech, one helper each.")
+```
+
+Things to know:
+
+- **The helper sees only `task`.** A vague `task` gets a vague answer, so tell the agent (in `system_addendum` or the prompt) to include every fact the helper needs.
+- **Failures come back as tool errors, not crashes.** A helper that gives up or crashes returns `[delegate failed: stuck]` (or `error`, `out_of_time`, ...) as a tool error. The agent can retry with different instructions or do the work itself. A refusal (`delegation refused: spawn limit reached; do this yourself`) is plain text.
+- **The ceiling is yours.** `capabilities=` / `tools=` decide what any helper can use. Whatever the model asks for outside it is dropped, and the result says what was dropped.
+- **Helpers can't delegate further** at the default `max_depth=1`.
+- **One run at a time.** A runner built with `delegation=` keeps its run's state on the instance, so don't call it concurrently with itself; use one runner per concurrent run.
+- **It doesn't use the runner's own `permissions=`.** `delegate` grants tools from the `SpawnConfig` ceiling only.
+- For a Supervisor that spawns helpers across a whole plan, see pattern 29 above and the [Sub-agents guide](../guides/sub-agents.md).
