@@ -123,6 +123,7 @@ class AsyncAgentRunner(PersistenceMixin):
         text_turn_nudges: int = 1,
         output_schema: Optional[Type[BaseModel]] = None,
         persistence: Optional[Persistence] = None,
+        system_addendum: Optional[str] = None,
     ):
         """Construct an ``AsyncAgentRunner``. Parameters mirror
         :class:`AgentRunner` -- see that docstring for the full details;
@@ -245,6 +246,9 @@ class AsyncAgentRunner(PersistenceMixin):
                 "are mutually exclusive. Function-calling routes through the "
                 "AgentType parser; native binding skips it. Pick one."
             )
+        # Role-specific instructions appended to the system prompt at run time
+        # (same contract as AgentRunner.system_addendum).
+        self.system_addendum = system_addendum
         # See AgentRunner.__init__ for the strict_tool_dispatch contract.
         self.strict_tool_dispatch = strict_tool_dispatch
         # Declared-once structured output. See AgentRunner.__init__.
@@ -467,6 +471,22 @@ class AsyncAgentRunner(PersistenceMixin):
         else:
             logger.info(f"malformed tool args for '{name}'; feeding error back")
 
+    def add_tool(self, tool) -> None:
+        """Register ``tool`` on a built runner. See ``AgentRunner.add_tool``."""
+        if self.registry.has(tool.name):
+            raise ValueError(f"tool '{tool.name}' is already registered")
+        self.registry._register_one(tool)
+        self.tools = list(self.tools) + [tool]
+        self._tool_prompt_block = self.registry.prompt_block()
+        self._tool_names_block = self.registry.names_block()
+
+    def remove_tool(self, name: str) -> None:
+        """Remove a tool by name (a no-op for unknown names)."""
+        self.registry.unregister(name)
+        self.tools = [t for t in self.tools if t.name != name]
+        self._tool_prompt_block = self.registry.prompt_block()
+        self._tool_names_block = self.registry.names_block()
+
     async def Initialize(
         self,
         user_input: str,
@@ -527,6 +547,8 @@ class AsyncAgentRunner(PersistenceMixin):
         # agents (a tool-less chat agent should answer in prose).
         if self.registry.names:
             system_prompt = system_prompt + "\n\n" + _ACT_DONT_ANNOUNCE
+        if self.system_addendum:
+            system_prompt = system_prompt + "\n\n" + self.system_addendum
 
         working_history = [{"role": "system", "content": system_prompt}]
 

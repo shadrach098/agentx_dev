@@ -500,6 +500,18 @@ class PersistenceMixin:
     _persistence: Optional[Persistence] = None
     _base_max_iterations: int = 4
     _saved_cache: Tuple[Any, Any] = (None, None)
+    # The RunBudget of the persistent run in progress (None otherwise). Tools that
+    # start sub-agents (``delegate``) read it so the sub-agent shares the deadline.
+    _active_budget: Optional[RunBudget] = None
+    # A SpawnPolicy when the runner was built with ``delegation=`` (see SubAgents).
+    _delegation: Any = None
+
+    def _begin_delegation_run(self) -> None:
+        """Start a fresh spawn count for this invocation of a runner built with ``delegation=``."""
+        policy = self._delegation
+        if policy is not None:
+            policy.persistence = self.persistence
+            policy.new_run()
 
     @property
     def persistence(self) -> Optional[Persistence]:
@@ -816,45 +828,53 @@ def run_persistent(runner, user_input, chat_history, stream_tokens, media, budge
     ``completion`` event whose ``outcome`` says why. Anything else
     (authentication errors, programming errors) propagates."""
     state = PersistentRun(runner.persistence, user_input, budget=budget, verbose=runner.verbose)
+    runner._active_budget = state.budget
     try:
-        yield from runner._iter_run_core(user_input, chat_history, stream_tokens, media, state)
-        return
-    except BudgetExpired:
-        state.finish(OUTCOME_OUT_OF_TIME)
-    except RunStuck as e:
-        state.finish(OUTCOME_STUCK, str(e))
-    except CostBudgetExceeded as e:
-        state.finish(OUTCOME_OUT_OF_BUDGET, str(e))
-    event = budget_event(state.outcome)
-    if event is not None:
-        state.emit(event)
-        state._say(f"budget: the {event['reason']} limit ended the run")
-    yield from state.drain()
-    events = list(state.exit_events(runner.model.__class__.__name__, user_input))
-    content = events[-1]["completion"].content
-    _end_agent_event(state, content)
-    _remember(runner, user_input, content)
-    yield from events
+        try:
+            yield from runner._iter_run_core(user_input, chat_history, stream_tokens, media, state)
+            return
+        except BudgetExpired:
+            state.finish(OUTCOME_OUT_OF_TIME)
+        except RunStuck as e:
+            state.finish(OUTCOME_STUCK, str(e))
+        except CostBudgetExceeded as e:
+            state.finish(OUTCOME_OUT_OF_BUDGET, str(e))
+        event = budget_event(state.outcome)
+        if event is not None:
+            state.emit(event)
+            state._say(f"budget: the {event['reason']} limit ended the run")
+        yield from state.drain()
+        events = list(state.exit_events(runner.model.__class__.__name__, user_input))
+        content = events[-1]["completion"].content
+        _end_agent_event(state, content)
+        _remember(runner, user_input, content)
+        yield from events
+    finally:
+        runner._active_budget = None
 
 
 async def run_persistent_async(runner, user_input, budget, run):
     """Async twin of :func:`run_persistent`. ``run`` is ``lambda state: <coroutine>``
     that runs the loop with the given ``PersistentRun``."""
     state = PersistentRun(runner.persistence, user_input, budget=budget, verbose=runner.verbose)
+    runner._active_budget = state.budget
     try:
-        return await run(state)
-    except BudgetExpired:
-        state.finish(OUTCOME_OUT_OF_TIME)
-    except RunStuck as e:
-        state.finish(OUTCOME_STUCK, str(e))
-    except CostBudgetExceeded as e:
-        state.finish(OUTCOME_OUT_OF_BUDGET, str(e))
-    event = budget_event(state.outcome)
-    if event is not None:
-        # The async runner has no live event stream: astream() derives this
-        # event from the completion's outcome. Log it here like the sync path.
-        state._say(f"budget: the {event['reason']} limit ended the run")
-    completion = state.exit_completion(runner.model.__class__.__name__, user_input)
-    _end_agent_event(state, completion.content)
-    _remember(runner, user_input, completion.content)
-    return completion
+        try:
+            return await run(state)
+        except BudgetExpired:
+            state.finish(OUTCOME_OUT_OF_TIME)
+        except RunStuck as e:
+            state.finish(OUTCOME_STUCK, str(e))
+        except CostBudgetExceeded as e:
+            state.finish(OUTCOME_OUT_OF_BUDGET, str(e))
+        event = budget_event(state.outcome)
+        if event is not None:
+            # The async runner has no live event stream: astream() derives this
+            # event from the completion's outcome. Log it here like the sync path.
+            state._say(f"budget: the {event['reason']} limit ended the run")
+        completion = state.exit_completion(runner.model.__class__.__name__, user_input)
+        _end_agent_event(state, completion.content)
+        _remember(runner, user_input, completion.content)
+        return completion
+    finally:
+        runner._active_budget = None

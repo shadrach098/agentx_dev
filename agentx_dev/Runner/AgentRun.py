@@ -682,6 +682,17 @@ class ToolRegistry:
         if cfg is not None:
             self._breakers[tool.name] = CircuitBreaker(tool.name, cfg)
 
+    def unregister(self, name: str) -> None:
+        """Remove a tool by name (a no-op for unknown names). The runner-level
+        ``func`` / ``args`` views point at these dicts, so they follow."""
+        self.sync_std.pop(name, None)
+        self.sync_struct.pop(name, None)
+        self.async_std.pop(name, None)
+        self.async_struct.pop(name, None)
+        self._tools = [t for t in self._tools if t.name != name]
+        self._tool_by_name.pop(name, None)
+        self._breakers.pop(name, None)
+
     def get_breaker(self, name: str) -> Optional[CircuitBreaker]:
         """Inspect a tool's breaker (useful for tests + ops dashboards).
         Returns None if breakers aren't configured for that tool."""
@@ -875,9 +886,14 @@ class ToolRegistry:
         qual = getattr(fn, "__qualname__", getattr(fn, "__name__", "?"))
         return f"{mod}.{qual}"
 
+    def _uncacheable(self, name: str) -> bool:
+        """A tool marked ``cacheable = False`` (side effects, or results that depend on the
+        caller) always executes."""
+        return getattr(self._tool_by_name.get(name), "cacheable", True) is False
+
     def _cache_get(self, name: str, args):
         cache = getattr(self, "_cache", None)
-        if cache is None:
+        if cache is None or self._uncacheable(name):
             return None
         from agentx_dev.Cache import generate_cache_key
         key = generate_cache_key(self._tool_fingerprint(name), args)
@@ -892,7 +908,7 @@ class ToolRegistry:
 
     def _cache_set(self, name: str, args, result) -> None:
         cache = getattr(self, "_cache", None)
-        if cache is None:
+        if cache is None or self._uncacheable(name):
             return
         from agentx_dev.Cache import generate_cache_key
         key = generate_cache_key(self._tool_fingerprint(name), args)
@@ -1837,6 +1853,23 @@ class AgentRunner(PersistenceMixin):
             )
         else:
             logger.info(f"malformed tool args for '{name}'; feeding error back")
+
+    def add_tool(self, tool) -> None:
+        """Register ``tool`` on a built runner (used to attach ``delegate`` for the
+        duration of a Supervisor run). The caller's original tool list is not mutated."""
+        if self.registry.has(tool.name):
+            raise ValueError(f"tool '{tool.name}' is already registered")
+        self.registry._register_one(tool)
+        self.tools = list(self.tools) + [tool]
+        self._tool_prompt_block = self.registry.prompt_block()
+        self._tool_names_block = self.registry.names_block()
+
+    def remove_tool(self, name: str) -> None:
+        """Remove a tool by name (a no-op for unknown names)."""
+        self.registry.unregister(name)
+        self.tools = [t for t in self.tools if t.name != name]
+        self._tool_prompt_block = self.registry.prompt_block()
+        self._tool_names_block = self.registry.names_block()
 
     def _iter_run(
         self,
