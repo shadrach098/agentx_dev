@@ -514,6 +514,13 @@ class PersistenceMixin:
             policy.new_run()
 
     @property
+    def spawned(self) -> List[Dict[str, Any]]:
+        """This run's sub-agents (name, origin, tools, dropped, outcome, chars). Empty
+        unless the runner was built with ``delegation=``."""
+        policy = self._delegation
+        return list(policy.run.records) if policy is not None else []
+
+    @property
     def persistence(self) -> Optional[Persistence]:
         return self._persistence
 

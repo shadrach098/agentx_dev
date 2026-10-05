@@ -520,7 +520,10 @@ class SpawnPolicy:
         if self.persistence is not None:
             runner.persistence = self.persistence
         if depth < cfg.max_depth:
-            runner.add_tool(make_delegate_tool(runner, self, depth + 1))
+            try:
+                runner.add_tool(make_delegate_tool(runner, self, depth + 1))
+            except Exception as e:                   # e.g. a pool tool already named "delegate"
+                raise SpawnRefused(f"could not build the agent: {e}") from e
         granted = presets + [t.name for t in pool_tools]
         return Built(spec=spec, runner=runner, description=self._describe(spec, granted),
                      granted=granted, dropped=dropped)
@@ -556,11 +559,133 @@ class SpawnPolicy:
                   + (f" dropped={built.dropped}" if built.dropped else ""))
 
 
-# The delegate tool is defined in Task 3; the policy only needs the name at call time.
-def make_delegate_tool(parent: Any, policy: SpawnPolicy, depth: int) -> Any:  # replaced in Task 3
-    raise NotImplementedError("delegate tools are added in Task 3")
+# ----------------------------------------------------------------------------
+# The delegate tool
+# ----------------------------------------------------------------------------
+
+class DelegateArgs(BaseModel):
+    task: str = Field(description="Everything the sub-agent needs to do the job. It sees ONLY this, "
+                                  "not your conversation, so include every fact it needs.")
+    instructions: str = Field(default="", description="Who the sub-agent is and exactly what it must return.")
+    tools: List[str] = Field(default_factory=list,
+                             description="Names of the tools it may use. Anything not offered is dropped.")
+
+
+DELEGATE_DESCRIPTION = (
+    "Hand a self-contained piece of your work to a fresh sub-agent and get its final answer back. "
+    "The sub-agent starts with a clean context and sees only `task`, so put every fact it needs in "
+    "`task`. Use it for large side jobs that would clutter your own context (reading many files, "
+    "researching a subtopic), not for trivial steps. It returns a short summary."
+)
+
+
+def cap_summary(text: Any, cap: int = SUMMARY_CAP_CHARS) -> str:
+    """The sub-agent's answer as the caller sees it: at most ``cap`` characters plus a marker."""
+    s = str(text)
+    return s if len(s) <= cap else s[:cap] + "\n[truncated]"
+
+
+def _is_async_runner(runner: Any) -> bool:
+    return asyncio.iscoroutinefunction(getattr(runner, "Initialize", None))
+
+
+def _delegate_spec(policy: SpawnPolicy, instructions: Any, tools: Any) -> AgentSpec:
+    inst = str(instructions or "").strip()[:MAX_INSTRUCTIONS_CHARS] or _DEFAULT_DELEGATE_INSTRUCTIONS
+    names = tuple(dict.fromkeys(str(t).strip() for t in (tools or []) if str(t).strip()))
+    return AgentSpec(name=policy.run.next_delegate_name(), instructions=inst, tools=names, origin="delegate")
+
+
+def _prepare(policy: SpawnPolicy, depth: int, is_async: bool, task: Any, instructions: Any,
+             tools: Any) -> Tuple[Optional[str], Optional[Built]]:
+    """``(refusal text, None)`` or ``(None, built sub-agent)``."""
+    if not str(task or "").strip():
+        return "delegation refused: task is empty; do this yourself", None
+    spec = _delegate_spec(policy, instructions, tools)
+    try:
+        return None, policy.build(spec, depth, is_async=is_async)
+    except SpawnRefused as e:
+        return f"delegation refused: {e.reason}; do this yourself", None
+
+
+def _delegate_error(policy: SpawnPolicy, built: Built, exc: BaseException) -> DelegationFailed:
+    name = built.spec.name
+    policy.run.finish(name, "error", 0)
+    policy.run.emit({"type": "delegate_result", "name": name, "outcome": "error", "chars": 0})
+    return DelegationFailed(f"[delegate failed: error] {exc}")
+
+
+def _delegate_result(policy: SpawnPolicy, built: Built, completion: Any) -> str:
+    name = built.spec.name
+    outcome = getattr(completion, "outcome", "done")
+    outcome = outcome if isinstance(outcome, str) else "done"
+    text = str(getattr(completion, "content", "") or "")
+    policy.run.finish(name, outcome, len(text))
+    policy.run.emit({"type": "delegate_result", "name": name, "outcome": outcome, "chars": len(text)})
+    if outcome != "done":
+        raise DelegationFailed(f"[delegate failed: {outcome}] {cap_summary(text)}")
+    note = (f"\n[note: these tools were not granted: {', '.join(built.dropped)}]" if built.dropped else "")
+    return cap_summary(text) + note
+
+
+def make_delegate_tool(parent: Any, policy: SpawnPolicy, depth: int) -> Any:
+    """The ``delegate`` tool for ``parent``. ``depth`` is the depth a sub-agent built by it gets.
+    An async parent gets an async tool that builds async sub-agents; a sync parent a sync tool."""
+    description = DELEGATE_DESCRIPTION + "\nTools you may grant:\n" + policy.menu()
+
+    if _is_async_runner(parent):
+        async def delegate(task: str, instructions: str = "", tools: Optional[List[str]] = None) -> str:
+            refusal, built = _prepare(policy, depth, True, task, instructions, tools)
+            if refusal is not None:
+                return refusal
+            budget = getattr(parent, "_active_budget", None)
+            kw = {"_budget": budget} if budget is not None and accepts_budget(built.runner.Initialize) else {}
+            try:
+                completion = await built.runner.Initialize(task, **kw)
+            except Exception as e:
+                raise _delegate_error(policy, built, e) from e
+            return _delegate_result(policy, built, completion)
+
+        tool = AsyncStructuredTool(func=delegate, args_schema=DelegateArgs,
+                                   name=DELEGATE_TOOL_NAME, description=description)
+        tool.cacheable = False        # a delegation has side effects: never answer it from the cache
+        return tool
+
+    def delegate(task: str, instructions: str = "", tools: Optional[List[str]] = None) -> str:
+        refusal, built = _prepare(policy, depth, False, task, instructions, tools)
+        if refusal is not None:
+            return refusal
+        budget = getattr(parent, "_active_budget", None)
+        kw = {"_budget": budget} if budget is not None and accepts_budget(built.runner.Initialize) else {}
+        try:
+            completion = built.runner.Initialize(task, **kw)
+        except Exception as e:
+            raise _delegate_error(policy, built, e) from e
+        return _delegate_result(policy, built, completion)
+
+    tool = StructuredTool(func=delegate, args_schema=DelegateArgs,
+                          name=DELEGATE_TOOL_NAME, description=description)
+    tool.cacheable = False            # a delegation has side effects: never answer it from the cache
+    return tool
 
 
 @contextmanager
-def attach_delegation(runners: Iterable[Any], policy: SpawnPolicy, depth: int = 0):  # replaced in Task 3
-    yield
+def attach_delegation(runners: Iterable[Any], policy: SpawnPolicy, depth: int = 0):
+    """Give every runner in ``runners`` the ``delegate`` tool for the duration of the block.
+
+    Runners that cannot take a tool (no ``add_tool``), that already have a ``delegate`` tool,
+    or are at ``depth >= max_depth`` are left alone. The tool is removed on exit, even if the
+    block raises, so the developer's runners are exactly as they were."""
+    attached: List[Any] = []
+    if policy.enabled and depth < policy.config.max_depth:
+        for r in runners:
+            if not callable(getattr(r, "add_tool", None)) or not hasattr(r, "registry"):
+                continue
+            if r.registry.has(DELEGATE_TOOL_NAME):
+                continue
+            r.add_tool(make_delegate_tool(r, policy, depth + 1))
+            attached.append(r)
+    try:
+        yield
+    finally:
+        for r in attached:
+            r.remove_tool(DELEGATE_TOOL_NAME)

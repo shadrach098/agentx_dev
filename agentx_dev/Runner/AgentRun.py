@@ -1408,6 +1408,7 @@ class AgentRunner(PersistenceMixin):
         text_turn_nudges: int = 1,
         output_schema: Optional[Type[BaseModel]] = None,
         persistence: Optional[Persistence] = None,
+        delegation: Optional[Any] = None,
     ):
         """Construct an ``AgentRunner``.
 
@@ -1549,6 +1550,11 @@ class AgentRunner(PersistenceMixin):
                 ``outcome`` says how the run ended. Streamed responses
                 (``stream_tokens``) are not retried. Default ``None``
                 keeps the ordinary loop.
+            delegation: (3.6) An enabled ``SpawnConfig`` gives the runner a
+                ``delegate`` tool: it can hand part of its work to a fresh
+                sub-agent (clean context, tools clipped to the config's
+                ceiling) and get a short summary back. ``runner.spawned``
+                lists this run's sub-agents. Default ``None``: no tool.
 
         Raises:
             TypeError: If both ``Agent`` and ``agent`` are passed, if
@@ -1718,6 +1724,13 @@ class AgentRunner(PersistenceMixin):
         else:
             raise ValueError("The 'Agent' object must be a template string containing '{tools}','{tool_names}',{user_input}, or an AgentFormattor instance.")
 
+        if delegation is not None and delegation.enabled:
+            from agentx_dev.SubAgents import SpawnPolicy, make_delegate_tool
+            self._delegation = SpawnPolicy(delegation, self.model, persistence=self.persistence,
+                                           is_async=False, verbose=self.verbose)
+            if delegation.max_depth > 0:
+                self.add_tool(make_delegate_tool(self, self._delegation, 1))
+
     def Tool_Runner(self, tool_name: str, args_str) -> Any:
         """Execute a tool. Delegates to ``self.registry.dispatch``.
 
@@ -1884,6 +1897,7 @@ class AgentRunner(PersistenceMixin):
         under a ``PersistentRun``: a time or cost limit, or an exhausted
         reflection ladder, ends the run with a normal completion whose
         ``outcome`` says why."""
+        self._begin_delegation_run()
         if self.persistence is None:
             yield from self._iter_run_core(user_input, chat_history, stream_tokens, media, None)
             return

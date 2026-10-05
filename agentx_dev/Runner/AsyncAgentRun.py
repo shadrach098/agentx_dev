@@ -124,6 +124,7 @@ class AsyncAgentRunner(PersistenceMixin):
         output_schema: Optional[Type[BaseModel]] = None,
         persistence: Optional[Persistence] = None,
         system_addendum: Optional[str] = None,
+        delegation: Optional[Any] = None,
     ):
         """Construct an ``AsyncAgentRunner``. Parameters mirror
         :class:`AgentRunner` -- see that docstring for the full details;
@@ -300,6 +301,13 @@ class AsyncAgentRunner(PersistenceMixin):
                 "The 'Agent' object must be a template string containing '{tools}','{tool_names}',{user_input}, "
                 "or an AgentFormattor instance."
             )
+
+        if delegation is not None and delegation.enabled:
+            from agentx_dev.SubAgents import SpawnPolicy, make_delegate_tool
+            self._delegation = SpawnPolicy(delegation, self.model, persistence=self.persistence,
+                                           is_async=True, verbose=self.verbose)
+            if delegation.max_depth > 0:
+                self.add_tool(make_delegate_tool(self, self._delegation, 1))
 
     def _auto_add_batch_concurrent_tool(self):
         has_async_tools = any(
@@ -498,6 +506,7 @@ class AsyncAgentRunner(PersistenceMixin):
         media: Optional[List[Any]] = None,
         _budget: Optional[RunBudget] = None,
     ) -> AgentCompletion:
+        self._begin_delegation_run()
         if self.persistence is None:
             return await self._initialize_core(
                 user_input, ChatHistory, stream, chat_history=chat_history,
