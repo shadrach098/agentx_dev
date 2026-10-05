@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union, Any
 
@@ -32,7 +33,7 @@ from agentx_dev.Runner.AsyncAgentRun import AsyncAgentRunner
 from agentx_dev.Agents.Agent import AgentType
 from agentx_dev.Tools import logger
 from agentx_dev.SubAgents import (   # noqa: F401  (SpawnConfig/SpawnRequest are re-exported)
-    AgentSpec, SpawnConfig, SpawnPolicy, SpawnRefused, SpawnRequest, SpecError,
+    DELEGATE_TOOL_NAME, AgentSpec, SpawnConfig, SpawnPolicy, SpawnRefused, SpawnRequest, SpecError,
     _default_interactive_approver, attach_delegation, parse_agent_spec, spawn_instruction,
     spec_from_legacy_spawn,
 )
@@ -122,14 +123,6 @@ class Specialist:
         return iter((self.description, self.runner))
 
 
-def _build_spawned_agent(request, model, allowed_paths):
-    """Bridge for ``Supervisor._handle_spawn`` until Task 4 rewrites it: builds the 3.5
-    capability-word specialist through the policy (approval already happened there)."""
-    cfg = SpawnConfig(enabled=True, auto_spawn=True, allowed_paths=list(allowed_paths))
-    built = SpawnPolicy(cfg, model).build(
-        AgentSpec(request.name, request.description, tuple(request.capabilities)))
-    return built.description, built.runner
-
 
 def _normalize_agents(agents: Dict[str, Any]) -> Dict[str, Specialist]:
     """Wrap classic ``(description, runner)`` tuples as ``Specialist``.
@@ -144,6 +137,27 @@ def _normalize_agents(agents: Dict[str, Any]) -> Dict[str, Specialist]:
     return out
 
 
+@contextmanager
+def _per_run_agents(sup):
+    """Give one run its own copy of the specialist registry, so agents spawned during
+    the run are discarded when it ends and ``sup.agents`` is exactly as it was."""
+    base = sup.agents
+    sup.agents = dict(base)
+    try:
+        yield
+    finally:
+        sup.agents = base
+
+
+def _step_agent_name(item: dict) -> Optional[str]:
+    """The agent a plan step runs on: its ``agent``, or the name its ``new_agent`` defines."""
+    name = item.get("agent")
+    if name:
+        return name
+    spec = item.get("new_agent")
+    return spec.get("name") if isinstance(spec, dict) else None
+
+
 class SupervisorResult(BaseModel):
     """Aggregate result produced by a Supervisor run."""
 
@@ -153,90 +167,14 @@ class SupervisorResult(BaseModel):
     plan: List[dict] = Field(default_factory=list)  # the decomposed plan
     # "done" | "partial" | "stuck" | "out_of_time" | "out_of_budget"
     outcome: str = "done"
+    # Sub-agents created during the run (planner-time spawns and delegations):
+    # name, origin, tools, dropped, outcome, chars. Empty when nothing was spawned.
+    spawned: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 # ----------------------------------------------------------------------------
 # Prompts
 # ----------------------------------------------------------------------------
-
-SUPERVISOR_SPAWN_INSTRUCTION = """
-
-── DYNAMIC SPECIALIST SPAWNING ──────────────────────────────────────
-You can SPAWN a new specialist mid-plan when the existing catalog can't cover a capability the task needs. This is not a fallback — it's the CORRECT move whenever the task requires a capability no registered agent has.
-
-## WHEN TO SPAWN (mandatory triggers — spawn BEFORE dispatching such a step)
-
-Before assigning any step to an existing specialist, check the specialist's description against the sub-task's needs. Spawn if ANY of these apply:
-
-  - The sub-task requires COMPUTATION over data (LOC counts, statistics, top-N ranking, aggregation, deduplication, cyclomatic complexity, AST parsing, JSON/CSV transformation, math over many values) AND no registered specialist has 'code' capability. Grep+read+list cannot count / sort / aggregate — you need `run_python`. SPAWN a code specialist.
-  - The sub-task requires WEB access (search, fetch a URL) AND no registered specialist has 'web' capability. SPAWN with 'web'.
-  - The sub-task requires WRITING or EDITING files AND no registered specialist has 'files' capability. SPAWN with 'files'.
-  - The sub-task requires DELETING files AND no registered specialist has 'delete'. SPAWN with 'delete'.
-
-If you assign a code-computation step to a specialist that only has grep/find/read, that step WILL FAIL. The specialist will try to call `run_python`, get "tool not found", spiral, and the framework will hard-abort with no data. Spawn instead.
-
-## DO NOT SPAWN DUPLICATES (the framework will REFUSE and your plan will fail)
-
-Before emitting ANY spawn, scan the "Available specialist agents" catalog above and ask:
-  1. Does an existing specialist's description already mention the capability I want (web / files / code / delete)?
-  2. Could an existing specialist's tool set cover this — even if its NAME sounds different from what I want to spawn?
-
-If yes to either — DISPATCH to that existing specialist instead. Do NOT spawn a new one. Every spawn with capabilities that overlap with an existing specialist WILL BE REFUSED by the framework's capability-overlap guard: the framework prints "REFUSED — existing specialist 'X' already covers caps ..." and the __spawn__ step's follow-up dispatch step then fails because your named specialist was never registered.
-
-Examples of INVALID duplicate spawns:
-  - Catalog has "researcher: web_search + web_fetch". You emit __spawn__ for "web_researcher" with caps=['web']. REFUSED. Dispatch to "researcher" instead.
-  - Catalog has "analyst: run_python + files". You emit __spawn__ for "stats_analyst" with caps=['code']. REFUSED. Reuse "analyst".
-  - Task has multiple web-lookup sub-tasks. Spawn ONE web specialist (or reuse the registered one), then dispatch to it N times. Do NOT spawn once per sub-task.
-
-If you genuinely need a specialist with a NARROWER role but overlapping tools (say, "focused only on Barrie" vs. a general researcher) — you still can't spawn it because tools are the same. Instead, dispatch to the existing specialist with a more specific query.
-
-## HOW TO SPAWN
-
-A spawn step goes in the plan array like a regular step, but with agent="__spawn__" plus additional fields:
-
-  {{"agent": "__spawn__",
-    "name": "<short lowercase identifier — used in later steps>",
-    "description": "<what this specialist should do>",
-    "capabilities": ["web", "files", "code", "delete"],   # any subset
-    "rationale": "<one sentence: why the existing specialists don't fit>"}}
-
-Then LATER steps that need that specialist reference it by the name you gave:
-  {{"agent": "<the name>", "query": "..."}}
-
-Recognized capabilities (grant only what's needed):
-  - web    : web_search + web_fetch tools
-  - files  : read/write/edit/list inside sandbox
-  - code   : run_python (execute Python for computation, AST, stats, aggregation)
-  - delete : delete_files inside sandbox
-
-## WORKED EXAMPLES
-
-### Example A — task asks for counts, stats, and rankings; catalog has no code specialist
-Registered agents: explorer (read/grep/find only), reporter (write only).
-Task: "Count Python files, total LOC, top 5 files by line count, class/def counts, TODOs, dependencies. Save a markdown report."
-
-CORRECT plan:
-  1. {{"agent": "__spawn__", "name": "analyst", "description": "Python code execution for computation over the source tree", "capabilities": ["code", "files"], "rationale": "None of the registered agents can run Python; the task needs LOC counting, ranking, and aggregation."}}
-  2. {{"agent": "analyst", "query": "Under ./agentx_dev, walk the tree with Path.rglob('*.py') (skip __pycache__/.venv/dist/build), then compute and print: (a) file count; (b) total LOC excluding blank+comment lines; (c) top-5 files by line count; (d) count of `class ` and `def ` occurrences per file; (e) TODO/FIXME/XXX matches with file:line. Include all numbers verbatim in your final answer."}}
-  3. {{"agent": "reporter", "query": "Write ./workspace/codebase_analysis.md with the metrics above, if_exists='rename'."}}
-
-WRONG plan (what NOT to do):
-  1. {{"agent": "explorer", "query": "count Python files"}}
-  2. {{"agent": "explorer", "query": "count total LOC"}}          ← explorer has no run_python → fails
-  3. {{"agent": "explorer", "query": "top 5 by line count"}}      ← explorer has no run_python → fails
-  ... (every computation step fails; the specialist spirals then aborts)
-
-### Example B — one spawn, reused across many steps
-The spawn step is CHEAP (just registers the specialist). One spawn + several dispatches to the spawned agent is normal. Do NOT spawn twice for the same capability.
-
-## RULES
-  - Only spawn when NO existing specialist can reasonably do the sub-task. Prefer reusing.
-  - Grant only the capabilities the specialist genuinely needs.
-  - A spawn step is its own step — it just registers the specialist; a follow-up step USES it.
-  - Spawns may be REJECTED. If a spawn is rejected, later steps referring to it will fail — write the plan assuming approval, but know that rejection is possible.
-────────────────────────────────────────────────────────────────────
-"""
-
 
 SUPERVISOR_PLAN_PROMPT = """You are a Supervisor. Your job is to write the SHORTEST plan that solves the user's task correctly. Fewer steps beat more steps.
 
@@ -638,7 +576,9 @@ def _plan_repair_note(repairs: List[str]) -> str:
         "Write the plan again with a valid dependency graph: every "
         "depends_on entry must name an existing step id, no step may "
         "depend on itself or on a __spawn__ step, and the graph must "
-        "contain no cycles."
+        "contain no cycles. A new_agent needs a name (letters, digits, "
+        "_ or -, at most 40 characters), non-empty instructions, tools as "
+        "a list of names, and must not be combined with agent."
     )
 
 
@@ -691,6 +631,34 @@ def _sanitize_plan(
                 repairs.append(f"duplicate id {sid!r} at position {i} renamed to {new_id!r}")
             step["id"] = new_id
         seen.add(step["id"])
+
+    # -- 7. new_agent validation (3.6) ----------------------------------------
+    # A valid definition is normalized and also names the step's agent; an invalid one is
+    # removed, and a step left with nothing to run is dropped (dependents lose the edge below).
+    checked: List[dict] = []
+    for step in plan:
+        if "new_agent" not in step:
+            checked.append(step)
+            continue
+        raw = step.pop("new_agent")
+        problem = ""
+        spec = None
+        try:
+            spec = parse_agent_spec(raw)
+        except SpecError as e:
+            problem = str(e)
+        if spec is not None and step.get("agent") not in (None, "", spec.name):
+            problem = f"a step cannot have both agent={step.get('agent')!r} and new_agent"
+        if problem:
+            repairs.append(f"step {step['id']!r}: new_agent invalid ({problem}) -- dropped")
+            if not step.get("agent") or step.get("agent") == "__spawn__":
+                continue
+            checked.append(step)
+            continue
+        step["new_agent"] = {"name": spec.name, "instructions": spec.instructions, "tools": list(spec.tools)}
+        step["agent"] = spec.name
+        checked.append(step)
+    plan = checked
 
     ids = [s["id"] for s in plan]
     id_pos = {sid: i for i, sid in enumerate(ids)}
@@ -910,7 +878,77 @@ def _log_no_plan() -> None:
 # Sync Supervisor
 # ----------------------------------------------------------------------------
 
-class Supervisor:
+class _SpawnMixin:
+    """Sub-agent creation shared by ``Supervisor`` and ``AsyncSupervisor`` (3.6). Needs
+    ``self.agents``, ``self.model``, ``self.persistence``, ``self.spawn_config``,
+    ``self.verbose`` and ``self._spawn_run_policy``."""
+
+    _SPAWN_ASYNC = False        # AsyncSupervisor builds async sub-agents
+
+    def _new_spawn_policy(self) -> SpawnPolicy:
+        return SpawnPolicy(self.spawn_config, self.model, persistence=self.persistence,
+                           is_async=self._SPAWN_ASYNC, verbose=self.verbose)
+
+    def _spawn_policy(self) -> SpawnPolicy:
+        """The policy for the run in progress (created on demand outside a run)."""
+        if self._spawn_run_policy is None:
+            self._spawn_run_policy = self._new_spawn_policy()
+        return self._spawn_run_policy
+
+    def _drain_spawn_events(self):
+        policy = self._spawn_run_policy
+        if policy is not None:
+            yield from policy.run.drain()
+
+    def _overlapping(self, built) -> Optional[str]:
+        """Name of a registered specialist that already has every tool ``built`` has (log only)."""
+        have = {getattr(t, "name", None) for t in getattr(built.runner, "tools", [])}
+        have -= {DELEGATE_TOOL_NAME, None}
+        if not have:
+            return None
+        for n, (_d, runner) in self.agents.items():
+            if n == built.spec.name:
+                continue
+            if have <= {getattr(t, "name", None) for t in getattr(runner, "tools", [])}:
+                return n
+        return None
+
+    def _spawn_spec(self, spec: AgentSpec) -> Tuple[Optional[str], str]:
+        """Build, reuse or refuse ``spec``. Returns ``(name, "")`` when an agent is available
+        under ``name`` (a clashing name may have been suffixed), or ``(None, reason)``."""
+        policy = self._spawn_policy()
+        registered = {n for n in self.agents if n not in policy.run.built}
+        try:
+            built = policy.obtain(spec, registered=registered)
+        except SpawnRefused as e:
+            return None, e.reason
+        name = built.spec.name
+        if built.reused != "registered" and name not in self.agents:
+            self.agents[name] = Specialist(description=built.description, runner=built.runner)
+        if built.reused is None and self.verbose:
+            twin = self._overlapping(built)
+            if twin:
+                print(f"{_C_PLAN}[supervisor.spawn] '{name}' has the same tools as the registered "
+                      f"specialist '{twin}'; keeping both (different instructions){_C_RESET}")
+        return name, ""
+
+    def _handle_spawn(self, spawn_step: dict) -> Tuple[Optional[str], Optional[str]]:
+        """Process a legacy ``__spawn__`` step. Returns ``(name, None)`` when the agent is
+        available and ``(None, None)`` otherwise. The 3.5 reroute is gone: a spawn whose
+        tools overlap an existing specialist is no longer refused."""
+        try:
+            spec = spec_from_legacy_spawn(spawn_step)
+        except SpecError as e:
+            if self.verbose:
+                print(f"{_C_ERROR}[supervisor.spawn] malformed request: {e}{_C_RESET}")
+            return None, None
+        name, reason = self._spawn_spec(spec)
+        if name is None and self.verbose:
+            print(f"{_C_ERROR}[supervisor.spawn] refused: {reason}{_C_RESET}")
+        return name, None
+
+
+class Supervisor(_SpawnMixin):
     """
     Synchronous multi-agent supervisor.
 
@@ -946,7 +984,13 @@ class Supervisor:
                 request NEW specialists mid-plan. When None (default),
                 spawning is disabled and the planner can only use the
                 specialists passed in ``agents``. See SpawnConfig for the
-                auto_spawn / approver knobs.
+                auto_spawn / approver knobs. (3.6) The planner can define a new
+                specialist inline (``new_agent``: name, instructions, tools) and
+                specialists can ``delegate`` to fresh sub-agents; tools are clipped
+                to the config's ceiling (``tools`` / ``capabilities``). With
+                ``persistence`` set and no ``spawn_config`` the default is
+                ``SpawnConfig(enabled=True, capabilities={"web", "files_read"},
+                max_spawns=6)``; pass ``SpawnConfig(enabled=False)`` to opt out.
             max_subtask_retries: How many times a sub-task that RAISES (or
                 returns an outcome other than "done") is re-dispatched
                 before the Supervisor gives up on it.
@@ -997,8 +1041,15 @@ class Supervisor:
         self.agents = _normalize_agents(agents)
         self.max_subtasks = max_subtasks
         self.verbose = verbose
-        self.spawn_config = spawn_config or SpawnConfig(enabled=False)
-        self._spawns_this_run = 0
+        if spawn_config is None:
+            # Persistent supervisors may create sub-agents out of the box, inside a safe
+            # ceiling (web search plus read-only files). Without persistence the default is off.
+            spawn_config = (
+                SpawnConfig(enabled=True, capabilities={"web", "files_read"}, max_spawns=6)
+                if persistence is not None else SpawnConfig(enabled=False)
+            )
+        self.spawn_config = spawn_config
+        self._spawn_run_policy: Optional[SpawnPolicy] = None
         self.max_subtask_retries = max(0, int(max_subtask_retries))
         self.subtask_success_check = subtask_success_check
         self.max_plan_retries = max(0, int(max_plan_retries))
@@ -1041,7 +1092,7 @@ class Supervisor:
         )
         prompt = base_prompt
         if self.spawn_config.enabled:
-            prompt = prompt + SUPERVISOR_SPAWN_INSTRUCTION
+            prompt = prompt + spawn_instruction(self._spawn_policy())
         if repair_note:
             prompt = prompt + repair_note
         messages = [{"role": "user", "content": prompt}]
@@ -1106,161 +1157,6 @@ class Supervisor:
         sane, _ = _sanitize_plan(raw, verbose=self.verbose, known_ids=known, replaceable=replaceable)
         prior = {r.step_id for r in results if r.step_id}
         return _rename_colliding_ids(sane, prior, round_no)
-
-    # Map from SpawnRequest capability keyword -> the concrete tool names
-    # a spawn would install. Kept in sync with _build_spawned_agent's
-    # capability dispatch. Used by _find_existing_for_capabilities to
-    # detect duplicate-capability spawns before they happen.
-    _CAP_TO_TOOLS: Dict[str, set] = {
-        "web": {"web_search", "web_fetch"},
-        "files": {"read_path", "write_file", "edit_file", "list_directory"},
-        "code": {"run_python"},
-        "delete": {"delete_path"},
-    }
-
-    def _find_existing_for_capabilities(
-        self, capabilities: List[str],
-    ) -> Optional[str]:
-        """If any registered specialist ALREADY has every tool the
-        requested capabilities would install, return that specialist's
-        name. Used to refuse redundant spawns.
-
-        Uses concrete tool-name overlap, not description matching — a
-        specialist that WAS spawned with 'web' has web_search + web_fetch
-        registered on its runner, so the check works whether the
-        specialist was pre-built or previously spawned.
-
-        Returns None if no existing specialist covers the caps, or if
-        capabilities is empty (nothing to check)."""
-        required: set = set()
-        for c in capabilities:
-            required |= self._CAP_TO_TOOLS.get(c.lower().strip(), set())
-        if not required:
-            return None
-        for name, (_desc, runner) in self.agents.items():
-            agent_tool_names = {getattr(t, "name", None) for t in getattr(runner, "tools", [])}
-            if required.issubset(agent_tool_names):
-                return name
-        return None
-
-    def _handle_spawn(self, spawn_step: dict) -> Tuple[Optional[str], Optional[str]]:
-        """Process a __spawn__ step. Returns a tuple:
-            (name_to_use, rewrite_from)
-
-        - New spawn approved      -> (new_name, None)
-        - Refused due to overlap  -> (existing_name, requested_name)
-              The Supervisor should REWRITE any subsequent plan steps
-              that reference `requested_name` to use `existing_name`
-              instead — this prevents the "UNKNOWN AGENT — skipping"
-              downstream failure that leaves the reporter with no data
-              and forces it to fabricate content.
-        - Any other refusal       -> (None, None)
-
-        Emits verbose logs on every branch so the trace shows exactly
-        which decision was made."""
-        cfg = self.spawn_config
-        if not cfg.enabled:
-            if self.verbose:
-                print(f"{_C_ERROR}[supervisor.spawn] request ignored — "
-                      f"spawn_config.enabled=False{_C_RESET}")
-            return None, None
-        if self._spawns_this_run >= cfg.effective_max_spawns:
-            if self.verbose:
-                print(f"{_C_ERROR}[supervisor.spawn] refused — max_spawns "
-                      f"({cfg.effective_max_spawns}) already reached{_C_RESET}")
-            return None, None
-
-        req = SpawnRequest(
-            name=str(spawn_step.get("name", "")).strip(),
-            description=str(spawn_step.get("description", "")).strip(),
-            capabilities=[str(c).strip() for c in
-                          (spawn_step.get("capabilities") or []) if c],
-            rationale=str(spawn_step.get("rationale", "")).strip(),
-        )
-        if not req.name or not req.description:
-            if self.verbose:
-                print(f"{_C_ERROR}[supervisor.spawn] malformed request — "
-                      f"missing name or description{_C_RESET}")
-            return None, None
-        if req.name in self.agents:
-            if self.verbose:
-                print(f"{_C_ERROR}[supervisor.spawn] name '{req.name}' already "
-                      f"registered — refusing to overwrite{_C_RESET}")
-            return None, None
-
-        # Duplicate-capability guard: check the existing catalog. If an
-        # existing specialist already covers the requested caps, refuse
-        # the spawn AND return the existing specialist's name so run()
-        # can rewrite subsequent plan steps that reference req.name to
-        # use the existing specialist. Without the rewrite, follow-up
-        # dispatches to req.name would hit "UNKNOWN AGENT — skipping"
-        # and downstream steps (like a reporter that needed the
-        # research data) would fabricate content.
-        existing = self._find_existing_for_capabilities(req.capabilities)
-        if existing is not None:
-            if self.verbose:
-                print(f"{_C_PLAN}[supervisor.spawn] REFUSED spawn '{req.name}' — "
-                      f"existing specialist '{existing}' already covers "
-                      f"caps {req.capabilities}. AUTO-REROUTING subsequent "
-                      f"dispatches from '{req.name}' → '{existing}'.{_C_RESET}")
-            return existing, req.name
-
-        if cfg.auto_spawn:
-            # Security gate: if auto_spawn_allowed_caps is configured,
-            # every requested cap MUST be in it. Anything else drops to
-            # the human approver (or refusal if none). This blocks a
-            # prompt-injected task from silently getting `code`/`delete`
-            # under auto_spawn — see SpawnConfig docstring for rationale.
-            asked = {c.lower() for c in req.capabilities}
-            allow = cfg.auto_spawn_allowed_caps
-            if allow is not None and not asked.issubset(allow):
-                over_reach = sorted(asked - allow)
-                if self.verbose:
-                    print(f"{_C_ERROR}[supervisor.spawn] '{req.name}' — "
-                          f"auto-spawn REFUSED; caps {over_reach} not in "
-                          f"auto_spawn_allowed_caps={sorted(allow)}. "
-                          f"Falling through to approver.{_C_RESET}")
-                if cfg.approver is None:
-                    # No human approver configured and auto-spawn refused
-                    # this request. Fail closed rather than silently
-                    # granting.
-                    if self.verbose:
-                        print(f"{_C_ERROR}[supervisor.spawn] REJECTED — "
-                              f"no approver set and auto-spawn refused "
-                              f"cap set {over_reach}.{_C_RESET}")
-                    return None, None
-                approved = bool(cfg.approver(req))
-                if self.verbose:
-                    verdict = f"{_C_RESULT}approved" if approved else f"{_C_ERROR}rejected"
-                    print(f"[supervisor.spawn] {verdict}{_C_RESET}")
-            else:
-                approved = True
-                if self.verbose:
-                    print(f"{_C_PLAN}[supervisor.spawn] auto-approving '{req.name}' "
-                          f"(caps: {', '.join(req.capabilities) or 'none'}){_C_RESET}")
-        else:
-            approver = cfg.approver or _default_interactive_approver
-            if self.verbose and cfg.approver is None:
-                # Only announce this when using the default interactive
-                # approver; a custom approver may handle its own UI.
-                print(f"{_C_DISPATCH}[supervisor.spawn] '{req.name}' — requesting "
-                      f"human approval{_C_RESET}")
-            approved = bool(approver(req))
-            if self.verbose:
-                verdict = f"{_C_RESULT}approved" if approved else f"{_C_ERROR}rejected"
-                print(f"[supervisor.spawn] {verdict}{_C_RESET}")
-
-        if not approved:
-            return None, None
-
-        description, runner = _build_spawned_agent(
-            req, model=self.model, allowed_paths=cfg.allowed_paths,
-        )
-        self.agents[req.name] = Specialist(description=description, runner=runner)
-        if self.persistence is not None:
-            runner.persistence = self.persistence
-        self._spawns_this_run += 1
-        return req.name, None
 
     def _dispatch_with_retry(
         self,
@@ -1405,25 +1301,13 @@ class Supervisor:
             step_deps = list(item.get("depends_on") or [])
 
             if agent_name == "__spawn__":
-                spawned_name, rewrite_from = self._handle_spawn(item)
-                yield {"type": "spawn", "name": spawned_name or item.get("name", "?"),
-                       "capabilities": item.get("capabilities", []),
-                       "rerouted_from": rewrite_from}
-                if spawned_name and rewrite_from:
-                    spawn_rewrites[rewrite_from] = spawned_name
+                spawned_name, _ = self._handle_spawn(item)
+                yield from self._drain_spawn_events()
+                label = item.get("name", "?")
+                if spawned_name:
                     sub_result = SubtaskResult(
                         agent="__spawn__",
-                        query=f"spawn: {rewrite_from}",
-                        content=f"REROUTED: caps already covered by existing "
-                                f"specialist '{spawned_name}'. Subsequent "
-                                f"dispatches to '{rewrite_from}' will run "
-                                f"on '{spawned_name}'.",
-                        step_id=step_id,
-                    )
-                elif spawned_name:
-                    sub_result = SubtaskResult(
-                        agent="__spawn__",
-                        query=f"spawn: {item.get('name', '?')}",
+                        query=f"spawn: {label}",
                         content=f"registered new specialist '{spawned_name}' with "
                                 f"capabilities: {', '.join(item.get('capabilities', []))}",
                         step_id=step_id,
@@ -1431,7 +1315,7 @@ class Supervisor:
                 else:
                     sub_result = SubtaskResult(
                         agent="__spawn__",
-                        query=f"spawn: {item.get('name', '?')}",
+                        query=f"spawn: {label}",
                         content="",
                         error="spawn refused (see log for reason)",
                         step_id=step_id,
@@ -1492,6 +1376,26 @@ class Supervisor:
                 yield {"type": "subtask_result", "result": sub_result,
                        "step": step_idx, "step_id": step_id}
                 continue
+
+            if item.get("new_agent"):
+                try:
+                    spawned_name, reason = self._spawn_spec(parse_agent_spec(item["new_agent"]))
+                except SpecError as e:
+                    spawned_name, reason = None, str(e)
+                yield from self._drain_spawn_events()
+                if spawned_name is None:
+                    sub_result = SubtaskResult(
+                        agent=agent_name or "<none>", query=item.get("query", ""), content="",
+                        error=f"spawn refused: {reason}", step_id=step_id, depends_on=step_deps,
+                    )
+                    if self.verbose:
+                        print(f"{_C_ERROR}[supervisor.spawn] step {step_id}: {reason}{_C_RESET}")
+                    subtask_results.append(sub_result)
+                    results_by_id[step_id] = sub_result
+                    yield {"type": "subtask_result", "result": sub_result,
+                           "step": step_idx, "step_id": step_id}
+                    continue
+                agent_name = spawned_name
 
             if agent_name in spawn_rewrites:
                 original = agent_name
@@ -1554,6 +1458,10 @@ class Supervisor:
             sub_result.depends_on = step_deps
             subtask_results.append(sub_result)
             results_by_id[step_id] = sub_result
+            policy = self._spawn_run_policy
+            if policy is not None and agent_name in policy.run.built:
+                policy.run.finish(agent_name, sub_result.outcome, len(sub_result.content))
+            yield from self._drain_spawn_events()
             yield {"type": "subtask_result", "result": sub_result,
                    "step": step_idx, "step_id": step_id}
             if self.verbose:
@@ -1566,7 +1474,10 @@ class Supervisor:
         Event shapes:
           - {"type": "plan_start"}
           - {"type": "plan",           "plan": <list of steps>}
-          - {"type": "spawn",          "name": str, "capabilities": list}
+          - {"type": "spawn",          "name": str, "origin": "plan" | "delegate", "tools": list,
+                                        "dropped": list, "reused": str | None, "refused": str | None,
+                                        "capabilities": list, "rerouted_from": None}
+          - {"type": "delegate_result", "name": str, "outcome": str, "chars": int}
           - {"type": "dispatch",       "agent": str, "query": str, "step": int}
           - {"type": "subtask_result", "result": SubtaskResult, "step": int}
           - {"type": "replan",         "round": int, "unresolved": list, "plan": list}  (persistent)
@@ -1579,7 +1490,7 @@ class Supervisor:
         on top of this and callers who want live UI updates can consume
         the intermediate events.
         """
-        self._spawns_this_run = 0
+        self._spawn_run_policy = self._new_spawn_policy()
         budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
         self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
                           if budget is not None else None)
@@ -1621,7 +1532,9 @@ class Supervisor:
         results_by_id: Dict[str, SubtaskResult] = {}
         spawn_rewrites: Dict[str, str] = {}
         budget_reason: Optional[str] = None
-        with apply_persistence([s.runner for s in self.agents.values()], self.persistence):
+        with _per_run_agents(self), \
+                attach_delegation([s.runner for s in self.agents.values()], self._spawn_policy()), \
+                apply_persistence([s.runner for s in self.agents.values()], self.persistence):
             yield from self._run_plan(plan, subtask_results, results_by_id, spawn_rewrites, budget)
             if self.persistence is not None:
                 stagnant = 0
@@ -1669,6 +1582,7 @@ class Supervisor:
             query=user_task, content=final,
             subtasks=subtask_results, plan=plan,
             outcome=_supervisor_outcome(subtask_results, budget_reason),
+            spawned=list(self._spawn_policy().run.records),
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}

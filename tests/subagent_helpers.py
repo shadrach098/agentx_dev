@@ -58,3 +58,20 @@ def router(plans=(), synth: str = "Final.", agent: Optional[Callable] = None, su
     model = MockModel(script=script)
     model.planner_prompts = lambda: [str(c[0]["content"]) for c in model.calls if PLANNER_MARK in str(c[0]["content"])]
     return model
+
+
+class ScriptedRunner:
+    """A fake specialist: each call returns the next ``(content, outcome)`` (default ``("ok", "done")``)."""
+
+    def __init__(self, *results):
+        from types import SimpleNamespace
+        self._ns = SimpleNamespace
+        self.results = list(results)
+        self.calls = []
+        self.tools = []
+        self.persistence = None
+
+    def Initialize(self, query, _budget=None):
+        self.calls.append((query, _budget))
+        content, outcome = self.results.pop(0) if self.results else ("ok", "done")
+        return self._ns(content=content, outcome=outcome, output=None, progress=None)
