@@ -221,10 +221,15 @@ class TestAttachDelegation:
         assert "delegate" not in a.registry.names
         assert b.registry._tool_by_name["delegate"] is own           # the runner's own tool stays
 
-    def test_not_attached_when_disabled_or_at_max_depth(self):
+    def test_not_attached_when_disabled_in_legacy_mode_or_at_max_depth(self):
         a = AgentRunner(model=MockModel(), agent=AgentType.ReAct, tools=[], verbose=False)
         with attach_delegation([a], SpawnPolicy(SpawnConfig(enabled=False), MockModel())):
             assert "delegate" not in a.registry.names
+        legacy = SpawnConfig(enabled=True, auto_spawn=True)                 # no capabilities= / tools=
+        with attach_delegation([a], SpawnPolicy(legacy, MockModel())):
+            assert "delegate" not in a.registry.names
+        with attach_delegation([a], SpawnPolicy(SpawnConfig(enabled=True, tools=[]), MockModel())):
+            assert "delegate" in a.registry.names                          # any ceiling counts
         with attach_delegation([a], SpawnPolicy(SpawnConfig(**CEILING), MockModel()), depth=1):
             assert "delegate" not in a.registry.names              # depth 1 is not < max_depth 1
 

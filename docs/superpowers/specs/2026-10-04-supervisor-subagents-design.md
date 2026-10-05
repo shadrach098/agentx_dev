@@ -84,7 +84,8 @@ max_depth: int = 1                           # 1 = a sub-agent cannot spawn
 - **Ceiling mode** applies when `tools` or `capabilities` is not `None`. Spawns inside
   the ceiling need no approval. If an `approver` is set it is still called.
 - **Legacy mode** applies when both are `None`. The 3.5.0 approval flow and
-  `auto_spawn_allowed_caps` gate behave as before.
+  `auto_spawn_allowed_caps` gate behave as before. Legacy mode gives specialists no
+  `delegate` tool; planner-defined `new_agent` steps still work, through the approval flow.
 - `max_spawns` becomes `Optional[int] = None`. Unset means 3 in legacy mode and 6 in ceiling
   mode and in the persistent default. It counts planner-time spawns and `delegate` calls
   together, per run.
@@ -126,7 +127,8 @@ delegate(task: str, instructions: str = "", tools: list[str] = []) -> str
 ```
 
 Registered on every specialist of a Supervisor/AsyncSupervisor whose effective config
-has `enabled=True`, and on a standalone runner given `delegation=`. A sub-agent built
+is in ceiling mode (`capabilities=` or `tools=` set, or the persistent default), and on a
+standalone runner given `delegation=`. A sub-agent built
 at depth `max_depth` does not receive it. The sync runner gets a synchronous tool; the
 async runner gets an async tool.
 

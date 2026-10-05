@@ -685,11 +685,13 @@ def make_delegate_tool(parent: Any, policy: SpawnPolicy, depth: int) -> Any:
 def attach_delegation(runners: Iterable[Any], policy: SpawnPolicy, depth: int = 0):
     """Give every runner in ``runners`` the ``delegate`` tool for the duration of the block.
 
-    Runners that cannot take a tool (no ``add_tool``), that already have a ``delegate`` tool,
-    or are at ``depth >= max_depth`` are left alone. The tool is removed on exit, even if the
-    block raises, so the developer's runners are exactly as they were."""
+    Nothing is attached unless the config is in ceiling mode (``capabilities=`` or ``tools=``
+    set): a legacy 3.5 config keeps its approval flow for planner spawns and gives specialists
+    no ``delegate``. Runners that cannot take a tool (no ``add_tool``), that already have a
+    ``delegate`` tool, or are at ``depth >= max_depth`` are left alone. The tool is removed on
+    exit, even if the block raises, so the developer's runners are exactly as they were."""
     attached: List[Any] = []
-    if policy.enabled and depth < policy.config.max_depth:
+    if policy.enabled and policy.config.ceiling_mode and depth < policy.config.max_depth:
         for r in runners:
             if not callable(getattr(r, "add_tool", None)) or not hasattr(r, "registry"):
                 continue

@@ -289,6 +289,17 @@ class TestSpecialistsDelegate:
         result = Supervisor(model=model, agents={"worker": ("w", worker)}, verbose=False).run("task")
         assert seen == [False] and result.spawned == []
 
+    def test_a_legacy_spawn_config_gives_specialists_no_delegate(self):
+        seen = []
+        model = router(plans=[plan_json(step("s1", "worker"))],
+                       agent=lambda m: seen.append(("delegate" in worker.registry.names,
+                                                    "delegate" in str(m[0]["content"]))) or make_final("ok"))
+        worker = AgentRunner(model=model, agent=AgentType.ReAct, tools=[], verbose=False)
+        legacy = SpawnConfig(enabled=True, auto_spawn=True)
+        result = sup(model, {"worker": ("w", worker)}, cfg=legacy).run("task")
+        assert seen == [(False, False)] and result.spawned == []
+        assert "CREATING NEW SPECIALISTS" in model.planner_prompts()[0]     # new_agent still taught
+
 
 class TestPersistentDefault:
     def test_a_persistent_supervisor_gets_the_safe_ceiling_by_default(self):

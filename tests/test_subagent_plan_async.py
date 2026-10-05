@@ -246,6 +246,17 @@ class TestAsyncSpecialistsDelegate:
         result = run(AsyncSupervisor(model=model, agents={"worker": ("w", worker)}, verbose=False))
         assert seen == [False] and result.spawned == []
 
+    def test_a_legacy_spawn_config_gives_specialists_no_delegate(self):
+        seen = []
+        model = router(plans=[plan_json(step("s1", "worker"))],
+                       agent=lambda m: seen.append(("delegate" in worker.registry.names,
+                                                    "delegate" in str(m[0]["content"]))) or make_final("ok"))
+        worker = AsyncAgentRunner(model=model, agent=AgentType.ReAct, tools=[], verbose=False)
+        legacy = SpawnConfig(enabled=True, auto_spawn=True)
+        result = run(asup(model, {"worker": ("w", worker)}, cfg=legacy))
+        assert seen == [(False, False)] and result.spawned == []
+        assert "CREATING NEW SPECIALISTS" in model.planner_prompts()[0]     # new_agent still taught
+
 
 class TestAsyncPersistentDefault:
     def test_persistent_default_and_explicit_override(self):
