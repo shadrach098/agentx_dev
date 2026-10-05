@@ -30,7 +30,7 @@ from agentx_dev.Agents.Agent import AgentType
 from agentx_dev.AsyncTools import AsyncStructuredTool
 from agentx_dev.Runner.AgentRun import AgentRunner
 from agentx_dev.Runner.AsyncAgentRun import AsyncAgentRunner
-from agentx_dev.Runner.Persistence import Persistence, accepts_budget
+from agentx_dev.Runner.Persistence import Persistence, RunBudget, accepts_budget
 from agentx_dev.Tools import StructuredTool, logger
 
 
@@ -358,6 +358,7 @@ class SpawnPolicy:
         is_async: bool = False,
         verbose: bool = False,
         run: Optional[SpawnRun] = None,
+        budget: Optional[RunBudget] = None,
     ):
         self.config = config
         self.model = model
@@ -365,6 +366,10 @@ class SpawnPolicy:
         self.is_async = is_async
         self.verbose = verbose
         self.run = run or SpawnRun()
+        # The supervisor run's RunBudget (set by Supervisor.stream / AsyncSupervisor.astream).
+        # ``delegate`` falls back to it when the calling runner's own _active_budget is gone,
+        # e.g. a parallel step on the same specialist finished first and cleared it.
+        self.budget = budget
 
     @property
     def enabled(self) -> bool:
@@ -372,6 +377,7 @@ class SpawnPolicy:
 
     def new_run(self) -> None:
         self.run = SpawnRun()
+        self.budget = None
 
     def _say(self, text: str) -> None:
         if self.verbose:
@@ -637,7 +643,7 @@ def make_delegate_tool(parent: Any, policy: SpawnPolicy, depth: int) -> Any:
             refusal, built = _prepare(policy, depth, True, task, instructions, tools)
             if refusal is not None:
                 return refusal
-            budget = getattr(parent, "_active_budget", None)
+            budget = getattr(parent, "_active_budget", None) or policy.budget
             kw = {"_budget": budget} if budget is not None and accepts_budget(built.runner.Initialize) else {}
             try:
                 completion = await built.runner.Initialize(task, **kw)
@@ -654,7 +660,7 @@ def make_delegate_tool(parent: Any, policy: SpawnPolicy, depth: int) -> Any:
         refusal, built = _prepare(policy, depth, False, task, instructions, tools)
         if refusal is not None:
             return refusal
-        budget = getattr(parent, "_active_budget", None)
+        budget = getattr(parent, "_active_budget", None) or policy.budget
         kw = {"_budget": budget} if budget is not None and accepts_budget(built.runner.Initialize) else {}
         try:
             completion = built.runner.Initialize(task, **kw)

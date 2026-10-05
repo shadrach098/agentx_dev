@@ -97,10 +97,18 @@ class TestAsyncDelegate:
     def test_the_sub_agent_shares_the_callers_deadline(self):
         model = router(agent=delegating_agent({"task": "t"}))
         p = aparent(model, persistence=Persistence(max_minutes=5))
-        fake = FakeAsyncRunner("ok")
+        active = []
+
+        class Watching(FakeAsyncRunner):
+            async def Initialize(self, task, _budget=None):
+                active.append(p._active_budget)          # the caller's budget while it runs
+                return await FakeAsyncRunner.Initialize(self, task, _budget)
+
+        fake = Watching("ok")
         fake_build(p, [fake])
         asyncio.run(p.ainvoke("go"))
-        assert isinstance(fake.budget, RunBudget) and fake.budget.remaining() > 0
+        assert isinstance(active[0], RunBudget)
+        assert fake.budget is active[0]                  # the very same budget, not a fresh one
 
     def test_a_sync_parent_under_async_code_still_gets_a_sync_tool(self):
         from agentx_dev import AgentRunner

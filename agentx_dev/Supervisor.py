@@ -1492,6 +1492,7 @@ class Supervisor(_SpawnMixin):
         """
         self._spawn_run_policy = self._new_spawn_policy()
         budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
+        self._spawn_run_policy.budget = budget        # delegate falls back to it (see SpawnPolicy)
         self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
                           if budget is not None else None)
 
@@ -2171,6 +2172,7 @@ class AsyncSupervisor(_SpawnMixin):
         """
         self._spawn_run_policy = self._new_spawn_policy()
         budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
+        self._spawn_run_policy.budget = budget        # delegate falls back to it (see SpawnPolicy)
         self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
                           if budget is not None else None)
         yield {"type": "plan_start"}

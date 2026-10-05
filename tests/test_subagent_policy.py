@@ -245,6 +245,15 @@ class TestEventsAndRecords:
         p.new_run()
         assert p.run.count == 0 and p.run.built == {} and p.run.records == []
 
+    def test_the_run_budget_is_held_for_one_run_only(self):
+        from agentx_dev.Runner.Persistence import RunBudget
+        b = RunBudget.start(5)
+        p = SpawnPolicy(SpawnConfig(enabled=True, **CEILING), MockModel(), budget=b)
+        assert p.budget is b
+        p.new_run()
+        assert p.budget is None
+        assert policy(**CEILING).budget is None
+
     def test_delegate_names_are_unique_and_valid(self):
         p = policy(**CEILING)
         assert [p.run.next_delegate_name() for _ in range(3)] == ["delegate_1", "delegate_2", "delegate_3"]

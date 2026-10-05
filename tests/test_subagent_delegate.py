@@ -138,10 +138,18 @@ class TestPersistenceAndBudget:
         args = {"task": "t"}
         model = router(agent=delegating_agent(args))
         p = parent(model, persistence=Persistence(max_minutes=5))
-        fake = FakeRunner("ok")
+        active = []
+
+        class Watching(FakeRunner):
+            def Initialize(self, task, _budget=None):
+                active.append(p._active_budget)          # the caller's budget while it runs
+                return FakeRunner.Initialize(self, task, _budget)
+
+        fake = Watching("ok")
         fake_build(p, fake)
         p.invoke("go")
-        assert isinstance(fake.budget, RunBudget) and fake.budget.remaining() > 0
+        assert isinstance(active[0], RunBudget)
+        assert fake.budget is active[0]                  # the very same budget, not a fresh one
 
     def test_without_persistence_no_budget_is_passed(self):
         p = parent(router(agent=delegating_agent({"task": "t"})))

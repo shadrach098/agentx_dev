@@ -8,9 +8,23 @@ from agentx_dev import (
 from agentx_dev.Supervisor import SpawnConfig
 from agentx_dev.SubAgents import AgentSpec, SpawnPolicy
 from tests.conftest import MockModel, make_final, make_react_response
-from tests.subagent_helpers import ScriptedRunner, plan_json, router, step
+from tests.subagent_helpers import (
+    PLANNER_MARK, SPAWNED_MARK, SYNTH_MARK, ScriptedRunner, plan_json, router, step,
+)
 
 P = Persistence(max_minutes=5)
+
+
+class AsyncScriptModel(MockModel):
+    """A model whose async calls run an async script, so a test can order concurrent turns."""
+
+    def __init__(self, afn):
+        super().__init__(script=lambda m: "")
+        self._afn = afn
+
+    async def async_initialize(self, messages):
+        self.calls.append(list(messages))
+        return await self._afn(messages)
 
 
 def fixer_step(tools=("web",)):
@@ -205,6 +219,60 @@ class TestSharedDeadline:
         sub_budget = by_runner[id(sub_runner)]
         assert worker_budget is not None and sub_budget is not None
         assert sub_budget.deadline == worker_budget.deadline
+        assert s._spawn_policy().budget is worker_budget      # the run's budget is on the policy too
+
+    def test_a_delegation_keeps_the_deadline_when_a_parallel_step_on_the_same_specialist_ends_first(
+            self, monkeypatch):
+        # Two parallel steps run on ONE async specialist. Step A finishes (which clears the
+        # runner's _active_budget) while step B is still running; B then delegates. The
+        # sub-agent must still get the supervisor's RunBudget, not start a fresh one.
+        budgets = []
+        original = AsyncAgentRunner.Initialize
+        b_started, a_finished = asyncio.Event(), asyncio.Event()
+        seen_cleared = []
+
+        async def spy(self, user_input, *a, **kw):
+            budgets.append((self, user_input, kw.get("_budget")))
+            try:
+                return await original(self, user_input, *a, **kw)
+            finally:
+                if user_input == "job A":
+                    a_finished.set()
+
+        monkeypatch.setattr(AsyncAgentRunner, "Initialize", spy)
+        b_turns = []
+
+        async def script(messages):
+            first, text = str(messages[0]["content"]), str(messages)
+            if PLANNER_MARK in first:
+                return plan_json(step("s1", "worker", "job A"), step("s2", "worker", "job B"))
+            if SYNTH_MARK in first:
+                return "Final."
+            if SPAWNED_MARK in first:
+                return make_final("X is 42")
+            if "job B" in text:
+                b_turns.append(1)
+                if len(b_turns) == 1:
+                    b_started.set()
+                    await a_finished.wait()
+                    seen_cleared.append(worker._active_budget is None)
+                    return make_react_response("delegate", {"task": "find X", "tools": ["web"]})
+                return make_final("B done")
+            await b_started.wait()
+            return make_final("A done")
+
+        model = AsyncScriptModel(script)
+        worker = AsyncAgentRunner(model=model, agent=AgentType.ReAct, tools=[], verbose=False)
+        s = async_sup(model, {"worker": ("w", worker)})
+        result = asyncio.run(s.run("task"))
+        assert result.outcome == "done" and [x["origin"] for x in result.spawned] == ["delegate"]
+        assert seen_cleared == [True]                         # A really had cleared the runner's budget
+        worker_budgets = [b for r, q, b in budgets if r is worker]
+        assert len(worker_budgets) == 2 and worker_budgets[0] is worker_budgets[1] is not None
+        sub_runner = s._spawn_policy().run.built["delegate_1"].runner
+        [sub_budget] = [b for r, q, b in budgets if r is sub_runner]
+        assert sub_budget is not None and sub_budget.deadline == worker_budgets[0].deadline
+        assert sub_budget is worker_budgets[0]
 
     def test_a_stuck_delegation_does_not_end_the_specialists_run_under_persistence(self):
         worker_calls = []
