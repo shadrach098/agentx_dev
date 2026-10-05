@@ -1613,7 +1613,7 @@ class Supervisor(_SpawnMixin):
 # Async Supervisor
 # ----------------------------------------------------------------------------
 
-class AsyncSupervisor:
+class AsyncSupervisor(_SpawnMixin):
     """
     Asynchronous multi-agent supervisor.
 
@@ -1622,6 +1622,8 @@ class AsyncSupervisor:
     :class:`AgentRunner` instances (sync runners are wrapped in
     ``asyncio.to_thread``).
     """
+
+    _SPAWN_ASYNC = True
 
     def __init__(
         self,
@@ -1635,6 +1637,7 @@ class AsyncSupervisor:
         max_parallel: Optional[int] = None,
         max_plan_retries: int = 1,
         persistence: Optional[Persistence] = None,
+        spawn_config: Optional[SpawnConfig] = None,
     ):
         """
         Args:
@@ -1668,9 +1671,13 @@ class AsyncSupervisor:
             max_plan_retries: (3.3) Replans after sanitization repairs;
                 see :class:`Supervisor`.
             persistence: (3.5) Opt-in ``Persistence(...)``; see
-                :class:`Supervisor`. Recovery plans cannot spawn new
-                specialists here (the async supervisor has no
-                ``spawn_config``).
+                :class:`Supervisor`.
+            spawn_config: (3.6) Lets the planner define new specialists inline
+                (``new_agent``) and specialists ``delegate`` to fresh sub-agents,
+                clipped to the config's ceiling. Spawned steps run in the same
+                parallel batches as any other step. Same defaults as
+                :class:`Supervisor` (on, with a safe ceiling, when ``persistence``
+                is set and no config is given).
         """
         self.model = model
         self.agents = _normalize_agents(agents)
@@ -1684,6 +1691,14 @@ class AsyncSupervisor:
         )
         self.max_plan_retries = max(0, int(max_plan_retries))
         self.persistence = persistence
+        if spawn_config is None:
+            # Same default as Supervisor: persistent runs may create sub-agents inside a safe ceiling.
+            spawn_config = (
+                SpawnConfig(enabled=True, capabilities={"web", "files_read"}, max_spawns=6)
+                if persistence is not None else SpawnConfig(enabled=False)
+            )
+        self.spawn_config = spawn_config
+        self._spawn_run_policy: Optional[SpawnPolicy] = None
         # Persistent runs only: waits out transient planner/synthesis errors until the deadline.
         self._patience: Optional[PersistentRun] = None
 
@@ -1726,6 +1741,8 @@ class AsyncSupervisor:
             user_task=user_task,
             max_subtasks=self.max_subtasks,
         )
+        if self.spawn_config.enabled:
+            prompt = prompt + spawn_instruction(self._spawn_policy())
         if repair_note:
             prompt = prompt + repair_note
         messages = [{"role": "user", "content": prompt}]
@@ -1739,11 +1756,23 @@ class AsyncSupervisor:
             return []
 
         plan = parsed.get("plan", []) or []
+        # A step may name a registered agent, define one inline (new_agent), or use one an
+        # earlier step defines; a legacy __spawn__ step carries no query.
+        defined = {s["new_agent"].get("name") for s in plan
+                   if isinstance(s, dict) and isinstance(s.get("new_agent"), dict)}
+        defined |= {s.get("name") for s in plan
+                    if isinstance(s, dict) and s.get("agent") == "__spawn__"}
         filtered = [
             item for item in plan
             if isinstance(item, dict)
-            and item.get("agent") in self.agents
-            and item.get("query")
+            and (
+                item.get("agent") == "__spawn__"
+                or (item.get("query") and (
+                    isinstance(item.get("new_agent"), dict)
+                    or item.get("agent") in self.agents
+                    or item.get("agent") in defined
+                ))
+            )
         ]
         return filtered[: self.max_subtasks]
 
@@ -1933,8 +1962,10 @@ class AsyncSupervisor:
         # Emit a `dispatch` event for every step up-front so UIs can
         # render the plan as a "task list" before results start landing.
         for step_idx, item in enumerate(plan):
+            if item.get("agent") == "__spawn__":
+                continue                      # bookkeeping, not a dispatch
             yield {"type": "dispatch",
-                   "agent": item.get("agent"), "query": item.get("query", ""),
+                   "agent": _step_agent_name(item), "query": item.get("query", ""),
                    "step": step_idx}
 
         # 3.3 unified completion-driven scheduler. Dependencies per step:
@@ -1962,6 +1993,7 @@ class AsyncSupervisor:
         done_ids: set = set()
         launched: set = set()
         running: Dict[asyncio.Task, int] = {}
+        launched_as: Dict[int, str] = {}      # step index -> the agent it was launched on
 
         def _ready() -> List[int]:
             out = []
@@ -2047,15 +2079,46 @@ class AsyncSupervisor:
                     if self.max_parallel is not None and len(running) >= self.max_parallel:
                         break
                     launched.add(i)
+                    if plan[i].get("agent") == "__spawn__":
+                        spawned_name, _ = self._handle_spawn(plan[i])
+                        for ev in self._drain_spawn_events():
+                            yield ev
+                        _record(i, SubtaskResult(
+                            agent="__spawn__", query=f"spawn: {plan[i].get('name', '?')}",
+                            content=(f"registered new specialist '{spawned_name}' with capabilities: "
+                                     f"{', '.join(plan[i].get('capabilities', []))}") if spawned_name else "",
+                            error=None if spawned_name else "spawn refused (see log for reason)",
+                        ))
+                        progressed = True
+                        continue
+                    launch_agent = plan[i].get("agent")
+                    if plan[i].get("new_agent"):
+                        try:
+                            spawned_name, reason = self._spawn_spec(parse_agent_spec(plan[i]["new_agent"]))
+                        except SpecError as e:
+                            spawned_name, reason = None, str(e)
+                        for ev in self._drain_spawn_events():
+                            yield ev
+                        if spawned_name is None:
+                            r = _record(i, SubtaskResult(
+                                agent=_step_agent_name(plan[i]) or "<none>", query=plan[i].get("query", ""),
+                                content="", error=f"spawn refused: {reason}",
+                            ))
+                            yield {"type": "subtask_result", "result": r,
+                                   "step": i, "step_id": step_ids[i]}
+                            progressed = True
+                            continue
+                        launch_agent = spawned_name
                     dep_results = [
                         results_by_id[d] for d in deps_of[i] if d in results_by_id
                     ]
                     task = asyncio.create_task(self._run_subtask(
-                        plan[i]["agent"], plan[i]["query"],
+                        launch_agent, plan[i]["query"],
                         prior_results=dep_results if dep_results else None,
                         budget=budget,
                     ))
                     running[task] = i
+                    launched_as[i] = launch_agent
                     progressed = True
 
                 if progressed and len(done_ids) >= len(plan):
@@ -2074,6 +2137,11 @@ class AsyncSupervisor:
                 for t in done:
                     i = running.pop(t)
                     r = _record(i, t.result())
+                    policy = self._spawn_run_policy
+                    if policy is not None and launched_as.get(i) in policy.run.built:
+                        policy.run.finish(launched_as[i], r.outcome, len(r.content))
+                    for ev in self._drain_spawn_events():
+                        yield ev
                     yield {"type": "subtask_result", "result": r,
                            "step": i, "step_id": step_ids[i]}
         finally:
@@ -2091,6 +2159,7 @@ class AsyncSupervisor:
         ``subtask_result`` events as each sub-task finishes -- so the
         UI sees whichever completes first, not the plan order.
         """
+        self._spawn_run_policy = self._new_spawn_policy()
         budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
         self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
                           if budget is not None else None)
@@ -2129,7 +2198,9 @@ class AsyncSupervisor:
         subtask_results: List[SubtaskResult] = []
         results_by_id: Dict[str, SubtaskResult] = {}
         budget_reason: Optional[str] = None
-        with apply_persistence([s.runner for s in self.agents.values()], self.persistence):
+        with _per_run_agents(self), \
+                attach_delegation([s.runner for s in self.agents.values()], self._spawn_policy()), \
+                apply_persistence([s.runner for s in self.agents.values()], self.persistence):
             plan_run = self._run_plan(plan, subtask_results, results_by_id, budget)
             try:
                 async for event in plan_run:
@@ -2184,6 +2255,7 @@ class AsyncSupervisor:
             query=user_task, content=final,
             subtasks=list(subtask_results), plan=plan,
             outcome=_supervisor_outcome(subtask_results, budget_reason),
+            spawned=list(self._spawn_policy().run.records),
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
