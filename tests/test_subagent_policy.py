@@ -48,6 +48,20 @@ class TestSpecs:
         with pytest.raises(SpecError):
             parse_agent_spec(raw)
 
+    @pytest.mark.parametrize("name", ["__spawn__", "__x", "__", "delegate_1", "delegate_12"])
+    def test_reserved_names_are_rejected(self, name):
+        with pytest.raises(SpecError, match="name is reserved"):
+            parse_agent_spec({"name": name, "instructions": "i"})
+
+    @pytest.mark.parametrize("name", ["delegate", "delegate_x", "delegate_1a", "my__agent", "_private"])
+    def test_names_close_to_the_reserved_ones_are_fine(self, name):
+        assert parse_agent_spec({"name": name, "instructions": "i"}).name == name
+
+    def test_a_legacy_spawn_name_is_only_checked_against_the_delegate_pattern(self):
+        with pytest.raises(SpecError, match="name is reserved"):
+            spec_from_legacy_spawn({"agent": "__spawn__", "name": "delegate_2", "description": "d"})
+        assert spec_from_legacy_spawn({"agent": "__spawn__", "name": "__scout", "description": "d"}).name == "__scout"
+
     def test_legacy_spawn_step_becomes_a_spec(self):
         s = spec_from_legacy_spawn({"agent": "__spawn__", "name": "analyst",
                                     "description": "runs python", "capabilities": ["code", "files"]})

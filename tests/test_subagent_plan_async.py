@@ -124,6 +124,15 @@ class TestAsyncNewAgentSteps:
         assert len(model.planner_prompts()) == 2 and "new_agent invalid" in model.planner_prompts()[1]
         assert result.subtasks[0].agent == "a"
 
+    def test_a_new_agent_named_spawn_fails_the_run_instead_of_vanishing(self):
+        bad = plan_json({"id": "s1", "query": "q",
+                         "new_agent": {"name": "__spawn__", "instructions": "Be useful.", "tools": ["web"]}})
+        model = router(plans=[bad, bad], sub=lambda m: make_final("x"))
+        result = run(asup(model))
+        assert len(model.planner_prompts()) == 2 and "name is reserved" in model.planner_prompts()[1]
+        assert result.content == "Supervisor failed to produce a valid plan."
+        assert result.outcome == "stuck" and result.subtasks == [] and result.spawned == []
+
     def test_the_stream_carries_the_spawn_event(self):
         model = router(plans=[plan_json(new_agent_step("s1", "a", "Be useful.", ["web"]))],
                        sub=lambda m: make_final("x"))

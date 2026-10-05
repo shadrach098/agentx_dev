@@ -46,6 +46,14 @@ class TestSanitizer:
         assert sane[0]["depends_on"] == []                      # the dependency on the dropped step is cleaned
         assert any("new_agent invalid" in r for r in repairs) and any("unknown dependency" in r for r in repairs)
 
+    @pytest.mark.parametrize("name", ["__spawn__", "__x", "delegate_1"])
+    def test_a_reserved_new_agent_name_drops_the_step_with_a_repair(self, name):
+        plan = [{"id": "s1", "query": "q", "new_agent": {"name": name, "instructions": "i"}},
+                step("s2", "w")]
+        sane, repairs = _sanitize_plan(plan)
+        assert [s["id"] for s in sane] == ["s2"]
+        assert repairs == ["step 's1': new_agent invalid (name is reserved) -- dropped"]
+
     def test_agent_and_a_different_new_agent_name_together_keep_the_step_but_drop_the_definition(self):
         plan = [{"id": "s1", "agent": "worker", "query": "q",
                  "new_agent": {"name": "other", "instructions": "i"}}]
@@ -154,6 +162,16 @@ class TestNewAgentSteps:
         s = sup(model, {"bad": ("b", bad)})
         result = s.run("task")
         assert result.subtasks[1].skipped and result.spawned == []
+
+    def test_a_new_agent_named_spawn_fails_the_run_instead_of_vanishing(self):
+        bad = plan_json({"id": "s1", "query": "q",
+                         "new_agent": {"name": "__spawn__", "instructions": "Be useful.", "tools": ["web"]}})
+        model = router(plans=[bad, bad], sub=lambda m: make_final("x"))
+        result = sup(model).run("task")
+        assert len(model.planner_prompts()) == 2                 # the repair retry happened
+        assert "name is reserved" in model.planner_prompts()[1]
+        assert result.content == "Supervisor failed to produce a valid plan."
+        assert result.outcome == "stuck" and result.subtasks == [] and result.spawned == []
 
     def test_a_malformed_definition_triggers_the_plan_repair_retry(self):
         bad = plan_json({"id": "s1", "query": "q", "new_agent": {"name": "a"}})

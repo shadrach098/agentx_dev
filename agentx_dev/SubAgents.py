@@ -163,6 +163,7 @@ MAX_INSTRUCTIONS_CHARS = 4000
 SUMMARY_CAP_CHARS = 4000
 DELEGATE_TOOL_NAME = "delegate"
 _NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_RESERVED_DELEGATE_RE = re.compile(r"^delegate_\d+$")       # the names delegate calls get
 
 # Preset capability word -> the concrete tool names it installs.
 PRESET_TOOLS: Dict[str, Set[str]] = {
@@ -216,13 +217,19 @@ class AgentSpec:
     origin: str = "plan"            # "plan" | "delegate"
 
 
-def parse_agent_spec(raw: Any, origin: str = "plan") -> AgentSpec:
-    """Validate and normalize a ``new_agent`` object. Raises :class:`SpecError`."""
+def parse_agent_spec(raw: Any, origin: str = "plan", *, reserve_dunder: bool = True) -> AgentSpec:
+    """Validate and normalize a ``new_agent`` object. Raises :class:`SpecError`.
+
+    Names starting with ``__`` (``__spawn__`` is plan syntax) and names of the form
+    ``delegate_<N>`` (generated for ``delegate`` calls) are reserved. ``reserve_dunder=False``
+    checks only the ``delegate_<N>`` form (used for legacy ``__spawn__`` steps)."""
     if not isinstance(raw, dict):
         raise SpecError("new_agent must be an object")
     name = raw.get("name")
     if not isinstance(name, str) or not _NAME_RE.match(name.strip()):
         raise SpecError("name must match [A-Za-z0-9_-] and be 1-40 characters")
+    if (reserve_dunder and name.strip().startswith("__")) or _RESERVED_DELEGATE_RE.match(name.strip()):
+        raise SpecError("name is reserved")
     instructions = raw.get("instructions")
     if not isinstance(instructions, str) or not instructions.strip():
         raise SpecError("instructions must be a non-empty string")
@@ -246,7 +253,7 @@ def spec_from_legacy_spawn(step: Dict[str, Any]) -> AgentSpec:
         "name": str(step.get("name", "")).strip(),
         "instructions": str(step.get("description", "")).strip(),
         "tools": [str(c).strip() for c in (step.get("capabilities") or []) if c],
-    })
+    }, reserve_dunder=False)
 
 
 class SpawnRefused(Exception):
