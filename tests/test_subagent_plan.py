@@ -205,6 +205,18 @@ class TestNewAgentSteps:
                             max_subtask_retries=0).run("task")
         assert [r.agent for r in result.subtasks] == ["worker"] and result.outcome == "done"
 
+    @pytest.mark.parametrize("spawning", [False, True])
+    @pytest.mark.parametrize("bad_agent", [["x"], {"k": "v"}])
+    def test_a_non_string_agent_beside_a_new_agent_does_not_crash_the_run(self, bad_agent, spawning):
+        bad = plan_json({"id": "s1", "agent": bad_agent, "query": "q",
+                         "new_agent": {"name": "a", "instructions": "i"}},
+                        {"id": "s2", "agent": "worker", "query": "q"})
+        model = router(plans=[bad, bad])
+        cfg = WEB if spawning else SpawnConfig()
+        result = Supervisor(model=model, agents={"worker": ("w", ScriptedRunner())}, spawn_config=cfg,
+                            verbose=False, max_subtask_retries=0).run("task")
+        assert [r.agent for r in result.subtasks] == ["worker"] and result.outcome == "done"
+
     def test_a_malformed_definition_triggers_the_plan_repair_retry(self):
         bad = plan_json({"id": "s1", "query": "q", "new_agent": {"name": "a"}})
         good = plan_json(new_agent_step("s1", "a", "Be useful.", ["web"]))

@@ -1771,6 +1771,7 @@ class AsyncSupervisor(_SpawnMixin):
         filtered = [
             item for item in plan
             if isinstance(item, dict)
+            and isinstance(item.get("agent"), (str, type(None)))   # a list/dict agent is unhashable
             and (
                 item.get("agent") == "__spawn__"
                 or (item.get("query") and (
