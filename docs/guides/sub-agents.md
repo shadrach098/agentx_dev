@@ -10,11 +10,26 @@ Nothing is on by default, except in persistent mode (below).
 ## Quick start
 
 ```python
-from agentx_dev import Supervisor, SpawnConfig
+from agentx_dev import AgentRunner, AgentType, GPT, Permissions, Supervisor, SpawnConfig
+
+model = GPT(model="gpt-4o-mini")     # or Claude(...); any chat model works
+
+# A specialist you register yourself: it can read and list files under ./workspace.
+explorer = AgentRunner(
+    model=model,
+    agent=AgentType.ReAct,
+    tools=[],
+    permissions=Permissions(
+        read_files=True, list_directories=True,
+        allowed_paths=["./workspace"], workspace="./workspace",
+    ),
+    system_addendum="You read files in the workspace and report what is in them. You cannot browse the web.",
+    verbose=False,
+)
 
 supervisor = Supervisor(
     model=model,
-    agents={"explorer": ("Reads the codebase", explorer)},   # your specialists
+    agents={"explorer": ("Reads and lists files in ./workspace", explorer)},   # your specialists
     spawn_config=SpawnConfig(
         enabled=True,
         capabilities={"web", "files_read"},   # the ceiling: what a spawned agent may use
@@ -29,6 +44,8 @@ for sub in result.spawned:
 ```
 
 `AsyncSupervisor` takes the same `spawn_config=`. Spawned steps run in the same parallel batches as every other step.
+
+A runnable version of this is in the repo: `python examples/subagents_demo.py` (it creates `./workspace/competitors.md` on the first run, accepts your own task as an argument, and takes `--persistent` to add recovery rounds and a shared deadline).
 
 ## What the planner writes
 
