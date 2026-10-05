@@ -42,6 +42,7 @@ excel = ["pandas>=1.5", "openpyxl>=3.1"]
 dev = [
     "pytest>=7.4",
     "pytest-asyncio>=0.23",
+    "httpx>=0.24",         # tests build httpx.Response objects; newer openai/anthropic no longer pull httpx in
     "numpy>=1.24",
     "pandas>=1.5",
     "openpyxl>=3.1",
