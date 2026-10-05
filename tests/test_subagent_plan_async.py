@@ -247,3 +247,33 @@ class TestAsyncPersistentDefault:
                               spawn_config=SpawnConfig(enabled=False))
         assert not off.spawn_config.enabled
         assert not AsyncSupervisor(model=router(), agents={}, verbose=False).spawn_config.enabled
+
+
+class TestAsyncUnbuiltAgentStep:
+    NOT_IN_REGISTRY = "specialist 'scout' not in registry (spawn may have been refused)"
+
+    def test_a_refused_legacy_spawn_then_a_step_on_it_fails_without_crashing(self):
+        cfg = SpawnConfig(enabled=True, approver=lambda r: False)
+        for seq in (False, True):
+            model = router(plans=[plan_json(
+                {"id": "sp", "agent": "__spawn__", "name": "scout", "description": "d", "capabilities": ["web"]},
+                step("s1", "scout", "look"))])
+            result = run(asup(model, cfg=cfg, sequential=seq))
+            assert result.subtasks[0].error == "spawn refused (see log for reason)"
+            assert result.subtasks[1].agent == "scout" and result.subtasks[1].error == self.NOT_IN_REGISTRY
+
+    def test_a_refused_new_agent_then_a_step_on_its_name_fails(self):
+        model = router(plans=[plan_json(
+            new_agent_step("s1", "a", "x", ["code"]),
+            {"id": "s2", "agent": "a", "query": "q"})])
+        result = run(asup(model))
+        by_agent = {r.step_id: r for r in result.subtasks}
+        assert by_agent["s1"].error == "spawn refused: no usable tools"
+        assert by_agent["s2"].error == "specialist 'a' not in registry (spawn may have been refused)"
+
+    def test_spawning_disabled_a_spawn_step_and_its_user_do_not_crash(self):
+        model = router(plans=[plan_json(
+            {"id": "sp", "agent": "__spawn__", "name": "scout", "description": "d", "capabilities": ["web"]},
+            step("s1", "scout", "look"))])
+        result = run(AsyncSupervisor(model=model, agents={}, verbose=False, max_subtask_retries=0))
+        assert result.subtasks[-1].agent == "scout" and result.subtasks[-1].error == self.NOT_IN_REGISTRY

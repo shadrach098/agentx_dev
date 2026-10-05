@@ -2109,6 +2109,16 @@ class AsyncSupervisor(_SpawnMixin):
                             progressed = True
                             continue
                         launch_agent = spawned_name
+                    if launch_agent not in self.agents:
+                        r = _record(i, SubtaskResult(
+                            agent=launch_agent or "<none>", query=plan[i].get("query", ""),
+                            content="",
+                            error=f"specialist '{launch_agent}' not in registry (spawn may have been refused)",
+                        ))
+                        yield {"type": "subtask_result", "result": r,
+                               "step": i, "step_id": step_ids[i]}
+                        progressed = True
+                        continue
                     dep_results = [
                         results_by_id[d] for d in deps_of[i] if d in results_by_id
                     ]
