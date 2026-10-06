@@ -34,6 +34,8 @@ Sub-agents: the Supervisor can create its own helpers. Opt-in, with the behavior
   function routes questions through your own channel (chatbot, backend). `max_questions`,
   `ask_timeout`, `SupervisorResult.asked`, `question`/`answer` events,
   `agentx_dev.ask_human_tool()`; waiting on the operator pauses the persistent deadline.
+- `RunBudget` now carries a `PausableClock` (it holds a lock), so a `RunBudget` can no longer be
+  deep-copied or pickled.
 
 ### Changed
 

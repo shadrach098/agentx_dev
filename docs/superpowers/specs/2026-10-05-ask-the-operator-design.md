@@ -106,14 +106,27 @@ run, because the operator pressed stop. `EOFError` counts as no answer.
 
 On `AsyncSupervisor` the notebook path calls `input()` on the event-loop thread, because
 ipykernel's `input()` is not safe from a worker thread; other tasks pause while the person
-types, and asks are serialized anyway (4.4). Every other built-in path (terminal,
-controlling terminal) runs in a worker thread (`asyncio.to_thread`), so the loop stays
-responsive while the person types.
+types, and asks are serialized anyway (4.4). That holds for the planner and for async
+specialists. A sync `AgentRunner` specialist under `AsyncSupervisor` (or a sync runner with
+parallel native tool calls) asks from a worker thread, where ipykernel's `input()` may not
+show the box or may misbehave: in a notebook, prefer async specialists, or verify the setup.
+Every other built-in path (terminal, controlling terminal) runs in a daemon thread bridged
+to an asyncio future, so the loop stays responsive while the person types and a cancelled
+ask (Ctrl-C under `asyncio.run`) cannot keep the process waiting for Enter.
 
-One blocking read at a time: a terminal or controlling-terminal read that times out leaves
-its reader thread waiting for a keystroke. While one is outstanding, a later timed built-in
-ask in the same process is refused (reason `no_channel`) rather than started behind it, so
-it cannot take the operator's next answer. The refusal lasts until that reader returns.
+One blocking read at a time: a terminal or controlling-terminal read that times out, or
+whose asking task is cancelled, leaves its reader thread waiting for a keystroke. While one
+is outstanding, a later built-in ask in the same process (timed or not) is refused (reason
+`no_channel`) rather than started behind it, so it cannot take the operator's next answer.
+The refusal lasts until that reader returns. A `no_channel` reply is not remembered by
+de-duplication (4.4), so the same question can be asked again once the reader is free.
+
+The question text is model-written. Control characters (escape sequences, bell, carriage
+return, other C0/C1 codes; newline and tab are kept) are stripped from it before the built-in
+asker prints it, so a question cannot redraw the operator's terminal.
+
+Waits are polled in 0.2 second slices (`_call_with_timeout`), so Ctrl-C is delivered promptly
+even on Windows, where a single long `join()` is not interruptible.
 
 ### 3.4 Events and result
 
@@ -167,7 +180,7 @@ One object per run, the only place that knows about the operator. Mirrors `Spawn
   blocking read is abandoned as a daemon. With no timeout it is called inline.
   **(async):** `asyncio.wait_for` around the awaited callable or `asyncio.to_thread`. The
   built-in asker is the exception: the notebook path runs on the loop thread without a
-  timeout (3.3), and the other built-in paths run in `asyncio.to_thread`.
+  timeout (3.3), and the other built-in paths run in a daemon thread bridged to a future.
 - `answers_block()` returns the text appended to context, or `""` when nothing was
   answered:
 
@@ -211,7 +224,9 @@ Behavior:
 `attach_delegation`: it adds the `ask_user` tool to each runner for the block and removes it
 on exit, even if the block raises, so the developer's runners are untouched afterwards.
 Runners without `add_tool`, or that already have a tool named `ask_user`, are left alone.
-Nothing is attached when `ask_user` is off.
+The same holds for planner-defined and `delegate` helpers: a pool tool named `ask_user`
+stays, the framework's is not added, and the spawn is not refused. Nothing is attached when
+`ask_user` is off.
 
 - `ask_user` is a reserved tool name. A developer's own tool with that name wins on that
   runner.
@@ -279,8 +294,8 @@ dedupe covers the common case of two helpers asking the same thing.
 | Callback raises | `reason="error"`, logged, no-answer reply. |
 | Callback exceeds `ask_timeout` | `reason="timeout"`, no-answer reply. |
 | Question limit reached | `reason="limit"`, no-answer reply. |
-| Same question asked twice | Second gets the first answer, `deduped=True`, no slot used. |
-| Timed built-in read left a reader waiting | Later timed built-in asks get `reason="no_channel"` until it returns (3.3). |
+| Same question asked twice | Second gets the first answer, `deduped=True`, no slot used. A `no_channel` first reply is not remembered: the repeat is asked again (and uses a slot). |
+| Built-in read left waiting (timeout, or the asking task cancelled) | Later built-in asks get `reason="no_channel"` until it returns (3.3). |
 | `async` callable, sync specialist under `AsyncSupervisor` | That question gets `reason="error"`; the agent proceeds on an assumption (3.1). |
 | Interrupt during a built-in prompt | `KeyboardInterrupt` propagates and the run stops. |
 | Planner returns `ask` on the recovery or second call | Ignored (no ask option is offered there). |
@@ -327,11 +342,17 @@ dedupe covers the common case of two helpers asking the same thing.
   net. Confirm with a real model once, manually.
 - **Notebook `input()` in async.** Blocking the loop while the person types is accepted for
   the notebook path only (ipykernel's `input()` is unsafe from a worker thread); asks are
-  serialized anyway. Terminal paths run in a worker thread. Revisit if a user runs long
-  background tasks in the same loop in a notebook.
+  serialized anyway. Terminal paths run in a daemon thread. Revisit if a user runs long
+  background tasks in the same loop in a notebook. A sync specialist under `AsyncSupervisor`
+  asks from a worker thread even in a notebook; that is documented as a caveat (prefer async
+  specialists) and left for a manual check in a real kernel.
 - **Abandoned reader threads** after a timeout stay blocked until the process exits (a
-  daemon thread). Bounded by `max_questions`. While one is outstanding, later timed
-  built-in asks get `no_channel` (3.3).
+  daemon thread), as does the reader of a cancelled ask. Bounded by `max_questions`. While
+  one is outstanding, later built-in asks get `no_channel` (3.3).
+- **Prompt injection through the question.** An agent can be steered by what it reads (a web
+  page, a file) into asking the operator for something sensitive. The guide tells operators:
+  never answer an agent's question with a password, key or token. Control characters are
+  stripped from the question before it is printed (3.3).
 - **Answers from the operator are trusted** as facts. A chatbot developer who forwards raw
   end-user text into the callback should treat it as untrusted input to the run, like the
   task itself.

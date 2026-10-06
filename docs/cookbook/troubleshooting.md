@@ -334,6 +334,14 @@ Supervisor, or `agentx_dev.ask_human_tool()` on a standalone runner: both
 use the notebook's input box. The Interrupt button stops a run that is
 waiting on it.
 
+**In a notebook the input box does not show, or misbehaves, for some agents *(3.6)***
+Async specialists (`AsyncAgentRunner`) under `AsyncSupervisor`, and the
+planner, ask on the event-loop thread, where ipykernel's `input()` works.
+A sync `AgentRunner` specialist under `AsyncSupervisor`, or a sync runner
+that makes parallel native tool calls, asks from a worker thread, where
+ipykernel's `input()` may not show the box or may misbehave. In a
+notebook, prefer async specialists, or verify your setup.
+
 **`ask_user=True` on a server never asks *(3.6)***
 Headless means no answer, by design: with no notebook, no terminal and no
 controlling terminal there is nobody to ask, so each ask comes back
@@ -348,12 +356,12 @@ with reason `error` and the agent proceeds on an assumption. The planner
 and spawned helpers on an `AsyncSupervisor` are async and can use it. Use
 async specialists (`AsyncAgentRunner`), or pass a plain function.
 
-**After a timeout, later asks get no answer *(3.6)***
+**After a timeout or a cancelled run, later asks get no answer *(3.6)***
 When a built-in read in a terminal or on the controlling terminal times out
-(`ask_timeout`, or the 300 s default on the controlling terminal), its
-reader thread keeps waiting for input. Until that read returns, later timed
-built-in asks in the same process are refused with reason `no_channel`
-rather than started behind it. Answer the pending prompt, or raise
+(`ask_timeout`, or the 300 s default on the controlling terminal), or the
+run is cancelled while it waits, its reader thread keeps waiting for input.
+Until that read returns, later built-in asks in the same process are refused
+with reason `no_channel` rather than started behind it. Answer the pending prompt, or raise
 `ask_timeout` so it does not expire while someone is still there.
 
 ## Structured output
