@@ -45,6 +45,8 @@ for sub in result.spawned:
 
 `AsyncSupervisor` takes the same `spawn_config=`. Spawned steps run in the same parallel batches as every other step.
 
+The planner chooses between your registered agents and new helpers using only each agent's name and description, so describe what each one does and what it cannot do (see [pattern 31 in the cookbook](../cookbook/patterns.md) for `Specialist`, `when_to_use` and a human-in-the-loop example).
+
 A runnable version of this is in the repo: `python examples/subagents_demo.py` (it creates `./workspace/competitors.md` on the first run, accepts your own task as an argument, and takes `--persistent` to add recovery rounds and a shared deadline).
 
 ## What the planner writes

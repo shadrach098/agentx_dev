@@ -890,6 +890,7 @@ Things to know:
 - **The ceiling is yours.** Without `code`, `files` or `delete` in `capabilities`, no plan can give a helper those, however the task is worded.
 - **Helpers are for one run.** `supervisor.agents` is unchanged afterwards; `result.spawned` is the record.
 - **A specialist can do this itself** with the `delegate` tool, to keep its own context small. See [Sub-agents](../guides/sub-agents.md).
+- **Your own specialists** are described to the planner by their name and description; see pattern 31 for `Specialist`, `when_to_use` and how to write them.
 
 ---
 
@@ -948,3 +949,100 @@ Things to know:
 - **One run at a time.** A runner built with `delegation=` keeps its run's state on the instance, so don't call it concurrently with itself; use one runner per concurrent run.
 - **It doesn't use the runner's own `permissions=`.** `delegate` grants tools from the `SpawnConfig` ceiling only.
 - For a Supervisor that spawns helpers across a whole plan, see pattern 29 above and the [Sub-agents guide](../guides/sub-agents.md).
+
+---
+
+## 31. Tell the planner what each specialist is for *(3.3, 3.6)*
+
+A Supervisor's planner never sees your agents' code or their `system_addendum`. All it sees is a short catalog: each agent's **name**, its **description**, and (if you use `Specialist`) a few extra lines. That catalog is the only thing it uses to decide who gets which step, and whether it needs to create a new helper (3.6). So there are two different texts, and they do different jobs:
+
+| Text | Who reads it | What it is for |
+|---|---|---|
+| `system_addendum` on the `AgentRunner` | the agent itself | how to behave: its role, rules, what to return |
+| the description in `agents={...}` (or `Specialist(description=, when_to_use=)`) | the Supervisor's planner | when to pick this agent, what it returns, what it cannot do |
+
+A plain `("description", runner)` tuple works, but `Specialist` lets you say more:
+
+```python
+from pydantic import BaseModel, Field
+from agentx_dev import (
+    AgentRunner, AgentType, Specialist, StructuredTool, Supervisor, SpawnConfig,
+)
+
+class Findings(BaseModel):
+    summary: str
+    sources: list[str]
+
+# A human-in-the-loop tool. input() works in a terminal and in Jupyter.
+class AskArgs(BaseModel):
+    question: str = Field(..., description="One short, self-contained question for the operator.")
+
+def ask(question: str) -> str:
+    reply = input(f"\n[agent asks] {question}\n> ").strip()
+    return f"[operator] {reply}" if reply else "(operator gave no answer)"
+
+ask_human = StructuredTool(func=ask, args_schema=AskArgs, name="ask_human",
+                           description="Ask the human operator one question and return the typed reply.")
+
+human = AgentRunner(
+    model=model, agent=AgentType.ReAct, tools=[ask_human], verbose=False,
+    system_addendum=(                      # written FOR THE AGENT
+        "You are the liaison to the human operator. Call ask_human exactly once with one "
+        "short, self-contained question, then report the question and the operator's reply "
+        "verbatim. Never guess or invent the operator's answer."
+    ),
+)
+researcher = AgentRunner(model=model, agent=AgentType.ReAct, tools=[], verbose=False,
+                         output_schema=Findings)          # (give it web tools in real use)
+writer = AgentRunner(model=model, agent=AgentType.ReAct, tools=[], verbose=False)
+
+supervisor = Supervisor(
+    model=model,
+    agents={
+        "human": Specialist(                  # written FOR THE PLANNER
+            description="Asks the human operator ONE clarifying question and returns their "
+                        "typed answer verbatim. Cannot search, read files or do other work.",
+            runner=human,
+            when_to_use="Only when the task is genuinely ambiguous or needs the operator's "
+                        "confirmation. Put the exact question and the options in the query.",
+        ),
+        "researcher": Specialist(
+            description="Searches the web and returns findings with sources.",
+            runner=researcher,                # its output_schema is shown to the planner
+        ),
+        "writer": Specialist(
+            description="Writes the final brief from findings it is given.",
+            runner=writer,
+            depends_on=["researcher"],        # a hint: usually runs after the researcher
+        ),
+    },
+    spawn_config=SpawnConfig(enabled=True, capabilities={"web"}),
+)
+
+print(supervisor._build_agent_catalog())      # exactly what the planner reads (a debugging peek)
+```
+
+That last line prints:
+
+```
+- human: Asks the human operator ONE clarifying question and returns their typed answer verbatim. Cannot search, read files or do other work.
+    use when: Only when the task is genuinely ambiguous or needs the operator's confirmation. Put the exact question and the options in the query.
+- researcher: Searches the web and returns findings with sources.
+    returns: Findings(summary, sources)
+- writer: Writes the final brief from findings it is given.
+    typically after: researcher
+```
+
+What each `Specialist` field does:
+
+- **`description`**: what it does and returns, in one or two sentences. Say what it **cannot** do too ("cannot browse the web"): that is how the planner knows to create a web helper (3.6) instead of sending web work to it.
+- **`when_to_use`**: routing advice, shown as `use when:`. Good for rare or expensive agents like the human one.
+- **`depends_on`**: names this agent *typically* follows. A hint only, never a rule.
+- **`output_schema`**: taken from the runner's `output_schema` unless you set it. The planner sees the field names, so it can write `skip_when` conditions against real fields.
+
+Things to know:
+
+- **Keep names short** (`"human"`, not `"Human in the Loop"`): the planner types them into plan steps.
+- **Describe the agent, not its prompt.** If you paste the `system_addendum` into the description you are spending the planner's attention on rules it can't use.
+- **The tuple and `Specialist` forms mix freely** in one `agents` dict.
+- **Check what the planner reads** with `supervisor._build_agent_catalog()` (a private method, handy for debugging). If a description doesn't tell *you* when to use the agent, it won't tell the planner either.

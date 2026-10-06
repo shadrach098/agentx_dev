@@ -148,6 +148,17 @@ more to work with — `depends_on` hints, `when_to_use` guidance, and an
 returns. It's iterable as a 2-tuple, so both forms can coexist in the
 same `agents` dict.
 
+## How do I make the Supervisor understand what one of my agents does? *(3.3)*
+
+Through the description you register it with, not its `system_addendum`.
+The planner never sees an agent's prompt; it only reads a catalog of
+names and descriptions (plus `when_to_use`, `depends_on` and the output
+fields if you use `Specialist`). Write the `system_addendum` for the
+agent, and the description for the planner: what the agent does and
+returns, and what it cannot do. `supervisor._build_agent_catalog()`
+prints exactly what the planner reads. Full example, including a
+human-in-the-loop specialist: [pattern 31](patterns.md).
+
 ## My agent blows the TPM limit fetching web pages
 
 Give `web_fetch_tool` a vector store:
