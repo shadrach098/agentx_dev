@@ -1001,10 +1001,15 @@ supervisor = Supervisor(
     agents={
         "human": Specialist(                  # written FOR THE PLANNER
             description="Asks the human operator ONE clarifying question and returns their "
-                        "typed answer verbatim. Cannot search, read files or do other work.",
+                        "typed answer verbatim. The only agent that can get information the "
+                        "task leaves out. Cannot search, read files or do other work.",
             runner=human,
-            when_to_use="Only when the task is genuinely ambiguous or needs the operator's "
-                        "confirmation. Put the exact question and the options in the query.",
+            when_to_use="Make this the FIRST step whenever the task refers to something it "
+                        "does not name (for example 'our competitors', 'the project', 'that "
+                        "file') or to any detail you would otherwise have to guess. Put the "
+                        "exact question in the query. Every step that needs the answer must "
+                        "list this step in depends_on. Do not research or guess before it "
+                        "has answered.",
         ),
         "researcher": Specialist(
             description="Searches the web and returns findings with sources.",
@@ -1025,8 +1030,8 @@ print(supervisor._build_agent_catalog())      # exactly what the planner reads (
 That last line prints:
 
 ```
-- human: Asks the human operator ONE clarifying question and returns their typed answer verbatim. Cannot search, read files or do other work.
-    use when: Only when the task is genuinely ambiguous or needs the operator's confirmation. Put the exact question and the options in the query.
+- human: Asks the human operator ONE clarifying question and returns their typed answer verbatim. The only agent that can get information the task leaves out. Cannot search, read files or do other work.
+    use when: Make this the FIRST step whenever the task refers to something it does not name (for example 'our competitors', 'the project', 'that file') or to any detail you would otherwise have to guess. Put the exact question in the query. Every step that needs the answer must list this step in depends_on. Do not research or guess before it has answered.
 - researcher: Searches the web and returns findings with sources.
     returns: Findings(summary, sources)
 - writer: Writes the final brief from findings it is given.
@@ -1039,6 +1044,15 @@ What each `Specialist` field does:
 - **`when_to_use`**: routing advice, shown as `use when:`. Good for rare or expensive agents like the human one.
 - **`depends_on`**: names this agent *typically* follows. A hint only, never a rule.
 - **`output_schema`**: taken from the runner's `output_schema` unless you set it. The planner sees the field names, so it can write `skip_when` conditions against real fields.
+
+### Making the planner actually use an agent like `human`
+
+Choosing steps is a single planning call that happens *before* anything runs, and the planner is told to prefer the shortest plan. So an agent that only makes sense in some situations gets skipped unless the catalog makes its trigger concrete:
+
+- **Write `when_to_use` as an instruction with a trigger**, not a hedge. "Only when genuinely ambiguous" never fires, because the planner doesn't see the task as ambiguous; "FIRST step whenever the task mentions something unnamed ('our competitors', 'the project')" does.
+- **Tell it how the answer flows:** "every step that needs the answer must list this step in `depends_on`". The answer is then handed to those steps as prior findings.
+- **Say it in the task too** when you can: "If anything is missing, ask the human first." That is the most reliable lever.
+- **Helpers a plan creates can't ask the operator.** If a new helper discovers mid-step that something is missing, it can only report that in its answer, which becomes part of the final answer (that is what happened in a run that created a web helper and ended by asking you for the competitor names). Getting the question asked is the planner's job, up front, through an agent like `human`.
 
 Things to know:
 
