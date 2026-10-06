@@ -36,6 +36,10 @@ from agentx_dev.SubAgents import (   # noqa: F401  (SpawnConfig/SpawnRequest are
     _default_interactive_approver, attach_delegation, parse_agent_spec, spawn_instruction,
     spec_from_legacy_spawn,
 )
+from agentx_dev.Operator import (
+    NO_ANSWER_PLAN_NOTE, OperatorChannel, ask_instruction, attach_ask_user,
+    parse_ask_request, validate_ask_user,
+)
 from agentx_dev.Runner.Persistence import (
     OUTCOME_DONE, OUTCOME_OUT_OF_BUDGET, OUTCOME_OUT_OF_TIME, OUTCOME_PARTIAL, OUTCOME_STUCK,
     BudgetExpired, Persistence, PersistentRun, RunBudget, _clip, accepts_budget,
@@ -169,6 +173,9 @@ class SupervisorResult(BaseModel):
     # Sub-agents created during the run (planner-time spawns and delegations):
     # name, origin, tools, dropped, outcome, chars. Empty when nothing was spawned.
     spawned: List[Dict[str, Any]] = Field(default_factory=list)
+    # Questions put to the operator (3.6): source, question, answered, reason, deduped.
+    # Answer text is not kept here (it may be sensitive). Empty when ask_user is off.
+    asked: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 # ----------------------------------------------------------------------------
@@ -891,9 +898,10 @@ def _log_no_plan() -> None:
 class _SpawnMixin:
     """Sub-agent creation shared by ``Supervisor`` and ``AsyncSupervisor`` (3.6). Needs
     ``self.agents``, ``self.model``, ``self.persistence``, ``self.spawn_config``,
-    ``self.verbose`` and ``self._spawn_run_policy``."""
+    ``self.verbose``, ``self._spawn_run_policy`` and ``self._operator``."""
 
     _SPAWN_ASYNC = False        # AsyncSupervisor builds async sub-agents
+    _operator: Optional[OperatorChannel] = None     # the per-run channel; None when ask_user is off
 
     def _new_spawn_policy(self) -> SpawnPolicy:
         return SpawnPolicy(self.spawn_config, self.model, persistence=self.persistence,
@@ -909,6 +917,27 @@ class _SpawnMixin:
         policy = self._spawn_run_policy
         if policy is not None:
             yield from policy.run.drain()
+        yield from self._drain_operator_events()
+
+    def _drain_operator_events(self):
+        if self._operator is not None:
+            yield from self._operator.drain()
+
+    def _new_operator_channel(self) -> Optional[OperatorChannel]:
+        return OperatorChannel.create(self.ask_user, max_questions=self.max_questions,
+                                      timeout=self.ask_timeout, is_async=self._SPAWN_ASYNC,
+                                      verbose=self.verbose)
+
+    def _task_for_model(self, user_task: str) -> str:
+        """The task as every model prompt sees it: the original plus any operator answers."""
+        return self._operator.with_answers(user_task) if self._operator is not None else user_task
+
+    def _with_answers(self, query: str) -> str:
+        """``query`` with the operator's answers so far, for a dispatched step."""
+        return self._operator.with_answers(query) if self._operator is not None else query
+
+    def _asked_records(self) -> List[Dict[str, Any]]:
+        return list(self._operator.records) if self._operator is not None else []
 
     def _overlapping(self, built) -> Optional[str]:
         """Name of a registered specialist that already has every tool ``built`` has (log only)."""
@@ -978,6 +1007,9 @@ class Supervisor(_SpawnMixin):
         subtask_success_check: Optional[Callable[[SubtaskResult], Any]] = None,
         max_plan_retries: int = 1,
         persistence: Optional[Persistence] = None,
+        ask_user: Any = None,
+        max_questions: int = 3,
+        ask_timeout: Optional[float] = None,
     ):
         """
         Args:
@@ -1042,6 +1074,18 @@ class Supervisor(_SpawnMixin):
                 runners that have none, for the duration of the run.
                 ``None`` (default) keeps the one-shot plan/run/synthesize
                 behaviour.
+            ask_user: (3.6) Lets the planner and every agent ask the human operator
+                for a fact the task leaves out. ``True`` uses the built-in asker
+                (notebook input box, terminal, or the controlling terminal; headless
+                means no answer). A function ``(question) -> str | None`` routes the
+                question through your own channel (a chatbot, a websocket). ``None``
+                (default) is off. No answer means the agent proceeds on a stated
+                assumption.
+            max_questions: (3.6) Questions per run, shared by the planner and all
+                agents. Default 3.
+            ask_timeout: (3.6) Seconds to wait for one answer. ``None`` lets the
+                channel decide (no limit in a notebook or terminal; 300 s on the
+                controlling-terminal path).
         """
         self.model = model
         # Normalize (and copy) so run-time spawns don't mutate the
@@ -1064,6 +1108,10 @@ class Supervisor(_SpawnMixin):
         self.subtask_success_check = subtask_success_check
         self.max_plan_retries = max(0, int(max_plan_retries))
         self.persistence = persistence
+        self.ask_user = validate_ask_user(ask_user, is_async=False)
+        self.max_questions = max(0, int(max_questions))
+        self.ask_timeout = ask_timeout
+        self._operator: Optional[OperatorChannel] = None
         # Persistent runs only: waits out transient planner/synthesis errors until the deadline.
         self._patience: Optional[PersistentRun] = None
 
@@ -1094,15 +1142,18 @@ class Supervisor(_SpawnMixin):
     def _build_agent_catalog(self) -> str:
         return _render_agent_catalog(self.agents)
 
-    def _plan_once(self, user_task: str, repair_note: str = "") -> List[dict]:
+    def _plan_once(self, user_task: str, repair_note: str = "", ask_allowed: bool = False) -> List[dict]:
+        offer = ask_allowed and self._operator is not None and self._operator.remaining() > 0
         base_prompt = SUPERVISOR_PLAN_PROMPT.format(
             agent_catalog=self._build_agent_catalog(),
-            user_task=user_task,
+            user_task=self._task_for_model(user_task),
             max_subtasks=self.max_subtasks,
         )
         prompt = base_prompt
         if self.spawn_config.enabled:
             prompt = prompt + spawn_instruction(self._spawn_policy())
+        if offer:
+            prompt = prompt + ask_instruction(self._operator.remaining())
         if repair_note:
             prompt = prompt + repair_note
         messages = [{"role": "user", "content": prompt}]
@@ -1114,6 +1165,15 @@ class Supervisor(_SpawnMixin):
             parsed = json.loads(cleaned)
         except json.JSONDecodeError:
             return []
+
+        if offer and isinstance(parsed, dict) and not (parsed.get("plan") or []):
+            questions = parse_ask_request(parsed.get("ask"), self._operator.remaining())
+            if questions:
+                for q in questions:
+                    self._operator.ask(q["question"], q["why"], "planner")
+                note = "" if self._operator.has_answers() else NO_ANSWER_PLAN_NOTE
+                # Plan again on the task plus the answers; no ask option this time.
+                return self._plan_once(user_task, repair_note=repair_note + note)
 
         plan = parsed.get("plan", []) or []
         # Keep spawn steps AND known-agent steps. Unknown agents at this
@@ -1131,7 +1191,8 @@ class Supervisor(_SpawnMixin):
         """Plan, sanitize, and (3.3) replan once per repair budget when
         sanitization had to fix the graph. Returns a sanitized plan whose
         every step carries a valid ``id`` and acyclic ``depends_on``."""
-        plan = self._plan_once(user_task)
+        ask_kw = {"ask_allowed": True} if self._operator is not None else {}
+        plan = self._plan_once(user_task, **ask_kw)
         if not plan:
             return []
         sane, repairs = _sanitize_plan(plan, verbose=self.verbose)
@@ -1270,7 +1331,7 @@ class Supervisor(_SpawnMixin):
     ) -> str:
         results_block = _format_results_block(subtask_results)
         prompt = SUPERVISOR_SYNTHESIZE_PROMPT.format(
-            user_task=user_task,
+            user_task=self._task_for_model(user_task),
             results_block=results_block,
         )
         if unresolved:
@@ -1451,6 +1512,7 @@ class Supervisor(_SpawnMixin):
                 dispatched_query = _build_augmented_query(sub_query, dep_results)
             else:
                 dispatched_query = _build_augmented_query(sub_query, subtask_results)
+            dispatched_query = self._with_answers(dispatched_query)
             yield {"type": "dispatch", "agent": agent_name, "query": sub_query,
                    "step": step_idx, "step_id": step_id}
             if self.verbose:
@@ -1482,6 +1544,8 @@ class Supervisor(_SpawnMixin):
                                         "dropped": list, "reused": str | None, "refused": str | None,
                                         "capabilities": list, "rerouted_from": None}
           - {"type": "delegate_result", "name": str, "outcome": str, "chars": int}
+          - {"type": "question",       "source": "planner" | <agent name>, "question": str, "context": str}
+          - {"type": "answer",         "source": str, "answered": bool, "reason": None | str}
           - {"type": "dispatch",       "agent": str, "query": str, "step": int}
           - {"type": "subtask_result", "result": SubtaskResult, "step": int}
           - {"type": "replan",         "round": int, "unresolved": list, "plan": list}  (persistent)
@@ -1497,6 +1561,10 @@ class Supervisor(_SpawnMixin):
         self._spawn_run_policy = self._new_spawn_policy()
         budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
         self._spawn_run_policy.budget = budget        # delegate falls back to it (see SpawnPolicy)
+        self._operator = self._new_operator_channel()
+        self._spawn_run_policy.operator = self._operator
+        if self._operator is not None:
+            self._operator.budget = budget            # waiting on the operator pauses the deadline
         self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
                           if budget is not None else None)
 
@@ -1507,6 +1575,7 @@ class Supervisor(_SpawnMixin):
             if self.persistence is None:
                 raise
             stopped = _stopped_before_planning(user_task, e)
+            stopped.asked = self._asked_records()
             spent = budget_event(stopped.outcome)
             yield spent
             if self.verbose:
@@ -1514,6 +1583,7 @@ class Supervisor(_SpawnMixin):
             yield {"type": "final", "content": stopped.content}
             yield {"type": "completion", "result": stopped}
             return
+        yield from self._drain_operator_events()
 
         if not plan:
             if self.verbose:
@@ -1524,6 +1594,7 @@ class Supervisor(_SpawnMixin):
                 plan=[],
                 subtasks=[],
                 outcome=OUTCOME_STUCK,
+                asked=self._asked_records(),
             )
             yield {"type": "final", "content": result.content}
             yield {"type": "completion", "result": result}
@@ -1538,6 +1609,7 @@ class Supervisor(_SpawnMixin):
         budget_reason: Optional[str] = None
         with _per_run_agents(self), \
                 attach_delegation([s.runner for s in self.agents.values()], self._spawn_policy()), \
+                attach_ask_user({n: s.runner for n, s in self.agents.items()}, self._operator), \
                 apply_persistence([s.runner for s in self.agents.values()], self.persistence):
             yield from self._run_plan(plan, subtask_results, results_by_id, budget)
             if self.persistence is not None:
@@ -1573,6 +1645,7 @@ class Supervisor(_SpawnMixin):
             yield spent
             if self.verbose:
                 _log_budget(spent)
+        yield from self._drain_operator_events()
         yield {"type": "synthesize_start"}
         persistent = self.persistence is not None
         unresolved = [r for r in subtask_results if _result_failed(r)] if persistent else []
@@ -1586,6 +1659,7 @@ class Supervisor(_SpawnMixin):
             subtasks=subtask_results, plan=plan,
             outcome=_supervisor_outcome(subtask_results, budget_reason),
             spawned=list(self._spawn_policy().run.records),
+            asked=self._asked_records(),
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
