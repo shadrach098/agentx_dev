@@ -286,6 +286,79 @@ class TestAsync:
         assert out["sync"].answered and peak == 1
 
 
+class TestAsyncBuiltin:
+    def test_outside_a_notebook_the_builtin_asker_runs_off_the_loop(self, monkeypatch):
+        seen = {}
+
+        def asker(question, *, prefix="", timeout=None):
+            seen["thread"] = threading.get_ident()
+            return "typed"
+        monkeypatch.setattr(op, "_in_notebook", lambda: False)
+        monkeypatch.setattr(op, "builtin_asker", asker)
+
+        async def go():
+            loop_thread = threading.get_ident()
+            reply = await make(True, is_async=True).aask("q")
+            return loop_thread, reply
+        loop_thread, reply = asyncio.run(go())
+        assert reply.text == "typed" and seen["thread"] != loop_thread
+
+    def test_in_a_notebook_the_builtin_asker_runs_on_the_loop_thread(self, monkeypatch):
+        seen = {}
+
+        def asker(question, *, prefix="", timeout=None):
+            seen["thread"] = threading.get_ident()
+            return "typed"
+        monkeypatch.setattr(op, "_in_notebook", lambda: True)
+        monkeypatch.setattr(op, "builtin_asker", asker)
+
+        async def go():
+            loop_thread = threading.get_ident()
+            reply = await make(True, is_async=True).aask("q")
+            return loop_thread, reply
+        loop_thread, reply = asyncio.run(go())
+        assert reply.text == "typed" and seen["thread"] == loop_thread
+
+    def test_the_loop_stays_responsive_while_the_operator_is_typing(self, monkeypatch):
+        gate = threading.Event()
+
+        def asker(question, *, prefix="", timeout=None):
+            gate.wait(5)
+            return "typed"
+        monkeypatch.setattr(op, "_in_notebook", lambda: False)
+        monkeypatch.setattr(op, "builtin_asker", asker)
+
+        async def go():
+            ticks = 0
+
+            async def ticker():
+                nonlocal ticks
+                while True:
+                    ticks += 1
+                    await asyncio.sleep(0.01)
+            t = asyncio.create_task(ticker())
+            ask = asyncio.create_task(make(True, is_async=True).aask("q"))
+            try:
+                await asyncio.sleep(0.2)
+                during = ticks
+                pending = not ask.done()
+            finally:
+                gate.set()
+            reply = await asyncio.wait_for(ask, 5)
+            t.cancel()
+            return during, pending, reply
+        during, pending, reply = asyncio.run(go())
+        assert pending and during >= 5 and reply.text == "typed"
+
+    def test_no_channel_from_the_off_loop_asker_is_no_channel(self, monkeypatch):
+        def nowhere(question, *, prefix="", timeout=None):
+            raise op.NoChannel("headless")
+        monkeypatch.setattr(op, "_in_notebook", lambda: False)
+        monkeypatch.setattr(op, "builtin_asker", nowhere)
+        reply = asyncio.run(make(True, is_async=True).aask("q"))
+        assert not reply.answered and reply.reason == "no_channel"
+
+
 class TestPlannerHelpers:
     def test_ask_instruction_states_the_limit(self):
         text = op.ask_instruction(2)

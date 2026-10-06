@@ -446,8 +446,15 @@ class OperatorChannel:
         try:
             with self._paused():
                 if self._builtin:
-                    # input() on the loop thread: other tasks wait while the person types.
-                    raw = builtin_asker(shown, prefix=self.prefix, timeout=self.timeout)
+                    if _in_notebook():
+                        # ipykernel's input() is not safe from a worker thread, and a person is
+                        # looking at the input box (Interrupt works): ask on the loop thread.
+                        raw = builtin_asker(shown, prefix=self.prefix, timeout=self.timeout)
+                    else:
+                        # A terminal read can wait minutes: keep the loop (other tasks, timers,
+                        # cancellation) running while the person types.
+                        raw = await asyncio.to_thread(builtin_asker, shown, prefix=self.prefix,
+                                                      timeout=self.timeout)
                 else:
                     raw = await asyncio.wait_for(go(), self.timeout)
         except NoChannel:
