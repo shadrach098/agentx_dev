@@ -62,6 +62,24 @@ class TestPlannerAsks:
         result = run(supervisor(model, ask_user=lambda q: ANSWER))
         assert result.asked[0]["answered"] is True
 
+    def test_a_malformed_ask_is_the_existing_no_plan_failure(self):
+        model = router(plans=[json.dumps({"ask": "what?"})])
+        result = run(supervisor(model, ask_user=lambda q: "x"))
+        assert result.content == "Supervisor failed to produce a valid plan." and result.outcome == "stuck"
+
+    def test_the_planner_cannot_ask_twice(self):
+        model = router(plans=[ASK_PLAN, ASK_PLAN])
+        asked = []
+        result = run(supervisor(model, ask_user=lambda q: asked.append(q) or "x"))
+        assert len(asked) == 1 and result.outcome == "stuck"
+
+    def test_the_question_budget_limits_what_the_planner_may_ask(self):
+        two = json.dumps({"ask": [{"question": "one?"}, {"question": "two?"}]})
+        model = router(plans=[two, plan_json(step("s1", "worker"))])
+        asked = []
+        run(supervisor(model, ask_user=lambda q: asked.append(q) or "x", max_questions=1))
+        assert asked == ["one?"] and "at most 1 questions" in model.planner_prompts()[0]
+
     def test_no_answer_plans_on_assumptions(self):
         model = router(plans=[ASK_PLAN, plan_json(step("s1", "worker"))])
         result = run(supervisor(model, ask_user=lambda q: None))
