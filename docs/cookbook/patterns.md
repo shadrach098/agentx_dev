@@ -1052,9 +1052,9 @@ Choosing steps is a single planning call that happens *before* anything runs, an
 - **Write `when_to_use` as an instruction with a trigger**, not a hedge. "Only when genuinely ambiguous" never fires, because the planner doesn't see the task as ambiguous; "FIRST step whenever the task mentions something unnamed ('our competitors', 'the project')" does.
 - **Tell it how the answer flows:** "every step that needs the answer must list this step in `depends_on`". The answer is then handed to those steps as prior findings.
 - **Say it in the task too** when you can: "If anything is missing, ask the human first." That is the most reliable lever.
+- **Without `ask_user`, helpers a plan creates can't ask the operator.** If a new helper discovers mid-step that something is missing, it can only report that in its answer, which becomes part of the final answer (that is what happened in a run that created a web helper and ended by asking you for the competitor names). Getting the question asked is then the planner's job, up front, through an agent like `human`. With `ask_user` set on the Supervisor, helpers get an `ask_user` tool and can ask mid-run; see pattern 32.
 
 Pattern 31 still works when you want a human step the planner must plan. For the built-in way to ask, where the Supervisor itself asks for what the task leaves out, see pattern 32.
-- **Helpers a plan creates can't ask the operator.** If a new helper discovers mid-step that something is missing, it can only report that in its answer, which becomes part of the final answer (that is what happened in a run that created a web helper and ended by asking you for the competitor names). Getting the question asked is the planner's job, up front, through an agent like `human`.
 
 Things to know:
 

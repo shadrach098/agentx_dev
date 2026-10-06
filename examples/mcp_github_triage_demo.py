@@ -30,8 +30,11 @@ HandoffCoordinator is one more step.
 import asyncio
 import os
 
+from pydantic import BaseModel, Field
+
 from agentx_dev import AsyncAgentRunner, AgentType, ask_human_tool
 from agentx_dev.MCP import MCPClient
+from agentx_dev.Tools import StructuredTool
 
 
 # --- provider fallback (same pattern as the other demos) --------------
@@ -44,6 +47,48 @@ def build_llm():
         from agentx_dev import GPT
         return GPT(model="gpt-4o-mini", temperature=0)
     raise RuntimeError("Set ANTHROPIC_API_KEY or OPENAI_API_KEY before running.")
+
+
+# --- approval gate ----------------------------------------------------
+# ask_human_tool() prompts in the notebook's input box or the terminal and, when nobody can
+# answer, returns a note that tells an agent to proceed on an assumption. That is right for
+# a missing fact and wrong for an approval to WRITE labels. So the agent gets this wrapper:
+# it returns APPROVED only for a typed "y" or "yes"; every other result, including no answer,
+# is NOT APPROVED.
+
+class _ApprovalArgs(BaseModel):
+    question: str = Field(..., description="Question for the operator. Self-contained.")
+    context: str = Field("", description="One-line status shown above the question.")
+
+
+NOT_APPROVED = "NOT APPROVED: apply nothing and report that no approval was given."
+
+
+def approval_tool(*, prompt_prefix: str = "[triager]") -> StructuredTool:
+    asker = ask_human_tool(prompt_prefix=prompt_prefix)
+
+    def _ask(question: str, context: str = "") -> str:
+        try:
+            reply = asker.func(question=question, context=context)
+        except Exception:
+            return NOT_APPROVED
+        prefix = "[operator] "
+        if isinstance(reply, str) and reply.startswith(prefix):
+            if reply[len(prefix):].strip().lower() in ("y", "yes"):
+                return "APPROVED"
+        return NOT_APPROVED
+
+    return StructuredTool(
+        func=_ask, args_schema=_ApprovalArgs, name="ask_human",
+        description=(
+            "Ask the operator to approve the proposed label plan. Call ONCE after you have "
+            "categorized every issue and have a full plan ready. Returns APPROVED only when "
+            "the operator typed y or yes; then APPLY the labels by calling the MCP "
+            "add_issue_labels tool for each issue. Any other result (NOT APPROVED, any other "
+            "reply, no answer) means abort: return the plan as your final answer without "
+            "writing anything."
+        ),
+    )
 
 
 # --- config -----------------------------------------------------------
@@ -86,14 +131,14 @@ WORKFLOW (in order -- do not skip steps):
    Include the plan table in your Thought BEFORE the ask_human call so it
    appears in the trace above the prompt when it fires.
 
-5. Branch on the reply:
-   - Starts with 'y' or 'yes' -> for EACH issue, call the MCP
+5. Branch on the result of `ask_human`:
+   - "APPROVED" -> for EACH issue, call the MCP
      `add_issue_labels` tool with owner, repo, issue_number, and
      labels=[type, priority]. Then emit Final_Answer summarizing what
      was written.
-   - Anything else (including "[no operator answer]" when nobody could be
-     asked) -> emit Final_Answer with the plan and the note
-     "Not applied -- operator rejected."
+   - Anything else (including "NOT APPROVED") -> do NOT apply anything;
+     emit Final_Answer with the plan and the note
+     "Not applied -- no approval given."
 
 DO NOT:
 - Invent new label names outside the taxonomy above.
@@ -163,7 +208,7 @@ async def main():
         runner = AsyncAgentRunner(
             model=llm,
             agent=AgentType.ReAct,
-            tools=[*picked, ask_human_tool(prompt_prefix="[triager]")],
+            tools=[*picked, approval_tool(prompt_prefix="[triager]")],
             use_function_calling=True,
             verbose=True,
             max_iterations=LIMIT * 3 + 5,   # rough upper bound
