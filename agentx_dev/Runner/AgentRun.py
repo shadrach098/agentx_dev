@@ -2250,6 +2250,8 @@ class AgentRunner(PersistenceMixin):
                     for i, c in enumerate(non_respond):
                         try:
                             results[i] = _run_one(c)
+                        except KeyboardInterrupt:
+                            raise                         # Ctrl-C (for example at an ask_user prompt) stops the run
                         except BaseException as e:
                             results[i] = ToolError(
                                 f"unhandled exception in dispatch for '{c['name']}': {e}",
@@ -2263,6 +2265,8 @@ class AgentRunner(PersistenceMixin):
                         for fut, idx in futures.items():
                             try:
                                 results[idx] = fut.result()
+                            except KeyboardInterrupt:
+                                raise
                             except BaseException as e:
                                 c = non_respond[idx]
                                 results[idx] = ToolError(

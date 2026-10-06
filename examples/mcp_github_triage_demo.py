@@ -78,7 +78,7 @@ def approval_tool(*, prompt_prefix: str = "[triager]") -> StructuredTool:
                 return "APPROVED"
         return NOT_APPROVED
 
-    return StructuredTool(
+    tool = StructuredTool(
         func=_ask, args_schema=_ApprovalArgs, name="ask_human",
         description=(
             "Ask the operator to approve the proposed label plan. Call ONCE after you have "
@@ -89,6 +89,8 @@ def approval_tool(*, prompt_prefix: str = "[triager]") -> StructuredTool:
             "writing anything."
         ),
     )
+    tool.cacheable = False        # an approval must never be replayed from a cache
+    return tool
 
 
 # --- config -----------------------------------------------------------

@@ -600,7 +600,7 @@ def ask_human_tool(*, prompt_prefix: str = "[agent]", ask_timeout: Optional[floa
             return NO_ANSWER_TEXT
         return reply_text(_clean_answer(raw))
 
-    return StructuredTool(
+    tool = StructuredTool(
         func=_ask, args_schema=AskUserArgs, name="ask_human",
         description=(
             "Ask the operator ONE clarifying question when the task is genuinely ambiguous and a "
@@ -610,3 +610,5 @@ def ask_human_tool(*, prompt_prefix: str = "[agent]", ask_timeout: Optional[floa
             "that nobody answered."
         ),
     )
+    tool.cacheable = False            # a human's answer must never be replayed from a cache
+    return tool
