@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-from agentx_dev import AgentRunner, AgentType, Persistence, Supervisor
+from agentx_dev import AgentRunner, AgentType, CostBudgetExceeded, Persistence, Supervisor
 from agentx_dev import Operator as op
 from agentx_dev.SubAgents import SpawnConfig
 from tests.conftest import MockModel, make_final, make_react_response
-from tests.subagent_helpers import ScriptedRunner, new_agent_step, plan_json, router, step
+from tests.subagent_helpers import PLANNER_MARK, ScriptedRunner, new_agent_step, plan_json, router, step
 
 ASK_PLAN = json.dumps({"ask": [{"question": "Which three competitors should I compare?",
                                 "why": "the task does not name them"}]})
@@ -189,3 +189,25 @@ class TestPersistent:
         prompts = model.planner_prompts()
         assert len(prompts) == 3 and "OPERATOR ANSWERS" in prompts[2] and ANSWER in prompts[2]
         assert ASK_MARK not in prompts[2]
+
+
+class TestBudgetStopAfterQuestions:
+    def test_a_budget_stop_while_replanning_still_streams_the_question_and_answer(self):
+        planner_calls = []
+
+        def script(messages):
+            if PLANNER_MARK in str(messages[0]["content"]):
+                planner_calls.append(1)
+                if len(planner_calls) == 1:
+                    return ASK_PLAN
+                raise CostBudgetExceeded(spent_usd=2.0, limit_usd=1.0)
+            return "unused"
+        sup = supervisor(MockModel(script=script), ask_user=lambda q: ANSWER,
+                         persistence=Persistence(max_minutes=5))
+        events = list(sup.stream("Compare our competitors"))
+        types = [e["type"] for e in events]
+        assert types.index("question") < types.index("answer") < types.index("budget")
+        assert ANSWER not in str(events[:-1])
+        result = events[-1]["result"]
+        assert result.outcome == "out_of_budget"
+        assert result.asked[0]["source"] == "planner" and result.asked[0]["answered"] is True

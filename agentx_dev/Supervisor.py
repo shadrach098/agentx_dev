@@ -1576,6 +1576,7 @@ class Supervisor(_SpawnMixin):
                 raise
             stopped = _stopped_before_planning(user_task, e)
             stopped.asked = self._asked_records()
+            yield from self._drain_operator_events()
             spent = budget_event(stopped.outcome)
             yield spent
             if self.verbose:
@@ -1715,6 +1716,9 @@ class AsyncSupervisor(_SpawnMixin):
         max_plan_retries: int = 1,
         persistence: Optional[Persistence] = None,
         spawn_config: Optional[SpawnConfig] = None,
+        ask_user: Any = None,
+        max_questions: int = 3,
+        ask_timeout: Optional[float] = None,
     ):
         """
         Args:
@@ -1755,6 +1759,18 @@ class AsyncSupervisor(_SpawnMixin):
                 parallel batches as any other step. Same defaults as
                 :class:`Supervisor` (on, with a safe ceiling, when ``persistence``
                 is set and no config is given).
+            ask_user: (3.6) Lets the planner and every agent ask the human operator
+                for a fact the task leaves out. ``True`` uses the built-in asker
+                (notebook input box, terminal, or the controlling terminal; headless
+                means no answer). A function ``(question) -> str | None``, sync or
+                ``async``, routes the question through your own channel (a chatbot, a
+                websocket); a sync one runs in a worker thread. ``None`` (default) is
+                off. No answer means the agent proceeds on a stated assumption.
+            max_questions: (3.6) Questions per run, shared by the planner and all
+                agents. Default 3.
+            ask_timeout: (3.6) Seconds to wait for one answer. ``None`` lets the
+                channel decide (no limit in a notebook or terminal; 300 s on the
+                controlling-terminal path).
         """
         self.model = model
         self.agents = _normalize_agents(agents)
@@ -1768,6 +1784,10 @@ class AsyncSupervisor(_SpawnMixin):
         )
         self.max_plan_retries = max(0, int(max_plan_retries))
         self.persistence = persistence
+        self.ask_user = validate_ask_user(ask_user, is_async=True)
+        self.max_questions = max(0, int(max_questions))
+        self.ask_timeout = ask_timeout
+        self._operator: Optional[OperatorChannel] = None
         if spawn_config is None:
             # Same default as Supervisor: persistent runs may create sub-agents inside a safe ceiling.
             spawn_config = (
@@ -1812,14 +1832,17 @@ class AsyncSupervisor(_SpawnMixin):
         # Fall back to running the sync method in a thread.
         return await asyncio.to_thread(self.model.Initialize, messages)
 
-    async def _plan_once(self, user_task: str, repair_note: str = "") -> List[dict]:
+    async def _plan_once(self, user_task: str, repair_note: str = "", ask_allowed: bool = False) -> List[dict]:
+        offer = ask_allowed and self._operator is not None and self._operator.remaining() > 0
         prompt = SUPERVISOR_PLAN_PROMPT.format(
             agent_catalog=self._build_agent_catalog(),
-            user_task=user_task,
+            user_task=self._task_for_model(user_task),
             max_subtasks=self.max_subtasks,
         )
         if self.spawn_config.enabled:
             prompt = prompt + spawn_instruction(self._spawn_policy())
+        if offer:
+            prompt = prompt + ask_instruction(self._operator.remaining())
         if repair_note:
             prompt = prompt + repair_note
         messages = [{"role": "user", "content": prompt}]
@@ -1831,6 +1854,15 @@ class AsyncSupervisor(_SpawnMixin):
             parsed = json.loads(cleaned)
         except json.JSONDecodeError:
             return []
+
+        if offer and isinstance(parsed, dict) and not (parsed.get("plan") or []):
+            questions = parse_ask_request(parsed.get("ask"), self._operator.remaining())
+            if questions:
+                for q in questions:
+                    await self._operator.aask(q["question"], q["why"], "planner")
+                note = "" if self._operator.has_answers() else NO_ANSWER_PLAN_NOTE
+                # Plan again on the task plus the answers; no ask option this time.
+                return await self._plan_once(user_task, repair_note=repair_note + note)
 
         plan = parsed.get("plan", []) or []
         # A step may name a registered agent, define one inline (new_agent), or use one an
@@ -1859,7 +1891,8 @@ class AsyncSupervisor(_SpawnMixin):
 
     async def _plan(self, user_task: str) -> List[dict]:
         """Plan + sanitize + (3.3) replan-on-repair. See Supervisor._plan."""
-        plan = await self._plan_once(user_task)
+        ask_kw = {"ask_allowed": True} if self._operator is not None else {}
+        plan = await self._plan_once(user_task, **ask_kw)
         if not plan:
             return []
         sane, repairs = _sanitize_plan(plan, verbose=self.verbose)
@@ -1904,7 +1937,7 @@ class AsyncSupervisor(_SpawnMixin):
     ) -> str:
         results_block = _format_results_block(subtask_results)
         prompt = SUPERVISOR_SYNTHESIZE_PROMPT.format(
-            user_task=user_task,
+            user_task=self._task_for_model(user_task),
             results_block=results_block,
         )
         if unresolved:
@@ -1943,7 +1976,7 @@ class AsyncSupervisor(_SpawnMixin):
         # concurrent mode there's nothing to thread and the specialist
         # runs on the plain query. Stored result uses the plain query
         # so the audit trail isn't polluted with the injected context.
-        dispatched_query = (
+        dispatched_query = self._with_answers(
             _build_augmented_query(sub_query, prior_results)
             if prior_results else sub_query
         )
@@ -2253,6 +2286,10 @@ class AsyncSupervisor(_SpawnMixin):
         self._spawn_run_policy = self._new_spawn_policy()
         budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
         self._spawn_run_policy.budget = budget        # delegate falls back to it (see SpawnPolicy)
+        self._operator = self._new_operator_channel()
+        self._spawn_run_policy.operator = self._operator
+        if self._operator is not None:
+            self._operator.budget = budget            # waiting on the operator pauses the deadline
         self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
                           if budget is not None else None)
         yield {"type": "plan_start"}
@@ -2262,6 +2299,9 @@ class AsyncSupervisor(_SpawnMixin):
             if self.persistence is None:
                 raise
             stopped = _stopped_before_planning(user_task, e)
+            stopped.asked = self._asked_records()
+            for ev in self._drain_operator_events():
+                yield ev
             spent = budget_event(stopped.outcome)
             yield spent
             if self.verbose:
@@ -2269,6 +2309,8 @@ class AsyncSupervisor(_SpawnMixin):
             yield {"type": "final", "content": stopped.content}
             yield {"type": "completion", "result": stopped}
             return
+        for ev in self._drain_operator_events():
+            yield ev
 
         if not plan:
             if self.verbose:
@@ -2278,6 +2320,7 @@ class AsyncSupervisor(_SpawnMixin):
                 content="Supervisor failed to produce a valid plan.",
                 plan=[], subtasks=[],
                 outcome=OUTCOME_STUCK,
+                asked=self._asked_records(),
             )
             yield {"type": "final", "content": result.content}
             yield {"type": "completion", "result": result}
@@ -2292,6 +2335,7 @@ class AsyncSupervisor(_SpawnMixin):
         budget_reason: Optional[str] = None
         with _per_run_agents(self), \
                 attach_delegation([s.runner for s in self.agents.values()], self._spawn_policy()), \
+                attach_ask_user({n: s.runner for n, s in self.agents.items()}, self._operator), \
                 apply_persistence([s.runner for s in self.agents.values()], self.persistence):
             plan_run = self._run_plan(plan, subtask_results, results_by_id, budget)
             try:
@@ -2335,6 +2379,8 @@ class AsyncSupervisor(_SpawnMixin):
             yield spent
             if self.verbose:
                 _log_budget(spent)
+        for ev in self._drain_operator_events():
+            yield ev
         yield {"type": "synthesize_start"}
         persistent = self.persistence is not None
         unresolved = [r for r in subtask_results if _result_failed(r)] if persistent else []
@@ -2348,6 +2394,7 @@ class AsyncSupervisor(_SpawnMixin):
             subtasks=list(subtask_results), plan=plan,
             outcome=_supervisor_outcome(subtask_results, budget_reason),
             spawned=list(self._spawn_policy().run.records),
+            asked=self._asked_records(),
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
