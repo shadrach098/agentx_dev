@@ -94,6 +94,32 @@ do (`capabilities=`, `tools=`, `max_spawns=`); nothing the model writes
 can exceed it. With `persistence=` set and no `spawn_config`, this is on
 with web plus read-only files. See [Sub-agents](../guides/sub-agents.md).
 
+## How do I let the Supervisor ask me a question? *(3.6)*
+
+Pass `ask_user=True`: `Supervisor(..., ask_user=True)`. The planner can then
+reply with questions instead of a plan when the task leaves out a fact it
+cannot assume ("our three competitors"), and every specialist and helper
+gets an `ask_user` tool for the run. `True` uses the built-in asker: the
+input box under the cell in Jupyter, VS Code and Colab, `input()` in a
+terminal, and no answer at once in a headless process. `max_questions`
+(default 3) is one budget for the run; with no answer an agent proceeds on
+a stated assumption and says so. See
+[Asking the operator](../guides/sub-agents.md#asking-the-operator) and
+[pattern 32](patterns.md).
+
+## Can a chatbot or backend use `ask_user`? *(3.6)*
+
+Yes, with a function instead of `True`:
+`Supervisor(..., ask_user=my_function, ask_timeout=120)`, where
+`my_function(question)` sends the question through your channel (a chat
+UI, a websocket, a queue) and returns the reply, or `None` for no answer.
+`AsyncSupervisor` also accepts an `async def` function when your
+specialists are async (`AsyncAgentRunner`); with sync specialists pass a
+plain function. A server with no terminal should not use `ask_user=True`:
+that never asks, by design. If your function forwards raw end-user text,
+treat the reply as untrusted input to the run, like the task itself. See
+[pattern 32](patterns.md).
+
 ## When should I use ReAct vs. function-calling vs. native binding?
 
 | Mode | When |

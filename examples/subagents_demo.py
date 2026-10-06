@@ -9,13 +9,16 @@ What to look for in the output:
 
   - the plan the Supervisor wrote, including any ``new_agent`` step;
   - ``[spawn]`` lines when a helper is built (verbose=True);
-  - ``result.spawned``: every helper it created, with its tools and outcome.
+  - ``result.spawned``: every helper it created, with its tools and outcome;
+  - with ``--ask``: the planner asks you for the competitors (the task names none), and
+    ``result.asked`` lists each question put to you.
 
 Run (set ANTHROPIC_API_KEY or OPENAI_API_KEY first):
 
     python examples/subagents_demo.py
     python examples/subagents_demo.py "Your own task here"
     python examples/subagents_demo.py --persistent     # recovery rounds + one shared deadline
+    python examples/subagents_demo.py --ask            # the planner asks you for the competitors
 """
 
 import os
@@ -33,6 +36,9 @@ DEFAULT_TASK = (
     "competitor's public pricing page on the web and compare their plans and prices in a "
     "short table, citing the page you used for each."
 )
+
+# Names no competitors: with --ask the Supervisor asks you for them instead of guessing.
+ASK_TASK = "Compare the pricing pages of our three competitors."
 
 SAMPLE_COMPETITORS = """# Competitors
 
@@ -74,7 +80,7 @@ def build_explorer(model):
     )
 
 
-def build_supervisor(model, persistent=False):
+def build_supervisor(model, persistent=False, ask=False):
     explorer = build_explorer(model)
     return Supervisor(
         model=model,
@@ -86,6 +92,7 @@ def build_supervisor(model, persistent=False):
             max_spawns=6,                         # helpers per run, plans and delegations together
         ),
         persistence=Persistence(max_minutes=15) if persistent else None,
+        ask_user=True if ask else None,   # built-in asker: notebook input box or terminal
         verbose=True,
     )
 
@@ -102,12 +109,13 @@ def seed_workspace():
 
 def main(argv):
     persistent = "--persistent" in argv
+    ask = "--ask" in argv
     args = [a for a in argv if not a.startswith("--")]
-    task = args[0] if args else DEFAULT_TASK
+    task = args[0] if args else (ASK_TASK if ask else DEFAULT_TASK)
 
     seed_workspace()
     model = build_model()
-    supervisor = build_supervisor(model, persistent=persistent)
+    supervisor = build_supervisor(model, persistent=persistent, ask=ask)
 
     result = supervisor.run(task)
 
@@ -122,6 +130,12 @@ def main(argv):
     for sub in result.spawned:
         print(f"  {sub['name']:<22} origin={sub['origin']:<8} tools={sub['tools']} "
               f"dropped={sub['dropped']} outcome={sub['outcome']} chars={sub['chars']}")
+    if ask:
+        print("\nQuestions put to you this run:")
+        if not result.asked:
+            print("  (none: the planner did not need to ask)")
+        for entry in result.asked:
+            print(f"  {entry['source']:<12} answered={entry['answered']} {entry['question']}")
     print(f"\nThe supervisor's own registry is unchanged: {list(supervisor.agents)}")
 
 

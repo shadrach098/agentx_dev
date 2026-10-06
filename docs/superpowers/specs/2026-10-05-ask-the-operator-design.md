@@ -55,12 +55,21 @@ AsyncSupervisor(model=..., agents=..., ask_user=None, max_questions=3, ask_timeo
 | Argument | Default | Meaning |
 |---|---|---|
 | `ask_user` | `None` | `None` or `False`: off. `True`: built-in asker. A callable: your channel. Anything else raises `TypeError` at construction. |
-| `max_questions` | `3` | One budget per run, shared by the planner and all agents. Must be `>= 0` (`0` means every ask gets the no-answer reply). |
-| `ask_timeout` | `None` | Seconds to wait for one answer. `None` means "the channel decides" (3.3). A number applies to every channel. |
+| `max_questions` | `3` | One budget per run, shared by the planner and all agents. It counts questions actually put to the operator, answered or not (a repeat that dedupe answers uses no slot). Must be `>= 0` (`0` means every ask gets the no-answer reply). |
+| `ask_timeout` | `None` | Seconds to wait for one answer. `None` means "the channel decides" (3.3). A number applies to every channel except the notebook input box, which ignores it (3.3). |
 
-A callable has the signature `fn(question: str) -> str | None`. Returning `None`, an empty
-string or whitespace means "no answer". On `AsyncSupervisor` the callable may be sync or
-`async`; a sync one runs in a worker thread so it never blocks the event loop.
+A callable has the signature `fn(question: str) -> str | None`. It receives the question
+text; when the asker gave a one-line context (the planner's `why`, or an agent's `context`),
+it is appended as `"\n(context: ...)"`. Returning `None`, an empty string or whitespace
+means "no answer". On `AsyncSupervisor` the callable may be sync or `async`; a sync one runs
+in a worker thread so it never blocks the event loop. An `async` callable on a sync
+`Supervisor` raises `TypeError` at construction.
+
+An `async` callable needs async specialists. The planner and spawned helpers on an
+`AsyncSupervisor` are async and can await it, but a sync specialist registered under an
+`AsyncSupervisor` asks through the synchronous path, which cannot await: its question gets
+reason `error` and the agent proceeds on an assumption. With sync specialists pass a plain
+function.
 
 ### 3.2 What the planner and agents see
 
@@ -68,9 +77,11 @@ string or whitespace means "no answer". On `AsyncSupervisor` the callable may be
   (section 4.2). The answers are added to the working task for planning, recovery rounds,
   every dispatched step, and synthesis.
 - **Agents.** Every specialist, every planner-defined helper and every `delegate` helper
-  gets an `ask_user(question, context="")` tool for the run (section 4.3). Its addendum
-  gains one line: "If a fact you need is missing and your tools cannot find it, call
-  ask_user. Do not guess."
+  gets an `ask_user(question, context="")` tool for the run (section 4.3). Helpers the
+  framework builds (planner-defined and `delegate`) also get one line added to their
+  instructions: "If a fact you need is missing and your tools cannot find it, call ask_user
+  with one specific question. Do not guess." Registered specialists keep their own
+  `system_addendum` untouched and rely on the tool description to know when to ask.
 
 ### 3.3 The built-in asker (`ask_user=True`)
 
@@ -80,19 +91,29 @@ Chosen in this order, once per question:
    `ZMQInteractiveShell`. If the kernel cannot take input (`kernel._allow_stdin` is false,
    as under papermill or nbconvert), or `input()` raises `StdinNotImplementedError`, there
    is no answer. Otherwise it calls `input()`, which shows the input box under the cell.
-   No timeout by default: a person is looking at the box.
+   It ignores `ask_timeout`, even when one is set: a person is looking at the box and the
+   Interrupt button stops the run.
 2. **Terminal.** `sys.stdin.isatty()` is true: it calls `input()`. No timeout by default.
 3. **Controlling terminal.** Stdin is not a terminal (IDE run panel, wrapper subprocess):
    open `CONIN$`/`CONOUT$` on Windows or `/dev/tty` on POSIX, as the demo tool does. Here
-   the prompt can land in a window nobody sees, so the default timeout is 300 seconds.
+   the prompt can land in a window nobody sees, so the default timeout is 300 seconds (or
+   `ask_timeout` when set).
 4. **Headless.** None of the above is available (cron, Docker without `-it`, a server):
    return no answer immediately.
 
 `KeyboardInterrupt` (the notebook Interrupt button, Ctrl-C) is not swallowed: it stops the
 run, because the operator pressed stop. `EOFError` counts as no answer.
 
-On `AsyncSupervisor` the notebook and terminal paths call `input()` on the event-loop
-thread. Other tasks pause while the person types; asks are serialized anyway (4.4).
+On `AsyncSupervisor` the notebook path calls `input()` on the event-loop thread, because
+ipykernel's `input()` is not safe from a worker thread; other tasks pause while the person
+types, and asks are serialized anyway (4.4). Every other built-in path (terminal,
+controlling terminal) runs in a worker thread (`asyncio.to_thread`), so the loop stays
+responsive while the person types.
+
+One blocking read at a time: a terminal or controlling-terminal read that times out leaves
+its reader thread waiting for a keystroke. While one is outstanding, a later timed built-in
+ask in the same process is refused (reason `no_channel`) rather than started behind it, so
+it cannot take the operator's next answer. The refusal lasts until that reader returns.
 
 ### 3.4 Events and result
 
@@ -113,7 +134,10 @@ With `verbose=True` the same moments print as `[ask]` lines.
 `agentx_dev.ask_human_tool(*, prompt_prefix="[agent]", ask_timeout=None) -> StructuredTool`
 is the demo's tool, rebuilt on the built-in asker, so a standalone `AgentRunner` that wants
 a human step gets the notebook-aware behavior. Its schema is the demo's: `question`,
-`context`. It is exported from the package (today it exists only inside the demo file).
+`context`; the tool is named `ask_human`. A reply comes back as `[operator] ...`, and no
+answer (headless, timeout) comes back as the same no-answer note agents get from
+`ask_user`, never an error. It is exported from the package; the demo in
+`examples/mcp_github_triage_demo.py` now imports it instead of defining its own.
 
 ## 4. Design
 
@@ -124,11 +148,16 @@ One object per run, the only place that knows about the operator. Mirrors `Spawn
 - `ask(question, context, source) -> Reply` and `aask(...)` (the async twin). A `Reply` has
   `text` (or `None`) and `reason`.
 - Holds the resolved asker, `max_questions`, `ask_timeout`, the list of ask records, the
-  answers so far, a lock (`threading.Lock` for sync; an `asyncio.Lock` created per run
-  for async), an event buffer with `drain()` (like `SpawnRun`), and `budget`.
+  answers so far, one `threading.Lock` for sync and async alike (`aask` polls it without
+  blocking the loop, so a cancelled task cannot leak it), an event buffer with `drain()`
+  (like `SpawnRun`), and `budget`.
 - **Order inside `ask`:** normalize the question (trim, collapse whitespace, case-fold);
-  if it matches an earlier question, return that answer (`deduped`, no slot used); else
-  reserve a slot (none left: `reason="limit"`); take the lock; call the asker; record.
+  take the lock; if it matches an earlier question, return that reply (`deduped`, no slot
+  used); else if no slot is left, `reason="limit"`; else take a slot, emit the `question`
+  event, call the asker, record. The budget counts questions actually put to the operator,
+  answered or not: a timeout, an error or a declined answer each spent a slot.
+- The asker receives the question with `"\n(context: ...)"` appended when a context was
+  given (3.1).
 - **Answers** are trimmed and cut at 2,000 characters.
 - **Failure handling:** an exception from the asker (other than `KeyboardInterrupt` and
   `asyncio.CancelledError`) is logged and becomes `reason="error"`. A timeout becomes
@@ -136,7 +165,9 @@ One object per run, the only place that knows about the operator. Mirrors `Spawn
 - **Timeout mechanics (sync):** with a timeout, the callable runs in a one-worker thread
   (with the caller's `contextvars` copied) and the wait is bounded; a thread stuck on a
   blocking read is abandoned as a daemon. With no timeout it is called inline.
-  **(async):** `asyncio.wait_for` around the awaited callable or `asyncio.to_thread`.
+  **(async):** `asyncio.wait_for` around the awaited callable or `asyncio.to_thread`. The
+  built-in asker is the exception: the notebook path runs on the loop thread without a
+  timeout (3.3), and the other built-in paths run in `asyncio.to_thread`.
 - `answers_block()` returns the text appended to context, or `""` when nothing was
   answered:
 
@@ -161,7 +192,7 @@ Behavior:
 
 - Reply has a non-empty `plan`: use it; any `ask` is ignored.
 - Reply has `ask` and no plan: the channel asks each question (up to the remaining
-  budget), then planning runs again on the working task (original plus the answers block)
+  budget; the planner's `why` is passed as the context), then planning runs again on the working task (original plus the answers block)
   with no ask option, so it cannot loop. If every question went unanswered, the second
   call carries a note: "No operator answered. Plan on stated assumptions and make each
   assumption explicit in the step queries."
@@ -199,7 +230,10 @@ Nothing is attached when `ask_user` is off.
   parent gets a sync tool, as `make_delegate_tool` does.
 - The tool description is: "Ask the operator ONE question when a fact you need is missing
   and your tools cannot find it. Good: which three competitors, which file, which account.
-  Bad: asking permission for each step, tone or audience, or anything you can look up."
+  Bad: asking permission for each step, tone or audience, or anything you can look up.
+  Returns the operator's reply, or a note that nobody answered (then proceed on a stated
+  assumption)." For registered specialists it is the only hint that the tool exists; helpers
+  also get the addendum line from 3.2.
 
 ### 4.4 Concurrency
 
@@ -246,6 +280,8 @@ dedupe covers the common case of two helpers asking the same thing.
 | Callback exceeds `ask_timeout` | `reason="timeout"`, no-answer reply. |
 | Question limit reached | `reason="limit"`, no-answer reply. |
 | Same question asked twice | Second gets the first answer, `deduped=True`, no slot used. |
+| Timed built-in read left a reader waiting | Later timed built-in asks get `reason="no_channel"` until it returns (3.3). |
+| `async` callable, sync specialist under `AsyncSupervisor` | That question gets `reason="error"`; the agent proceeds on an assumption (3.1). |
 | Interrupt during a built-in prompt | `KeyboardInterrupt` propagates and the run stops. |
 | Planner returns `ask` on the recovery or second call | Ignored (no ask option is offered there). |
 | Helper at `max_depth` with no `ask_user` attached | Not possible: `build()` attaches it to every helper when the channel exists. |
@@ -289,10 +325,13 @@ dedupe covers the common case of two helpers asking the same thing.
 - **Planner may not ask.** Whether a model returns `ask` for the competitors example is model
   behavior; the scripted tests prove the framework path. The mid-run tool is the second
   net. Confirm with a real model once, manually.
-- **Notebook `input()` in async.** Blocking the loop while the person types is accepted;
-  asks are serialized anyway. Revisit if a user runs long background tasks in the same loop.
+- **Notebook `input()` in async.** Blocking the loop while the person types is accepted for
+  the notebook path only (ipykernel's `input()` is unsafe from a worker thread); asks are
+  serialized anyway. Terminal paths run in a worker thread. Revisit if a user runs long
+  background tasks in the same loop in a notebook.
 - **Abandoned reader threads** after a timeout stay blocked until the process exits (a
-  daemon thread). Bounded by `max_questions`.
+  daemon thread). Bounded by `max_questions`. While one is outstanding, later timed
+  built-in asks get `no_channel` (3.3).
 - **Answers from the operator are trusted** as facts. A chatbot developer who forwards raw
   end-user text into the callback should treat it as untrusted input to the run, like the
   task itself.

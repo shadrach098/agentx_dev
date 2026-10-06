@@ -34,8 +34,9 @@ print(result.spawned)       # the helpers it created, with outcomes
 | **One ceiling** | `SpawnConfig(capabilities=..., tools=..., max_spawns=..., max_depth=...)` bounds every helper. Over-asks are clipped, not fatal. |
 | **Sync and async** | `AsyncSupervisor` takes `spawn_config=` too; spawned steps run in parallel. |
 | **Persistent mode** | On by default with a safe ceiling (web plus read-only files); helpers share the run deadline; recovery plans can spawn a replacement. |
+| **Ask the operator** | `Supervisor(ask_user=True)` lets the planner ask for facts the task leaves out ("which three competitors?") and gives every agent an `ask_user` tool. Works in a notebook's input box and in terminals; `ask_user=my_function` routes questions through your own channel. |
 
-[Guide](docs/guides/sub-agents.md).
+[Guide](docs/guides/sub-agents.md). To let the Supervisor ask you for missing facts, see [Asking the operator](docs/guides/sub-agents.md#asking-the-operator).
 
 ### Upgrade notes
 

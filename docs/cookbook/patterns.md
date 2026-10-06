@@ -1052,6 +1052,8 @@ Choosing steps is a single planning call that happens *before* anything runs, an
 - **Write `when_to_use` as an instruction with a trigger**, not a hedge. "Only when genuinely ambiguous" never fires, because the planner doesn't see the task as ambiguous; "FIRST step whenever the task mentions something unnamed ('our competitors', 'the project')" does.
 - **Tell it how the answer flows:** "every step that needs the answer must list this step in `depends_on`". The answer is then handed to those steps as prior findings.
 - **Say it in the task too** when you can: "If anything is missing, ask the human first." That is the most reliable lever.
+
+Pattern 31 still works when you want a human step the planner must plan. For the built-in way to ask, where the Supervisor itself asks for what the task leaves out, see pattern 32.
 - **Helpers a plan creates can't ask the operator.** If a new helper discovers mid-step that something is missing, it can only report that in its answer, which becomes part of the final answer (that is what happened in a run that created a web helper and ended by asking you for the competitor names). Getting the question asked is the planner's job, up front, through an agent like `human`.
 
 Things to know:
@@ -1060,3 +1062,50 @@ Things to know:
 - **Describe the agent, not its prompt.** If you paste the `system_addendum` into the description you are spending the planner's attention on rules it can't use.
 - **The tuple and `Specialist` forms mix freely** in one `agents` dict.
 - **Check what the planner reads** with `supervisor._build_agent_catalog()` (a private method, handy for debugging). If a description doesn't tell *you* when to use the agent, it won't tell the planner either.
+
+---
+
+## 32. Let the Supervisor ask you for missing facts (`ask_user`) *(3.6)*
+
+"Compare the pricing pages of our three competitors" never names the competitors. The planner is pushed toward the shortest plan, so it plans anyway, or spawns a web helper that guesses. A human-in-the-loop tool built on `CONIN$` or `/dev/tty` can also hang forever in Jupyter: that is the console of the kernel process, not the notebook, so the prompt appears where nobody is looking. With `ask_user` set, the planner can ask before it plans and every agent can ask mid-run, on a channel that fits where your code runs.
+
+In a notebook or a terminal, `ask_user=True` is enough:
+
+```python
+from agentx_dev import Supervisor, SpawnConfig
+
+supervisor = Supervisor(
+    model=model,
+    agents={"writer": ("Writes the final brief from findings it is given", writer)},
+    spawn_config=SpawnConfig(enabled=True, capabilities={"web"}),
+    ask_user=True,        # notebook: the input box under the cell; terminal: input()
+)
+
+result = supervisor.run("Compare the pricing pages of our three competitors")
+print(result.content)
+for q in result.asked:    # source, question, answered, reason, deduped (no answer text)
+    print(q["source"], q["question"], q["answered"], q["reason"])
+```
+
+What happens: the planner replies with a question ("Which three competitors?") instead of a plan, you type `Notion, Obsidian, Coda`, and planning runs again with your answer added to the task. A helper that hits another gap later can call its own `ask_user` tool.
+
+A chatbot or backend has no terminal, so route the question through your own channel with a function. Returning `None` means nobody answered:
+
+```python
+def ask_via_chat(question: str) -> str | None:
+    session.send(question)                        # your UI, websocket or queue
+    return session.wait_for_reply(timeout=120)    # None = no answer
+
+supervisor = Supervisor(model=model, agents=agents, ask_user=ask_via_chat,
+                        max_questions=3, ask_timeout=120)
+```
+
+On an `AsyncSupervisor` the function may be `async def` (with async specialists; see below), or a plain function, which runs in a worker thread.
+
+Things to know:
+
+- **Budget and timeout.** `max_questions` (default 3) is one budget for the whole run, planner and agents together. `ask_timeout` bounds the wait for one answer; it is not enforced on a notebook's input box, where the Interrupt button stops the run.
+- **No answer is not a failure.** Headless, a raised exception, a timeout, an empty reply or a spent budget all tell the agent to proceed on a stated assumption. `ask_user=True` on a server therefore never asks; pass a function there.
+- **When the planner still does not ask,** say it in the task: "If anything is missing, ask the operator first." Agents can still ask mid-run through the `ask_user` tool.
+- **`async def` needs async specialists.** A sync specialist under `AsyncSupervisor` asks through the synchronous path, which cannot await an async function; with sync specialists pass a plain function.
+- See [Asking the operator](../guides/sub-agents.md#asking-the-operator) for the events, the `result.asked` fields and the limits.

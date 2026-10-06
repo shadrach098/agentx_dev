@@ -227,6 +227,17 @@ spawn_config = SpawnConfig(
 `request` is a `SpawnRequest` with `name`, `description`,
 `capabilities`, `rationale`.
 
+## Asking the operator (3.6)
+
+`Supervisor(..., ask_user=True)` (or `ask_user=my_function` for a chatbot or
+backend) lets the planner ask for a fact the task leaves out, and gives
+every specialist and helper an `ask_user` tool for the run. `True` uses a
+built-in asker that works in a notebook's input box and in terminals, and
+returns no answer at once in a headless process; no answer is not a
+failure, the agent proceeds on a stated assumption. `max_questions`
+(default 3) and `ask_timeout` bound it, and `result.asked` records what was
+asked. See [Asking the operator](../guides/sub-agents.md#asking-the-operator).
+
 ## Verbose mode
 
 `verbose=True` on the supervisor prints:

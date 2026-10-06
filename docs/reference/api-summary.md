@@ -123,14 +123,16 @@ CLI: `python -m agentx_dev.Evals run <dir> --config <yaml>`
 
 | Symbol | Kind | Doc |
 |---|---|---|
-| `Supervisor` | class | Sync decompose + dispatch + synthesize (3.3: `depends_on` DAG plans, `skip_when` conditional steps, `max_plan_retries`) (3.5: `persistence=` replans unfinished steps under one shared deadline) |
-| `AsyncSupervisor` | class | Async concurrent dispatch (3.3: completion-driven DAG scheduler, `max_parallel=` cap) |
-| `SupervisorResult` | dataclass | Plan + subtask results + final (3.5: `.outcome`) |
+| `Supervisor` | class | Sync decompose + dispatch + synthesize (3.3: `depends_on` DAG plans, `skip_when` conditional steps, `max_plan_retries`) (3.5: `persistence=` replans unfinished steps under one shared deadline) (3.6: `ask_user=True \| function`, `max_questions=3`, `ask_timeout=` let the planner and every agent ask the operator for missing facts) |
+| `AsyncSupervisor` | class | Async concurrent dispatch (3.3: completion-driven DAG scheduler, `max_parallel=` cap) (3.6: same `ask_user=`, `max_questions=`, `ask_timeout=`; `ask_user` may be an `async` function) |
+| `SupervisorResult` | dataclass | Plan + subtask results + final (3.5: `.outcome`) (3.6: `.asked`, one dict per question put to the operator: `source`, `question`, `answered`, `reason`, `deduped`; no answer text) |
 | `SubtaskResult` | dataclass | One specialist's contribution. *(3.2)* `.output` carries the validated Pydantic instance when the runner declared an `output_schema` |
 | `SpawnConfig` | dataclass | Sub-agent settings: `enabled`, `capabilities` / `tools` (the ceiling), `allowed_paths`, `max_spawns`, `max_depth`, `approver` (3.6: ceiling mode; `AsyncSupervisor` and `AgentRunner(delegation=)` accept it) |
 | `AgentSpec` *(3.6)* | dataclass | One sub-agent to build: `name`, `instructions`, `tools`, `origin` |
 | `SpawnRequest` | dataclass | One planner-issued spawn ask |
 | `Specialist` *(3.3)* | dataclass | Registry entry with planner metadata: `depends_on` hints, `output_schema` display, `when_to_use` |
+| `ask_human_tool` *(3.6)* | function | `ask_human_tool(prompt_prefix="[agent]", ask_timeout=None)` returns a standalone `ask_human` tool (`question`, `context`) for any `AgentRunner`, built on the notebook-aware built-in asker |
+| Supervisor stream events *(3.6)* | events | `{"type": "question", "source", "question", "context"}` and `{"type": "answer", "source", "answered", "reason"}` when `ask_user` is set. See [Sub-agents](../guides/sub-agents.md#asking-the-operator) |
 
 ## Session persistence
 

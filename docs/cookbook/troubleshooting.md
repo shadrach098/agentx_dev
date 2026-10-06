@@ -325,6 +325,37 @@ on the previous one *is* a chain — the scheduler can only run what the
 edges permit. Register specialists with no `depends_on` if they're
 genuinely independent.
 
+**My run hangs forever on a question in Jupyter *(3.6)***
+A tool that asks through `CONIN$` (Windows) or `/dev/tty` (POSIX), like the
+old `ask_human_tool` in `examples/mcp_github_triage_demo.py`, reads the
+console of the kernel process, not the notebook. The prompt shows up in a
+window nobody watches and the read blocks. Use `ask_user=True` on the
+Supervisor, or `agentx_dev.ask_human_tool()` on a standalone runner: both
+use the notebook's input box. The Interrupt button stops a run that is
+waiting on it.
+
+**`ask_user=True` on a server never asks *(3.6)***
+Headless means no answer, by design: with no notebook, no terminal and no
+controlling terminal there is nobody to ask, so each ask comes back
+`no_channel` (see `result.asked`) and the agent proceeds on an assumption.
+Pass a function instead (`ask_user=my_function`) that routes the question
+through your own channel.
+
+**An `async def` `ask_user` function gets reason `error` *(3.6)***
+A sync specialist under `AsyncSupervisor` asks through the synchronous
+path, which cannot await an async function, so that question is recorded
+with reason `error` and the agent proceeds on an assumption. The planner
+and spawned helpers on an `AsyncSupervisor` are async and can use it. Use
+async specialists (`AsyncAgentRunner`), or pass a plain function.
+
+**After a timeout, later asks get no answer *(3.6)***
+When a built-in read in a terminal or on the controlling terminal times out
+(`ask_timeout`, or the 300 s default on the controlling terminal), its
+reader thread keeps waiting for input. Until that read returns, later timed
+built-in asks in the same process are refused with reason `no_channel`
+rather than started behind it. Answer the pending prompt, or raise
+`ask_timeout` so it does not expire while someone is still there.
+
 ## Structured output
 
 **`completion.output` is `None`**

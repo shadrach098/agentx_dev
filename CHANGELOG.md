@@ -28,6 +28,12 @@ Sub-agents: the Supervisor can create its own helpers. Opt-in, with the behavior
   `AgentSpec`, `ToolRegistry.unregister`, `AgentRunner.add_tool` /
   `remove_tool`.
 - New guide: Sub-agents.
+- **Ask the operator**: `Supervisor(ask_user=True | function)` lets the planner ask for facts the task
+  leaves out and gives every agent an `ask_user` tool. `True` uses a built-in asker that works in
+  notebooks (the input box), terminals and IDE consoles and never blocks a headless process; a
+  function routes questions through your own channel (chatbot, backend). `max_questions`,
+  `ask_timeout`, `SupervisorResult.asked`, `question`/`answer` events,
+  `agentx_dev.ask_human_tool()`; waiting on the operator pauses the persistent deadline.
 
 ### Changed
 

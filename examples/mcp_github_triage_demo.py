@@ -29,13 +29,9 @@ HandoffCoordinator is one more step.
 
 import asyncio
 import os
-import sys
 
-from pydantic import BaseModel, Field
-
-from agentx_dev import AsyncAgentRunner, AgentType
+from agentx_dev import AsyncAgentRunner, AgentType, ask_human_tool
 from agentx_dev.MCP import MCPClient
-from agentx_dev.Tools import StructuredTool
 
 
 # --- provider fallback (same pattern as the other demos) --------------
@@ -48,65 +44,6 @@ def build_llm():
         from agentx_dev import GPT
         return GPT(model="gpt-4o-mini", temperature=0)
     raise RuntimeError("Set ANTHROPIC_API_KEY or OPENAI_API_KEY before running.")
-
-
-# --- human-in-the-loop tool (opens the controlling terminal directly) ---
-
-class _AskHumanArgs(BaseModel):
-    question: str = Field(..., description="Question for the operator. Self-contained.")
-    context: str = Field("", description="One-line status shown above the question.")
-
-
-def ask_human_tool(*, prompt_prefix: str = "[triager]") -> StructuredTool:
-    """Approver prompt that talks to the controlling terminal via /dev/tty
-    (POSIX) or CONIN$/CONOUT$ (Windows) instead of stdin/stdout. Works
-    when the script was launched from an IDE run panel or through a
-    subprocess wrapper. Returns a clear ERROR string only when there is
-    genuinely no terminal (cron / Docker without -it)."""
-
-    def _open_tty():
-        try:
-            if sys.platform == "win32":
-                return open("CONIN$", "r"), open("CONOUT$", "w")
-            return open("/dev/tty", "r"), open("/dev/tty", "w")
-        except OSError:
-            return None, None
-
-    def _ask(question: str, context: str = "") -> str:
-        tty_in, tty_out = _open_tty()
-        if tty_in is None:
-            return (
-                "ERROR: no controlling terminal (headless run). Do NOT "
-                "apply any labels; return the plan as your final answer."
-            )
-        banner = f"\n{prompt_prefix} \U0001F64B needs approval"
-        if context:
-            banner += f"\n  context: {context}"
-        banner += f"\n  question: {question}\n  > "
-        try:
-            tty_out.write(banner)
-            tty_out.flush()
-            reply = tty_in.readline().strip()
-        except (EOFError, KeyboardInterrupt):
-            return "ERROR: operator declined; do NOT write any labels."
-        finally:
-            try: tty_in.close()
-            except Exception: pass
-            try: tty_out.close()
-            except Exception: pass
-        return f"[operator] {reply}" if reply else "(operator pressed Enter - treat as REJECT)"
-
-    return StructuredTool(
-        func=_ask, args_schema=_AskHumanArgs, name="ask_human",
-        description=(
-            "Ask the operator to approve the proposed label plan. Call ONCE "
-            "after you've categorized every issue and have a full plan ready. "
-            "If the operator types anything starting with 'y' or 'yes', "
-            "APPLY the labels by calling the MCP add_issue_labels tool for "
-            "each issue. Any other reply -- abort and return the plan as your "
-            "final answer without writing anything."
-        ),
-    )
 
 
 # --- config -----------------------------------------------------------
@@ -154,7 +91,8 @@ WORKFLOW (in order -- do not skip steps):
      `add_issue_labels` tool with owner, repo, issue_number, and
      labels=[type, priority]. Then emit Final_Answer summarizing what
      was written.
-   - Anything else -> emit Final_Answer with the plan and the note
+   - Anything else (including "[no operator answer]" when nobody could be
+     asked) -> emit Final_Answer with the plan and the note
      "Not applied -- operator rejected."
 
 DO NOT:
@@ -225,7 +163,7 @@ async def main():
         runner = AsyncAgentRunner(
             model=llm,
             agent=AgentType.ReAct,
-            tools=[*picked, ask_human_tool()],
+            tools=[*picked, ask_human_tool(prompt_prefix="[triager]")],
             use_function_calling=True,
             verbose=True,
             max_iterations=LIMIT * 3 + 5,   # rough upper bound

@@ -45,6 +45,8 @@ for sub in result.spawned:
 
 `AsyncSupervisor` takes the same `spawn_config=`. Spawned steps run in the same parallel batches as every other step.
 
+The task above names no competitors. Add `ask_user=True` and the Supervisor asks you for them (see [Asking the operator](#asking-the-operator)).
+
 The planner chooses between your registered agents and new helpers using only each agent's name and description, so describe what each one does and what it cannot do (see [pattern 31 in the cookbook](../cookbook/patterns.md) for `Specialist`, `when_to_use` and a human-in-the-loop example).
 
 A runnable version of this is in the repo: `python examples/subagents_demo.py` (it creates `./workspace/competitors.md` on the first run, accepts your own task as an argument, and takes `--persistent` to add recovery rounds and a shared deadline).
@@ -135,6 +137,53 @@ With `persistence=Persistence(...)` on a Supervisor and no `spawn_config`, spawn
 
 See [Long-running agents](long-running-agents.md).
 
+## Asking the operator
+
+"Compare the pricing pages of our three competitors" never names the competitors. With `ask_user` set, the Supervisor can ask you instead of guessing.
+
+```python
+supervisor = Supervisor(model=model, agents={"explorer": ("Reads files in ./workspace", explorer)},
+                        spawn_config=SpawnConfig(enabled=True, capabilities={"web"}),
+                        ask_user=True)
+```
+
+- **The planner asks first.** When the task leaves out a fact it cannot assume, it replies with questions instead of a plan. The framework asks them (up to `max_questions`, default 3), adds your answers to the task, and plans again. There is no extra model call when it plans straight away.
+- **Every agent can ask mid-run.** Specialists, planner-defined helpers and `delegate` helpers get an `ask_user(question, context="")` tool for the run (removed afterwards, so your runners are untouched). The answer goes to the agent as `[operator] ...` and to every step dispatched later. Helpers also get a line in their instructions telling them to ask rather than guess; your registered specialists learn about the tool from its description.
+- **One question budget per run**, shared by all of them. An identical question is asked once; a repeat gets the first answer and uses no slot. A question counts against the budget once it is put to you, whether or not you answer it.
+- **No answer is not a failure.** If nobody can answer (headless, your function raised, it timed out, you sent an empty reply, the budget is spent) the agent is told to proceed on a stated assumption and say what it assumed.
+
+`ask_user` takes:
+
+| Value | Meaning |
+|---|---|
+| `None` / `False` (default) | Off. Nothing changes. Use this for a chatbot or backend unless you wire a channel. |
+| `True` | The built-in asker. In a notebook (Jupyter, VS Code, Colab) it shows the input box under the cell; in a terminal it uses `input()`; when stdin is not a terminal it opens the controlling terminal (`CONIN$` / `/dev/tty`, 300 s default timeout); headless it returns no answer at once. |
+| a function `(question) -> str \| None` | Your own channel: a chat UI, a websocket, a queue. `AsyncSupervisor` also accepts an `async` function; a plain one runs in a worker thread. |
+
+```python
+def ask_via_chat(question: str) -> str | None:
+    session.send(question)                       # your channel
+    return session.wait_for_reply(timeout=120)   # None = no answer
+
+Supervisor(model=model, agents=agents, ask_user=ask_via_chat, max_questions=3, ask_timeout=120)
+```
+
+Your function receives the question as a string. When the asker (the planner or an agent) gave a one-line context, it is appended as `(context: ...)` after the question. Returning `None`, an empty string or whitespace means no answer. A reply is cut at 2,000 characters.
+
+`ask_timeout` bounds the wait for one answer (a function that does not return in time counts as no answer). It is not enforced on the notebook input box, where a person is looking at the box and the Interrupt button stops the run. In persistent mode, time spent waiting on you does not count against `max_minutes`.
+
+What you can see: `question` and `answer` stream events (after the answer; your function is the live channel for a UI), `[ask]` lines with `verbose=True`, and `result.asked` (source, question, answered, reason, deduped; the answer text is not kept). Treat answers as facts: if your function forwards raw end-user text, treat it as untrusted input to the run, like the task itself.
+
+Things to know:
+
+- **Interrupt stops the run.** `KeyboardInterrupt` (the notebook Interrupt button, Ctrl-C) is not treated as "no answer"; the operator pressed stop.
+- **`AsyncSupervisor`: terminal asks do not block the loop.** The built-in asker reads in a worker thread, so other tasks keep running while you type. In a notebook it calls `input()` on the event-loop thread (ipykernel's `input()` is not safe from a worker thread), so other tasks pause while you type. Asks are one at a time either way.
+- **An `async def` function needs async specialists.** The planner and spawned helpers on an `AsyncSupervisor` can await it. A sync specialist (a plain `AgentRunner`) asks through the synchronous path, which cannot await an async function: its question gets reason `error` and the agent proceeds on an assumption. With sync specialists, pass a plain function.
+- **A reader can outlive a timeout.** If a built-in read on a terminal or the controlling terminal times out, the reader thread keeps waiting for a keystroke. Later timed built-in asks in that process get no answer (`no_channel`) until it returns.
+- **Your own `ask_user` tool wins.** A runner that already has a tool named `ask_user` keeps it and is not given the framework's.
+
+For a standalone `AgentRunner` that needs a human step, give it `agentx_dev.ask_human_tool()`: the same asker as a tool called `ask_human` (arguments `question` and optional `context`), so it works in a notebook's input box as well as a terminal. `ask_human_tool(prompt_prefix="[agent]", ask_timeout=None)`.
+
 ## Watching it
 
 `supervisor.stream(task)` includes:
@@ -143,8 +192,10 @@ See [Long-running agents](long-running-agents.md).
 |---|---|
 | `{"type": "spawn", "name", "origin": "plan"\|"delegate", "tools", "dropped", "reused", "refused", ...}` | A helper was built, reused, or refused. |
 | `{"type": "delegate_result", "name", "outcome", "chars"}` | A delegation returned. |
+| `{"type": "question", "source": "planner"\|<agent name>, "question", "context"}` | A question was put to the operator (`ask_user` set). |
+| `{"type": "answer", "source", "answered", "reason": None\|"no_channel"\|"declined"\|"timeout"\|"limit"\|"error"}` | The reply, or why there was none. The answer text is not in the event. |
 
-With `verbose=True` the same moments print as `[spawn]` lines.
+With `verbose=True` the same moments print as `[spawn]` and `[ask]` lines.
 
 ## Things to know
 
