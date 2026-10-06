@@ -32,7 +32,7 @@ from agentx_dev.AsyncTools import AsyncStructuredTool
 from agentx_dev.Runner.AgentRun import AgentRunner
 from agentx_dev.Runner.AsyncAgentRun import AsyncAgentRunner
 from agentx_dev.Runner.Persistence import Persistence, RunBudget, accepts_budget
-from agentx_dev.Operator import ASK_ADDENDUM_LINE, make_ask_tool
+from agentx_dev.Operator import ASK_ADDENDUM_LINE, ASK_TOOL_NAME, make_ask_tool
 from agentx_dev.Tools import StructuredTool, logger
 
 
@@ -574,10 +574,11 @@ class SpawnPolicy:
                 runner.add_tool(make_delegate_tool(runner, self, depth + 1))
             except Exception as e:                   # e.g. a pool tool already named "delegate"
                 raise SpawnRefused(f"could not build the agent: {e}") from e
-        if self.operator is not None:
+        if self.operator is not None and not runner.registry.has(ASK_TOOL_NAME):
+            # A developer's own tool named "ask_user" wins on this runner (spec 4.3).
             try:
                 runner.add_tool(make_ask_tool(runner, self.operator, spec.name))
-            except Exception as e:                   # e.g. a pool tool already named "ask_user"
+            except Exception as e:
                 raise SpawnRefused(f"could not build the agent: {e}") from e
         granted = presets + [t.name for t in pool_tools]
         return Built(spec=spec, runner=runner, description=self._describe(spec, granted, dropped),

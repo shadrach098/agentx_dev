@@ -130,14 +130,18 @@ class TestHelpers:
         out = asyncio.run(built.runner.registry.adispatch("ask_user", {"question": "Which?"}))
         assert out == "[operator] Coda"
 
-    def test_a_pool_tool_named_ask_user_refuses_the_helper_cleanly(self):
-        from agentx_dev.SubAgents import SpawnRefused
-        clash = StandardTool(func=lambda question: "pool", name="ask_user", description="pool tool")
-        ch = OperatorChannel.create(lambda q: "x")
+    def test_a_pool_tool_named_ask_user_wins_on_the_helper(self):
+        clash = StandardTool(func=lambda question: "pool answer", name="ask_user", description="pool tool")
+        ch = OperatorChannel.create(lambda q: "framework answer")
         cfg = SpawnConfig(enabled=True, tools=[clash], capabilities={"web"})
         policy = SpawnPolicy(cfg, router(), operator=ch)
-        with pytest.raises(SpawnRefused):
-            policy.build(AgentSpec(name="h", instructions="x", tools=("ask_user",), origin="plan"))
+        built = policy.build(AgentSpec(name="h", instructions="x", tools=("ask_user",), origin="plan"))
+        reg = built.runner.registry
+        assert reg.has("ask_user")
+        assert reg.dispatch("ask_user", {"question": "q"}) == "pool answer"     # the developer's tool
+        assert [t.name for t in built.runner.tools].count("ask_user") == 1
+        assert ch.asked == 0                                                    # the framework tool was not added
+        assert op.ASK_ADDENDUM_LINE.strip() in built.runner.system_addendum     # addendum behaviour unchanged
 
 
 class TestAskHumanTool:
