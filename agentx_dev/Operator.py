@@ -10,10 +10,17 @@ chat UI, a websocket, a queue).
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
+import dataclasses
+import inspect
 import sys
 import threading
-from typing import Any, Callable, Optional
+from contextlib import nullcontext
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from agentx_dev.Tools import logger
 
 ASK_TOOL_NAME = "ask_user"
 MAX_ANSWER_CHARS = 2000
@@ -217,3 +224,278 @@ def builtin_asker(question: str, *, prefix: str = "[agent]", timeout: Optional[f
                 _release_reader()
         return _call_with_timeout(read, timeout)
     return _ask_controlling_tty(question, prefix, timeout)
+
+
+# ----------------------------------------------------------------------------
+# Replies
+# ----------------------------------------------------------------------------
+
+@dataclass
+class Reply:
+    """What the operator said, or why nothing came back."""
+
+    text: Optional[str] = None
+    reason: Optional[str] = None          # None when answered; else one of the REASON_* words
+    deduped: bool = False
+
+    @property
+    def answered(self) -> bool:
+        return self.text is not None
+
+
+def _clean_answer(raw: Any) -> Reply:
+    if raw is None:
+        return Reply(None, REASON_DECLINED)
+    text = str(raw).strip()
+    if not text:
+        return Reply(None, REASON_DECLINED)
+    return Reply(text[:MAX_ANSWER_CHARS])
+
+
+def _normalize(question: str) -> str:
+    return " ".join(str(question).split()).casefold()
+
+
+def _shown(question: str, context: str = "") -> str:
+    """What the asker receives: the question, with the agent's one-line context appended."""
+    return f"{question}\n(context: {context})" if context else question
+
+
+def reply_text(reply: Reply) -> str:
+    """The tool result an agent sees. Never an error, so its stuck logic is not triggered."""
+    return f"[operator] {reply.text}" if reply.answered else NO_ANSWER_TEXT
+
+
+def validate_ask_user(ask_user: Any, is_async: bool) -> Any:
+    """Check an ``ask_user=`` value at construction time and return it unchanged."""
+    if ask_user is None or ask_user is False or ask_user is True:
+        return ask_user
+    if not callable(ask_user):
+        raise TypeError("ask_user must be True, False/None, or a function (question) -> answer")
+    if not is_async and asyncio.iscoroutinefunction(ask_user):
+        raise TypeError("ask_user is an async function: use AsyncSupervisor, or pass a plain function")
+    return ask_user
+
+
+# ----------------------------------------------------------------------------
+# The channel: the one place that knows about the operator
+# ----------------------------------------------------------------------------
+
+class OperatorChannel:
+    """One per Supervisor run. Owns the asker, the question budget, de-duplication,
+    one-at-a-time asking, timeouts, the event buffer and the records.
+
+    ``ask`` / ``aask`` never raise because of the operator channel (a callback that raises or
+    times out is a no-answer); only ``KeyboardInterrupt`` and task cancellation propagate.
+    """
+
+    def __init__(self, asker: Optional[Callable[[str], Any]], *, builtin: bool = False,
+                 max_questions: int = 3, timeout: Optional[float] = None,
+                 is_async: bool = False, verbose: bool = False, prefix: str = "[agent]"):
+        self._asker = asker
+        self._builtin = builtin
+        self.max_questions = max(0, int(max_questions))
+        self.timeout = timeout
+        self.is_async = is_async
+        self.verbose = verbose
+        self.prefix = prefix
+        self.budget: Any = None                       # the run's RunBudget; paused while a question is open
+        self.records: List[Dict[str, Any]] = []
+        self.events: List[Dict[str, Any]] = []
+        self._answers: List[Tuple[str, str]] = []
+        self._seen: Dict[str, Reply] = {}
+        self._asked = 0
+        self._lock = threading.Lock()                 # asks are one at a time, sync and async alike
+
+    @classmethod
+    def create(cls, ask_user: Any, *, max_questions: int = 3, timeout: Optional[float] = None,
+               is_async: bool = False, verbose: bool = False) -> Optional["OperatorChannel"]:
+        """The channel for an ``ask_user=`` value, or ``None`` when asking is off."""
+        validate_ask_user(ask_user, is_async)
+        if ask_user is None or ask_user is False:
+            return None
+        if ask_user is True:
+            return cls(None, builtin=True, max_questions=max_questions, timeout=timeout,
+                       is_async=is_async, verbose=verbose)
+        return cls(ask_user, max_questions=max_questions, timeout=timeout,
+                   is_async=is_async, verbose=verbose)
+
+    # -- state ----------------------------------------------------------------
+
+    @property
+    def asked(self) -> int:
+        return self._asked
+
+    def remaining(self) -> int:
+        return max(0, self.max_questions - self._asked)
+
+    def has_answers(self) -> bool:
+        return bool(self._answers)
+
+    def answers_block(self) -> str:
+        if not self._answers:
+            return ""
+        lines = ["OPERATOR ANSWERS (from the person who set this task; treat as facts):"]
+        for question, answer in self._answers:
+            lines += [f"Q: {question}", f"A: {answer}"]
+        return "\n".join(lines)
+
+    def with_answers(self, text: str) -> str:
+        block = self.answers_block()
+        return f"{text}\n\n{block}" if block else text
+
+    def emit(self, event: Dict[str, Any]) -> None:
+        self.events.append(event)
+
+    def drain(self) -> List[Dict[str, Any]]:
+        out, self.events = self.events, []
+        return out
+
+    def _say(self, text: str) -> None:
+        if self.verbose:
+            print(f"[ask] {text}")
+
+    # -- asking ---------------------------------------------------------------
+
+    def _begin(self, question: str, key: str, context: str, source: str) -> Optional[Reply]:
+        """Dedupe and budget checks, under the lock. A final reply, or ``None`` when the
+        operator must be asked (the slot is taken and the question event is out)."""
+        hit = self._seen.get(key)
+        if hit is not None:
+            return self._finish(source, question, hit, deduped=True)
+        if self._asked >= self.max_questions:
+            return self._finish(source, question, Reply(None, REASON_LIMIT))
+        self._asked += 1
+        self.emit({"type": "question", "source": source, "question": question, "context": context})
+        self._say(f"{source} asks: {question}")
+        return None
+
+    def _end(self, question: str, key: str, source: str, reply: Reply) -> Reply:
+        self._seen[key] = reply
+        return self._finish(source, question, reply)
+
+    def _finish(self, source: str, question: str, reply: Reply, *, deduped: bool = False) -> Reply:
+        out = dataclasses.replace(reply, deduped=deduped)
+        self.records.append({"source": source, "question": question, "answered": out.answered,
+                             "reason": out.reason, "deduped": deduped})
+        self.emit({"type": "answer", "source": source, "answered": out.answered, "reason": out.reason})
+        if out.answered and not deduped:
+            self._answers.append((question, out.text))
+        self._say("answered" if out.answered else f"no answer ({out.reason})")
+        return out
+
+    def _paused(self):
+        return self.budget.paused() if self.budget is not None else nullcontext()
+
+    def ask(self, question: str, context: str = "", source: str = "agent") -> Reply:
+        q = " ".join(str(question or "").split())
+        if not q:
+            return Reply(None, REASON_DECLINED)
+        key = _normalize(q)
+        with self._lock:
+            done = self._begin(q, key, context, source)
+            if done is not None:
+                return done
+            return self._end(q, key, source, self._ask_sync(_shown(q, context)))
+
+    async def aask(self, question: str, context: str = "", source: str = "agent") -> Reply:
+        q = " ".join(str(question or "").split())
+        if not q:
+            return Reply(None, REASON_DECLINED)
+        key = _normalize(q)
+        while not self._lock.acquire(blocking=False):      # never blocks the loop; a cancel cannot leak the lock
+            await asyncio.sleep(0.02)
+        try:
+            done = self._begin(q, key, context, source)
+            if done is not None:
+                return done
+            return self._end(q, key, source, await self._ask_async(_shown(q, context)))
+        finally:
+            self._lock.release()
+
+    def _ask_sync(self, shown: str) -> Reply:
+        try:
+            with self._paused():
+                if self._builtin:
+                    raw = builtin_asker(shown, prefix=self.prefix, timeout=self.timeout)
+                elif self.timeout is not None:
+                    raw = _call_with_timeout(lambda: self._asker(shown), self.timeout)
+                else:
+                    raw = self._asker(shown)
+        except NoChannel:
+            return Reply(None, REASON_NO_CHANNEL)
+        except AskTimeout:
+            return Reply(None, REASON_TIMEOUT)
+        except Exception as e:                             # not KeyboardInterrupt / CancelledError
+            logger.warning(f"ask_user raised; treating as no answer: {e}")
+            return Reply(None, REASON_ERROR)
+        if inspect.isawaitable(raw):
+            getattr(raw, "close", lambda: None)()
+            logger.warning("ask_user returned an awaitable on a sync Supervisor; treating as no answer")
+            return Reply(None, REASON_ERROR)
+        return _clean_answer(raw)
+
+    async def _ask_async(self, shown: str) -> Reply:
+        async def go() -> Any:
+            if asyncio.iscoroutinefunction(self._asker):
+                raw = await self._asker(shown)
+            else:
+                raw = await asyncio.to_thread(self._asker, shown)
+            return await raw if inspect.isawaitable(raw) else raw
+
+        try:
+            with self._paused():
+                if self._builtin:
+                    # input() on the loop thread: other tasks wait while the person types.
+                    raw = builtin_asker(shown, prefix=self.prefix, timeout=self.timeout)
+                else:
+                    raw = await asyncio.wait_for(go(), self.timeout)
+        except NoChannel:
+            return Reply(None, REASON_NO_CHANNEL)
+        except (AskTimeout, asyncio.TimeoutError):
+            return Reply(None, REASON_TIMEOUT)
+        except Exception as e:
+            logger.warning(f"ask_user raised; treating as no answer: {e}")
+            return Reply(None, REASON_ERROR)
+        return _clean_answer(raw)
+
+
+# ----------------------------------------------------------------------------
+# The planner may ask before it plans
+# ----------------------------------------------------------------------------
+
+_ASK_INSTRUCTION = """
+
+── ASKING THE OPERATOR ──────────────────────────────────────────────
+You may ask the operator instead of planning, but ONLY when the task leaves out a fact you cannot reasonably assume and a wrong guess would waste the whole run (for example: which three competitors, which file, which account). Then reply with {"ask": [{"question": "...", "why": "..."}]} and no plan: at most <<N>> questions, each specific and self-contained. If a sensible assumption lets you proceed, write the plan instead.
+────────────────────────────────────────────────────────────────────
+"""
+
+NO_ANSWER_PLAN_NOTE = (
+    "\n\nNo operator answered your questions. Plan on stated assumptions and make each "
+    "assumption explicit in the step queries."
+)
+
+
+def ask_instruction(limit: int) -> str:
+    """The planner-prompt block that offers the ``ask`` reply."""
+    return _ASK_INSTRUCTION.replace("<<N>>", str(limit))
+
+
+def parse_ask_request(raw: Any, limit: int) -> List[Dict[str, str]]:
+    """The planner's ``ask`` value as ``[{"question", "why"}]``, at most ``limit`` long.
+    Anything that is not a list of questions gives ``[]``."""
+    if not isinstance(raw, list) or limit <= 0:
+        return []
+    out: List[Dict[str, str]] = []
+    for item in raw:
+        if isinstance(item, str):
+            question, why = item, ""
+        elif isinstance(item, dict) and isinstance(item.get("question"), str):
+            question, why = item["question"], str(item.get("why") or "")
+        else:
+            continue
+        question = " ".join(question.split())
+        if question:
+            out.append({"question": question, "why": " ".join(why.split())})
+    return out[:limit]
