@@ -70,6 +70,7 @@ from .Supervisor import (
     SupervisorResult, SubtaskResult,
 )
 from .SubAgents import AgentSpec
+from .Operator import ask_human_tool
 
 # MCP is an optional dependency — only re-export the names if the module imports cleanly.
 try:
@@ -230,6 +231,7 @@ __all__ = [
     "SpawnRequest",
     "SupervisorResult",
     "SubtaskResult",
+    "ask_human_tool",
 ]
 
 if _MCP_AVAILABLE:

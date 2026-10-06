@@ -16,11 +16,14 @@ import dataclasses
 import inspect
 import sys
 import threading
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from agentx_dev.Tools import logger
+from pydantic import BaseModel, Field
+
+from agentx_dev.AsyncTools import AsyncStructuredTool
+from agentx_dev.Tools import StructuredTool, logger
 
 ASK_TOOL_NAME = "ask_user"
 MAX_ANSWER_CHARS = 2000
@@ -506,3 +509,104 @@ def parse_ask_request(raw: Any, limit: int) -> List[Dict[str, str]]:
         if question:
             out.append({"question": question, "why": " ".join(why.split())})
     return out[:limit]
+
+
+# ----------------------------------------------------------------------------
+# The tool agents use to ask
+# ----------------------------------------------------------------------------
+
+class AskUserArgs(BaseModel):
+    question: str = Field(
+        ...,
+        description=("The question to ask the operator. Be specific and self-contained: they "
+                     "cannot see your conversation. Ask ONE thing at a time."),
+    )
+    context: str = Field(
+        "",
+        description=("Optional one line of context shown with the question so the operator "
+                     "knows what stage of the task you are at."),
+    )
+
+
+ASK_USER_DESCRIPTION = (
+    "Ask the operator ONE question when a fact you need is missing and your tools cannot find "
+    "it. Good: which three competitors, which file, which account. Bad: asking permission for "
+    "each step, tone or audience, or anything you can look up. Returns the operator's reply, or "
+    "a note that nobody answered (then proceed on a stated assumption)."
+)
+
+ASK_ADDENDUM_LINE = (
+    "\n\n- If a fact you need is missing and your tools cannot find it, call ask_user with one "
+    "specific question. Do not guess."
+)
+
+
+def _is_async_runner(runner: Any) -> bool:
+    return asyncio.iscoroutinefunction(getattr(runner, "Initialize", None))
+
+
+def make_ask_tool(parent: Any, channel: OperatorChannel, source: str) -> Any:
+    """The ``ask_user`` tool for ``parent``. An async parent gets an async tool that awaits the
+    channel; a sync parent a sync tool. ``source`` (the agent's name) labels events and records."""
+    if _is_async_runner(parent):
+        async def ask_user(question: str, context: str = "") -> str:
+            return reply_text(await channel.aask(question, context, source))
+
+        tool = AsyncStructuredTool(func=ask_user, args_schema=AskUserArgs,
+                                   name=ASK_TOOL_NAME, description=ASK_USER_DESCRIPTION)
+    else:
+        def ask_user(question: str, context: str = "") -> str:
+            return reply_text(channel.ask(question, context, source))
+
+        tool = StructuredTool(func=ask_user, args_schema=AskUserArgs,
+                              name=ASK_TOOL_NAME, description=ASK_USER_DESCRIPTION)
+    tool.cacheable = False            # asking has side effects: never answer it from the cache
+    return tool
+
+
+@contextmanager
+def attach_ask_user(agents: Dict[str, Any], channel: Optional[OperatorChannel]):
+    """Give every runner in ``agents`` (``name -> runner``) the ``ask_user`` tool for the block.
+
+    Nothing is attached when ``channel`` is ``None``. Objects that cannot take a tool (no
+    ``add_tool``), or that already have a tool named ``ask_user`` (the developer's wins), are
+    left alone. The tool is removed on exit, even if the block raises, so the developer's
+    runners are exactly as they were."""
+    attached: List[Any] = []
+    if channel is not None:
+        for name, r in agents.items():
+            if not callable(getattr(r, "add_tool", None)) or not hasattr(r, "registry"):
+                continue
+            if r.registry.has(ASK_TOOL_NAME):
+                continue
+            r.add_tool(make_ask_tool(r, channel, name))
+            attached.append(r)
+    try:
+        yield
+    finally:
+        for r in attached:
+            r.remove_tool(ASK_TOOL_NAME)
+
+
+def ask_human_tool(*, prompt_prefix: str = "[agent]", ask_timeout: Optional[float] = None) -> Any:
+    """A standalone ``ask_human`` tool for any ``AgentRunner``, built on the built-in asker:
+    it prompts in the notebook's input box or the terminal, and never blocks in a headless
+    process. Returns the operator's reply, or a note that nobody answered."""
+
+    def _ask(question: str, context: str = "") -> str:
+        try:
+            raw = builtin_asker(_shown(question, context), prefix=prompt_prefix, timeout=ask_timeout)
+        except (NoChannel, AskTimeout):
+            return NO_ANSWER_TEXT
+        return reply_text(_clean_answer(raw))
+
+    return StructuredTool(
+        func=_ask, args_schema=AskUserArgs, name="ask_human",
+        description=(
+            "Ask the operator ONE clarifying question when the task is genuinely ambiguous and a "
+            "guess would waste a whole run. Good uses: acronym disambiguation, which file or "
+            "account is meant. BAD uses: tone or audience, permission for every step, or asking "
+            "the operator to do your research. Returns the operator's typed reply, or a note "
+            "that nobody answered."
+        ),
+    )

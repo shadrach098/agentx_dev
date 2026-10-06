@@ -32,6 +32,7 @@ from agentx_dev.AsyncTools import AsyncStructuredTool
 from agentx_dev.Runner.AgentRun import AgentRunner
 from agentx_dev.Runner.AsyncAgentRun import AsyncAgentRunner
 from agentx_dev.Runner.Persistence import Persistence, RunBudget, accepts_budget
+from agentx_dev.Operator import ASK_ADDENDUM_LINE, make_ask_tool
 from agentx_dev.Tools import StructuredTool, logger
 
 
@@ -368,6 +369,7 @@ class SpawnPolicy:
         verbose: bool = False,
         run: Optional[SpawnRun] = None,
         budget: Optional[RunBudget] = None,
+        operator: Any = None,
     ):
         self.config = config
         self.model = model
@@ -380,6 +382,9 @@ class SpawnPolicy:
         # ``delegate`` falls back to it when the calling runner's own _active_budget is gone,
         # e.g. a parallel step on the same specialist finished first and cleared it.
         self.budget = budget
+        # The run's OperatorChannel (set by the Supervisor). When present, every helper this
+        # policy builds gets the ask_user tool.
+        self.operator = operator
 
     @property
     def enabled(self) -> bool:
@@ -501,7 +506,9 @@ class SpawnPolicy:
             permissions=perms,
             max_iterations=15,
             verbose=False,
-            system_addendum=_SPAWNED_SPECIALIST_ADDENDUM + "\n\nYour role:\n" + spec.instructions,
+            system_addendum=(_SPAWNED_SPECIALIST_ADDENDUM
+                             + (ASK_ADDENDUM_LINE if self.operator is not None else "")
+                             + "\n\nYour role:\n" + spec.instructions),
         )
 
     def build(self, spec: AgentSpec, depth: int = 1, *, is_async: Optional[bool] = None) -> Built:
@@ -566,6 +573,11 @@ class SpawnPolicy:
             try:
                 runner.add_tool(make_delegate_tool(runner, self, depth + 1))
             except Exception as e:                   # e.g. a pool tool already named "delegate"
+                raise SpawnRefused(f"could not build the agent: {e}") from e
+        if self.operator is not None:
+            try:
+                runner.add_tool(make_ask_tool(runner, self.operator, spec.name))
+            except Exception as e:                   # e.g. a pool tool already named "ask_user"
                 raise SpawnRefused(f"could not build the agent: {e}") from e
         granted = presets + [t.name for t in pool_tools]
         return Built(spec=spec, runner=runner, description=self._describe(spec, granted, dropped),
