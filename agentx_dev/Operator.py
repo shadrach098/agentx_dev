@@ -119,6 +119,33 @@ def _call_with_timeout(fn: Callable[[], Any], timeout: float) -> Any:
     return box.get("value")
 
 
+# One blocking read at a time. A reader abandoned by a timeout is still waiting on the
+# terminal and would take the operator's next keystrokes, so while one is outstanding a
+# later ask is refused (NoChannel) rather than started behind it.
+_reader_lock = threading.Lock()
+_reader_busy = False
+
+
+def _refuse_if_reader_outstanding() -> None:
+    with _reader_lock:
+        if _reader_busy:
+            raise NoChannel("an earlier prompt is still waiting for input")
+
+
+def _claim_reader() -> None:
+    global _reader_busy
+    with _reader_lock:
+        if _reader_busy:
+            raise NoChannel("an earlier prompt is still waiting for input")
+        _reader_busy = True
+
+
+def _release_reader() -> None:
+    global _reader_busy
+    with _reader_lock:
+        _reader_busy = False
+
+
 def _read_input(prompt: str) -> Optional[str]:
     try:
         return input(prompt)
@@ -131,12 +158,16 @@ def _read_input(prompt: str) -> Optional[str]:
 
 
 def _ask_controlling_tty(question: str, prefix: str, timeout: Optional[float]) -> Optional[str]:
+    _refuse_if_reader_outstanding()
     tty_in, tty_out = _open_controlling_tty()
     if tty_in is None:
         raise NoChannel("no terminal to ask on")
 
     def read() -> Optional[str]:
+        claimed = False
         try:
+            _claim_reader()
+            claimed = True
             tty_out.write(f"\n{prefix} needs your input\n  question: {question}\n  > ")
             tty_out.flush()
             line = tty_in.readline()
@@ -148,6 +179,8 @@ def _ask_controlling_tty(question: str, prefix: str, timeout: Optional[float]) -
                     f.close()
                 except Exception:
                     pass
+            if claimed:
+                _release_reader()
         return line.strip() if line else None
 
     return _call_with_timeout(read, CONTROLLING_TTY_TIMEOUT if timeout is None else timeout)
@@ -174,5 +207,13 @@ def builtin_asker(question: str, *, prefix: str = "[agent]", timeout: Optional[f
         prompt = f"\n{prefix} needs your input\n  question: {question}\n> "
         if timeout is None:
             return _read_input(prompt)
-        return _call_with_timeout(lambda: _read_input(prompt), timeout)
+        _refuse_if_reader_outstanding()
+
+        def read() -> Optional[str]:
+            _claim_reader()
+            try:
+                return _read_input(prompt)
+            finally:
+                _release_reader()
+        return _call_with_timeout(read, timeout)
     return _ask_controlling_tty(question, prefix, timeout)

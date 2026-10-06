@@ -4,6 +4,7 @@ import builtins
 import io
 import sys
 import threading
+import time
 import types
 
 import pytest
@@ -22,6 +23,22 @@ class ColabShell(ZMQInteractiveShell):
 
 class StdinNotImplementedError(RuntimeError):
     pass
+
+
+@pytest.fixture(autouse=True)
+def fresh_reader_guard():
+    op._release_reader()
+    yield
+    op._release_reader()
+
+
+def wait_until(predicate, seconds=3.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
 
 
 def fake_ipython(monkeypatch, shell):
@@ -192,3 +209,78 @@ class TestCallWithTimeout:
             raise ValueError("nope")
         with pytest.raises(ValueError, match="nope"):
             op._call_with_timeout(boom, 1.0)
+
+
+class TestAbandonedReader:
+    """A reader abandoned by a timeout is still blocked; a later ask must not queue behind it."""
+
+    def test_controlling_terminal_refuses_while_an_abandoned_reader_is_waiting(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch, is_tty=False)
+        gate, entered = threading.Event(), threading.Event()
+
+        class Stuck(io.StringIO):
+            def readline(self, *a):
+                entered.set()
+                gate.wait(5)
+                return "late\n"
+        monkeypatch.setattr(op, "_open_controlling_tty", lambda: (Stuck(), io.StringIO()))
+        try:
+            with pytest.raises(op.AskTimeout):
+                op.builtin_asker("first", timeout=0.05)
+            assert entered.wait(3)
+
+            monkeypatch.setattr(op, "_open_controlling_tty", lambda: pytest.fail("must not open a second handle"))
+            with pytest.raises(op.NoChannel, match="still waiting"):
+                op.builtin_asker("second", timeout=0.05)
+        finally:
+            gate.set()
+        assert wait_until(lambda: not op._reader_busy)
+
+        monkeypatch.setattr(op, "_open_controlling_tty", lambda: (io.StringIO("fresh\n"), io.StringIO()))
+        assert op.builtin_asker("third") == "fresh"
+
+    def test_terminal_refuses_while_an_abandoned_reader_is_waiting(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch)
+        gate, entered = threading.Event(), threading.Event()
+        calls = []
+
+        def blocking_input(prompt=""):
+            calls.append(prompt)
+            entered.set()
+            gate.wait(5)
+            return "late"
+        monkeypatch.setattr(builtins, "input", blocking_input)
+        try:
+            with pytest.raises(op.AskTimeout):
+                op.builtin_asker("first", timeout=0.05)
+            assert entered.wait(3)
+
+            with pytest.raises(op.NoChannel, match="still waiting"):
+                op.builtin_asker("second", timeout=0.05)
+            assert len(calls) == 1                       # the second ask never reached input()
+        finally:
+            gate.set()
+        assert wait_until(lambda: not op._reader_busy)
+
+        monkeypatch.setattr(builtins, "input", lambda prompt="": "fresh")
+        assert op.builtin_asker("third", timeout=1.0) == "fresh"
+
+    def test_a_finished_read_leaves_the_guard_clear(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch, is_tty=False)
+        monkeypatch.setattr(op, "_open_controlling_tty", lambda: (io.StringIO("a\n"), io.StringIO()))
+        assert op.builtin_asker("q") == "a"
+        assert op._reader_busy is False
+
+        tty_stdin(monkeypatch)
+        monkeypatch.setattr(builtins, "input", lambda prompt="": "b")
+        assert op.builtin_asker("q", timeout=1.0) == "b"
+        assert op._reader_busy is False
+
+        def eof(prompt=""):
+            raise EOFError
+        monkeypatch.setattr(builtins, "input", eof)
+        assert op.builtin_asker("q", timeout=1.0) is None
+        assert op._reader_busy is False
