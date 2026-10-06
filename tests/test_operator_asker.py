@@ -1,5 +1,6 @@
 """The built-in asker (ask_user=True): notebook, terminal, controlling terminal, headless."""
 
+import asyncio
 import builtins
 import io
 import sys
@@ -211,6 +212,40 @@ class TestCallWithTimeout:
             op._call_with_timeout(boom, 1.0)
 
 
+    def test_a_timeout_still_fires_in_about_the_requested_time(self):
+        gate = threading.Event()
+        started = time.monotonic()
+        try:
+            with pytest.raises(op.AskTimeout):
+                op._call_with_timeout(lambda: gate.wait(5), 0.05)
+            assert time.monotonic() - started < 1.0
+        finally:
+            gate.set()
+
+    def test_a_slow_value_still_returns_and_it_waits_in_short_slices(self, monkeypatch):
+        joins = []
+        real_join = threading.Thread.join
+
+        def spy(self, timeout=None):
+            joins.append(timeout)
+            return real_join(self, timeout)
+        monkeypatch.setattr(threading.Thread, "join", spy)
+
+        def slow():
+            time.sleep(0.5)
+            return "late but in time"
+        assert op._call_with_timeout(slow, 5.0) == "late but in time"
+        assert joins and max(joins) <= 0.2 + 1e-9             # never one long lock-wait
+
+    def test_a_zero_timeout_times_out_at_once(self):
+        gate = threading.Event()
+        try:
+            with pytest.raises(op.AskTimeout):
+                op._call_with_timeout(lambda: gate.wait(5), 0)
+        finally:
+            gate.set()
+
+
 class TestAbandonedReader:
     """A reader abandoned by a timeout is still blocked; a later ask must not queue behind it."""
 
@@ -284,3 +319,123 @@ class TestAbandonedReader:
         monkeypatch.setattr(builtins, "input", eof)
         assert op.builtin_asker("q", timeout=1.0) is None
         assert op._reader_busy is False
+
+
+class TestPromptText:
+    def test_control_characters_in_a_model_written_question_never_reach_the_terminal(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch)
+        seen = []
+        monkeypatch.setattr(builtins, "input", lambda prompt="": seen.append(prompt) or "ok")
+        op.builtin_asker("Which?\x1b[2J\x1b]0;pwned\x07 \rline\x00\x7f\tafter\nnext", prefix="[a]")
+        shown = seen[0]
+        assert not any(ord(c) < 32 and c not in "\n\t" for c in shown) and "\x7f" not in shown
+        assert "Which?" in shown and "\tafter\nnext" in shown
+
+    def test_the_controlling_terminal_prompt_is_cleaned_too(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch, is_tty=False)
+        written = []
+
+        class Out(io.StringIO):
+            def close(self):
+                written.append(self.getvalue())
+                super().close()
+        monkeypatch.setattr(op, "_open_controlling_tty", lambda: (io.StringIO("a\n"), Out()))
+        op.builtin_asker("Q\x1b[31m red\x07")
+        assert "\x1b" not in written[0] and "\x07" not in written[0] and "Q" in written[0]
+
+    def test_the_notebook_prompt_is_cleaned_too(self, monkeypatch):
+        fake_ipython(monkeypatch, ZMQInteractiveShell())
+        seen = []
+        monkeypatch.setattr(builtins, "input", lambda prompt="": seen.append(prompt) or "ok")
+        op.builtin_asker("Q\x1b[31m red")
+        assert "\x1b" not in seen[0]
+
+    def test_ordinary_text_is_unchanged(self):
+        text = "Which three competitors?\n(context: step 1)\tok"
+        assert op._strip_controls(text) == text
+
+
+class TestAsyncTerminalRead:
+    """The untimed async terminal read runs in a daemon thread and holds the reader guard."""
+
+    def test_the_read_runs_in_a_daemon_thread_off_the_loop(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch)
+        seen = {}
+
+        def typed(prompt=""):
+            seen["thread"] = threading.current_thread()
+            return "Obsidian"
+        monkeypatch.setattr(builtins, "input", typed)
+
+        async def go():
+            return await op.OperatorChannel.create(True, is_async=True).aask("Which?")
+        reply = asyncio.run(go())
+        assert reply.text == "Obsidian"
+        assert seen["thread"].daemon and seen["thread"] is not threading.main_thread()
+        assert op._reader_busy is False
+
+    def test_a_reader_exception_is_mapped_and_the_guard_is_released(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch)
+
+        def boom(prompt=""):
+            raise RuntimeError("terminal on fire")
+        monkeypatch.setattr(builtins, "input", boom)
+        reply = asyncio.run(op.OperatorChannel.create(True, is_async=True).aask("q"))
+        assert reply.reason == "error" and op._reader_busy is False
+
+    def test_keyboard_interrupt_from_the_reader_propagates(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch)
+
+        def interrupt(prompt=""):
+            raise KeyboardInterrupt
+        monkeypatch.setattr(builtins, "input", interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            asyncio.run(op.OperatorChannel.create(True, is_async=True).aask("q"))
+        assert op._reader_busy is False
+
+    def test_cancelling_the_ask_leaves_a_guarded_daemon_reader(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch)
+        gate, entered = threading.Event(), threading.Event()
+        readers = []
+
+        def blocking_input(prompt=""):
+            readers.append(threading.current_thread())
+            entered.set()
+            gate.wait(5)
+            return "late"
+        monkeypatch.setattr(builtins, "input", blocking_input)
+        out = {}
+
+        async def go():
+            ch = op.OperatorChannel.create(True, is_async=True)
+            task = asyncio.create_task(ch.aask("first question"))
+            for _ in range(300):
+                if entered.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert entered.is_set()
+            started = time.monotonic()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            out["cancel_seconds"] = time.monotonic() - started
+            out["second"] = await ch.aask("second question")
+        try:
+            asyncio.run(go())
+        finally:
+            gate.set()
+        assert out["cancel_seconds"] < 1.0                         # (a) prompt cancellation
+        assert out["second"].reason == "no_channel"                # (b) refused, no stolen answer
+        assert len(readers) == 1                                   #     the second ask never read
+        assert wait_until(lambda: not op._reader_busy)             # (c) the guard clears once released
+        assert readers[0].daemon                                   # (d) the orphan cannot hold the process
+
+        monkeypatch.setattr(builtins, "input", lambda prompt="": "fresh")
+        reply = asyncio.run(op.OperatorChannel.create(True, is_async=True).aask("third"))
+        assert reply.text == "fresh"

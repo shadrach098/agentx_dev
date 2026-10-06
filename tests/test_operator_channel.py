@@ -154,7 +154,85 @@ class TestBudgetAndDedupe:
         assert calls == ["q"] and again.reason == "error" and again.deduped and ch.asked == 1
 
 
+    def test_a_no_channel_reply_is_not_cached_so_the_same_question_is_asked_again(self, monkeypatch):
+        calls = []
+
+        def asker(question, *, prefix="", timeout=None):
+            calls.append(question)
+            if len(calls) == 1:
+                raise op.NoChannel("an earlier prompt is still waiting for input")
+            return "Notion"
+        monkeypatch.setattr(op, "builtin_asker", asker)
+        ch = make(True, max_questions=3)
+        first = ch.ask("Which competitors?")
+        again = ch.ask("which  competitors?")
+        assert first.reason == "no_channel" and not first.answered
+        assert again.answered and again.text == "Notion" and not again.deduped
+        assert len(calls) == 2
+        assert ch.asked == 2                                  # both were questions put to the operator
+        assert [r["reason"] for r in ch.records] == ["no_channel", None]
+        assert [e["type"] for e in ch.drain()] == ["question", "answer", "question", "answer"]
+
+    def test_timeout_and_error_are_still_cached(self, monkeypatch):
+        for exc, reason in ((op.AskTimeout("x"), "timeout"), (RuntimeError("down"), "error")):
+            calls = []
+
+            def asker(question, *, prefix="", timeout=None, exc=exc, calls=calls):
+                calls.append(question)
+                raise exc
+            monkeypatch.setattr(op, "builtin_asker", asker)
+            ch = make(True)
+            assert ch.ask("q").reason == reason
+            again = ch.ask("q")
+            assert again.reason == reason and again.deduped and len(calls) == 1
+
+
 class TestEvents:
+    def test_many_threads_emitting_while_another_drains_lose_no_event(self):
+        ch = make(lambda q: "a")
+        threads_n, per_thread = 8, 400
+        collected, stop = [], threading.Event()
+
+        def drainer():
+            while not stop.is_set():
+                collected.extend(ch.drain())
+
+        def emitter(n):
+            for i in range(per_thread):
+                ch.emit({"type": "x", "n": n, "i": i})
+        d = threading.Thread(target=drainer, daemon=True)
+        emitters = [threading.Thread(target=emitter, args=(n,), daemon=True) for n in range(threads_n)]
+        d.start()
+        try:
+            for t in emitters:
+                t.start()
+            for t in emitters:
+                t.join(10)
+        finally:
+            stop.set()
+            d.join(10)
+        collected.extend(ch.drain())
+        assert len(collected) == threads_n * per_thread
+        assert len({(e["n"], e["i"]) for e in collected}) == threads_n * per_thread
+
+    def test_draining_does_not_wait_for_a_question_that_is_being_asked(self):
+        gate, entered = threading.Event(), threading.Event()
+
+        def slow(q):
+            entered.set()
+            gate.wait(5)
+            return "a"
+        ch = make(slow)
+        t = threading.Thread(target=lambda: ch.ask("q"), daemon=True)
+        t.start()
+        try:
+            assert entered.wait(3)
+            events = ch.drain()                               # returns while the ask holds its lock
+            assert [e["type"] for e in events] == ["question"]
+        finally:
+            gate.set()
+            t.join(5)
+
     def test_question_and_answer_events_carry_no_answer_text(self):
         ch = make(lambda q: "secret value")
         ch.ask("Which?", context="ctx", source="planner")

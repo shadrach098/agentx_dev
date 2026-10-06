@@ -14,8 +14,10 @@ import asyncio
 import contextvars
 import dataclasses
 import inspect
+import re
 import sys
 import threading
+import time
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -28,6 +30,7 @@ from agentx_dev.Tools import StructuredTool, logger
 ASK_TOOL_NAME = "ask_user"
 MAX_ANSWER_CHARS = 2000
 CONTROLLING_TTY_TIMEOUT = 300.0            # seconds; the prompt can land in a window nobody sees
+_WAIT_SLICE = 0.2                          # seconds; how often a waiting caller can be interrupted
 
 REASON_NO_CHANNEL = "no_channel"
 REASON_DECLINED = "declined"
@@ -121,7 +124,14 @@ def _call_with_timeout(fn: Callable[[], Any], timeout: float) -> Any:
 
     thread = threading.Thread(target=target, daemon=True)
     thread.start()
-    thread.join(timeout)
+    # Wait in short slices: on Windows a single long join() is an uninterruptible lock wait, so
+    # Ctrl-C would only be delivered when it ended (up to 300 s on the terminal path).
+    deadline = time.monotonic() + timeout
+    while thread.is_alive():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        thread.join(min(_WAIT_SLICE, remaining))
     if thread.is_alive():
         raise AskTimeout(f"no answer within {timeout:g} seconds")
     if "error" in box:
@@ -154,6 +164,48 @@ def _release_reader() -> None:
     global _reader_busy
     with _reader_lock:
         _reader_busy = False
+
+
+_CONTROL_CHARS = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")      # everything but newline and tab
+
+
+def _strip_controls(text: str) -> str:
+    """``text`` without control characters (escape sequences, bell, carriage return, C1 codes),
+    keeping newline and tab, so a model-written question cannot redraw the operator's terminal."""
+    return _CONTROL_CHARS.sub("", str(text))
+
+
+async def _run_in_daemon_thread(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Await ``fn(*args, **kwargs)`` run in a DAEMON thread (with the caller's contextvars).
+
+    ``asyncio.to_thread`` uses a non-daemon executor worker: when the awaiting task is cancelled
+    (Ctrl-C under ``asyncio.run``) a blocked terminal read keeps the process alive until the
+    operator presses Enter. A daemon thread ends with the process. A result that arrives after
+    the awaiter was cancelled is dropped."""
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+    ctx = contextvars.copy_context()
+
+    def deliver(setter: Callable[[Any], None], value: Any) -> None:
+        if not future.done():                              # cancelled meanwhile: drop it quietly
+            setter(value)
+
+    def target() -> None:
+        try:
+            value = ctx.run(fn, *args, **kwargs)
+        except BaseException as e:                         # re-raised in the awaiter
+            if isinstance(e, StopIteration):               # cannot be set on a future
+                e = RuntimeError(f"StopIteration raised in {getattr(fn, '__name__', 'reader')}")
+            outcome: Tuple[Callable[[Any], None], Any] = (future.set_exception, e)
+        else:
+            outcome = (future.set_result, value)
+        try:
+            loop.call_soon_threadsafe(deliver, *outcome)
+        except RuntimeError:                               # the loop is already closed
+            pass
+
+    threading.Thread(target=target, daemon=True, name="ask_user_reader").start()
+    return await future
 
 
 def _read_input(prompt: str) -> Optional[str]:
@@ -209,6 +261,7 @@ def builtin_asker(question: str, *, prefix: str = "[agent]", timeout: Optional[f
     Returns the typed answer, or ``None`` on EOF. ``KeyboardInterrupt`` is not swallowed:
     pressing Interrupt means stop the run. Raises :class:`NoChannel` / :class:`AskTimeout`.
     """
+    question = _strip_controls(question)       # a model wrote it: no escape sequences on the terminal
     if _in_notebook():
         if not _notebook_can_prompt():
             raise NoChannel("this notebook kernel cannot take input")
@@ -216,7 +269,13 @@ def builtin_asker(question: str, *, prefix: str = "[agent]", timeout: Optional[f
     if _stdin_is_tty():
         prompt = f"\n{prefix} needs your input\n  question: {question}\n> "
         if timeout is None:
-            return _read_input(prompt)
+            # Guarded too: if the asking task is cancelled, this read stays blocked, and the
+            # next ask must be refused rather than start a second reader behind it.
+            _claim_reader()
+            try:
+                return _read_input(prompt)
+            finally:
+                _release_reader()
         _refuse_if_reader_outstanding()
 
         def read() -> Optional[str]:
@@ -309,6 +368,7 @@ class OperatorChannel:
         self._seen: Dict[str, Reply] = {}
         self._asked = 0
         self._lock = threading.Lock()                 # asks are one at a time, sync and async alike
+        self._events_lock = threading.Lock()          # emit/drain only; never the ask lock, which is held while the human thinks
 
     @classmethod
     def create(cls, ask_user: Any, *, max_questions: int = 3, timeout: Optional[float] = None,
@@ -348,10 +408,12 @@ class OperatorChannel:
         return f"{text}\n\n{block}" if block else text
 
     def emit(self, event: Dict[str, Any]) -> None:
-        self.events.append(event)
+        with self._events_lock:
+            self.events.append(event)
 
     def drain(self) -> List[Dict[str, Any]]:
-        out, self.events = self.events, []
+        with self._events_lock:
+            out, self.events = self.events, []
         return out
 
     def _say(self, text: str) -> None:
@@ -374,7 +436,8 @@ class OperatorChannel:
         return None
 
     def _end(self, question: str, key: str, source: str, reply: Reply) -> Reply:
-        self._seen[key] = reply
+        if reply.reason != REASON_NO_CHANNEL:      # transient (a busy reader): a later ask may succeed
+            self._seen[key] = reply
         return self._finish(source, question, reply)
 
     def _finish(self, source: str, question: str, reply: Reply, *, deduped: bool = False) -> Reply:
@@ -455,9 +518,11 @@ class OperatorChannel:
                         raw = builtin_asker(shown, prefix=self.prefix, timeout=self.timeout)
                     else:
                         # A terminal read can wait minutes: keep the loop (other tasks, timers,
-                        # cancellation) running while the person types.
-                        raw = await asyncio.to_thread(builtin_asker, shown, prefix=self.prefix,
-                                                      timeout=self.timeout)
+                        # cancellation) running while the person types. A daemon thread, so a
+                        # cancelled ask cannot keep the process alive; the reader guard (inside
+                        # builtin_asker) stops the next ask from starting behind it.
+                        raw = await _run_in_daemon_thread(builtin_asker, shown, prefix=self.prefix,
+                                                          timeout=self.timeout)
                 else:
                     raw = await asyncio.wait_for(go(), self.timeout)
         except NoChannel:
