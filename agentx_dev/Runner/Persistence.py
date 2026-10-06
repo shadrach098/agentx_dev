@@ -14,6 +14,7 @@ import inspect
 import json
 import logging
 import re
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -78,6 +79,34 @@ class RunStuck(Exception):
     """The reflection ladder was exhausted; the message is the stuck reason."""
 
 
+class PausableClock:
+    """``time.monotonic`` that stands still while paused. It is callable, so it drops in
+    wherever a clock is expected, and every ``RunBudget`` made with it (including the
+    children from ``capped``) shares the pause."""
+
+    def __init__(self, base: Optional[Callable[[], float]] = None):
+        self._base = base or time.monotonic
+        self._lost = 0.0                       # total time spent paused so far
+        self._paused_at: Optional[float] = None
+        self._lock = threading.Lock()
+
+    def __call__(self) -> float:
+        with self._lock:
+            now = self._base() if self._paused_at is None else self._paused_at
+            return now - self._lost
+
+    def pause(self) -> None:
+        with self._lock:
+            if self._paused_at is None:
+                self._paused_at = self._base()
+
+    def resume(self) -> None:
+        with self._lock:
+            if self._paused_at is not None:
+                self._lost += self._base() - self._paused_at
+                self._paused_at = None
+
+
 class RunBudget:
     """A deadline on a monotonic clock, shared by a run and everything under it."""
 
@@ -87,7 +116,7 @@ class RunBudget:
 
     @classmethod
     def start(cls, minutes: float, clock: Optional[Callable[[], float]] = None) -> "RunBudget":
-        clock = clock or time.monotonic
+        clock = clock or PausableClock()
         return cls(clock() + minutes * 60.0, clock)
 
     def remaining(self) -> float:
@@ -103,6 +132,21 @@ class RunBudget:
     def capped(self, minutes: float) -> "RunBudget":
         """A budget that ends at the earlier of this deadline and ``minutes`` from now."""
         return RunBudget(min(self.deadline, self._clock() + minutes * 60.0), self._clock)
+
+    @contextmanager
+    def paused(self):
+        """Stop this run's clock for the length of the block (the operator is thinking).
+        Does nothing when the clock cannot pause (a plain callable, as in some tests)."""
+        pause = getattr(self._clock, "pause", None)
+        resume = getattr(self._clock, "resume", None)
+        if pause is None or resume is None:
+            yield
+            return
+        pause()
+        try:
+            yield
+        finally:
+            resume()
 
 
 # ---------------------------------------------------------------------------
