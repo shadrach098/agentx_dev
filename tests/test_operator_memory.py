@@ -77,6 +77,26 @@ class TestExactReuse:
         ch.memory.note_answered(QUESTION)
         assert "Which three" not in ch.memory.recall("q", "plan")
 
+    def test_a_question_answered_from_memory_is_left_out_of_later_recall_blocks(self):
+        store = FakeStore([answer_hit(QUESTION, "stored answer"), hit("another fact")])
+        ch = channel(store=store)
+        assert ch.ask(QUESTION, source="planner").from_memory
+        block = ch.memory.recall("anything", "plan")
+        assert "stored answer" not in block and "Which three" not in block and "another fact" in block
+
+    def test_a_question_the_operator_answered_is_left_out_of_later_recall_blocks(self):
+        other = "Which file should I read?"
+        # the stored answer ranks below the five hits the exact-answer lookup inspects, so the
+        # operator is asked; the recall block (top_k raised) would still show the stored entry
+        store = FakeStore([hit(f"filler {i}") for i in range(5)] + [answer_hit(other, "report.md"), hit("another fact")])
+        ch = channel(lambda q: "report.md", store=store)
+        ch.memory.top_k = 10
+        assert ch.memory.recall("anything", "plan").count("report.md") == 1     # visible before the answer
+        reply = ch.ask(other, source="planner")
+        assert reply.answered and not reply.from_memory
+        block = ch.memory.recall("anything", "plan")
+        assert "report.md" not in block and "another fact" in block
+
     def test_without_memory_nothing_changes(self):
         ch = OperatorChannel.create(lambda q: "typed")
         ch.ask(QUESTION, source="planner")

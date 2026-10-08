@@ -180,7 +180,7 @@ class RunMemory:
                 if meta.get("kind") == KIND_ANSWER and meta.get("qkey") == qkey:
                     answer = meta.get("answer")
                     if isinstance(answer, str) and answer.strip():
-                        return answer
+                        return answer[:MAX_ANSWER_CHARS]
             except Exception as e:                    # a malformed hit is skipped, never raised
                 logger.warning(f"memory hit skipped (malformed): {e}")
         return None

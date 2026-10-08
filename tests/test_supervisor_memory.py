@@ -157,6 +157,10 @@ class TestLookupAnswer:
         assert make(store).lookup_answer("which three  competitors should i compare?") == "Notion, Obsidian, Coda"
         assert store.searches == [("which three  competitors should i compare?", 5, 0.0)]
 
+    def test_a_huge_stored_answer_is_capped(self):
+        store = FakeStore([answer_hit(QUESTION, "x" * 5000)])
+        assert make(store).lookup_answer(QUESTION) == "x" * 2000
+
     def test_a_similar_but_different_question_is_not_reused(self):
         store = FakeStore([answer_hit("Which two competitors should I compare?", "A, B")])
         assert make(store).lookup_answer(QUESTION) is None
