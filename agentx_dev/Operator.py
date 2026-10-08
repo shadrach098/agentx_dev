@@ -42,6 +42,14 @@ NO_ANSWER_TEXT = (
     "[no operator answer] Proceed on a stated assumption and say plainly what you assumed "
     "in your answer."
 )
+NO_QUESTIONS_LEFT_TEXT = (
+    "[no operator answer] No more questions are available (you have already asked your one "
+    "question, or the run's question limit is reached). Proceed on a stated assumption and say "
+    "plainly what you assumed in your answer."
+)
+
+PLANNER_SOURCE = "planner"
+MAX_QUESTIONS_PER_AGENT = 1     # one agent should not spend the whole shared budget clarifying
 
 
 class NoChannel(Exception):
@@ -325,7 +333,9 @@ def _shown(question: str, context: str = "") -> str:
 
 def reply_text(reply: Reply) -> str:
     """The tool result an agent sees. Never an error, so its stuck logic is not triggered."""
-    return f"[operator] {reply.text}" if reply.answered else NO_ANSWER_TEXT
+    if reply.answered:
+        return f"[operator] {reply.text}"
+    return NO_QUESTIONS_LEFT_TEXT if reply.reason == REASON_LIMIT else NO_ANSWER_TEXT
 
 
 def validate_ask_user(ask_user: Any, is_async: bool) -> Any:
@@ -353,10 +363,13 @@ class OperatorChannel:
 
     def __init__(self, asker: Optional[Callable[[str], Any]], *, builtin: bool = False,
                  max_questions: int = 3, timeout: Optional[float] = None,
-                 is_async: bool = False, verbose: bool = False, prefix: str = "[agent]"):
+                 is_async: bool = False, verbose: bool = False, prefix: str = "[agent]",
+                 per_agent_limit: int = MAX_QUESTIONS_PER_AGENT):
         self._asker = asker
         self._builtin = builtin
         self.max_questions = max(0, int(max_questions))
+        self.per_agent_limit = max(0, int(per_agent_limit))    # the planner is exempt
+        self._by_source: Dict[str, int] = {}
         self.timeout = timeout
         self.is_async = is_async
         self.verbose = verbose
@@ -407,6 +420,11 @@ class OperatorChannel:
         block = self.answers_block()
         return f"{text}\n\n{block}" if block else text
 
+    def plan_note(self) -> str:
+        """Appended to a planning prompt once the operator has answered something: do the
+        work, do not plan another step that only asks."""
+        return ANSWERED_PLAN_NOTE if self._answers else ""
+
     def emit(self, event: Dict[str, Any]) -> None:
         with self._events_lock:
             self.events.append(event)
@@ -428,9 +446,12 @@ class OperatorChannel:
         hit = self._seen.get(key)
         if hit is not None:
             return self._finish(source, question, hit, deduped=True)
+        if source != PLANNER_SOURCE and self._by_source.get(source, 0) >= self.per_agent_limit:
+            return self._finish(source, question, Reply(None, REASON_LIMIT))
         if self._asked >= self.max_questions:
             return self._finish(source, question, Reply(None, REASON_LIMIT))
         self._asked += 1
+        self._by_source[source] = self._by_source.get(source, 0) + 1
         self.emit({"type": "question", "source": source, "question": question, "context": context})
         self._say(f"{source} asks: {question}")
         return None
@@ -551,6 +572,16 @@ NO_ANSWER_PLAN_NOTE = (
     "assumption explicit in the step queries."
 )
 
+# Added to a planning prompt once the operator has answered something. A partial answer (one URL
+# where three competitors were needed) must lead to work, not to another "ask for the rest" step.
+ANSWERED_PLAN_NOTE = (
+    "\n\nThe operator has answered what they could (see OPERATOR ANSWERS in the task). Plan the "
+    "actual work now. Do not plan a step whose job is only to ask for more information. If "
+    "something is still unknown, plan a step that finds it with tools (give that specialist the "
+    "tools it needs, for example web for anything online) or state your assumption in the step "
+    "queries."
+)
+
 
 def ask_instruction(limit: int) -> str:
     """The planner-prompt block that offers the ``ask`` reply."""
@@ -595,14 +626,16 @@ class AskUserArgs(BaseModel):
 
 ASK_USER_DESCRIPTION = (
     "Ask the operator ONE question when a fact you need is missing and your tools cannot find "
-    "it. Good: which three competitors, which file, which account. Bad: asking permission for "
-    "each step, tone or audience, or anything you can look up. Returns the operator's reply, or "
-    "a note that nobody answered (then proceed on a stated assumption)."
+    "it. Search with your tools first. You may ask at most once per task, so make it count: one "
+    "specific, self-contained question. Good: which three competitors, which file, which "
+    "account. Bad: asking permission for each step, tone or audience, or anything you can look "
+    "up. Returns the operator's reply, or a note that nobody answered (then proceed on a stated "
+    "assumption)."
 )
 
 ASK_ADDENDUM_LINE = (
     "\n\n- If a fact you need is missing and your tools cannot find it, call ask_user with one "
-    "specific question. Do not guess."
+    "specific question (you may ask at most once, so search with your tools first). Do not guess."
 )
 
 

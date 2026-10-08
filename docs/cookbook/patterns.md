@@ -1104,7 +1104,7 @@ On an `AsyncSupervisor` the function may be `async def` (with async specialists;
 
 Things to know:
 
-- **Budget and timeout.** `max_questions` (default 3) is one budget for the whole run, planner and agents together. `ask_timeout` bounds the wait for one answer; it is not enforced on a notebook's input box, where the Interrupt button stops the run.
+- **Budget and timeout.** `max_questions` (default 3) is one budget for the whole run, planner and agents together, and each agent may ask only once (the planner may ask several questions in its one round), so one helper cannot use the whole budget clarifying. `ask_timeout` bounds the wait for one answer; it is not enforced on a notebook's input box, where the Interrupt button stops the run.
 - **No answer is not a failure.** Headless, a raised exception, a timeout, an empty reply or a spent budget all tell the agent to proceed on a stated assumption. `ask_user=True` on a server therefore never asks; pass a function there.
 - **When the planner still does not ask,** say it in the task: "If anything is missing, ask the operator first." Agents can still ask mid-run through the `ask_user` tool.
 - **`async def` needs async specialists.** A sync specialist under `AsyncSupervisor` asks through the synchronous path, which cannot await an async function; with sync specialists pass a plain function.

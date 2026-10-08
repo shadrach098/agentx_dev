@@ -37,7 +37,7 @@ from agentx_dev.SubAgents import (   # noqa: F401  (SpawnConfig/SpawnRequest are
     spec_from_legacy_spawn,
 )
 from agentx_dev.Operator import (
-    NO_ANSWER_PLAN_NOTE, OperatorChannel, ask_instruction, attach_ask_user,
+    NO_ANSWER_PLAN_NOTE, PLANNER_SOURCE, OperatorChannel, ask_instruction, attach_ask_user,
     parse_ask_request, validate_ask_user,
 )
 from agentx_dev.Runner.Persistence import (
@@ -1154,6 +1154,8 @@ class Supervisor(_SpawnMixin):
             prompt = prompt + spawn_instruction(self._spawn_policy())
         if offer:
             prompt = prompt + ask_instruction(self._operator.remaining())
+        if self._operator is not None:
+            prompt = prompt + self._operator.plan_note()
         if repair_note:
             prompt = prompt + repair_note
         messages = [{"role": "user", "content": prompt}]
@@ -1170,7 +1172,7 @@ class Supervisor(_SpawnMixin):
             questions = parse_ask_request(parsed.get("ask"), self._operator.remaining())
             if questions:
                 for q in questions:
-                    self._operator.ask(q["question"], q["why"], "planner")
+                    self._operator.ask(q["question"], q["why"], PLANNER_SOURCE)
                 note = "" if self._operator.has_answers() else NO_ANSWER_PLAN_NOTE
                 # Plan again on the task plus the answers; no ask option this time.
                 return self._plan_once(user_task, repair_note=repair_note + note)
@@ -1843,6 +1845,8 @@ class AsyncSupervisor(_SpawnMixin):
             prompt = prompt + spawn_instruction(self._spawn_policy())
         if offer:
             prompt = prompt + ask_instruction(self._operator.remaining())
+        if self._operator is not None:
+            prompt = prompt + self._operator.plan_note()
         if repair_note:
             prompt = prompt + repair_note
         messages = [{"role": "user", "content": prompt}]
@@ -1859,7 +1863,7 @@ class AsyncSupervisor(_SpawnMixin):
             questions = parse_ask_request(parsed.get("ask"), self._operator.remaining())
             if questions:
                 for q in questions:
-                    await self._operator.aask(q["question"], q["why"], "planner")
+                    await self._operator.aask(q["question"], q["why"], PLANNER_SOURCE)
                 note = "" if self._operator.has_answers() else NO_ANSWER_PLAN_NOTE
                 # Plan again on the task plus the answers; no ask option this time.
                 return await self._plan_once(user_task, repair_note=repair_note + note)

@@ -414,7 +414,7 @@ class TestAsyncTerminalRead:
 
         async def go():
             ch = op.OperatorChannel.create(True, is_async=True)
-            task = asyncio.create_task(ch.aask("first question"))
+            task = asyncio.create_task(ch.aask("first question", source="a"))
             for _ in range(300):
                 if entered.is_set():
                     break
@@ -425,7 +425,7 @@ class TestAsyncTerminalRead:
             with pytest.raises(asyncio.CancelledError):
                 await task
             out["cancel_seconds"] = time.monotonic() - started
-            out["second"] = await ch.aask("second question")
+            out["second"] = await ch.aask("second question", source="b")
         try:
             asyncio.run(go())
         finally:

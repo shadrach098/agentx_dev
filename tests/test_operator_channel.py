@@ -101,8 +101,8 @@ class TestAsk:
             return "fine"
         ch = make(interrupt)
         with pytest.raises(KeyboardInterrupt):
-            ch.ask("first")
-        assert ch.ask("second").text == "fine"             # the lock was released
+            ch.ask("first", source="a")
+        assert ch.ask("second", source="b").text == "fine"             # the lock was released
 
     def test_an_empty_question_is_declined_without_asking(self):
         ch = make(lambda q: pytest.fail("must not ask"))
@@ -122,8 +122,8 @@ class TestBudgetAndDedupe:
     def test_the_question_budget_is_shared_and_a_spent_budget_gives_limit(self):
         calls = []
         ch = make(lambda q: calls.append(q) or "a", max_questions=2)
-        assert ch.ask("one").answered and ch.ask("two").answered
-        third = ch.ask("three")
+        assert ch.ask("one", source="a").answered and ch.ask("two", source="b").answered
+        third = ch.ask("three", source="c")
         assert not third.answered and third.reason == "limit"
         assert calls == ["one", "two"] and ch.remaining() == 0 and ch.asked == 2
 
@@ -164,8 +164,8 @@ class TestBudgetAndDedupe:
             return "Notion"
         monkeypatch.setattr(op, "builtin_asker", asker)
         ch = make(True, max_questions=3)
-        first = ch.ask("Which competitors?")
-        again = ch.ask("which  competitors?")
+        first = ch.ask("Which competitors?", source="a")
+        again = ch.ask("which  competitors?", source="b")
         assert first.reason == "no_channel" and not first.answered
         assert again.answered and again.text == "Notion" and not again.deduped
         assert len(calls) == 2
@@ -319,7 +319,8 @@ class TestAsync:
         ch = make(ask, is_async=True)
 
         async def go():
-            return await asyncio.gather(ch.aask("question one"), ch.aask("question two"))
+            return await asyncio.gather(ch.aask("question one", source="a"),
+                                        ch.aask("question two", source="b"))
         replies = asyncio.run(go())
         assert [r.answered for r in replies] == [True, True] and peak == 1
 

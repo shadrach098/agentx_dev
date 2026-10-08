@@ -335,7 +335,8 @@ Later steps reuse it by name: {"id": "s3", "agent": "<that name>", "query": "...
 Rules:
   - Prefer an existing specialist whenever one fits. Define a new one only for a genuinely different role or toolset.
   - "instructions" must say what the specialist should RETURN (facts, numbers, a table), not just what to do. The framework adds: return the real data, never invent it.
-  - "tools" may only name tools from the menu below; anything else is dropped. A specialist with no tools can still reason.
+  - "tools" may only name tools from the menu below; anything else is dropped.
+  - A specialist can only use the tools you give it. One that must look something up needs the matching tool from the menu<<WEBHINT>>; a specialist with no tools can only reason from the instructions you write and cannot fetch anything.
   - A step uses EITHER "agent" OR "new_agent", never both. "name" is letters, digits, "_" or "-" (max 40).
 
 Tools you can grant:
@@ -346,8 +347,10 @@ Tools you can grant:
 
 def spawn_instruction(policy: "SpawnPolicy") -> str:
     """The planner-prompt block that teaches ``new_agent``."""
+    web_hint = ' ("web" for anything online)' if policy._preset_allowed("web") else ""
     return (_SPAWN_INSTRUCTION
             .replace("<<MAX>>", str(policy.config.effective_max_spawns))
+            .replace("<<WEBHINT>>", web_hint)
             .replace("<<MENU>>", policy.menu()))
 
 

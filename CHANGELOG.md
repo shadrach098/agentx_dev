@@ -33,7 +33,11 @@ Sub-agents: the Supervisor can create its own helpers. Opt-in, with the behavior
   notebooks (the input box), terminals and IDE consoles and never blocks a headless process; a
   function routes questions through your own channel (chatbot, backend). `max_questions`,
   `ask_timeout`, `SupervisorResult.asked`, `question`/`answer` events,
-  `agentx_dev.ask_human_tool()`; waiting on the operator pauses the persistent deadline.
+  `agentx_dev.ask_human_tool()`; waiting on the operator pauses the persistent deadline. Each agent
+  may ask once per run (the planner may ask several questions in its one round), and after the
+  operator answers the planner is told to do the work instead of planning another question. The
+  helper-creation instructions now say a helper can only look things up with the tools it is given
+  (this applies to every Supervisor that enables spawning).
 - `RunBudget` now carries a `PausableClock` (it holds a lock), so a `RunBudget` can no longer be
   deep-copied or pickled.
 

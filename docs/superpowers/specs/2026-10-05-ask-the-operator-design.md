@@ -244,11 +244,31 @@ stays, the framework's is not added, and the spawn is not refused. Nothing is at
 - **Sync vs async:** an async parent gets an async tool that awaits `channel.aask`; a sync
   parent gets a sync tool, as `make_delegate_tool` does.
 - The tool description is: "Ask the operator ONE question when a fact you need is missing
-  and your tools cannot find it. Good: which three competitors, which file, which account.
-  Bad: asking permission for each step, tone or audience, or anything you can look up.
-  Returns the operator's reply, or a note that nobody answered (then proceed on a stated
-  assumption)." For registered specialists it is the only hint that the tool exists; helpers
-  also get the addendum line from 3.2.
+  and your tools cannot find it. Search with your tools first. You may ask at most once per
+  task, so make it count: one specific, self-contained question. Good: which three competitors,
+  which file, which account. Bad: asking permission for each step, tone or audience, or
+  anything you can look up. Returns the operator's reply, or a note that nobody answered (then
+  proceed on a stated assumption)." For registered specialists it is the only hint that the
+  tool exists; helpers also get the addendum line from 3.2 (which also says to search first
+  and that one question is allowed).
+- **One question per agent (added after a real run).** Each agent, by name, may put one
+  question to the operator per run (`OperatorChannel.per_agent_limit`, default 1); the planner
+  (source `planner`) is exempt because it asks in a single round. A second question from the
+  same agent gets `reason="limit"` and the tool text "[no operator answer] No more questions
+  are available ... Proceed on a stated assumption". A question the agent repeats (after
+  normalization) still gets its cached answer. This stops one helper from spending the shared
+  `max_questions` budget on clarifying.
+- **After an answer, the planner is told to do the work (added after the same run).** Once the
+  operator has answered at least one question, every planning prompt (the post-ask replan and
+  recovery rounds) carries `ANSWERED_PLAN_NOTE`: do not plan a step whose job is only to ask
+  for more information; find what is still unknown with tools (give the specialist the tools it
+  needs) or state the assumption. Without it, a partial answer (one URL where three
+  competitors were needed) led to a step that asked the operator again.
+- **Helpers need tools to look things up (added after the same run).** The helper-creation
+  instructions (`spawn_instruction`) say a specialist can only use the tools it is given, that
+  one with no tools can only reason and cannot fetch anything, and, when the ceiling allows
+  `web`, that anything online needs `"web"`. This applies to every Supervisor that enables
+  spawning, with or without `ask_user`.
 
 ### 4.4 Concurrency
 
