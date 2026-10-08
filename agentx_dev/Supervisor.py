@@ -909,6 +909,7 @@ class _SpawnMixin:
     _SPAWN_ASYNC = False        # AsyncSupervisor builds async sub-agents
     _operator: Optional[OperatorChannel] = None     # the per-run channel; None when ask_user is off
     _run_memory: Optional[RunMemory] = None         # the per-run memory; None when memory is off
+    _synth_fell_back: bool = False                  # True when the last synthesis returned the budget stub
 
     def _new_spawn_policy(self) -> SpawnPolicy:
         return SpawnPolicy(self.spawn_config, self.model, persistence=self.persistence,
@@ -1402,6 +1403,7 @@ class Supervisor(_SpawnMixin):
         subtask_results: List[SubtaskResult],
         unresolved: Optional[List[SubtaskResult]] = None,
     ) -> str:
+        self._synth_fell_back = False
         results_block = _format_results_block(subtask_results)
         prompt = SUPERVISOR_SYNTHESIZE_PROMPT.format(
             user_task=self._task_for_model(user_task),
@@ -1415,6 +1417,7 @@ class Supervisor(_SpawnMixin):
         except (CostBudgetExceeded, BudgetExpired) as e:
             if self.persistence is None:
                 raise
+            self._synth_fell_back = True
             what = "cost budget" if isinstance(e, CostBudgetExceeded) else "time limit"
             return f"Stopped: the {what} was reached.\n\n{results_block}"
 
@@ -1735,7 +1738,8 @@ class Supervisor(_SpawnMixin):
             _log_final(final)
 
         outcome = _supervisor_outcome(subtask_results, budget_reason)
-        if self._run_memory is not None and outcome == OUTCOME_DONE:
+        if (self._run_memory is not None and outcome == OUTCOME_DONE
+                and not self._synth_fell_back and str(final).strip()):
             self._run_memory.remember_result(user_task, final)
 
         result = SupervisorResult(
@@ -2045,6 +2049,7 @@ class AsyncSupervisor(_SpawnMixin):
         subtask_results: List[SubtaskResult],
         unresolved: Optional[List[SubtaskResult]] = None,
     ) -> str:
+        self._synth_fell_back = False
         results_block = _format_results_block(subtask_results)
         prompt = SUPERVISOR_SYNTHESIZE_PROMPT.format(
             user_task=self._task_for_model(user_task),
@@ -2058,6 +2063,7 @@ class AsyncSupervisor(_SpawnMixin):
         except (CostBudgetExceeded, BudgetExpired) as e:
             if self.persistence is None:
                 raise
+            self._synth_fell_back = True
             what = "cost budget" if isinstance(e, CostBudgetExceeded) else "time limit"
             return f"Stopped: the {what} was reached.\n\n{results_block}"
 
@@ -2506,7 +2512,8 @@ class AsyncSupervisor(_SpawnMixin):
             _log_final(final)
 
         outcome = _supervisor_outcome(subtask_results, budget_reason)
-        if self._run_memory is not None and outcome == OUTCOME_DONE:
+        if (self._run_memory is not None and outcome == OUTCOME_DONE
+                and not self._synth_fell_back and str(final).strip()):
             await asyncio.to_thread(self._run_memory.remember_result, user_task, final)
 
         result = SupervisorResult(

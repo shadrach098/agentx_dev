@@ -6,11 +6,13 @@ import threading
 
 import pytest
 
-from agentx_dev import AsyncSupervisor
+from agentx_dev import AsyncSupervisor, CostBudgetExceeded, Persistence
 from agentx_dev import SupervisorMemory as sm
 from agentx_dev.Embeddings import HashEmbeddings, VectorStore
 from tests.memory_helpers import FakeStore, answer_hit, hit
-from tests.subagent_helpers import ScriptedRunner, plan_json, router, step
+from agentx_dev.Runner.Persistence import BudgetExpired
+from tests.conftest import MockModel, make_final
+from tests.subagent_helpers import PLANNER_MARK, SYNTH_MARK, ScriptedRunner, plan_json, router, step
 
 ASK_PLAN = json.dumps({"ask": [{"question": "Which three competitors should I compare?", "why": "none named"}]})
 QUESTION = "Which three competitors should I compare?"
@@ -105,6 +107,69 @@ class TestWrite:
         result = run(supervisor(model, memory=store, ask_user=ask))
         assert store.kinds_added() == ["operator_answer", "run_result"]
         assert [m["kind"] for m in result.memory] == ["operator_answer", "run_result"]
+
+
+def synth_model(plans, synth_fn):
+    """A role-routing model whose synthesis call is ``synth_fn()`` (it may raise)."""
+    queue = list(plans)
+
+    def script(messages):
+        first = str(messages[0]["content"])
+        if PLANNER_MARK in first:
+            return queue.pop(0)
+        if SYNTH_MARK in first:
+            return synth_fn()
+        return make_final("agent done")
+
+    return MockModel(script=script)
+
+
+def over_budget():
+    raise CostBudgetExceeded(spent_usd=2.0, limit_usd=1.0)
+
+
+class TestSynthesisCutOff:
+    """A run whose synthesis was cut off by the budget, or came back empty, saves no result."""
+
+    def test_a_synthesis_stopped_by_the_cost_budget_saves_nothing(self):
+        store = FakeStore()
+        sup = supervisor(synth_model([plan_json(step("s1", "worker"))], over_budget), memory=store,
+                         persistence=Persistence(max_minutes=5))
+        result = run(sup)
+        assert result.content.startswith("Stopped: the cost budget was reached.")
+        assert store.added == [] and result.memory == []
+
+    def test_the_stub_does_not_overwrite_a_good_earlier_result(self):
+        store = VectorStore(embeddings=HashEmbeddings())
+        sm.RunMemory(store).remember_result("task", "GOOD OLD ANSWER")
+        sup = supervisor(synth_model([plan_json(step("s1", "worker"))], over_budget), memory=store,
+                         memory_min_score=0.0, persistence=Persistence(max_minutes=5))
+        run(sup)
+        assert len(store) == 1 and "GOOD OLD ANSWER" in store._texts[0] and "Stopped" not in store._texts[0]
+
+    def test_a_synthesis_stopped_by_the_time_limit_saves_nothing(self):
+        def out_of_time():
+            raise BudgetExpired("time is up")
+        store = FakeStore()
+        result = run(supervisor(synth_model([plan_json(step("s1", "worker"))], out_of_time), memory=store,
+                                persistence=Persistence(max_minutes=5)))
+        assert result.content.startswith("Stopped: the time limit was reached.") and store.added == []
+
+    def test_an_empty_synthesis_saves_nothing(self):
+        store = FakeStore()
+        result = run(supervisor(synth_model([plan_json(step("s1", "worker"))], lambda: "  "), memory=store))
+        assert result.outcome == "done" and store.added == [] and result.memory == []
+
+    def test_the_next_run_saves_again_after_a_cut_off_one(self):
+        store = FakeStore()
+        answers = [over_budget, lambda: "Fine now."]
+        sup = supervisor(synth_model([plan_json(step("s1", "worker")), plan_json(step("s1", "worker"))],
+                                     lambda: answers.pop(0)()), memory=store,
+                         persistence=Persistence(max_minutes=5))
+        run(sup)
+        assert store.added == []
+        run(sup)
+        assert store.kinds_added() == ["run_result"]
 
 
 class TestExactReuse:
