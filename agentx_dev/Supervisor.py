@@ -40,6 +40,7 @@ from agentx_dev.Operator import (
     NO_ANSWER_PLAN_NOTE, PLANNER_SOURCE, OperatorChannel, ask_instruction, attach_ask_user,
     parse_ask_request, validate_ask_user,
 )
+from agentx_dev.SupervisorMemory import MEMORY_ASK_LINE, RunMemory, validate_memory
 from agentx_dev.Runner.Persistence import (
     OUTCOME_DONE, OUTCOME_OUT_OF_BUDGET, OUTCOME_OUT_OF_TIME, OUTCOME_PARTIAL, OUTCOME_STUCK,
     BudgetExpired, Persistence, PersistentRun, RunBudget, _clip, accepts_budget,
@@ -176,6 +177,9 @@ class SupervisorResult(BaseModel):
     # Questions put to the operator (3.6): source, question, answered, reason, deduped.
     # Answer text is not kept here (it may be sensitive). Empty when ask_user is off.
     asked: List[Dict[str, Any]] = Field(default_factory=list)
+    # What this run saved to long-term memory (3.6): kind, id, text (first 80 characters).
+    # Empty when memory is off, read-only, or nothing qualified.
+    memory: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 # ----------------------------------------------------------------------------
@@ -898,10 +902,13 @@ def _log_no_plan() -> None:
 class _SpawnMixin:
     """Sub-agent creation shared by ``Supervisor`` and ``AsyncSupervisor`` (3.6). Needs
     ``self.agents``, ``self.model``, ``self.persistence``, ``self.spawn_config``,
-    ``self.verbose``, ``self._spawn_run_policy`` and ``self._operator``."""
+    ``self.verbose``, ``self._spawn_run_policy``, ``self._operator``, ``self.memory``,
+    ``self.memory_top_k``, ``self.memory_min_score``, ``self.memory_write`` and
+    ``self._run_memory``."""
 
     _SPAWN_ASYNC = False        # AsyncSupervisor builds async sub-agents
     _operator: Optional[OperatorChannel] = None     # the per-run channel; None when ask_user is off
+    _run_memory: Optional[RunMemory] = None         # the per-run memory; None when memory is off
 
     def _new_spawn_policy(self) -> SpawnPolicy:
         return SpawnPolicy(self.spawn_config, self.model, persistence=self.persistence,
@@ -922,6 +929,8 @@ class _SpawnMixin:
     def _drain_operator_events(self):
         if self._operator is not None:
             yield from self._operator.drain()
+        if self._run_memory is not None:
+            yield from self._run_memory.drain()
 
     def _new_operator_channel(self) -> Optional[OperatorChannel]:
         return OperatorChannel.create(self.ask_user, max_questions=self.max_questions,
@@ -938,6 +947,31 @@ class _SpawnMixin:
 
     def _asked_records(self) -> List[Dict[str, Any]]:
         return list(self._operator.records) if self._operator is not None else []
+
+    def _new_run_memory(self) -> Optional[RunMemory]:
+        return RunMemory.create(self.memory, top_k=self.memory_top_k, min_score=self.memory_min_score,
+                                write=self.memory_write, verbose=self.verbose)
+
+    def _memory_block(self, query: str, stage: str) -> str:
+        """The FROM MEMORY block for ``query`` ("" when memory is off or nothing matches)."""
+        return self._run_memory.recall(query, stage) if self._run_memory is not None else ""
+
+    def _planning_task(self, user_task: str) -> str:
+        """The task as a PLANNING prompt sees it: the original, any operator answers, and the
+        memory block for the task. Synthesis keeps ``_task_for_model`` (no memory there)."""
+        task = self._task_for_model(user_task)
+        block = self._memory_block(user_task, "plan")
+        return f"{task}\n\n{block}" if block else task
+
+    def _step_context(self, dispatched_query: str, step_query: str) -> str:
+        """A dispatched step's query with the operator answers and the memory block for the
+        step's own query."""
+        query = self._with_answers(dispatched_query)
+        block = self._memory_block(step_query, "step")
+        return f"{query}\n\n{block}" if block else query
+
+    def _memory_records(self) -> List[Dict[str, Any]]:
+        return list(self._run_memory.written) if self._run_memory is not None else []
 
     def _overlapping(self, built) -> Optional[str]:
         """Name of a registered specialist that already has every tool ``built`` has (log only)."""
@@ -1010,6 +1044,10 @@ class Supervisor(_SpawnMixin):
         ask_user: Any = None,
         max_questions: int = 3,
         ask_timeout: Optional[float] = None,
+        memory: Any = None,
+        memory_top_k: int = 4,
+        memory_min_score: float = 0.2,
+        memory_write: bool = True,
     ):
         """
         Args:
@@ -1086,6 +1124,16 @@ class Supervisor(_SpawnMixin):
             ask_timeout: (3.6) Seconds to wait for one answer. ``None`` lets the
                 channel decide (no limit in a notebook or terminal; 300 s on the
                 controlling-terminal path).
+            memory: (3.6) Long-term memory: any vector store with ``add`` and ``search``
+                (``VectorStore``, ``ChromaVectorStore``, ``QdrantVectorStore``,
+                ``PgVectorStore``). The planner and every dispatched step get the few
+                relevant stored items as a FROM MEMORY block; the Supervisor saves each
+                operator answer and each completed run's final answer; an exact repeat of an
+                answered question is answered from memory. ``None`` (default) is off.
+            memory_top_k: Items per lookup (default 4; 0 turns recall off).
+            memory_min_score: Matches below this score are dropped (default 0.2; about 0.5
+                for OpenAI embeddings, about 0.1 for HashEmbeddings).
+            memory_write: False makes the store read-only.
         """
         self.model = model
         # Normalize (and copy) so run-time spawns don't mutate the
@@ -1112,6 +1160,13 @@ class Supervisor(_SpawnMixin):
         self.max_questions = max(0, int(max_questions))
         self.ask_timeout = ask_timeout
         self._operator: Optional[OperatorChannel] = None
+        self.memory = validate_memory(memory)
+        if int(memory_top_k) < 0:
+            raise ValueError("memory_top_k must be >= 0")
+        self.memory_top_k = int(memory_top_k)
+        self.memory_min_score = float(memory_min_score)
+        self.memory_write = bool(memory_write)
+        self._run_memory: Optional[RunMemory] = None
         # Persistent runs only: waits out transient planner/synthesis errors until the deadline.
         self._patience: Optional[PersistentRun] = None
 
@@ -1146,7 +1201,7 @@ class Supervisor(_SpawnMixin):
         offer = ask_allowed and self._operator is not None and self._operator.remaining() > 0
         base_prompt = SUPERVISOR_PLAN_PROMPT.format(
             agent_catalog=self._build_agent_catalog(),
-            user_task=self._task_for_model(user_task),
+            user_task=self._planning_task(user_task),
             max_subtasks=self.max_subtasks,
         )
         prompt = base_prompt
@@ -1154,6 +1209,8 @@ class Supervisor(_SpawnMixin):
             prompt = prompt + spawn_instruction(self._spawn_policy())
         if offer:
             prompt = prompt + ask_instruction(self._operator.remaining())
+            if self._memory_block(user_task, "plan"):
+                prompt = prompt + MEMORY_ASK_LINE
         if self._operator is not None:
             prompt = prompt + self._operator.plan_note()
         if repair_note:
@@ -1514,7 +1571,7 @@ class Supervisor(_SpawnMixin):
                 dispatched_query = _build_augmented_query(sub_query, dep_results)
             else:
                 dispatched_query = _build_augmented_query(sub_query, subtask_results)
-            dispatched_query = self._with_answers(dispatched_query)
+            dispatched_query = self._step_context(dispatched_query, sub_query)
             yield {"type": "dispatch", "agent": agent_name, "query": sub_query,
                    "step": step_idx, "step_id": step_id}
             if self.verbose:
@@ -1548,6 +1605,7 @@ class Supervisor(_SpawnMixin):
           - {"type": "delegate_result", "name": str, "outcome": str, "chars": int}
           - {"type": "question",       "source": "planner" | <agent name>, "question": str, "context": str}
           - {"type": "answer",         "source": str, "answered": bool, "reason": None | str}
+          - {"type": "memory",         "stage": "plan" | "step", "hits": int}
           - {"type": "dispatch",       "agent": str, "query": str, "step": int}
           - {"type": "subtask_result", "result": SubtaskResult, "step": int}
           - {"type": "replan",         "round": int, "unresolved": list, "plan": list}  (persistent)
@@ -1567,6 +1625,9 @@ class Supervisor(_SpawnMixin):
         self._spawn_run_policy.operator = self._operator
         if self._operator is not None:
             self._operator.budget = budget            # waiting on the operator pauses the deadline
+        self._run_memory = self._new_run_memory()
+        if self._operator is not None:
+            self._operator.memory = self._run_memory
         self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
                           if budget is not None else None)
 
@@ -1578,6 +1639,7 @@ class Supervisor(_SpawnMixin):
                 raise
             stopped = _stopped_before_planning(user_task, e)
             stopped.asked = self._asked_records()
+            stopped.memory = self._memory_records()
             yield from self._drain_operator_events()
             spent = budget_event(stopped.outcome)
             yield spent
@@ -1598,6 +1660,7 @@ class Supervisor(_SpawnMixin):
                 subtasks=[],
                 outcome=OUTCOME_STUCK,
                 asked=self._asked_records(),
+                memory=self._memory_records(),
             )
             yield {"type": "final", "content": result.content}
             yield {"type": "completion", "result": result}
@@ -1657,12 +1720,17 @@ class Supervisor(_SpawnMixin):
         if self.verbose:
             _log_final(final)
 
+        outcome = _supervisor_outcome(subtask_results, budget_reason)
+        if self._run_memory is not None and outcome == OUTCOME_DONE:
+            self._run_memory.remember_result(user_task, final)
+
         result = SupervisorResult(
             query=user_task, content=final,
             subtasks=subtask_results, plan=plan,
-            outcome=_supervisor_outcome(subtask_results, budget_reason),
+            outcome=outcome,
             spawned=list(self._spawn_policy().run.records),
             asked=self._asked_records(),
+            memory=self._memory_records(),
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
