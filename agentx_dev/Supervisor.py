@@ -970,6 +970,20 @@ class _SpawnMixin:
         block = self._memory_block(step_query, "step")
         return f"{query}\n\n{block}" if block else query
 
+    async def _amemory_block(self, query: str, stage: str) -> str:
+        """Async twin of :meth:`_memory_block`; the store is called off the event loop."""
+        return await self._run_memory.arecall(query, stage) if self._run_memory is not None else ""
+
+    async def _aplanning_task(self, user_task: str) -> str:
+        task = self._task_for_model(user_task)
+        block = await self._amemory_block(user_task, "plan")
+        return f"{task}\n\n{block}" if block else task
+
+    async def _astep_context(self, dispatched_query: str, step_query: str) -> str:
+        query = self._with_answers(dispatched_query)
+        block = await self._amemory_block(step_query, "step")
+        return f"{query}\n\n{block}" if block else query
+
     def _memory_records(self) -> List[Dict[str, Any]]:
         return list(self._run_memory.written) if self._run_memory is not None else []
 
@@ -1789,6 +1803,10 @@ class AsyncSupervisor(_SpawnMixin):
         ask_user: Any = None,
         max_questions: int = 3,
         ask_timeout: Optional[float] = None,
+        memory: Any = None,
+        memory_top_k: int = 4,
+        memory_min_score: float = 0.2,
+        memory_write: bool = True,
     ):
         """
         Args:
@@ -1841,6 +1859,17 @@ class AsyncSupervisor(_SpawnMixin):
             ask_timeout: (3.6) Seconds to wait for one answer. ``None`` lets the
                 channel decide (no limit in a notebook or terminal; 300 s on the
                 controlling-terminal path).
+            memory: (3.6) Long-term memory: any vector store with ``add`` and ``search``
+                (``VectorStore``, ``ChromaVectorStore``, ``QdrantVectorStore``,
+                ``PgVectorStore``). A slow store is called off the event loop. The planner
+                and every dispatched step get the few relevant stored items as a FROM
+                MEMORY block; the Supervisor saves each operator answer and each completed
+                run's final answer; an exact repeat of an answered question is answered
+                from memory. ``None`` (default) is off.
+            memory_top_k: Items per lookup (default 4; 0 turns recall off).
+            memory_min_score: Matches below this score are dropped (default 0.2; about 0.5
+                for OpenAI embeddings, about 0.1 for HashEmbeddings).
+            memory_write: False makes the store read-only.
         """
         self.model = model
         self.agents = _normalize_agents(agents)
@@ -1858,6 +1887,13 @@ class AsyncSupervisor(_SpawnMixin):
         self.max_questions = max(0, int(max_questions))
         self.ask_timeout = ask_timeout
         self._operator: Optional[OperatorChannel] = None
+        self.memory = validate_memory(memory)
+        if int(memory_top_k) < 0:
+            raise ValueError("memory_top_k must be >= 0")
+        self.memory_top_k = int(memory_top_k)
+        self.memory_min_score = float(memory_min_score)
+        self.memory_write = bool(memory_write)
+        self._run_memory: Optional[RunMemory] = None
         if spawn_config is None:
             # Same default as Supervisor: persistent runs may create sub-agents inside a safe ceiling.
             spawn_config = (
@@ -1906,13 +1942,15 @@ class AsyncSupervisor(_SpawnMixin):
         offer = ask_allowed and self._operator is not None and self._operator.remaining() > 0
         prompt = SUPERVISOR_PLAN_PROMPT.format(
             agent_catalog=self._build_agent_catalog(),
-            user_task=self._task_for_model(user_task),
+            user_task=await self._aplanning_task(user_task),
             max_subtasks=self.max_subtasks,
         )
         if self.spawn_config.enabled:
             prompt = prompt + spawn_instruction(self._spawn_policy())
         if offer:
             prompt = prompt + ask_instruction(self._operator.remaining())
+            if await self._amemory_block(user_task, "plan"):
+                prompt = prompt + MEMORY_ASK_LINE
         if self._operator is not None:
             prompt = prompt + self._operator.plan_note()
         if repair_note:
@@ -2048,9 +2086,10 @@ class AsyncSupervisor(_SpawnMixin):
         # concurrent mode there's nothing to thread and the specialist
         # runs on the plain query. Stored result uses the plain query
         # so the audit trail isn't polluted with the injected context.
-        dispatched_query = self._with_answers(
+        dispatched_query = await self._astep_context(
             _build_augmented_query(sub_query, prior_results)
-            if prior_results else sub_query
+            if prior_results else sub_query,
+            sub_query,
         )
         if self.verbose:
             _log_dispatch(agent_name, sub_query)
@@ -2362,6 +2401,9 @@ class AsyncSupervisor(_SpawnMixin):
         self._spawn_run_policy.operator = self._operator
         if self._operator is not None:
             self._operator.budget = budget            # waiting on the operator pauses the deadline
+        self._run_memory = self._new_run_memory()
+        if self._operator is not None:
+            self._operator.memory = self._run_memory
         self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
                           if budget is not None else None)
         yield {"type": "plan_start"}
@@ -2372,6 +2414,7 @@ class AsyncSupervisor(_SpawnMixin):
                 raise
             stopped = _stopped_before_planning(user_task, e)
             stopped.asked = self._asked_records()
+            stopped.memory = self._memory_records()
             for ev in self._drain_operator_events():
                 yield ev
             spent = budget_event(stopped.outcome)
@@ -2393,6 +2436,7 @@ class AsyncSupervisor(_SpawnMixin):
                 plan=[], subtasks=[],
                 outcome=OUTCOME_STUCK,
                 asked=self._asked_records(),
+                memory=self._memory_records(),
             )
             yield {"type": "final", "content": result.content}
             yield {"type": "completion", "result": result}
@@ -2461,12 +2505,17 @@ class AsyncSupervisor(_SpawnMixin):
         if self.verbose:
             _log_final(final)
 
+        outcome = _supervisor_outcome(subtask_results, budget_reason)
+        if self._run_memory is not None and outcome == OUTCOME_DONE:
+            await asyncio.to_thread(self._run_memory.remember_result, user_task, final)
+
         result = SupervisorResult(
             query=user_task, content=final,
             subtasks=list(subtask_results), plan=plan,
-            outcome=_supervisor_outcome(subtask_results, budget_reason),
+            outcome=outcome,
             spawned=list(self._spawn_policy().run.records),
             asked=self._asked_records(),
+            memory=self._memory_records(),
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
