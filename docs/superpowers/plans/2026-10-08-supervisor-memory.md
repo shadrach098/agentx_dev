@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Python 3.10, 3.11, 3.12 must work (CI matrix). No new dependencies.
-- With `memory=None` (the default), behavior is identical to today: no new prompt text, no store calls, no new events, `SupervisorResult.memory == []`, and `result.asked` / `answer` events keep their exact current shapes (the new `from_memory` key exists only when true). The existing suite (baseline now: 930 passed, 4 skipped) must stay green.
+- With `memory=None` (the default), behavior is identical to today: no new prompt text, no store calls, no new events, `SupervisorResult.memory == []`, and `result.asked` / `answer` events keep their exact current shapes (the new `from_memory` key exists only when true). The existing suite (baseline now: 941 passed, 4 skipped) must stay green.
 - Sync and async parity: everything added to `Supervisor` is added to `AsyncSupervisor`; async store calls run in `asyncio.to_thread` so the loop is never blocked.
 - A store problem never fails a run: every `search` / `add` call is wrapped; an exception is logged with `logger.warning` and treated as "no hits" / "not written".
 - Never add a `Co-Authored-By` trailer or any attribution line to commit messages (the user is the sole contributor). Plain conventional-commit messages.
@@ -783,7 +783,7 @@ Expected: FAIL (`AttributeError: 'OperatorChannel' object has no attribute 'memo
            key = _normalize(q)
            with self._lock:
                done = self._begin(q, key, context, source, self._stored_answer(q, key))
-               result = done if done is not None else self._end(q, key, source, self._ask_sync(_shown(q, context)))
+               result = done if done is not None else self._end(q, key, source, self._ask_sync(_shown(q, context), source))
            self._flush_writes()
            return result
 
@@ -799,7 +799,7 @@ Expected: FAIL (`AttributeError: 'OperatorChannel' object has no attribute 'memo
                if self.memory is not None and key not in self._seen:
                    stored = await self.memory.alookup_answer(q)
                done = self._begin(q, key, context, source, stored)
-               result = done if done is not None else self._end(q, key, source, await self._ask_async(_shown(q, context)))
+               result = done if done is not None else self._end(q, key, source, await self._ask_async(_shown(q, context), source))
            finally:
                self._lock.release()
            if self._pending_writes:
@@ -1130,7 +1130,7 @@ Expected: FAIL (`TypeError: Supervisor.__init__() got an unexpected keyword argu
 - [ ] **Step 4: Run to verify it passes, then the whole suite**
 
 Run: `python -m pytest tests/test_supervisor_memory_wiring.py -q` then `python -m pytest -q`
-Expected: new tests pass; full suite green (930 + new). If an existing test fails only because it asserts an exact `SupervisorResult` dict or event list, report it instead of loosening production behavior.
+Expected: new tests pass; full suite green (941 + new). If an existing test fails only because it asserts an exact `SupervisorResult` dict or event list, report it instead of loosening production behavior.
 
 - [ ] **Step 5: Commit**
 
