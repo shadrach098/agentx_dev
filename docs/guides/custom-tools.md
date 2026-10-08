@@ -194,6 +194,14 @@ the full response body lands on disk and the reply includes a
 `open(cached_path).read()` snippet the model can drop straight into
 `run_python`. Saves LLM tokens on huge pages.
 
+**`web_fetch_tool(text_only=True)`** (3.6) — return an HTML page as readable text
+(scripts, styles and tags removed) instead of the first `max_chars` characters of raw
+markup. A modern page puts tens of thousands of characters of script and style before its
+content, so by default a model can fetch a pricing page and see only its title. JSON and
+plain text come back unchanged, and the full raw body is still cached when `cache_dir` is
+set. The default stays off (the raw body, as before); the helpers a Supervisor builds turn
+it on.
+
 **SSRF guard** (3.0.6) — `web_fetch` rejects non-public destinations
 (loopback, RFC1918, 169.254.169.254 cloud metadata, link-local,
 multicast) and re-validates every redirect hop.

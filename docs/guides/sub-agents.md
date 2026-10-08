@@ -204,6 +204,8 @@ With `verbose=True` the same moments print as `[spawn]` and `[ask]` lines.
 ## Things to know
 
 - **The ceiling bounds tools, not behavior.** Instructions can steer a helper within what you allowed (for example to fetch a particular URL with `web`). Keep `code`, `files` and `delete` out of the ceiling for supervisors that handle untrusted input.
+- **A helper without a code tool can still write code as text.** A model may answer with a script it cannot run (the ceiling stopped it from running anything; `result.spawned[i]["tools"]` shows what it had). Helpers are told never to answer with a script unless they have a code tool, and to say what they tried and what was missing; the Supervisor then reports that no data came back instead of treating the code as data.
+- **Helpers fetch readable text.** The `web` helper's `web_fetch` returns pages as readable text (scripts, styles and tags removed), so prices and copy are not buried under markup. Your own `web_fetch_tool()` keeps returning the raw body unless you pass `text_only=True`.
 - **Cost.** Each helper is a full agent with its own turns. `max_spawns` and `max_depth` bound the count; for unattended runs also use `Persistence` or a model cost cap (`model.configure_limits(budget_usd=..., input_price_per_1k=..., output_price_per_1k=...)`).
 - **Fresh context is the point, and the catch.** A helper knows nothing you don't put in its task.
 - **Tool cache.** Helpers in persistent mode run with the tool-result cache off, like any persistent agent.

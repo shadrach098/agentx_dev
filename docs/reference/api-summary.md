@@ -68,7 +68,7 @@ Tools registered by `DefaultTools`: `read_path`, `list_directory`,
 | Symbol | Kind | Doc |
 |---|---|---|
 | `web_search_tool` | factory | DuckDuckGo + Wikipedia fallback |
-| `web_fetch_tool` | factory | GET a URL (optional disk cache) |
+| `web_fetch_tool` | factory | GET a URL (optional disk cache; 3.6: `text_only=True` returns readable text instead of raw markup) |
 
 ## Memory
 

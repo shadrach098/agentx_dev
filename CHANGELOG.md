@@ -38,6 +38,11 @@ Sub-agents: the Supervisor can create its own helpers. Opt-in, with the behavior
   operator answers the planner is told to do the work instead of planning another question. The
   helper-creation instructions now say a helper can only look things up with the tools it is given
   (this applies to every Supervisor that enables spawning).
+- `web_fetch_tool(text_only=True)`: return an HTML page as readable text (scripts, styles and tags
+  removed) instead of the first 50,000 characters of raw markup, which on a modern page can hold no
+  content at all. Default off (unchanged for existing agents); the helpers a Supervisor builds use it.
+  Helpers are also told not to answer with a script unless they have a code tool, and to say what
+  they tried and what was missing.
 - `RunBudget` now carries a `PausableClock` (it holds a lock), so a `RunBudget` can no longer be
   deep-copied or pickled.
 

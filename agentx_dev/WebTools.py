@@ -165,11 +165,15 @@ def _cache_path_for(cache_dir: Path, url: str) -> Path:
     return cache_dir / f"fetch_{digest}{suffix}"
 
 
-def _do_fetch(url: str, cache_dir: Optional[Path], max_chars: int) -> str:
+def _do_fetch(url: str, cache_dir: Optional[Path], max_chars: int, text_only: bool = False) -> str:
     """Fetch a URL and return its text body (plus a saved-to line when a
     cache_dir is configured). Errors return an 'ERROR:' string; never
     raises so the tool dispatch can log cleanly and the agent can decide
-    whether to retry a different URL."""
+    whether to retry a different URL.
+
+    With ``text_only`` an HTML page is returned as readable text (scripts, styles and tags
+    removed) before it is cut at ``max_chars``. Anything that does not look like HTML (JSON,
+    plain text) is returned as it is."""
     if not url.startswith(("http://", "https://")):
         return f"ERROR: URL must start with http:// or https:// — got {url!r}"
     # SSRF guard: reject non-public destinations (loopback, RFC1918,
@@ -216,6 +220,19 @@ def _do_fetch(url: str, cache_dir: Optional[Path], max_chars: int) -> str:
             )
         except (OSError, PermissionError) as e:
             cache_note = f"\n\n[cache write failed: {e}; preview only]"
+
+    if text_only and _looks_like_html(body):
+        text = _html_to_text(body)
+        if not text:
+            return (
+                "(the page has no readable text after removing scripts and markup; it is probably "
+                "rendered by JavaScript, so try another URL or search for the same facts)"
+                + cache_note
+            )
+        if len(text) > max_chars:
+            text = (text[:max_chars] + f"\n\n... (preview truncated at {max_chars} chars; "
+                    f"total readable text was {len(text)} chars)")
+        return text + cache_note
 
     if len(body) > max_chars:
         body = body[:max_chars] + f"\n\n... (preview truncated at {max_chars} chars; total was {total_bytes} bytes)"
@@ -313,6 +330,14 @@ _MULTI_WS_RE = re.compile(r"[ \t]+")
 _MULTI_NL_RE = re.compile(r"\n{3,}")
 
 
+_HTML_START_RE = re.compile(r"<\s*(!doctype\s+html|html|head|body)\b", re.IGNORECASE)
+
+
+def _looks_like_html(body: str) -> bool:
+    """True for an HTML document (JSON and plain text are left alone by ``text_only``)."""
+    return bool(_HTML_START_RE.search(body[:2000]))
+
+
 def _html_to_text(body: str) -> str:
     """Best-effort HTML -> plain text. Cheap enough to run on every
     fetch; keep it dependency-free so `pip install agentx-dev` doesn't
@@ -331,10 +356,18 @@ def web_fetch_tool(
     vector_store: Optional[Any] = None,
     chunk_size: int = 1500,
     chunk_overlap: int = 200,
+    text_only: bool = False,
 ) -> StructuredTool:
     """Build a web_fetch tool.
 
     Args:
+        text_only: Return an HTML page as readable text (scripts, styles and tags removed)
+            instead of the first ``max_chars`` characters of raw markup. A modern page puts tens
+            of thousands of characters of script and style before its content, so with the raw
+            default a model can fetch a pricing page and see only its title. JSON and plain text
+            are returned unchanged. Default False (the raw body, as before); the helpers a
+            Supervisor builds turn it on. The full raw body is still cached when ``cache_dir``
+            is set.
         cache_dir: When set, every successful fetch also writes the FULL
             body to a file under this directory and the tool response
             includes a "[cached full body to: <path>]" line telling the
@@ -372,7 +405,8 @@ def web_fetch_tool(
         splitter = TextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
     def _fetch(url: str, max_chars: int = 50_000) -> str:
-        raw_response = _do_fetch(url, cache_dir=resolved_dir, max_chars=max_chars)
+        raw_response = _do_fetch(url, cache_dir=resolved_dir, max_chars=max_chars,
+                                 text_only=text_only and vector_store is None)
         # Errors from _do_fetch return an "ERROR:" string; propagate
         # verbatim so the agent loop sees it as a normal tool failure.
         if raw_response.startswith("ERROR:"):
@@ -474,6 +508,12 @@ def web_fetch_tool(
         parts.append(
             "Returns the response body as text, truncated at max_chars "
             "(default 50k)."
+        )
+    if text_only and vector_store is None:
+        parts.append(
+            "An HTML page comes back as readable text (scripts, styles and tags removed), so the "
+            "prices, plans and copy on the page are in the first characters; JSON and plain text "
+            "are returned unchanged."
         )
     parts.append("Errors return an 'ERROR:' string; no exception.")
 

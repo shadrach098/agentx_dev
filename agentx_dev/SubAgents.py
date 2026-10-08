@@ -153,6 +153,7 @@ _SPAWNED_SPECIALIST_ADDENDUM = """You were spawned by a Supervisor to handle a s
 
 - INCLUDE THE ACTUAL DATA IN YOUR FINAL ANSWER. Do not just report a status like "the file was written" or "task complete". If you extracted a title, list it. If you found 3 competitors, name them + positioning + URL in your reply. If you saved a report, include a concise summary of its contents. The Supervisor cannot read your files — it can only read your reply.
 - Do NOT invent data. If a fetch failed or a page didn't contain the field asked for, say so plainly ("no phone numbers were found on the page"). Say it explicitly rather than guess.
+- You can only do what your tools allow. If you have no code-execution tool, never answer with a script or code: use the tools you do have. If your tools return nothing useful, say plainly what you tried and what was missing instead of guessing.
 - Keep the reply structured (bullet lists, tables, key: value lines) so the Supervisor's synthesis step can lift verbatim facts out.
 - For any STRUCTURAL CODE METRIC — class counts, method counts per class, function names, duplicate-function detection, cyclomatic complexity, call-graph analysis — USE the `ast` module inside run_python. Parse the file with `ast.parse(source)` and walk `ast.ClassDef` / `ast.FunctionDef` / `ast.AsyncFunctionDef` nodes. Do NOT use regex or `line.startswith('def ')` for these — that approach misses nested defs, counts strings-that-happen-to-contain-'class' as classes, treats keywords like `for`/`while` inside a function body as CC contributors for the wrong function, and produces obviously-wrong numbers (functions with CC=400, "function names" that are actually Python keywords). If you find yourself computing a per-function metric via string heuristics, stop and rewrite using ast."""
 
@@ -496,7 +497,9 @@ class SpawnPolicy:
         cache_dir = str(cfg.allowed_paths[0]) if (cfg.allowed_paths and file_caps) else None
         for preset in granted_presets:
             if preset == "web":
-                tools.extend([web_search_tool(), web_fetch_tool(cache_dir=cache_dir)])
+                # Readable text, not raw markup: a modern page puts tens of thousands of
+                # characters of script before its content, which hid the prices from models.
+                tools.extend([web_search_tool(), web_fetch_tool(cache_dir=cache_dir, text_only=True)])
             else:
                 flags.update(_PRESET_PERMS[preset])
         tools.extend(pool_tools)
