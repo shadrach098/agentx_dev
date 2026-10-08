@@ -81,8 +81,22 @@ The planner's plan is model output, which can be steered by the user's text. So 
 | `allowed_paths` | `["./workspace"]` | The file sandbox for `files_read`, `files`, `code` and `delete`. |
 | `max_spawns` | 3 (6 in ceiling mode) | Sub-agents per run, planner spawns and delegations together. |
 | `max_depth` | `1` | A helper can't spawn its own helpers. Raise it to allow deeper trees. |
+| `max_iterations` | `15` | How many steps each helper the Supervisor creates may take. The helper is told its limit so it can finish before it runs out. |
 | `approver` | `None` | Optional `(SpawnRequest) -> bool`. In ceiling mode it is an extra gate, not required. |
 | `auto_spawn`, `auto_spawn_allowed_caps` | | The older approval flow, used only when neither `capabilities` nor `tools` is set. |
+
+### Where the step limit is set
+
+A step is one turn of an agent's loop (a model reply, usually followed by a tool call). The limit lives in two places, depending on who built the agent:
+
+| Agent | Set the limit with |
+|---|---|
+| A specialist you registered with the Supervisor | `AgentRunner(..., max_iterations=N)` when you build it |
+| A helper the Supervisor creates (a planner's `new_agent` or a `delegate` call) | `SpawnConfig(max_iterations=N)` |
+
+The Supervisor itself has no step limit: it plans, dispatches and synthesizes. What bounds it is the number of steps in the plan, `max_subtask_retries` and, in persistent mode, the `Persistence` limits (`max_minutes`, `max_replans`, the cost budget).
+
+When a helper runs out of steps its outcome is `iteration_limit`, and the Supervisor retries it (once by default, see `max_subtask_retries`) with a note saying it ran out, what it did, and to look things up less and answer from what it has. If helpers keep hitting the limit, raise `SpawnConfig(max_iterations=...)` or narrow what the step asks for.
 
 Inside the ceiling, nobody is asked for approval, so a long unattended run never stalls. A request outside it is clipped, not fatal: the helper is built with what is allowed. If a helper asked for tools and none are allowed, the step fails with `spawn refused: no usable tools`.
 

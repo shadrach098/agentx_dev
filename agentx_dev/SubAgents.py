@@ -101,6 +101,10 @@ class SpawnConfig:
             request: anything outside it is dropped.
         max_depth: (3.6) 1 (default) = a spawned agent cannot spawn more;
             specialists you registered can delegate. Raise to allow deeper trees.
+        max_iterations: (3.6) Step limit for each helper the Supervisor creates (planner-defined
+            agents and ``delegate`` calls). Default 15. Specialists you registered keep the limit
+            you gave their own ``AgentRunner(max_iterations=...)``. The helper is told its limit,
+            so it can wrap up before it runs out. Values below 1 are treated as 1.
         max_spawns: Defaults to 3 in legacy mode and 6 in ceiling mode;
             counts planner-time spawns and ``delegate`` calls together.
     """
@@ -113,6 +117,7 @@ class SpawnConfig:
     tools: Optional[List[Any]] = None
     capabilities: Optional[Set[str]] = None
     max_depth: int = 1
+    max_iterations: int = 15
 
     @property
     def ceiling_mode(self) -> bool:
@@ -156,6 +161,14 @@ _SPAWNED_SPECIALIST_ADDENDUM = """You were spawned by a Supervisor to handle a s
 - You can only do what your tools allow. If you have no code-execution tool, never answer with a script or code: use the tools you do have. If your tools return nothing useful, say plainly what you tried and what was missing instead of guessing.
 - Keep the reply structured (bullet lists, tables, key: value lines) so the Supervisor's synthesis step can lift verbatim facts out.
 - For any STRUCTURAL CODE METRIC — class counts, method counts per class, function names, duplicate-function detection, cyclomatic complexity, call-graph analysis — USE the `ast` module inside run_python. Parse the file with `ast.parse(source)` and walk `ast.ClassDef` / `ast.FunctionDef` / `ast.AsyncFunctionDef` nodes. Do NOT use regex or `line.startswith('def ')` for these — that approach misses nested defs, counts strings-that-happen-to-contain-'class' as classes, treats keywords like `for`/`while` inside a function body as CC contributors for the wrong function, and produces obviously-wrong numbers (functions with CC=400, "function names" that are actually Python keywords). If you find yourself computing a per-function metric via string heuristics, stop and rewrite using ast."""
+
+
+def _step_budget_line(max_iterations: int) -> str:
+    """Tells a helper how many steps it has, so it wraps up instead of running out."""
+    unit = "step" if max_iterations == 1 else "steps"
+    return (f"\n\nYou have at most {max_iterations} {unit}. Finish with a Final_Answer before "
+            "they run out. Stop researching once you have enough; an answer that says what is "
+            "missing is better than running out of steps.")
 
 
 # ----------------------------------------------------------------------------
@@ -505,15 +518,17 @@ class SpawnPolicy:
         tools.extend(pool_tools)
         perms = Permissions(allowed_paths=list(cfg.allowed_paths), **flags) if flags else None
         cls = AsyncAgentRunner if is_async else AgentRunner
+        steps = max(1, int(cfg.max_iterations))
         return cls(
             model=self.model,
             agent=AgentType.ReAct,
             tools=tools,
             permissions=perms,
-            max_iterations=15,
+            max_iterations=steps,
             verbose=False,
             system_addendum=(_SPAWNED_SPECIALIST_ADDENDUM
                              + (ASK_ADDENDUM_LINE if self.operator is not None else "")
+                             + _step_budget_line(steps)
                              + "\n\nYour role:\n" + spec.instructions),
         )
 

@@ -42,7 +42,7 @@ from agentx_dev.Operator import (
 )
 from agentx_dev.SupervisorMemory import MEMORY_ASK_LINE, RunMemory, validate_memory
 from agentx_dev.Runner.Persistence import (
-    OUTCOME_DONE, OUTCOME_OUT_OF_BUDGET, OUTCOME_OUT_OF_TIME, OUTCOME_PARTIAL, OUTCOME_STUCK,
+    OUTCOME_DONE, OUTCOME_ITERATION_LIMIT, OUTCOME_OUT_OF_BUDGET, OUTCOME_OUT_OF_TIME, OUTCOME_PARTIAL, OUTCOME_STUCK,
     BudgetExpired, Persistence, PersistentRun, RunBudget, _clip, accepts_budget,
     apply_persistence, budget_event,
 )
@@ -526,6 +526,29 @@ def _augment_query_with_unmet_criteria(
         f"{reason}\n\nThe same approach will fail the same way — change your "
         f"METHOD (a different tool, endpoint, parse strategy, or fallback) and "
         f"produce output that meets the criteria."
+    )
+
+
+_RECAP_CHARS = 1500
+
+
+def _augment_query_with_iteration_limit(base_query: str, recap: str, attempt: int) -> str:
+    """The retry note for a specialist that ran out of steps (outcome ``iteration_limit``).
+
+    The generic "change your METHOD" note sent such a helper to do the same research again with
+    the same budget. What it needs to hear is that the steps were the problem and that nothing
+    it found survived, so the note says that, shows a trimmed recap of what the last attempt
+    did, and asks for an answer from what is already known."""
+    recap = (recap or "").strip()
+    if len(recap) > _RECAP_CHARS:
+        recap = recap[:_RECAP_CHARS].rstrip() + " ..."
+    shown = f"\n\nWhat it did:\n{recap}" if recap else ""
+    return (
+        f"{base_query}\n\n===\n\n[supervisor] Your PREVIOUS attempt (#{attempt}) ran out of "
+        f"steps before it gave a Final_Answer, so everything it found was lost.{shown}\n\n"
+        f"Make fewer lookups this time and stop researching as soon as you have enough. Answer "
+        f"from what you can find quickly; an answer that says what is missing is better than "
+        f"running out of steps again."
     )
 
 
@@ -1385,9 +1408,14 @@ class Supervisor(_SpawnMixin):
                     f"{_C_RESET}"
                 )
             if attempt < attempts:
-                query = _augment_query_with_unmet_criteria(
-                    dispatched_query, reason, attempt,
-                )
+                if result.outcome == OUTCOME_ITERATION_LIMIT:
+                    query = _augment_query_with_iteration_limit(
+                        dispatched_query, result.content, attempt,
+                    )
+                else:
+                    query = _augment_query_with_unmet_criteria(
+                        dispatched_query, reason, attempt,
+                    )
 
         if last_result is not None:
             # Keep the content the specialist produced, but flag it failed.
@@ -2162,9 +2190,14 @@ class AsyncSupervisor(_SpawnMixin):
                     f"{_C_RESET}"
                 )
             if attempt < attempts:
-                query = _augment_query_with_unmet_criteria(
-                    dispatched_query, reason, attempt,
-                )
+                if candidate.outcome == OUTCOME_ITERATION_LIMIT:
+                    query = _augment_query_with_iteration_limit(
+                        dispatched_query, candidate.content, attempt,
+                    )
+                else:
+                    query = _augment_query_with_unmet_criteria(
+                        dispatched_query, reason, attempt,
+                    )
         if result is None:
             if last_result is not None:
                 last_result.error = last_error

@@ -49,6 +49,13 @@ Sub-agents: the Supervisor can create its own helpers. Opt-in, with the behavior
   content at all. Default off (unchanged for existing agents); the helpers a Supervisor builds use it.
   Helpers are also told not to answer with a script unless they have a code tool, and to say what
   they tried and what was missing.
+- `SpawnConfig(max_iterations=15)`: the step limit for the helpers a Supervisor creates (it was fixed at 15).
+  Registered specialists keep the limit set on their own `AgentRunner`. Helpers are told their step limit
+  so they can finish with a Final_Answer in time.
+- A helper that runs out of steps (`iteration_limit`) is retried with a note that it ran out, a short
+  recap of what it did, and an instruction to do fewer lookups; other failures keep the generic retry note.
+- The unknown-tool error now lists the valid tools and says that a response-format name such as `React_`
+  is not a tool, so a model that called one can recover.
 - `RunBudget` now carries a `PausableClock` (it holds a lock), so a `RunBudget` can no longer be
   deep-copied or pickled.
 

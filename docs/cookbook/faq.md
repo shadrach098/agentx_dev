@@ -347,6 +347,20 @@ Before 3.3 it was concurrent *without* context threading — sub-tasks
 couldn't see each other's findings. Declaring edges is what buys you
 both at once.
 
+## Where do I set max iterations for a Supervisor's agents? *(3.6)*
+
+It depends on who built the agent:
+
+- **A specialist you registered**: on its own runner, `AgentRunner(..., max_iterations=N)`.
+- **A helper the Supervisor creates** (planner-defined `new_agent` or a `delegate` call):
+  `Supervisor(..., spawn_config=SpawnConfig(max_iterations=N))`. The default is 15.
+- **The Supervisor itself** has no step limit; it is bounded by the plan, `max_subtask_retries` and, in
+  persistent mode, the `Persistence` limits.
+
+A helper that runs out ends with outcome `iteration_limit` and loses what it found, so the
+Supervisor retries it (once by default) with a note that it ran out and what it did. Helpers are also told
+their limit up front. See [Sub-agents](../guides/sub-agents.md).
+
 ## Why did a sub-task not run? *(3.3)*
 
 Check `SubtaskResult.skipped`. Two different causes, told apart by

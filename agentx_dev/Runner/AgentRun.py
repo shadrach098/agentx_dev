@@ -533,6 +533,12 @@ def _find_project_guide(
     return None
 
 
+# Names of the response formats an agent can be run with. Models sometimes write one of
+# these where a tool name belongs; the unknown-tool message says so.
+_FORMAT_NAMES = frozenset({"React_", "StandardParser", "ChainOfThought", "ZeroShot",
+                           "FewShot", "Instruction_Tuned_"})
+
+
 class ToolRegistry:
     """Owns tool storage, name lookup, and prompt-block generation.
 
@@ -789,6 +795,22 @@ class ToolRegistry:
 
     def names_block(self) -> str:
         return ", ".join(t.name for t in self._tools)
+
+    def _unknown_tool_message(self, name: str) -> str:
+        """What the model reads when it names a tool that does not exist.
+
+        A bare "not found" left models guessing, and some answered with a response-format
+        name such as ``React_`` as if it were a tool, so the message lists what IS callable."""
+        if self._tools:
+            valid = f"Valid tools: {', '.join(self.names)}."
+        else:
+            valid = "You have no tools in this run."
+        if name in _FORMAT_NAMES:
+            what = (f"'{name}' is the name of your response format, not a tool; "
+                    "do not put it in an action.")
+        else:
+            what = f"Tool '{name}' not found."
+        return f"{what} {valid} To finish, reply with Final_Answer."
 
     def to_tool_specs(self) -> List[Dict[str, Any]]:
         """Build provider-agnostic tool specs for every registered tool.
@@ -1152,10 +1174,7 @@ class ToolRegistry:
                 logger.warning(
                     f"Tool '{name}' not found. Available tools: {self.names}"
                 )
-                result = ToolError(
-                    f"Tool '{name}' not found. Please double-check the tool name.",
-                    tool=name,
-                )
+                result = ToolError(self._unknown_tool_message(name), tool=name)
 
             if not isinstance(result, ToolError):
                 self._cache_set(name, args, result)
@@ -1291,10 +1310,7 @@ class ToolRegistry:
                 logger.warning(
                     f"Tool '{name}' not found. Available tools: {self.names}"
                 )
-                result = ToolError(
-                    f"Tool '{name}' not found. Please double-check the tool name.",
-                    tool=name,
-                )
+                result = ToolError(self._unknown_tool_message(name), tool=name)
 
             if not isinstance(result, ToolError):
                 self._cache_set(name, args, result)

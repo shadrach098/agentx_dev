@@ -127,7 +127,7 @@ CLI: `python -m agentx_dev.Evals run <dir> --config <yaml>`
 | `AsyncSupervisor` | class | Async concurrent dispatch (3.3: completion-driven DAG scheduler, `max_parallel=` cap) (3.6: same `ask_user=`, `max_questions=`, `ask_timeout=`; `ask_user` may be an `async` function; same `memory=`, `memory_top_k=`, `memory_min_score=`, `memory_write=`) |
 | `SupervisorResult` | dataclass | Plan + subtask results + final (3.5: `.outcome`) (3.6: `.asked`, one dict per question put to the operator: `source`, `question`, `answered`, `reason`, `deduped`; no answer text) (3.6: `.memory`, what the run saved to long-term memory: `kind`, `id`, `text` cut at 80 characters) |
 | `SubtaskResult` | dataclass | One specialist's contribution. *(3.2)* `.output` carries the validated Pydantic instance when the runner declared an `output_schema` |
-| `SpawnConfig` | dataclass | Sub-agent settings: `enabled`, `capabilities` / `tools` (the ceiling), `allowed_paths`, `max_spawns`, `max_depth`, `approver` (3.6: ceiling mode; `AsyncSupervisor` and `AgentRunner(delegation=)` accept it) |
+| `SpawnConfig` | dataclass | Sub-agent settings: `enabled`, `capabilities` / `tools` (the ceiling), `allowed_paths`, `max_spawns`, `max_depth`, `max_iterations` (step limit for Supervisor-created helpers), `approver` (3.6: ceiling mode; `AsyncSupervisor` and `AgentRunner(delegation=)` accept it) |
 | `AgentSpec` *(3.6)* | dataclass | One sub-agent to build: `name`, `instructions`, `tools`, `origin` |
 | `SpawnRequest` | dataclass | One planner-issued spawn ask |
 | `Specialist` *(3.3)* | dataclass | Registry entry with planner metadata: `depends_on` hints, `output_schema` display, `when_to_use` |
