@@ -458,3 +458,29 @@ class TestPlannerHelpers:
     def test_reply_text(self):
         assert op.reply_text(op.Reply(text="Notion")) == "[operator] Notion"
         assert op.reply_text(op.Reply(None, "declined")) == op.NO_ANSWER_TEXT
+
+
+class TestWhoIsAsking:
+    def test_the_builtin_prompt_is_prefixed_with_the_agent_that_asked(self, monkeypatch):
+        seen = []
+
+        def record(question, *, prefix="", timeout=None):
+            seen.append(prefix)
+            return "an answer"
+        monkeypatch.setattr(op, "builtin_asker", record)
+        ch = make(True, max_questions=5)
+        ch.ask("one?", source="planner")
+        ch.ask("two?", source="pricing_researcher")
+        assert seen == ["[planner]", "[pricing_researcher]"]
+
+    def test_the_async_builtin_prompt_is_prefixed_too(self, monkeypatch):
+        seen = []
+
+        def record(question, *, prefix="", timeout=None):
+            seen.append(prefix)
+            return "an answer"
+        monkeypatch.setattr(op, "builtin_asker", record)
+        monkeypatch.setattr(op, "_in_notebook", lambda: True)
+        ch = make(True, is_async=True)
+        asyncio.run(ch.aask("one?", source="analyst"))
+        assert seen == ["[analyst]"]

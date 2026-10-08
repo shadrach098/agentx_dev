@@ -330,7 +330,7 @@ class TestPromptText:
         op.builtin_asker("Which?\x1b[2J\x1b]0;pwned\x07 \rline\x00\x7f\tafter\nnext", prefix="[a]")
         shown = seen[0]
         assert not any(ord(c) < 32 and c not in "\n\t" for c in shown) and "\x7f" not in shown
-        assert "Which?" in shown and "\tafter\nnext" in shown
+        assert "Which?" in shown and "\tafter\n  next" in shown       # newline kept; continuation lines are indented
 
     def test_the_controlling_terminal_prompt_is_cleaned_too(self, monkeypatch):
         no_ipython(monkeypatch)
@@ -439,3 +439,87 @@ class TestAsyncTerminalRead:
         monkeypatch.setattr(builtins, "input", lambda prompt="": "fresh")
         reply = asyncio.run(op.OperatorChannel.create(True, is_async=True).aask("third"))
         assert reply.text == "fresh"
+
+
+class TestPromptShowsWhoIsAsking:
+    """Every built-in prompt starts with `[who] <hand> needs your input`, so a GUI shows who asked."""
+
+    HAND = "\U0001F64B"
+
+    def test_the_banner_has_the_prefix_the_hand_and_the_question(self):
+        text = op._banner("[planner]", "Which competitors?")
+        assert text == f"\n[planner] {self.HAND} needs your input\n  question: Which competitors?\n"
+
+    def test_a_context_line_is_kept_on_its_own_line(self):
+        text = op._banner("[helper]", "Which file?\n(context: step 2)")
+        assert "  question: Which file?\n  (context: step 2)\n" in text
+
+    def test_the_plain_banner_has_no_hand(self):
+        assert self.HAND not in op._banner("[x]", "q", emoji=False)
+        assert "[x] needs your input" in op._banner("[x]", "q", emoji=False)
+
+    def test_a_notebook_prompt_names_who_asked(self, monkeypatch):
+        fake_ipython(monkeypatch, ZMQInteractiveShell())
+        seen = []
+        monkeypatch.setattr(builtins, "input", lambda prompt="": seen.append(prompt) or "ok")
+        op.builtin_asker("Which competitors?", prefix="[pricing_researcher]")
+        assert seen[0].startswith(f"\n[pricing_researcher] {self.HAND} needs your input")
+        assert "question: Which competitors?" in seen[0] and seen[0].endswith("> ")
+
+    def test_a_terminal_prompt_names_who_asked(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch)
+        seen = []
+        monkeypatch.setattr(builtins, "input", lambda prompt="": seen.append(prompt) or "ok")
+        op.builtin_asker("Which?", prefix="[planner]")
+        assert f"[planner] {self.HAND} needs your input" in seen[0]
+
+    def test_the_controlling_terminal_banner_names_who_asked(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch, is_tty=False)
+        written = []
+
+        class Out(io.StringIO):
+            def close(self):
+                written.append(self.getvalue())
+                super().close()
+        monkeypatch.setattr(op, "_open_controlling_tty", lambda: (io.StringIO("Coda\n"), Out()))
+        assert op.builtin_asker("Which?", prefix="[planner]") == "Coda"
+        assert f"[planner] {self.HAND} needs your input" in written[0]
+
+    def test_a_console_that_cannot_print_the_hand_gets_the_plain_banner(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch)
+        seen = []
+
+        def input_ascii_only(prompt=""):
+            seen.append(prompt)
+            prompt.encode("ascii")                         # what a cp1252-style console would do
+            return "ok"
+        monkeypatch.setattr(builtins, "input", input_ascii_only)
+        assert op.builtin_asker("Which?", prefix="[planner]") == "ok"
+        assert len(seen) == 2 and self.HAND in seen[0] and self.HAND not in seen[1]
+        assert "[planner] needs your input" in seen[1]
+
+    def test_a_controlling_terminal_that_cannot_print_the_hand_gets_the_plain_banner(self, monkeypatch):
+        no_ipython(monkeypatch)
+        tty_stdin(monkeypatch, is_tty=False)
+        raw = io.BytesIO()
+        ascii_out = io.TextIOWrapper(raw, encoding="ascii", write_through=True)
+        captured = []
+        real_close = ascii_out.close
+
+        def close():
+            captured.append(raw.getvalue().decode("ascii"))
+            real_close()
+        ascii_out.close = close
+        monkeypatch.setattr(op, "_open_controlling_tty", lambda: (io.StringIO("Coda\n"), ascii_out))
+        assert op.builtin_asker("Which?", prefix="[planner]") == "Coda"
+        assert "[planner] needs your input" in captured[0] and self.HAND not in captured[0]
+
+    def test_control_characters_are_still_stripped_from_the_question(self, monkeypatch):
+        fake_ipython(monkeypatch, ZMQInteractiveShell())
+        seen = []
+        monkeypatch.setattr(builtins, "input", lambda prompt="": seen.append(prompt) or "ok")
+        op.builtin_asker("Which\x1b[2J file?", prefix="[x]")
+        assert "\x1b" not in seen[0] and "Which[2J file?" in seen[0]

@@ -216,9 +216,30 @@ async def _run_in_daemon_thread(fn: Callable[..., Any], *args: Any, **kwargs: An
     return await future
 
 
-def _read_input(prompt: str) -> Optional[str]:
+PROMPT_EMOJI = "\U0001F64B"        # a raised hand: this agent needs you
+
+
+def _banner(prefix: str, question: str, *, emoji: bool = True) -> str:
+    """The header every built-in prompt shows, so you can see WHO is asking (``prefix`` is
+    ``[planner]`` or the agent's name). ``question`` may carry the agent's one-line context on
+    its own lines; they are indented under it. ``emoji=False`` is the plain fallback for a
+    console that cannot print the hand."""
+    head = f"{prefix} {PROMPT_EMOJI} needs your input" if emoji else f"{prefix} needs your input"
+    first, *rest = str(question).split("\n")
+    lines = [head, f"  question: {first}"] + [f"  {line}" for line in rest]
+    return "\n" + "\n".join(lines) + "\n"
+
+
+def _read_input(prompt: str, plain: Optional[str] = None) -> Optional[str]:
+    """``input(prompt)``; a console that cannot encode the prompt (an emoji on a legacy code page)
+    gets ``plain`` instead, so asking never fails because of a symbol."""
     try:
-        return input(prompt)
+        try:
+            return input(prompt)
+        except UnicodeEncodeError:
+            if plain is None:
+                raise
+            return input(plain)
     except EOFError:
         return None
     except Exception as e:                                  # StdinNotImplementedError is a RuntimeError
@@ -238,7 +259,10 @@ def _ask_controlling_tty(question: str, prefix: str, timeout: Optional[float]) -
         try:
             _claim_reader()
             claimed = True
-            tty_out.write(f"\n{prefix} needs your input\n  question: {question}\n  > ")
+            try:
+                tty_out.write(_banner(prefix, question) + "  > ")
+            except UnicodeEncodeError:                     # a console that cannot print the hand
+                tty_out.write(_banner(prefix, question, emoji=False) + "  > ")
             tty_out.flush()
             line = tty_in.readline()
         except EOFError:
@@ -273,15 +297,17 @@ def builtin_asker(question: str, *, prefix: str = "[agent]", timeout: Optional[f
     if _in_notebook():
         if not _notebook_can_prompt():
             raise NoChannel("this notebook kernel cannot take input")
-        return _read_input(f"{question}\n> ")
+        return _read_input(_banner(prefix, question) + "> ",
+                           _banner(prefix, question, emoji=False) + "> ")
     if _stdin_is_tty():
-        prompt = f"\n{prefix} needs your input\n  question: {question}\n> "
+        prompt = _banner(prefix, question) + "> "
+        plain = _banner(prefix, question, emoji=False) + "> "
         if timeout is None:
             # Guarded too: if the asking task is cancelled, this read stays blocked, and the
             # next ask must be refused rather than start a second reader behind it.
             _claim_reader()
             try:
-                return _read_input(prompt)
+                return _read_input(prompt, plain)
             finally:
                 _release_reader()
         _refuse_if_reader_outstanding()
@@ -289,7 +315,7 @@ def builtin_asker(question: str, *, prefix: str = "[agent]", timeout: Optional[f
         def read() -> Optional[str]:
             _claim_reader()
             try:
-                return _read_input(prompt)
+                return _read_input(prompt, plain)
             finally:
                 _release_reader()
         return _call_with_timeout(read, timeout)
@@ -471,6 +497,10 @@ class OperatorChannel:
         self._say("answered" if out.answered else f"no answer ({out.reason})")
         return out
 
+    def _prefix_for(self, source: str) -> str:
+        """The prompt prefix naming who asks: ``[planner]``, ``[pricing_researcher]``."""
+        return f"[{source}]" if source else self.prefix
+
     def _paused(self):
         return self.budget.paused() if self.budget is not None else nullcontext()
 
@@ -483,7 +513,7 @@ class OperatorChannel:
             done = self._begin(q, key, context, source)
             if done is not None:
                 return done
-            return self._end(q, key, source, self._ask_sync(_shown(q, context)))
+            return self._end(q, key, source, self._ask_sync(_shown(q, context), source))
 
     async def aask(self, question: str, context: str = "", source: str = "agent") -> Reply:
         q = " ".join(str(question or "").split())
@@ -496,15 +526,15 @@ class OperatorChannel:
             done = self._begin(q, key, context, source)
             if done is not None:
                 return done
-            return self._end(q, key, source, await self._ask_async(_shown(q, context)))
+            return self._end(q, key, source, await self._ask_async(_shown(q, context), source))
         finally:
             self._lock.release()
 
-    def _ask_sync(self, shown: str) -> Reply:
+    def _ask_sync(self, shown: str, source: str = "") -> Reply:
         try:
             with self._paused():
                 if self._builtin:
-                    raw = builtin_asker(shown, prefix=self.prefix, timeout=self.timeout)
+                    raw = builtin_asker(shown, prefix=self._prefix_for(source), timeout=self.timeout)
                 elif self.timeout is not None:
                     raw = _call_with_timeout(lambda: self._asker(shown), self.timeout)
                 else:
@@ -522,7 +552,7 @@ class OperatorChannel:
             return Reply(None, REASON_ERROR)
         return _clean_answer(raw)
 
-    async def _ask_async(self, shown: str) -> Reply:
+    async def _ask_async(self, shown: str, source: str = "") -> Reply:
         async def go() -> Any:
             if asyncio.iscoroutinefunction(self._asker):
                 raw = await self._asker(shown)
@@ -536,13 +566,13 @@ class OperatorChannel:
                     if _in_notebook():
                         # ipykernel's input() is not safe from a worker thread, and a person is
                         # looking at the input box (Interrupt works): ask on the loop thread.
-                        raw = builtin_asker(shown, prefix=self.prefix, timeout=self.timeout)
+                        raw = builtin_asker(shown, prefix=self._prefix_for(source), timeout=self.timeout)
                     else:
                         # A terminal read can wait minutes: keep the loop (other tasks, timers,
                         # cancellation) running while the person types. A daemon thread, so a
                         # cancelled ask cannot keep the process alive; the reader guard (inside
                         # builtin_asker) stops the next ask from starting behind it.
-                        raw = await _run_in_daemon_thread(builtin_asker, shown, prefix=self.prefix,
+                        raw = await _run_in_daemon_thread(builtin_asker, shown, prefix=self._prefix_for(source),
                                                           timeout=self.timeout)
                 else:
                     raw = await asyncio.wait_for(go(), self.timeout)

@@ -175,6 +175,17 @@ Your function receives the question as a string. When the asker (the planner or 
 
 `ask_timeout` bounds the wait for one answer (a function that does not return in time counts as no answer). It is not enforced on the notebook input box, where a person is looking at the box and the Interrupt button stops the run. In persistent mode, time spent waiting on you does not count against `max_minutes`.
 
+**What the built-in prompt looks like.** Every prompt starts with who is asking, so you can see which agent needs you (the planner shows as `[planner]`, a helper by its name), then the question, and the agent's one-line context if it gave one:
+
+```
+[pricing_researcher] 🙋 needs your input
+  question: Which three competitors should I compare?
+  (context: the task names none)
+> 
+```
+
+The same header appears in a notebook's input box, in a terminal, and on the controlling terminal. A console that cannot print the hand (some legacy Windows code pages) gets the same header without it. A function you pass as `ask_user` receives only the question text, so add your own label in your chat UI.
+
 What you can see: `question` and `answer` stream events (after the answer; your function is the live channel for a UI), `[ask]` lines with `verbose=True`, and `result.asked` (source, question, answered, reason, deduped; the answer text is not kept). Treat answers as facts: if your function forwards raw end-user text, treat it as untrusted input to the run, like the task itself.
 
 Things to know:
