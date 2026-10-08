@@ -333,6 +333,7 @@ class Reply:
     text: Optional[str] = None
     reason: Optional[str] = None          # None when answered; else one of the REASON_* words
     deduped: bool = False
+    from_memory: bool = False             # the answer came from long-term memory, not the operator
 
     @property
     def answered(self) -> bool:
@@ -407,6 +408,9 @@ class OperatorChannel:
         self._seen: Dict[str, Reply] = {}
         self._asked = 0
         self._lock = threading.Lock()                 # asks are one at a time, sync and async alike
+        self.memory: Any = None                       # a RunMemory (set by the Supervisor) or None
+        self._pending_writes: List[Tuple[str, str, str]] = []   # (question, answer, source) to store
+        self._writes_lock = threading.Lock()
         self._events_lock = threading.Lock()          # emit/drain only; never the ask lock, which is held while the human thinks
 
     @classmethod
@@ -466,12 +470,17 @@ class OperatorChannel:
 
     # -- asking ---------------------------------------------------------------
 
-    def _begin(self, question: str, key: str, context: str, source: str) -> Optional[Reply]:
-        """Dedupe and budget checks, under the lock. A final reply, or ``None`` when the
-        operator must be asked (the slot is taken and the question event is out)."""
+    def _begin(self, question: str, key: str, context: str, source: str,
+               stored: Optional[str] = None) -> Optional[Reply]:
+        """Dedupe, memory and budget checks, under the lock. A final reply, or ``None`` when
+        the operator must be asked (the slot is taken and the question event is out)."""
         hit = self._seen.get(key)
         if hit is not None:
             return self._finish(source, question, hit, deduped=True)
+        if stored is not None:
+            reply = Reply(stored, from_memory=True)
+            self._seen[key] = reply
+            return self._finish(source, question, reply)
         if source != PLANNER_SOURCE and self._by_source.get(source, 0) >= self.per_agent_limit:
             return self._finish(source, question, Reply(None, REASON_LIMIT))
         if self._asked >= self.max_questions:
@@ -489,12 +498,23 @@ class OperatorChannel:
 
     def _finish(self, source: str, question: str, reply: Reply, *, deduped: bool = False) -> Reply:
         out = dataclasses.replace(reply, deduped=deduped)
-        self.records.append({"source": source, "question": question, "answered": out.answered,
-                             "reason": out.reason, "deduped": deduped})
-        self.emit({"type": "answer", "source": source, "answered": out.answered, "reason": out.reason})
+        record = {"source": source, "question": question, "answered": out.answered,
+                  "reason": out.reason, "deduped": deduped}
+        event = {"type": "answer", "source": source, "answered": out.answered, "reason": out.reason}
+        if out.from_memory:                        # present only when true: shapes are unchanged otherwise
+            record["from_memory"] = True
+            event["from_memory"] = True
+        self.records.append(record)
+        self.emit(event)
         if out.answered and not deduped:
             self._answers.append((question, out.text))
-        self._say("answered" if out.answered else f"no answer ({out.reason})")
+            if self.memory is not None:
+                self.memory.note_answered(question)
+                if not out.from_memory:
+                    with self._writes_lock:
+                        self._pending_writes.append((question, out.text, source))
+        self._say("answered from memory" if out.from_memory
+                  else "answered" if out.answered else f"no answer ({out.reason})")
         return out
 
     def _prefix_for(self, source: str) -> str:
@@ -504,16 +524,32 @@ class OperatorChannel:
     def _paused(self):
         return self.budget.paused() if self.budget is not None else nullcontext()
 
+    def _stored_answer(self, q: str, key: str) -> Optional[str]:
+        """The exact stored answer, or None. Skipped when memory is off or the run already has it."""
+        if self.memory is None or key in self._seen:
+            return None
+        return self.memory.lookup_answer(q)
+
+    def _flush_writes(self) -> None:
+        """Store the answers queued by ``_finish``. Called after the ask lock is released, so a
+        slow store never holds it."""
+        if self.memory is None:
+            return
+        with self._writes_lock:
+            pending, self._pending_writes = self._pending_writes, []
+        for question, answer, source in pending:
+            self.memory.remember_answer(question, answer, source)
+
     def ask(self, question: str, context: str = "", source: str = "agent") -> Reply:
         q = " ".join(str(question or "").split())
         if not q:
             return Reply(None, REASON_DECLINED)
         key = _normalize(q)
         with self._lock:
-            done = self._begin(q, key, context, source)
-            if done is not None:
-                return done
-            return self._end(q, key, source, self._ask_sync(_shown(q, context), source))
+            done = self._begin(q, key, context, source, self._stored_answer(q, key))
+            result = done if done is not None else self._end(q, key, source, self._ask_sync(_shown(q, context), source))
+        self._flush_writes()
+        return result
 
     async def aask(self, question: str, context: str = "", source: str = "agent") -> Reply:
         q = " ".join(str(question or "").split())
@@ -523,12 +559,16 @@ class OperatorChannel:
         while not self._lock.acquire(blocking=False):      # never blocks the loop; a cancel cannot leak the lock
             await asyncio.sleep(0.02)
         try:
-            done = self._begin(q, key, context, source)
-            if done is not None:
-                return done
-            return self._end(q, key, source, await self._ask_async(_shown(q, context), source))
+            stored = None
+            if self.memory is not None and key not in self._seen:
+                stored = await self.memory.alookup_answer(q)
+            done = self._begin(q, key, context, source, stored)
+            result = done if done is not None else self._end(q, key, source, await self._ask_async(_shown(q, context), source))
         finally:
             self._lock.release()
+        if self._pending_writes:
+            await asyncio.to_thread(self._flush_writes)
+        return result
 
     def _ask_sync(self, shown: str, source: str = "") -> Reply:
         try:
