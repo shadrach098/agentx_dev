@@ -67,7 +67,8 @@ AsyncSupervisor(model=..., agents=..., memory=None, memory_top_k=4, memory_min_s
    `run_result:<first 16 hex of sha1 of the normalized task>` (the newest result for the same task
    replaces the older one), metadata `{"kind": "run_result", "task": <task>, "ts": <ISO UTC>}`.
    Stuck, partial, out-of-time, out-of-budget, no-plan and stopped-before-planning runs are never
-   written.
+   written, and neither is a run whose synthesis was cut off by the budget (the "Stopped: ..." stub)
+   or came back empty.
 
 Facts you add yourself with `store.add([...])` (no metadata, or metadata without a known `kind`)
 are read like any other and shown as `[note]`.
@@ -116,8 +117,9 @@ today. To be asked again about a fact, delete its id from the store.
 
 ### 3.5 Events and result
 
-- Stream event `{"type": "memory", "stage": "plan" | "step", "hits": <int>}`, emitted only when
-  something was injected, at the places the operator events are drained.
+- Stream event `{"type": "memory", "stage": "plan" | "step", "hits": <int>}`, emitted the first
+  time a distinct query injects something in a run (a repeat of the same query is served from the
+  per-run cache and does not emit again), at the places the operator events are drained.
 - `SupervisorResult.memory: List[dict]`: what this run wrote, `{"kind", "id", "text"}` with `text`
   cut at 80 characters. Empty when nothing was written.
 - With `verbose=True`, `[memory]` lines print the same moments.
@@ -128,7 +130,7 @@ today. To be asked again about a fact, delete its id from the store.
 
 One per run, the only place that talks to the store. It mirrors `OperatorChannel`.
 
-- `RunMemory.create(memory, *, top_k, min_score, write, is_async, verbose) -> Optional[RunMemory]`
+- `RunMemory.create(memory, *, top_k, min_score, write, verbose) -> Optional[RunMemory]`
   (validates; `None` when `memory` is `None`).
 - `recall(query, stage) -> str` and `arecall(...)`: the block or `""`. Results are cached per
   normalized query for the run, so the same text is searched once. The store call runs in

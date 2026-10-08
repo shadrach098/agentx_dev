@@ -41,7 +41,8 @@ Sub-agents: the Supervisor can create its own helpers. Opt-in, with the behavior
 - **Supervisor long-term memory**: `Supervisor(memory=store)` (any vector store: `VectorStore`, Chroma,
   Qdrant, pgvector) gives the planner and every dispatched step the few relevant stored items as a
   FROM MEMORY block, saves each operator answer and each completed run's final answer, and answers an
-  exact repeat of an answered question from memory. `memory_top_k`, `memory_min_score`,
+  exact repeat of an answered question from memory (a run whose synthesis was cut off by the budget
+  saves nothing). `memory_top_k`, `memory_min_score`,
   `memory_write`, `SupervisorResult.memory`, `memory` stream events.
 - `web_fetch_tool(text_only=True)`: return an HTML page as readable text (scripts, styles and tags
   removed) instead of the first 50,000 characters of raw markup, which on a modern page can hold no

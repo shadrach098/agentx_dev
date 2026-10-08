@@ -222,7 +222,7 @@ supervisor = Supervisor(model=model, agents=agents, ask_user=True, memory=store)
 **What it saves** (when `memory_write=True`):
 
 - **Each operator answer**, as `Q: <question>` / `A: <answer>` under the id `operator_answer:<16 hex of sha1 of the normalized question>` (trimmed, spaces collapsed, case-folded). A newer answer to the same question replaces the old one. An answer that came from memory is not saved again.
-- **Each run's final answer, only when the run's outcome is `done`**, as `Task: <task>` / `Result: <answer>` under `run_result:<16 hex of sha1 of the normalized task>`. The result is cut at 2,000 characters, and the newest result for the same task replaces the older one. Stuck, partial, out-of-time, out-of-budget and stopped runs save nothing.
+- **Each run's final answer, only when the run's outcome is `done`**, as `Task: <task>` / `Result: <answer>` under `run_result:<16 hex of sha1 of the normalized task>`. The result is cut at 2,000 characters, and the newest result for the same task replaces the older one. A run that ends in any outcome other than `done` saves nothing (and neither does a run whose synthesis was cut off by the budget).
 
 **What it reads.** Before planning (and before each recovery round) and before each dispatched step (specialists and planner-defined helpers), the Supervisor searches the store with that text and adds a block to the prompt:
 
@@ -235,7 +235,7 @@ FROM MEMORY (saved from earlier runs; may be out of date, so check anything that
 
 At most `memory_top_k` items, each cut at 600 characters, the whole block at 3,000. Synthesis and `delegate` helpers get no block (a `delegate` helper sees only the task its parent passes). An operator answer already given in this run is left out (it is in the OPERATOR ANSWERS block). When the block is not empty and `ask_user` is set, the planner is also told not to ask what the block already answers. Facts you add yourself with `store.add([...])` are read like any other and shown as `[note]`, as is any item without a known `kind`.
 
-**Exact-answer reuse.** Before a question reaches you, the Supervisor looks for a stored operator answer to the exact same question (same normalization as the in-run dedupe). If it finds one, you are not prompted, no question slot is used, and the answer joins the run's OPERATOR ANSWERS. The record in `result.asked` and the `answer` event carry `"from_memory": True` (the key is present only when true). Only an exact match is reused; a similar question still asks you. This needs `ask_user`; without it recall and run results still work.
+**Exact-answer reuse.** Before a question reaches you, the Supervisor looks for a stored operator answer to the exact same question (same normalization as the in-run dedupe). If it finds one, you are not prompted, no question slot is used, and the answer joins the run's OPERATOR ANSWERS. The record in `result.asked` and the `answer` event carry `"from_memory": True` (the key is present only when true). A repeat of a question already answered from memory in the same run also shows `deduped: True` and `from_memory: True` on its record. Only an exact match is reused; a similar question still asks you. This needs `ask_user`; without it recall and run results still work.
 
 **To be asked again about a fact, delete its id** from the store: `store.delete([entry["id"]])` for an `entry` in `result.memory` (below), or `store.delete([answer_id(question)])` with `from agentx_dev.SupervisorMemory import answer_id`.
 
@@ -243,7 +243,7 @@ What you can see:
 
 | Where | What |
 |---|---|
-| `{"type": "memory", "stage": "plan" \| "step", "hits": int}` stream event | Something was injected (not emitted when nothing matched or `memory_top_k=0`). |
+| `{"type": "memory", "stage": "plan" \| "step", "hits": int}` stream event | Emitted the first time a distinct query injects something in a run (a repeat of the same query is served from the per-run cache and does not emit again); not emitted when nothing matched or `memory_top_k=0`. |
 | `result.memory` | What this run saved: `[{"kind": "operator_answer" \| "run_result", "id", "text"}]`, `text` cut at 80 characters. Empty when nothing was saved. |
 | `[memory]` lines with `verbose=True` | The same moments. |
 
@@ -269,7 +269,7 @@ Things to know:
 | `{"type": "answer", "source", "answered", "reason": None\|"no_channel"\|"declined"\|"timeout"\|"limit"\|"error"}` | The reply, or why there was none. The answer text is not in the event. `"from_memory": True` is added when the answer came from long-term memory. |
 | `{"type": "memory", "stage": "plan"\|"step", "hits": int}` | Items from long-term memory were added to a prompt (`memory=` set). |
 
-With `verbose=True` the same moments print as `[spawn]` and `[ask]` lines.
+With `verbose=True` the same moments print as `[spawn]`, `[ask]` and `[memory]` lines.
 
 ## Things to know
 
