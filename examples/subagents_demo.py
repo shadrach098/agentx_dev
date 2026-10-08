@@ -23,6 +23,7 @@ Run (set ANTHROPIC_API_KEY or OPENAI_API_KEY first):
     python examples/subagents_demo.py --persistent     # recovery rounds + one shared deadline
     python examples/subagents_demo.py --ask            # the planner asks you for the competitors
     python examples/subagents_demo.py --ask --memory memory.json   # the second run does not ask again
+                                                                   # (--memory=memory.json works too)
 """
 
 import os
@@ -123,7 +124,7 @@ def load_memory(path):
 
 
 def parse_args(argv):
-    """Return (flags, memory_file, positional). ``--memory`` takes the next argument."""
+    """Return (flags, memory_file, positional). ``--memory FILE`` and ``--memory=FILE`` both work."""
     memory_file = None
     positional = []
     flags = set()
@@ -135,6 +136,10 @@ def parse_args(argv):
                 raise SystemExit("--memory needs a file name, for example: --memory memory.json")
             memory_file = argv[i + 1]
             i += 1
+        elif arg.startswith("--memory="):
+            memory_file = arg[len("--memory="):]
+            if not memory_file:
+                raise SystemExit("--memory= needs a file name, for example: --memory=memory.json")
         elif arg.startswith("--"):
             flags.add(arg)
         else:
@@ -154,9 +159,11 @@ def main(argv):
     store = load_memory(memory_file) if memory_file else None
     supervisor = build_supervisor(model, persistent=persistent, ask=ask, memory=store)
 
-    result = supervisor.run(task)
-    if store is not None:
-        store.save(memory_file)            # the store is yours to persist
+    try:
+        result = supervisor.run(task)
+    finally:
+        if store is not None:
+            store.save(memory_file)        # the store is yours to persist; saved even if the run crashes
 
     print("\n" + "=" * 70)
     print("FINAL ANSWER")
