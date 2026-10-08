@@ -18,7 +18,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from agentx_dev.Operator import _normalize
+from agentx_dev.Operator import MAX_ANSWER_CHARS, _normalize
 from agentx_dev.Tools import logger
 
 MEMORY_RESULT_CHARS = 2000
@@ -89,6 +89,7 @@ class RunMemory:
         self.events: List[Dict[str, Any]] = []
         self._cache: Dict[str, str] = {}
         self._known: Set[str] = set()                 # normalized questions answered in this run
+        self._epoch = 0                               # bumped by note_answered; guards the cache
         self._lock = threading.Lock()                 # state only; never held during a store call
         self._recall_lock = threading.Lock()          # serializes recall so one query is searched once
 
@@ -122,17 +123,21 @@ class RunMemory:
             logger.warning(f"memory search failed; continuing without it: {e}")
             return []
 
-    def _format(self, hits: List[Any]) -> Tuple[str, int]:
+    def _format(self, hits: List[Any], known: Set[str]) -> Tuple[str, int]:
         lines: List[str] = []
         used = len(MEMORY_HEADER)
         for h in hits:
-            meta = getattr(h, "metadata", None) or {}
-            if meta.get("kind") == KIND_ANSWER and meta.get("qkey") in self._known:
-                continue                              # already in this run's OPERATOR ANSWERS
-            text = " ".join(str(getattr(h, "text", "")).split())
-            if len(text) > MEMORY_ITEM_CHARS:
-                text = text[: MEMORY_ITEM_CHARS - 3] + "..."
-            line = f"- [{_label(meta)}] {text}"
+            try:
+                meta = getattr(h, "metadata", None) or {}
+                if meta.get("kind") == KIND_ANSWER and meta.get("qkey") in known:
+                    continue                          # already in this run's OPERATOR ANSWERS
+                text = " ".join(str(getattr(h, "text", "")).split())
+                if len(text) > MEMORY_ITEM_CHARS:
+                    text = text[: MEMORY_ITEM_CHARS - 3] + "..."
+                line = f"- [{_label(meta)}] {text}"
+            except Exception as e:                    # a malformed hit is skipped, never raised
+                logger.warning(f"memory hit skipped (malformed): {e}")
+                continue
             if used + len(line) + 1 > MEMORY_BLOCK_CHARS:
                 break
             lines.append(line)
@@ -150,9 +155,15 @@ class RunMemory:
             with self._lock:
                 if key in self._cache:
                     return self._cache[key]
-            block, hits = self._format(self._search(query, self.top_k, self.min_score))
+                epoch, known = self._epoch, set(self._known)
+            found = self._search(query, self.top_k, self.min_score)
+            block, hits = self._format(found, known)
             with self._lock:
-                self._cache[key] = block
+                if epoch == self._epoch:
+                    self._cache[key] = block
+                else:                                 # an answer arrived mid-search: re-filter, don't cache
+                    known = set(self._known)
+                    block, hits = self._format(found, known)
         if block:
             self._announce(stage, hits)
         return block
@@ -164,11 +175,14 @@ class RunMemory:
         """The stored operator answer to exactly this question (after normalization), or None."""
         qkey = _normalize(question)
         for h in self._search(question, 5, 0.0):
-            meta = getattr(h, "metadata", None) or {}
-            if meta.get("kind") == KIND_ANSWER and meta.get("qkey") == qkey:
-                answer = meta.get("answer")
-                if isinstance(answer, str) and answer.strip():
-                    return answer
+            try:
+                meta = getattr(h, "metadata", None) or {}
+                if meta.get("kind") == KIND_ANSWER and meta.get("qkey") == qkey:
+                    answer = meta.get("answer")
+                    if isinstance(answer, str) and answer.strip():
+                        return answer
+            except Exception as e:                    # a malformed hit is skipped, never raised
+                logger.warning(f"memory hit skipped (malformed): {e}")
         return None
 
     async def alookup_answer(self, question: str) -> Optional[str]:
@@ -179,6 +193,7 @@ class RunMemory:
         with self._lock:
             self._known.add(_normalize(question))
             self._cache.clear()
+            self._epoch += 1
 
     # -- writing --------------------------------------------------------------
 
@@ -195,6 +210,7 @@ class RunMemory:
     def remember_answer(self, question: str, answer: str, source: str) -> None:
         if not self.write:
             return
+        question, answer = str(question), str(answer)[:MAX_ANSWER_CHARS]
         self._add(answer_id(question), f"Q: {question}\nA: {answer}", {
             "kind": KIND_ANSWER, "qkey": _normalize(question), "question": question,
             "answer": answer, "source": source, "ts": _now_iso(),

@@ -102,6 +102,22 @@ class TestRecall:
             t.join(5)
         assert len(store.searches) == 1
 
+    def test_an_answer_arriving_mid_recall_is_not_served_or_cached_stale(self):
+        class Interrupted(FakeStore):
+            def search(self, query, *, top_k=5, min_score=0.0):
+                result = super().search(query, top_k=top_k, min_score=min_score)
+                if len(self.searches) == 1:            # the operator answers while this search runs
+                    rm.note_answered(QUESTION)
+                return result
+        store = Interrupted([answer_hit(QUESTION, "OLD ANSWER"), hit("another fact")])
+        rm = make(store)
+        first = rm.recall("q", "plan")
+        assert "OLD ANSWER" not in first and "another fact" in first
+        second = rm.recall("q", "plan")
+        assert len(store.searches) == 2                # the first block was not cached
+        assert "OLD ANSWER" not in second and "another fact" in second
+        assert rm.recall("q", "plan") == second and len(store.searches) == 2
+
     def test_note_answered_clears_the_cache(self):
         store = FakeStore([hit("x")])
         rm = make(store)
@@ -119,6 +135,16 @@ class TestRecall:
     def test_a_failing_search_is_no_block_not_an_error(self):
         rm = make(FakeStore(boom=True))
         assert rm.recall("q", "plan") == "" and rm.lookup_answer(QUESTION) is None
+
+    def test_a_malformed_hit_is_skipped_not_raised(self):
+        class Odd:
+            def __init__(self, metadata):
+                self.text, self.score, self.id, self.metadata = "odd", 0.9, "o", metadata
+        bad = [Odd("not a dict"), Odd({"kind": "operator_answer", "qkey": ["unhashable"]})]
+        assert make(FakeStore(bad)).recall("q", "plan") == ""
+        rm = make(FakeStore(bad + [hit("a good one")]))
+        assert "a good one" in rm.recall("q", "plan")
+        assert make(FakeStore(bad)).lookup_answer(QUESTION) is None
 
     def test_verbose_prints_a_memory_line(self, capsys):
         make(FakeStore([hit("a")]), verbose=True).recall("q", "plan")
@@ -171,6 +197,15 @@ class TestWrites:
         assert ids == [sm.result_id("Compare pricing")]
         assert metas[0]["kind"] == "run_result" and metas[0]["task"] == "Compare pricing"
         assert rm.written[0]["kind"] == "run_result" and len(rm.written[0]["text"]) <= 80
+
+    def test_a_non_string_answer_and_a_huge_one_are_stored_as_bounded_strings(self):
+        store = FakeStore()
+        rm = make(store)
+        rm.remember_answer(QUESTION, 42, "planner")
+        rm.remember_answer("Another question?", "a" * 5000, "planner")
+        first, second = store.added[0][2][0], store.added[1][2][0]
+        assert first["answer"] == "42" and isinstance(first["answer"], str)
+        assert len(second["answer"]) == 2000 and len(store.added[1][0][0].split("A: ")[1]) == 2000
 
     def test_a_read_only_memory_writes_nothing(self):
         store = FakeStore()
