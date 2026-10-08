@@ -1109,3 +1109,71 @@ Things to know:
 - **When the planner still does not ask,** say it in the task: "If anything is missing, ask the operator first." Agents can still ask mid-run through the `ask_user` tool.
 - **`async def` needs async specialists.** A sync specialist under `AsyncSupervisor` asks through the synchronous path, which cannot await an async function; with sync specialists pass a plain function.
 - See [Asking the operator](../guides/sub-agents.md#asking-the-operator) for the events, the `result.asked` fields and the limits.
+
+---
+
+## 33. Give the Supervisor a long-term memory (`memory=`) *(3.6)*
+
+You run "Compare the pricing pages of our three competitors" every week. Each run asks which three competitors again, and redoes research the last run finished, because a Supervisor run starts from nothing and `ask_user` answers live only for the run that got them. With `memory=<a vector store>` the planner and every dispatched step get the few relevant stored items, and the Supervisor saves each operator answer and each completed run's final answer by itself.
+
+A file-backed store that survives between runs:
+
+```python
+from pathlib import Path
+
+from agentx_dev import GPT, HashEmbeddings, SpawnConfig, Supervisor, VectorStore
+
+MEMORY_FILE = Path("supervisor_memory.json")
+embeddings = HashEmbeddings()            # offline; use OpenAIEmbeddings() for better recall
+store = VectorStore.load(MEMORY_FILE, embeddings) if MEMORY_FILE.exists() else VectorStore(embeddings)
+
+supervisor = Supervisor(
+    model=GPT(model="gpt-4o-mini"), agents={}, ask_user=True,
+    spawn_config=SpawnConfig(enabled=True, capabilities={"web"}),
+    memory=store, memory_min_score=0.1,
+)
+result = supervisor.run("Compare the pricing pages of our three competitors")
+store.save(MEMORY_FILE)                  # the store is yours to persist
+print(result.memory)                     # what this run saved
+```
+
+The first run asks for the competitors and saves your answer. On the next run the same question is answered from memory: you are not prompted and no question slot is used (`result.asked` shows it with `"from_memory": True`). The last run's comparison is also in the planner's FROM MEMORY block, so it can build on it. `HashEmbeddings` is noisy, so the example lowers `memory_min_score` to 0.1; with `OpenAIEmbeddings` use about 0.5.
+
+A database store persists itself, so there is no save step. Chroma:
+
+```python
+from agentx_dev import OpenAIEmbeddings, Supervisor
+from agentx_dev.VectorStores import ChromaVectorStore
+
+store = ChromaVectorStore(
+    embeddings=OpenAIEmbeddings(),
+    collection_name="supervisor_memory",
+    persist_directory="./.chroma",       # None keeps it in memory only
+)
+supervisor = Supervisor(model=model, agents=agents, ask_user=True, memory=store, memory_min_score=0.5)
+```
+
+`QdrantVectorStore` and `PgVectorStore` work the same way.
+
+A curated, read-only store gives the Supervisor facts it should always know, without letting a run write into it (the right choice for untrusted input):
+
+```python
+from agentx_dev import HashEmbeddings, Supervisor, VectorStore
+
+store = VectorStore(HashEmbeddings())
+store.add(["Our fiscal year starts in April.", "Prices are quoted in euros."])
+
+supervisor = Supervisor(model=model, agents=agents, memory=store, memory_write=False, memory_min_score=0.1)
+```
+
+Facts you add this way show as `[note]` in the FROM MEMORY block.
+
+Things to know:
+
+- **Only an exact repeat is reused without asking.** A question is answered from memory when it matches a stored one after trimming, collapsing spaces and ignoring case. A similar but different question still goes to the operator. Everything else in memory is context the model reads, not an answer the framework gives.
+- **To be asked again about a fact, delete its id.** Operator answers are stored as `operator_answer:<16 hex of the question's sha1>`; the ids a run saved are in `result.memory`. `store.delete([entry["id"]])` forgets one.
+- **Only finished runs save a result.** A run that ends `done` saves its final answer (cut at 2,000 characters) under `run_result:<hash of the task>`; stuck, partial, out-of-time and out-of-budget runs save none. Running the same task again replaces its result.
+- **Stored results are replayed into later prompts.** A result built from a web page can carry text its author wrote. Use `memory_write=False` for supervisors that handle untrusted input, and never answer an agent's question with a password, key or token.
+- **Cost.** Each lookup is one embedding request plus a search (planning, each step, each exact-answer check). `memory_top_k=0` turns recall off; writes and exact-answer reuse still run.
+- **`delegate` helpers and synthesis get no memory block.** A `delegate` helper sees only the task its parent passes.
+- See [Long-term memory](../guides/sub-agents.md#long-term-memory) for the arguments, the block format and the events.

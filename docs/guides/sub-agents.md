@@ -199,6 +199,64 @@ Things to know:
 
 For a standalone `AgentRunner` that needs a human step, give it `agentx_dev.ask_human_tool()`: the same asker as a tool called `ask_human` (arguments `question` and optional `context`), so it works in a notebook's input box as well as a terminal. `ask_human_tool(prompt_prefix="[agent]", ask_timeout=None)`.
 
+## Long-term memory
+
+Every run starts from nothing: a fact you gave once ("our competitors are Notion, Obsidian, Coda") is asked for again next time, and earlier research is not available to the planner. Give the Supervisor a vector store and it remembers.
+
+```python
+from agentx_dev import HashEmbeddings, Supervisor, VectorStore
+
+store = VectorStore(embeddings=HashEmbeddings())          # any store with add() and search()
+supervisor = Supervisor(model=model, agents=agents, ask_user=True, memory=store)
+```
+
+`memory` takes anything with callable `add` and `search`: `VectorStore`, `ChromaVectorStore`, `QdrantVectorStore`, `PgVectorStore`. Anything else raises `TypeError` at construction. Keeping the store persistent is yours to do: the in-memory `VectorStore` has `save(path)` and `VectorStore.load(path, embeddings)` (call `save` after the run); Chroma (with a `persist_directory`), Qdrant and pgvector persist themselves. With `memory=None` (the default) nothing changes. `AsyncSupervisor` takes the same arguments.
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `memory` | `None` | The store. `None` is off. |
+| `memory_top_k` | `4` | Items per lookup. `0` turns recall off (writes and exact-answer reuse still run). Must be `>= 0`. |
+| `memory_min_score` | `0.2` | Matches scoring below this are dropped. Tune per embedding: about `0.5` for `OpenAIEmbeddings`, about `0.1` for `HashEmbeddings`. |
+| `memory_write` | `True` | `False` makes the store read-only: nothing is saved, recall and exact-answer reuse still run. |
+
+**What it saves** (when `memory_write=True`):
+
+- **Each operator answer**, as `Q: <question>` / `A: <answer>` under the id `operator_answer:<16 hex of sha1 of the normalized question>` (trimmed, spaces collapsed, case-folded). A newer answer to the same question replaces the old one. An answer that came from memory is not saved again.
+- **Each run's final answer, only when the run's outcome is `done`**, as `Task: <task>` / `Result: <answer>` under `run_result:<16 hex of sha1 of the normalized task>`. The result is cut at 2,000 characters, and the newest result for the same task replaces the older one. Stuck, partial, out-of-time, out-of-budget and stopped runs save nothing.
+
+**What it reads.** Before planning (and before each recovery round) and before each dispatched step (specialists and planner-defined helpers), the Supervisor searches the store with that text and adds a block to the prompt:
+
+```
+FROM MEMORY (saved from earlier runs; may be out of date, so check anything that matters with your tools):
+- [operator answer, 2026-10-05] Q: Which three competitors should I compare? A: Notion, Obsidian, Coda
+- [earlier result, 2026-10-04] Task: Compare pricing pages ... Result: ...
+- [note] Our fiscal year starts in April.
+```
+
+At most `memory_top_k` items, each cut at 600 characters, the whole block at 3,000. Synthesis and `delegate` helpers get no block (a `delegate` helper sees only the task its parent passes). An operator answer already given in this run is left out (it is in the OPERATOR ANSWERS block). When the block is not empty and `ask_user` is set, the planner is also told not to ask what the block already answers. Facts you add yourself with `store.add([...])` are read like any other and shown as `[note]`, as is any item without a known `kind`.
+
+**Exact-answer reuse.** Before a question reaches you, the Supervisor looks for a stored operator answer to the exact same question (same normalization as the in-run dedupe). If it finds one, you are not prompted, no question slot is used, and the answer joins the run's OPERATOR ANSWERS. The record in `result.asked` and the `answer` event carry `"from_memory": True` (the key is present only when true). Only an exact match is reused; a similar question still asks you. This needs `ask_user`; without it recall and run results still work.
+
+**To be asked again about a fact, delete its id** from the store: `store.delete([entry["id"]])` for an `entry` in `result.memory` (below), or `store.delete([answer_id(question)])` with `from agentx_dev.SupervisorMemory import answer_id`.
+
+What you can see:
+
+| Where | What |
+|---|---|
+| `{"type": "memory", "stage": "plan" \| "step", "hits": int}` stream event | Something was injected (not emitted when nothing matched or `memory_top_k=0`). |
+| `result.memory` | What this run saved: `[{"kind": "operator_answer" \| "run_result", "id", "text"}]`, `text` cut at 80 characters. Empty when nothing was saved. |
+| `[memory]` lines with `verbose=True` | The same moments. |
+
+Things to know:
+
+- **Stored results are replayed into later prompts.** A result built from a web page or a file can carry text the page's author wrote. Use `memory_write=False` (a curated, read-only store) for supervisors that handle untrusted input.
+- **Never answer an agent with a password, key or token.** Answers are stored in your file or database and shown to later runs.
+- **Cost.** Each lookup is one embedding request plus a search: planning, each dispatched step, and each exact-answer check. With `OpenAIEmbeddings` that adds up on long plans; `memory_top_k=0` skips recall.
+- **A memory problem never fails a run.** A store that raises on `search` or `add` is logged and skipped.
+- **No expiry.** Items are dated and labelled "may be out of date"; delete an id, or use a fresh store, to forget.
+- **Noisy matches.** `HashEmbeddings` is noisy; raise `memory_min_score` if irrelevant items appear.
+- See [pattern 33](../cookbook/patterns.md) for file-backed, Chroma and read-only examples.
+
 ## Watching it
 
 `supervisor.stream(task)` includes:
@@ -208,7 +266,8 @@ For a standalone `AgentRunner` that needs a human step, give it `agentx_dev.ask_
 | `{"type": "spawn", "name", "origin": "plan"\|"delegate", "tools", "dropped", "reused", "refused", ...}` | A helper was built, reused, or refused. |
 | `{"type": "delegate_result", "name", "outcome", "chars"}` | A delegation returned. |
 | `{"type": "question", "source": "planner"\|<agent name>, "question", "context"}` | A question was put to the operator (`ask_user` set). |
-| `{"type": "answer", "source", "answered", "reason": None\|"no_channel"\|"declined"\|"timeout"\|"limit"\|"error"}` | The reply, or why there was none. The answer text is not in the event. |
+| `{"type": "answer", "source", "answered", "reason": None\|"no_channel"\|"declined"\|"timeout"\|"limit"\|"error"}` | The reply, or why there was none. The answer text is not in the event. `"from_memory": True` is added when the answer came from long-term memory. |
+| `{"type": "memory", "stage": "plan"\|"step", "hits": int}` | Items from long-term memory were added to a prompt (`memory=` set). |
 
 With `verbose=True` the same moments print as `[spawn]` and `[ask]` lines.
 

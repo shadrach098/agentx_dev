@@ -238,6 +238,17 @@ failure, the agent proceeds on a stated assumption. `max_questions`
 (default 3) and `ask_timeout` bound it, and `result.asked` records what was
 asked. See [Asking the operator](../guides/sub-agents.md#asking-the-operator).
 
+## Long-term memory (3.6)
+
+`Supervisor(..., memory=store)` (a `VectorStore`, `ChromaVectorStore`,
+`QdrantVectorStore` or `PgVectorStore`) gives the planner and every
+dispatched step the few stored items relevant to their own text, saves each
+operator answer and each completed run's final answer, and answers an exact
+repeat of an answered question from memory instead of asking again.
+`memory_top_k`, `memory_min_score` and `memory_write` tune it, and
+`result.memory` lists what a run saved. See
+[Long-term memory](../guides/sub-agents.md#long-term-memory).
+
 ## Verbose mode
 
 `verbose=True` on the supervisor prints:

@@ -35,8 +35,9 @@ print(result.spawned)       # the helpers it created, with outcomes
 | **Sync and async** | `AsyncSupervisor` takes `spawn_config=` too; spawned steps run in parallel. |
 | **Persistent mode** | On by default with a safe ceiling (web plus read-only files); helpers share the run deadline; recovery plans can spawn a replacement. |
 | **Ask the operator** | `Supervisor(ask_user=True)` lets the planner ask for facts the task leaves out ("which three competitors?") and gives every agent an `ask_user` tool. Works in a notebook's input box and in terminals; `ask_user=my_function` routes questions through your own channel. |
+| **Long-term memory** | `Supervisor(memory=store)` (any vector store: `VectorStore`, Chroma, Qdrant, pgvector) gives the planner and every step the few relevant stored items, saves operator answers and finished results, and answers an exact repeat of a question from memory instead of asking again. |
 
-[Guide](docs/guides/sub-agents.md). To let the Supervisor ask you for missing facts, see [Asking the operator](docs/guides/sub-agents.md#asking-the-operator).
+[Guide](docs/guides/sub-agents.md). To let the Supervisor ask you for missing facts, see [Asking the operator](docs/guides/sub-agents.md#asking-the-operator). To keep what it learns between runs, see [Long-term memory](docs/guides/sub-agents.md#long-term-memory).
 
 ### Upgrade notes
 

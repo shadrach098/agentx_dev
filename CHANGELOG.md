@@ -38,6 +38,11 @@ Sub-agents: the Supervisor can create its own helpers. Opt-in, with the behavior
   operator answers the planner is told to do the work instead of planning another question. The
   helper-creation instructions now say a helper can only look things up with the tools it is given
   (this applies to every Supervisor that enables spawning).
+- **Supervisor long-term memory**: `Supervisor(memory=store)` (any vector store: `VectorStore`, Chroma,
+  Qdrant, pgvector) gives the planner and every dispatched step the few relevant stored items as a
+  FROM MEMORY block, saves each operator answer and each completed run's final answer, and answers an
+  exact repeat of an answered question from memory. `memory_top_k`, `memory_min_score`,
+  `memory_write`, `SupervisorResult.memory`, `memory` stream events.
 - `web_fetch_tool(text_only=True)`: return an HTML page as readable text (scripts, styles and tags
   removed) instead of the first 50,000 characters of raw markup, which on a modern page can hold no
   content at all. Default off (unchanged for existing agents); the helpers a Supervisor builds use it.

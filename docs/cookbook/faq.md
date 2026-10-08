@@ -120,6 +120,30 @@ that never asks, by design. If your function forwards raw end-user text,
 treat the reply as untrusted input to the run, like the task itself. See
 [pattern 32](patterns.md).
 
+## How do I stop the Supervisor asking me the same thing every run? *(3.6)*
+
+Give it a memory: `Supervisor(..., ask_user=True, memory=store)`, where `store`
+is a `VectorStore`, `ChromaVectorStore`, `QdrantVectorStore` or
+`PgVectorStore`. Each answer you give is saved, and the next time the exact
+same question comes up it is answered from memory: no prompt, no question
+slot (`result.asked` shows `"from_memory": True`). The in-memory
+`VectorStore` is yours to persist with `store.save(path)` and
+`VectorStore.load(path, embeddings)`. To be asked again about a fact, delete
+its id from the store (the ids a run saved are in `result.memory`). See
+[Long-term memory](../guides/sub-agents.md#long-term-memory) and
+[pattern 33](patterns.md).
+
+## Can I give the Supervisor facts it should always know? *(3.6)*
+
+Yes. Add them to a store and pass it as `memory=`:
+`store.add(["Our fiscal year starts in April."])`. The planner and every
+dispatched step get the few items relevant to their own text as a FROM
+MEMORY block, where your facts show as `[note]`. Add `memory_write=False` to
+make the store read-only, so a run (for example one that handles untrusted
+input) cannot add to it. Tune `memory_min_score` to the embeddings (about
+0.5 for `OpenAIEmbeddings`, about 0.1 for `HashEmbeddings`). See
+[pattern 33](patterns.md).
+
 ## When should I use ReAct vs. function-calling vs. native binding?
 
 | Mode | When |

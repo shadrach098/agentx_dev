@@ -11,7 +11,10 @@ What to look for in the output:
   - ``[spawn]`` lines when a helper is built (verbose=True);
   - ``result.spawned``: every helper it created, with its tools and outcome;
   - with ``--ask``: the planner asks you for the competitors (the task names none), and
-    ``result.asked`` lists each question put to you.
+    ``result.asked`` lists each question put to you;
+  - with ``--memory FILE``: a vector store is loaded from FILE (created on the first run),
+    the Supervisor saves what it learns into it, and the next run answers a repeated
+    question from memory instead of asking you again. ``result.memory`` lists what a run saved.
 
 Run (set ANTHROPIC_API_KEY or OPENAI_API_KEY first):
 
@@ -19,6 +22,7 @@ Run (set ANTHROPIC_API_KEY or OPENAI_API_KEY first):
     python examples/subagents_demo.py "Your own task here"
     python examples/subagents_demo.py --persistent     # recovery rounds + one shared deadline
     python examples/subagents_demo.py --ask            # the planner asks you for the competitors
+    python examples/subagents_demo.py --ask --memory memory.json   # the second run does not ask again
 """
 
 import os
@@ -26,7 +30,8 @@ import sys
 from pathlib import Path
 
 from agentx_dev import (
-    AgentRunner, AgentType, Permissions, Persistence, SpawnConfig, Supervisor,
+    AgentRunner, AgentType, HashEmbeddings, Permissions, Persistence, SpawnConfig, Supervisor,
+    VectorStore,
 )
 
 WORKSPACE = "./workspace"
@@ -80,7 +85,7 @@ def build_explorer(model):
     )
 
 
-def build_supervisor(model, persistent=False, ask=False):
+def build_supervisor(model, persistent=False, ask=False, memory=None):
     explorer = build_explorer(model)
     return Supervisor(
         model=model,
@@ -93,6 +98,8 @@ def build_supervisor(model, persistent=False, ask=False):
         ),
         persistence=Persistence(max_minutes=15) if persistent else None,
         ask_user=True if ask else None,   # built-in asker: notebook input box or terminal
+        memory=memory,                    # a vector store (or None): long-term memory
+        memory_min_score=0.1,             # HashEmbeddings scores are low; use ~0.5 with OpenAIEmbeddings
         verbose=True,
     )
 
@@ -107,17 +114,49 @@ def seed_workspace():
         print(f"(created {target})")
 
 
+def load_memory(path):
+    """The store kept in ``path``: loaded when the file exists, otherwise a new empty one."""
+    embeddings = HashEmbeddings()          # offline; OpenAIEmbeddings() recalls better
+    if Path(path).exists():
+        return VectorStore.load(path, embeddings)
+    return VectorStore(embeddings)
+
+
+def parse_args(argv):
+    """Return (flags, memory_file, positional). ``--memory`` takes the next argument."""
+    memory_file = None
+    positional = []
+    flags = set()
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--memory":
+            if i + 1 >= len(argv) or argv[i + 1].startswith("--"):
+                raise SystemExit("--memory needs a file name, for example: --memory memory.json")
+            memory_file = argv[i + 1]
+            i += 1
+        elif arg.startswith("--"):
+            flags.add(arg)
+        else:
+            positional.append(arg)
+        i += 1
+    return flags, memory_file, positional
+
+
 def main(argv):
-    persistent = "--persistent" in argv
-    ask = "--ask" in argv
-    args = [a for a in argv if not a.startswith("--")]
+    flags, memory_file, args = parse_args(argv)
+    persistent = "--persistent" in flags
+    ask = "--ask" in flags
     task = args[0] if args else (ASK_TASK if ask else DEFAULT_TASK)
 
     seed_workspace()
     model = build_model()
-    supervisor = build_supervisor(model, persistent=persistent, ask=ask)
+    store = load_memory(memory_file) if memory_file else None
+    supervisor = build_supervisor(model, persistent=persistent, ask=ask, memory=store)
 
     result = supervisor.run(task)
+    if store is not None:
+        store.save(memory_file)            # the store is yours to persist
 
     print("\n" + "=" * 70)
     print("FINAL ANSWER")
@@ -136,6 +175,12 @@ def main(argv):
             print("  (none: the planner did not need to ask)")
         for entry in result.asked:
             print(f"  {entry['source']:<12} answered={entry['answered']} {entry['question']}")
+    if store is not None:
+        print(f"\nSaved to memory ({memory_file}, {len(store)} item(s) in the store):")
+        if not result.memory:
+            print("  (nothing new this run)")
+        for entry in result.memory:
+            print(f"  {entry['kind']:<16} {entry['text'][:60]}")
     print(f"\nThe supervisor's own registry is unchanged: {list(supervisor.agents)}")
 
 
