@@ -4,7 +4,7 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
-## [3.6.0] - 2026-10-04
+## [3.6.0] - 2026-10-09
 
 Sub-agents: the Supervisor can create its own helpers. Opt-in, with the behavior changes listed below.
 
