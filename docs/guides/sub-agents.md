@@ -224,7 +224,7 @@ store = VectorStore(embeddings=HashEmbeddings())          # any store with add()
 supervisor = Supervisor(model=model, agents=agents, ask_user=True, memory=store)
 ```
 
-`memory` takes anything with callable `add` and `search`: `VectorStore`, `ChromaVectorStore`, `QdrantVectorStore`, `PgVectorStore`. Anything else raises `TypeError` at construction. Keeping the store persistent is yours to do: the in-memory `VectorStore` has `save(path)` and `VectorStore.load(path, embeddings)` (call `save` after the run); Chroma (with a `persist_directory`), Qdrant and pgvector persist themselves. With `memory=None` (the default) nothing changes. `AsyncSupervisor` takes the same arguments.
+`memory` takes anything with callable `add` and `search`: `VectorStore`, `ChromaVectorStore`, `QdrantVectorStore`, `PgVectorStore`. The last three need their extra (`pip install "agentx-dev[chroma]"`, `[qdrant]`, `[pgvector]`); the in-memory `VectorStore` needs nothing. Anything else raises `TypeError` at construction. Keeping the store persistent is yours to do: the in-memory `VectorStore` has `save(path)` and `VectorStore.load(path, embeddings)` (call `save` after the run); Chroma (with a `persist_directory`), Qdrant and pgvector persist themselves. With `memory=None` (the default) nothing changes. `AsyncSupervisor` takes the same arguments.
 
 | Argument | Default | Meaning |
 |---|---|---|

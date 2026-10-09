@@ -1808,7 +1808,13 @@ class Claude(BaseChatModel):
                 drop or clamp it, retry, and remember it for this model.
                 Logged at WARNING. Set False to surface the raw error.
         """
-        import anthropic as _anthropic
+        try:
+            import anthropic as _anthropic
+        except ImportError as e:
+            from agentx_dev._optional import optional_import_error
+            raise optional_import_error(
+                "Claude", e, modules=("anthropic",), pip="anthropic", extra="anthropic",
+            ) from e
         self._anthropic = _anthropic
         self.model_name = model
         self.max_tokens = max_tokens

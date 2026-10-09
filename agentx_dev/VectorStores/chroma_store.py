@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence
 
+from agentx_dev._optional import optional_import_error
 from agentx_dev.Embeddings import Embeddings, VectorHit
 
 
@@ -54,9 +55,8 @@ class ChromaVectorStore:
         try:
             import chromadb
         except ImportError as e:
-            raise ImportError(
-                "ChromaVectorStore requires the chromadb package. "
-                "Install with: pip install chromadb"
+            raise optional_import_error(
+                "ChromaVectorStore", e, modules=("chromadb",), pip="chromadb", extra="chroma",
             ) from e
 
         self._embeddings = embeddings

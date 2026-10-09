@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 import re as _re
 
+from agentx_dev._optional import optional_import_error
+
 # Regex patterns for the most common secret formats. Order matters —
 # longer/more-specific patterns first so they don't get truncated by a
 # greedier match. Each pattern replaces the entire match with [REDACTED]
@@ -277,9 +279,9 @@ class OTelHook:
             from opentelemetry import trace
             from opentelemetry.trace import Status, StatusCode
         except ImportError as e:
-            raise ImportError(
-                "OTelHook requires opentelemetry-api. "
-                "Install with: pip install opentelemetry-api opentelemetry-sdk"
+            raise optional_import_error(
+                "OTelHook", e, modules=("opentelemetry",), pip="opentelemetry-api opentelemetry-sdk",
+                extra="otel",
             ) from e
         self._trace = trace
         self._Status = Status

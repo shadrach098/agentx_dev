@@ -10,9 +10,9 @@ Adapters ship in `agentx_dev.VectorStores`:
 
 | Adapter | Backing store | Extra install |
 |---|---|---|
-| `ChromaVectorStore` | Chroma (local persistent or client/server) | `pip install chromadb` |
-| `QdrantVectorStore` | Qdrant (local or remote) | `pip install qdrant-client` |
-| `PgVectorStore` | Postgres + pgvector | `pip install "psycopg[binary]"` (or `psycopg2-binary`) |
+| `ChromaVectorStore` | Chroma (local persistent or client/server) | `pip install "agentx-dev[chroma]"` (or `chromadb`) |
+| `QdrantVectorStore` | Qdrant (local or remote) | `pip install "agentx-dev[qdrant]"` (or `qdrant-client`) |
+| `PgVectorStore` | Postgres + pgvector | `pip install "agentx-dev[pgvector]"` (or `psycopg[binary]` / `psycopg2-binary`) |
 
 ## Chroma
 

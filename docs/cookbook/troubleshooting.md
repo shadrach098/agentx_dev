@@ -530,9 +530,19 @@ addendum if `holdset` score improves too.
 
 ## Vector store adapter errors *(3.1)*
 
-**`ImportError: ChromaVectorStore requires the chromadb package`**
-Install the extra: `pip install agentx-dev[chroma]` (or `[qdrant]` /
-`[pgvector]`).
+**`ImportError: ChromaVectorStore requires the chromadb package, which is not installed`**
+Install the extra: `python -m pip install "agentx-dev[chroma]"` (or `[qdrant]` /
+`[pgvector]`). The message also prints the Python that is running; install into that one.
+If `pip` installed it but the error stays, `pip` and your `python` are different installs
+(`py -m pip`, or the interpreter your IDE uses).
+
+**`ImportError: ChromaVectorStore could not import chromadb: ModuleNotFoundError: No module named 'flask'`** *(3.6.1)*
+The package is installed, but importing it failed, and the text after `could not import` is the
+real error. Reinstalling will not help. The usual cause is a file in your project folder named
+like a library, such as `google.py`, `numpy.py` or `typing.py`: Python finds it before the real
+package, and chromadb's dependencies (protobuf lives under `google`) then fail. Rename the file
+(and delete its `__pycache__` copy). Before 3.6.1 this case was reported as "requires the chromadb
+package". The same message format applies to Qdrant, pgvector, MCP, OpenTelemetry and `Claude`.
 
 **`ValueError: Embedding dim mismatch` after switching adapters**
 The adapter shape is identical but the *backend* stores vectors on

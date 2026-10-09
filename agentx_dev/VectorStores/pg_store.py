@@ -31,26 +31,30 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence
 
+from agentx_dev._optional import _is_missing, optional_import_error
 from agentx_dev.Embeddings import Embeddings, VectorHit
 
 
 def _load_psycopg():
     """Return (module, kind) where kind is 'v3' or 'v2'. Raises if neither
     is installed."""
+    modules = ("psycopg", "psycopg2")
+    first: Optional[ImportError] = None
     try:
         import psycopg
         return psycopg, "v3"
-    except ImportError:
-        pass
+    except ImportError as e:
+        first = e
     try:
         import psycopg2 as psycopg
         return psycopg, "v2"
     except ImportError as e:
-        raise ImportError(
-            "PgVectorStore requires psycopg (v3, preferred) or psycopg2. "
-            "Install one of: pip install 'psycopg[binary]' -- OR -- "
-            "pip install psycopg2-binary"
-        ) from e
+        # psycopg being installed but broken is the more useful thing to report than psycopg2
+        # (the fallback) being absent.
+        cause = first if (first is not None and not _is_missing(first, modules)) else e
+        raise optional_import_error(
+            "PgVectorStore", cause, modules=modules, pip="psycopg[binary]", extra="pgvector",
+        ) from cause
 
 
 class PgVectorStore:

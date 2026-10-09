@@ -34,6 +34,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional, Sequence
 
+from agentx_dev._optional import optional_import_error
 from agentx_dev.Embeddings import Embeddings, VectorHit
 
 
@@ -83,9 +84,9 @@ class QdrantVectorStore:
             from qdrant_client import QdrantClient
             from qdrant_client.http import models as qm
         except ImportError as e:
-            raise ImportError(
-                "QdrantVectorStore requires qdrant-client. "
-                "Install with: pip install qdrant-client"
+            raise optional_import_error(
+                "QdrantVectorStore", e, modules=("qdrant_client",), pip="qdrant-client",
+                extra="qdrant",
             ) from e
 
         # Reject mutually-exclusive backend selectors up front so the user

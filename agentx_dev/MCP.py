@@ -39,6 +39,7 @@ from typing import Any, Dict, List, Optional, Type
 
 from pydantic import BaseModel, Field, create_model
 
+from agentx_dev._optional import optional_import_error
 from agentx_dev.AsyncTools import AsyncStructuredTool
 
 
@@ -164,9 +165,8 @@ class MCPClient:
         try:
             from mcp import ClientSession
         except ImportError as e:
-            raise ImportError(
-                "MCPClient requires the 'mcp' package. "
-                "Install with: pip install mcp"
+            raise optional_import_error(
+                "MCPClient", e, modules=("mcp",), pip="mcp", extra="mcp",
             ) from e
 
         try:
@@ -191,9 +191,8 @@ class MCPClient:
             from mcp import StdioServerParameters
             from mcp.client.stdio import stdio_client
         except ImportError as e:
-            raise ImportError(
-                "MCPClient.connect_stdio requires the 'mcp' package. "
-                "Install with: pip install mcp"
+            raise optional_import_error(
+                "MCPClient.connect_stdio", e, modules=("mcp",), pip="mcp", extra="mcp",
             ) from e
 
         params = StdioServerParameters(command=command, args=list(args), env=env)
@@ -230,9 +229,8 @@ class MCPClient:
         try:
             from mcp.client.sse import sse_client
         except ImportError as e:
-            raise ImportError(
-                "MCPClient.connect_sse requires the 'mcp' package. "
-                "Install with: pip install mcp"
+            raise optional_import_error(
+                "MCPClient.connect_sse", e, modules=("mcp",), pip="mcp", extra="mcp",
             ) from e
 
         exit_stack = AsyncExitStack()
@@ -264,9 +262,8 @@ class MCPClient:
         try:
             from mcp.client.streamable_http import streamablehttp_client
         except ImportError as e:
-            raise ImportError(
-                "MCPClient.connect_http requires the 'mcp' package. "
-                "Install with: pip install mcp"
+            raise optional_import_error(
+                "MCPClient.connect_http", e, modules=("mcp",), pip="mcp", extra="mcp",
             ) from e
 
         exit_stack = AsyncExitStack()

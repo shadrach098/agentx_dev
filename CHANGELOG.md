@@ -4,6 +4,24 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.6.1] - 2026-10-09
+
+### Fixed
+
+- A package that was installed but failed to import was reported as not installed. A user whose project
+  folder held a `google.py` saw "ChromaVectorStore requires the chromadb package" although chromadb was
+  installed: the file hid the real `google` package that chromadb's dependencies use, and the catch-all
+  hid that. The error now says which case it is. Not installed: it names the extra
+  (`python -m pip install "agentx-dev[chroma]"`) and the Python that is running. Installed but failing:
+  it shows the real error and common causes (a file named like a library, a version conflict) and no
+  install command. Applies to `ChromaVectorStore`, `QdrantVectorStore`, `PgVectorStore`, `MCPClient`,
+  `OTelHook` and `Claude`.
+
+### Docs
+
+- Install pages list the `chroma`, `qdrant` and `pgvector` extras and say why a plain install leaves
+  them out; the troubleshooting page covers both messages.
+
 ## [3.6.0] - 2026-10-09
 
 Sub-agents: the Supervisor can create its own helpers. Opt-in, with the behavior changes listed below.
