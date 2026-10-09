@@ -105,7 +105,7 @@ SpawnConfig(enabled=True, capabilities={"web", "files"}, allowed_paths=["./works
 
 `allowed_paths` is the only place the file tools can reach. The planner still decides what each helper gets within the ceiling, so say in the task where the result goes ("save the list to ./workspace/prospects.md") and it will ask for `files`. `result.spawned[i]["tools"]` shows what a helper received and `["dropped"]` what the ceiling clipped.
 
-A specialist you registered is different: it has the tools you gave its own `AgentRunner` (for example `permissions=Permissions.allow_all()`), and the ceiling does not apply. Since 3.6.2 the planner's catalog lists each registered agent's tools under its description (`tools: read_path, write_file, ...`), so you do not need to repeat them in the description. Tools the framework adds itself (`ask_user`, `delegate`) are left out of that list.
+A specialist you registered is different: it has the tools you gave its own `AgentRunner` (its `permissions=`, for example `Permissions(read_files=True, write_files=True, edit_files=True, allowed_paths=[...])`), and the ceiling does not apply. Since 3.6.2 the planner's catalog lists each registered agent's tools under its description (`tools: read_path, write_file, ...`), so you do not need to repeat them in the description. Tools the framework adds itself (`ask_user`, `delegate`) are left out of that list.
 
 ### Where the step limit is set
 
