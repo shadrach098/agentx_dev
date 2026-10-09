@@ -85,6 +85,28 @@ The planner's plan is model output, which can be steered by the user's text. So 
 | `approver` | `None` | Optional `(SpawnRequest) -> bool`. In ceiling mode it is an extra gate, not required. |
 | `auto_spawn`, `auto_spawn_allowed_caps` | | The older approval flow, used only when neither `capabilities` nor `tools` is set. |
 
+### Letting helpers write files
+
+`capabilities` is a ceiling, and these are the words it takes:
+
+| Word | What a helper gets |
+|---|---|
+| `web` | `web_search`, `web_fetch` |
+| `files_read` | read, list, find, grep (read-only) |
+| `files` | the `files_read` tools plus `write_file` and `edit_file` |
+| `code` | `run_python` |
+| `delete` | file deletion |
+
+`{"web", "files_read"}` lets helpers read files but never write them. To let them save results, put `files` in the ceiling and name the folder:
+
+```python
+SpawnConfig(enabled=True, capabilities={"web", "files"}, allowed_paths=["./workspace"])
+```
+
+`allowed_paths` is the only place the file tools can reach. The planner still decides what each helper gets within the ceiling, so say in the task where the result goes ("save the list to ./workspace/prospects.md") and it will ask for `files`. `result.spawned[i]["tools"]` shows what a helper received and `["dropped"]` what the ceiling clipped.
+
+A specialist you registered is different: it has the tools you gave its own `AgentRunner` (for example `permissions=Permissions.allow_all()`), and the ceiling does not apply. Since 3.6.2 the planner's catalog lists each registered agent's tools under its description (`tools: read_path, write_file, ...`), so you do not need to repeat them in the description. Tools the framework adds itself (`ask_user`, `delegate`) are left out of that list.
+
 ### Where the step limit is set
 
 A step is one turn of an agent's loop (a model reply, usually followed by a tool call). The limit lives in two places, depending on who built the agent:
@@ -165,6 +187,7 @@ supervisor = Supervisor(model=model, agents={"explorer": ("Reads files in ./work
 - **Every agent can ask mid-run.** Specialists, planner-defined helpers and `delegate` helpers get an `ask_user(question, context="")` tool for the run (removed afterwards, so your runners are untouched). The answer goes to the agent as `[operator] ...` and to every step dispatched later. Helpers also get a line in their instructions telling them to ask rather than guess; your registered specialists learn about the tool from its description.
 - **After you answer, the planner is told to do the work.** Once you have answered something, every planning prompt (the replan, and any recovery round) adds: do not plan a step whose job is only to ask for more information; find what is still unknown with tools (give the helper the tools it needs, such as `web`) or state the assumption. A partial answer, such as one URL where three competitors were needed, should lead to research, not to another round of questions.
 - **A helper can only look things up with the tools it is given.** The helper-creation instructions tell the planner that a helper with no tools can only reason and cannot fetch anything, and name `web` when your ceiling allows it. The `ceiling` only caps what a helper may use; the plan decides what it asks for.
+- **Asking at a checkpoint.** A task such as "research this, and when done ask me what to do next" works: the planner is told to put "call `ask_user` at that point" in the step's query, and a helper's instructions say to call `ask_user` when the task tells it to check with you, not to write the question into its answer (a question in an answer is never shown to you). The same helper then acts on your reply with its own tools, so it needs the tools for what you will ask it to do (for example `files` to save something). It uses its one question for this. With `ask_user` unset, nothing changes. In a verbose run the `[spawn]` line ends `tools=['web'] + ask_user` for a helper that can ask; `result.spawned` is unchanged.
 - **An agent may ask once.** Each agent (by name) gets one question per run, and its tool description says to search with its tools first. The planner is exempt (it may ask several questions in its one round). The second question from the same agent gets "no more questions available; proceed on a stated assumption", so one helper cannot spend the whole shared budget clarifying.
 - **One question budget per run**, shared by all of them. An identical question is asked once; a repeat gets the first answer and uses no slot. A question counts against the budget once it is put to you, whether or not you answer it. The one reply that is not remembered is `no_channel` (for example a terminal that is busy), so the same question can be asked again once the channel is free.
 - **No answer is not a failure.** If nobody can answer (headless, your function raised, it timed out, you sent an empty reply, the budget is spent) the agent is told to proceed on a stated assumption and say what it assumed.

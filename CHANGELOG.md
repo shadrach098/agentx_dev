@@ -4,6 +4,30 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.6.2] - 2026-10-09
+
+### Fixed
+
+- **"When done, ask me" now reaches `ask_user`.** With `ask_user=True` and a task that said to ask the
+  operator what to do when finished, the helper wrote the question into its answer and the run ended
+  with nobody to answer. A helper's instruction covered only a missing fact; it now also covers a task
+  that tells it to check with the user, and says to call `ask_user` at that point and act on the reply.
+  The planner is told to put that instruction in the step's query rather than plan a step that only
+  asks.
+
+### Changed
+
+- The planner's catalog lists each registered agent's tools under its description (framework tools
+  `ask_user` and `delegate` left out, long lists cut at 12), so a description no longer has to say
+  that an agent can write files. Registered agents whose runner has no tool registry are unchanged.
+- The verbose `[spawn]` line ends with `+ ask_user` for a helper that can ask. `result.spawned` is
+  unchanged.
+
+### Docs
+
+- Sub-agents guide: how to let helpers write files (`capabilities={"web", "files"}` and
+  `allowed_paths`), the capability words, and asking at a checkpoint; FAQ entry.
+
 ## [3.6.1] - 2026-10-09
 
 ### Fixed

@@ -576,13 +576,39 @@ def _evaluate_success_verdict(verdict) -> tuple:
 # 3.3: plan-graph helpers (pure functions — unit-testable without a model)
 # ----------------------------------------------------------------------------
 
+_CATALOG_HIDDEN_TOOLS = frozenset({"ask_user", "delegate"})      # added by the framework, not the developer
+_CATALOG_MAX_TOOLS = 12
+
+
+def _catalog_tools_line(runner: Any) -> str:
+    """``"    tools: a, b"`` for a registered agent, or ``""`` when it has none to show.
+
+    The planner chooses between a registered agent and a new helper from this catalog, and it
+    saw only the description. A developer who wrote "File management" had to add "writes and
+    edits files" by hand so the planner would pick it; the agent's own tool list says so."""
+    try:
+        names = [n for n in runner.registry.names if n not in _CATALOG_HIDDEN_TOOLS]
+    except Exception:
+        return ""
+    if not names:
+        return ""
+    shown = ", ".join(names[:_CATALOG_MAX_TOOLS])
+    if len(names) > _CATALOG_MAX_TOOLS:
+        shown += f", ... ({len(names) - _CATALOG_MAX_TOOLS} more)"
+    return f"    tools: {shown}"
+
+
 def _render_agent_catalog(agents: Dict[str, Any]) -> str:
     """Render the planner-facing catalog. Specialist entries (3.3) get
-    their extra metadata lines; classic tuples render as before."""
+    their extra metadata lines; classic tuples render as before. Each agent's tools are
+    listed under it."""
     lines: List[str] = []
     for name, entry in agents.items():
+        tools_line = _catalog_tools_line(entry.runner if isinstance(entry, Specialist) else entry[1])
         if isinstance(entry, Specialist):
             lines.append(f"- {name}: {entry.description}")
+            if tools_line:
+                lines.append(tools_line)
             if entry.depends_on:
                 lines.append(f"    typically after: {', '.join(entry.depends_on)}")
             if entry.output_schema is not None:
@@ -596,6 +622,8 @@ def _render_agent_catalog(agents: Dict[str, Any]) -> str:
         else:
             desc, _ = entry
             lines.append(f"- {name}: {desc}")
+            if tools_line:
+                lines.append(tools_line)
     return "\n".join(lines)
 
 

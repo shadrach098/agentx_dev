@@ -347,6 +347,14 @@ Before 3.3 it was concurrent *without* context threading — sub-tasks
 couldn't see each other's findings. Declaring edges is what buys you
 both at once.
 
+## How do I let a Supervisor's helpers write files? *(3.6)*
+
+Put `files` in the ceiling: `SpawnConfig(enabled=True, capabilities={"web", "files"},
+allowed_paths=["./workspace"])`. `files_read` is read-only, and `files` adds `write_file` and
+`edit_file`. Helpers can touch only `allowed_paths`. Say in the task where the result should be
+saved so the planner requests `files` for the helper. A specialist you registered keeps the tools
+of its own `AgentRunner`. See [Sub-agents](../guides/sub-agents.md#letting-helpers-write-files).
+
 ## Where do I set max iterations for a Supervisor's agents? *(3.6)*
 
 It depends on who built the agent:

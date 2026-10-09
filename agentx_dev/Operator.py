@@ -453,7 +453,8 @@ class OperatorChannel:
     def plan_note(self) -> str:
         """Appended to a planning prompt once the operator has answered something: do the
         work, do not plan another step that only asks."""
-        return ANSWERED_PLAN_NOTE if self._answers else ""
+        note = CHECKPOINT_PLAN_NOTE
+        return note + ANSWERED_PLAN_NOTE if self._answers else note
 
     def emit(self, event: Dict[str, Any]) -> None:
         with self._events_lock:
@@ -705,7 +706,20 @@ ASK_USER_DESCRIPTION = (
 
 ASK_ADDENDUM_LINE = (
     "\n\n- If a fact you need is missing and your tools cannot find it, call ask_user with one "
-    "specific question (you may ask at most once, so search with your tools first). Do not guess."
+    "specific question (you may ask at most once, so search with your tools first). Do not guess. "
+    "If your task tells you to check with the user at some point (for example \"when done, ask what "
+    "to do next\"), call ask_user at that point instead of writing the question in your answer, "
+    "then act on the reply."
+)
+
+# Added to every planning prompt when the operator can be asked. A task that says "ask me when
+# you are done" is not a missing fact for the up-front round; it is a request that the agent
+# doing the work calls ask_user at that point, and a question typed into an answer reaches no one.
+CHECKPOINT_PLAN_NOTE = (
+    "\n\nIf the task asks you to check with the operator at some point (for example \"when done, ask "
+    "me what to do next\"), do not plan a step whose only job is to ask. Tell the specialist doing "
+    "that work, in its step query, to call ask_user at that point and to act on the reply. A "
+    "question written into a specialist's answer is never shown to the operator."
 )
 
 

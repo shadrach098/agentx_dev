@@ -632,7 +632,9 @@ class SpawnPolicy:
                        "reused": built.reused, "refused": None,
                        "capabilities": list(built.granted), "rerouted_from": None})
         what = f"reusing {built.reused} agent" if built.reused else "built"
-        self._say(f"{what} '{built.spec.name}' ({built.spec.origin}) tools={built.granted or 'none'}"
+        registry = getattr(built.runner, "registry", None)
+        asks = " + ask_user" if registry is not None and registry.has(ASK_TOOL_NAME) else ""
+        self._say(f"{what} '{built.spec.name}' ({built.spec.origin}) tools={built.granted or 'none'}{asks}"
                   + (f" dropped={built.dropped}" if built.dropped else ""))
 
 
