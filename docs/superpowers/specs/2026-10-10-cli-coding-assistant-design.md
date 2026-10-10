@@ -205,17 +205,34 @@ Deny rules and the sandbox cannot be overridden from the prompt.
 
 **Default deny rules.** The application always adds a set of deny rules to the user's and the project's, so a
 model cannot rewrite its own permissions or plant something that runs later, outside the approval prompts.
-They refuse `write_file`, `edit_file`, `delete_path` and `move_file` (as source or destination) on
-`.agentx` and everything under it (the settings files), `.git/hooks` and everything under it (git hooks), and
-`.git/config` (which can point git at other hooks or commands), at the top of the project and in any
-sub-folder (`*/.agentx/*`, `*/.git/hooks/*`, `*/.git/config`; this also covers `~/.agentx` when the home folder is
-reachable). They hold in every mode, `accept-edits` included, and are not asked about. Reading those files is
-still allowed. `run_shell` is not covered (it can reach any file the shell can), but it is never auto-approved
-for such a command unless an allow rule or a "don't ask again" grant covers it, so the user sees it first.
+They refuse `write_file`, `edit_file`, `delete_path` and `move_file` (as source and as destination) on:
 
-**A new conversation is a clean slate.** `/clear` and `/resume` (and a conversation started with
-`--continue`/`--resume`) empty the session-wide command grants ("don't ask again"); the rules from settings
-stay. Switching to `accept-edits` with `a` on an edit prompt is a mode change, not a grant, and survives `/clear`.
+- `.git` and everything under it (`.git`, `.git/*`, `*/.git`, `*/.git/*`), at the top of the project and in any
+  sub-folder. Git follows a `.git` FILE (`gitdir: ...`), `.git/commondir`, `.git/config` (`core.hooksPath`,
+  aliases, `core.fsmonitor`), `.git/hooks/*` and `.git/modules/<sub>/config|hooks/*`, and moving `.git` away and
+  back would defeat any narrower rule. The honest reason is that a change under `.git/` is invisible to
+  `git status` and `git diff`, unlike an edit to `conftest.py`, a `Makefile` or `package.json`, which the user
+  can see in review before running anything, so the approval prompt is the only chance to see it, and the
+  default is to refuse outright;
+- `.agentx` and everything under it at the top of the project (`.agentx`, `.agentx/*`; the only place the
+  project settings are read from), and `~/.agentx` when the tools can reach the home folder: a model must not
+  rewrite its own permissions.
+
+They hold in every mode, `accept-edits` included, are matched against every spelling of the path the gate
+computes (relative, absolute, `./`, `..`, backslashes, links followed, case folded on Windows, short 8.3
+names resolved) and are not asked about. Names that merely start alike (`.gitignore`, `.github/`,
+`git_notes.txt`) are not denied. Reading those files is still allowed.
+
+**Not covered:** deny rules do not constrain `run_shell` or `run_python`, which can reach any file the shell or
+interpreter can. Those always ask unless an allow rule or a "don't ask again" grant covers the command, so
+the user sees the command first; the approval prompt, not a deny rule, is the protection there.
+
+**A new conversation is a clean slate.** `/clear`, `/resume` (and a conversation started with
+`--continue`/`--resume`) empty the session-wide command grants ("don't ask again") and undo an edit grant: when
+the user answered `a` at an edit prompt (which switches the gate to `accept-edits`), the gate returns to the mode
+the app started in. A mode the user chose, with `--mode`, the settings, `/mode` or Shift+Tab, is kept. The rules
+from settings stay. The notice for a new or resumed conversation shows the mode in force. The system
+instructions (`AGENTX.md` files) are read again, so a file written by `/init` is used by the next conversation.
 
 ## 8. The chat experience (`ui.py`, `commands.py`, `context.py`)
 
@@ -291,6 +308,13 @@ settings.
 Before the first prompt the app prints every line of `Settings.problems` as a warning and, when the project's
 file contributes any `allow` rules, one block listing them as coming from the project's settings, so the user
 sees what a cloned repository is allowing before anything runs.
+
+A project file cannot loosen the mode: `"mode": "accept-edits"` in the project's settings is ignored with a
+warning (set it in your own settings or with `--mode`); `plan` and `default` from the project are honoured.
+
+Extra folders (`addDirs`, `--add-dir`) are resolved to absolute paths, listed in the startup banner, and
+reported when they do not exist (they are never created); one that is the filesystem root or the user's home
+folder gets a bold warning.
 
 ## 11. Errors
 

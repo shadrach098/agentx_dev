@@ -102,7 +102,11 @@ def load_settings(cwd: Path, home: Path) -> Settings:
             settings.problems.append(f"settings file {path}: 'model' must be text; ignored")
         mode = data.get("mode")
         if mode is not None:
-            if isinstance(mode, str) and mode in MODES:
+            if is_project and mode == "accept-edits":
+                # a cloned repository must not switch off the edit prompts on its own
+                settings.problems.append("project settings asked for accept-edits mode; ignored "
+                                         "(set it in your own settings or with --mode)")
+            elif isinstance(mode, str) and mode in MODES:
                 settings.mode = mode
             else:
                 settings.problems.append(

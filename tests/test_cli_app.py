@@ -28,6 +28,9 @@ class Lines:
         if not self.items:
             raise EOFError
         item = self.items.pop(0)
+        if callable(item):                       # a side effect between two inputs (a file written, say)
+            item()
+            return self(prompt)
         if isinstance(item, BaseException):
             raise item
         return item
@@ -35,7 +38,7 @@ class Lines:
 
 def make_app(tmp_path, lines, model, **kw):
     out = io.StringIO()
-    console = Console(file=out, width=100, force_terminal=False, color_system=None)
+    console = Console(file=out, width=kw.pop("width", 100), force_terminal=False, color_system=None)
     cwd, home = tmp_path / "proj", tmp_path / "home"
     cwd.mkdir(exist_ok=True)
     home.mkdir(exist_ok=True)
@@ -132,8 +135,13 @@ def test_the_tool_cache_is_off_and_nothing_has_a_timeout(tmp_path):
 
 # -- the built-in deny rules ----------------------------------------------------------------------------------
 
-PROTECTED = [".git/hooks/pre-commit", ".git/hooks/sub/x", ".agentx/settings.json", ".agentx/new.json",
-             "sub/.git/hooks/pre-push", "sub/.agentx/settings.json", "./.agentx/../.agentx/settings.json"]
+PROTECTED = [".git", ".git/config", ".git/commondir", ".git/HEAD", ".git/hooks", ".git/hooks/pre-commit",
+             ".git/hooks/sub/x", ".git/modules/s/hooks/x", ".git/modules/s/config", "sub/.git", "sub/.git/config",
+             "sub/.git/hooks/pre-push", ".agentx", ".agentx/settings.json", ".agentx/new.json",
+             "./.agentx/../.agentx/settings.json", "./.git/config", ".git\\config", "sub/../.git/config",
+             "sub/../.git"]
+if sys.platform == "win32":                    # a case-insensitive file system: other spellings of the same file
+    PROTECTED += [".GIT/config", ".Git/hooks/pre-commit", ".AGENTX/settings.json"]
 
 
 def check(gate, tool, **args):
@@ -161,18 +169,114 @@ def test_hooks_and_settings_cannot_be_moved_from_or_to(tmp_path, path):
         assert refusal is not None and "deny rule" in refusal, args
 
 
-def test_the_protected_folders_themselves_cannot_be_deleted_or_moved(tmp_path):
-    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits")
+def test_the_absolute_path_of_a_protected_file_is_refused_too(tmp_path):
+    app, _, cwd, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits")
     app.gate.ask = lambda request: pytest.fail("must be refused")
-    for folder in (".agentx", ".git/hooks"):
-        assert "deny rule" in app.gate.check("delete_path", {"path": folder})
-        assert "deny rule" in app.gate.check("move_file", {"source": folder, "destination": "gone"})
+    for relative in (".git/config", ".git/commondir", ".agentx/settings.json", ".git"):
+        for form in (str(app.cwd / relative), str(cwd / relative), (app.cwd / relative).as_posix()):
+            assert "deny rule" in app.gate.check("write_file", {"path": form, "content": "x"}), form
+            assert "deny rule" in app.gate.check("move_file", {"source": "a", "destination": form}), form
+
+
+def test_the_user_home_settings_folder_is_protected_when_the_tools_can_reach_it(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits", add_dirs=[home])
+    app.gate.ask = lambda request: pytest.fail("must be refused")
+    for name in (".agentx/settings.json", ".agentx/AGENTX.md", ".agentx"):
+        target = str(home.resolve() / name)
+        assert "deny rule" in app.gate.check("write_file", {"path": target, "content": "x"}), name
+        assert "deny rule" in app.gate.check("move_file", {"source": "a", "destination": target}), name
+
+
+ORDINARY = ["src/app.py", ".gitignore", ".gitattributes", ".gitmodules", ".github/workflows/ci.yml", "git_notes.txt",
+            "agentx.md", ".git_notes", "x.git", "docs/git/notes.md", "sub/legit.git/config", "sub/.gitkeep",
+            ".agentx.md", ".agentx-old/x", "sub/.agentx/note.txt"]
 
 
 def test_ordinary_files_are_still_editable_in_accept_edits(tmp_path):
     app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits")
-    for path in ("src/app.py", ".gitignore", ".github/workflows/ci.yml", "agentx.md", ".git/config.txt"):
+    for path in ORDINARY:
         assert app.gate.check("write_file", {"path": path, "content": "x"}) is None, path
+        assert app.gate.check("edit_file", {"path": path, "find": "a", "replace": "b"}) is None, path
+
+
+def test_ordinary_files_can_be_moved_in_default_mode_with_an_ask(tmp_path):
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]))
+    asked = []
+    app.gate.ask = lambda request: (asked.append(request.subject), Answer("y"))[1]
+    for path in ORDINARY:
+        assert app.gate.check("move_file", {"source": path, "destination": "elsewhere.txt"}) is None, path
+    assert len(asked) == len(ORDINARY)
+
+
+def tool_named(app, name):
+    return next(tool for tool in app.tools if tool.name == name)
+
+
+def git_project(cwd):
+    (cwd / ".git" / "hooks").mkdir(parents=True)
+    (cwd / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    (cwd / ".git" / "modules" / "s" / "hooks").mkdir(parents=True)
+    (cwd / "sub" / ".git").mkdir(parents=True)
+    (cwd / "sub" / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+
+
+def test_the_tools_themselves_refuse_to_touch_git_internals_in_accept_edits(tmp_path):
+    """Through the real tool set (the gate in front of the real tools), on real files."""
+    app, _, cwd, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits")
+    app.gate.ask = lambda request: pytest.fail("a protected path must be refused, not asked about")
+    git_project(cwd)
+    call = lambda name, **args: tool_named(app, name).func(**args)
+    cases = [
+        ("write_file", {"path": ".git/commondir", "content": "../elsewhere"}),
+        ("write_file", {"path": ".git/modules/s/hooks/x", "content": "evil"}),
+        ("write_file", {"path": ".git/hooks/pre-commit", "content": "evil"}),
+        ("write_file", {"path": "sub/.git/config", "content": "evil"}),
+        ("edit_file", {"path": ".git/config", "find": "[core]", "replace": "[core]\nhooksPath=/x"}),
+        ("delete_path", {"path": ".git", "recursive": True}),
+        ("delete_path", {"path": ".git/config"}),
+        ("move_file", {"source": ".git", "destination": "moved"}),
+        ("move_file", {"source": "moved", "destination": ".git"}),
+        ("move_file", {"source": ".git/hooks", "destination": "h"}),
+    ]
+    (cwd / "moved").mkdir()
+    for name, args in cases:
+        result = call(name, **args)
+        assert "deny rule" in str(result), (name, args, result)
+    assert not (cwd / ".git" / "commondir").exists() and not (cwd / ".git" / "hooks" / "pre-commit").exists()
+    assert (cwd / ".git" / "config").read_text(encoding="utf-8") == "[core]\n"
+    assert (cwd / ".git").is_dir() and (cwd / "moved").is_dir() and not (cwd / "h").exists()
+
+
+def test_a_git_file_cannot_be_overwritten(tmp_path):
+    """A worktree or submodule has a ``.git`` FILE whose ``gitdir:`` line points git elsewhere."""
+    app, _, cwd, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits")
+    app.gate.ask = lambda request: pytest.fail("must be refused")
+    (cwd / ".git").write_text("gitdir: ../real/.git\n", encoding="utf-8")
+    result = tool_named(app, "write_file").func(path=".git", content="gitdir: /elsewhere\n", if_exists="overwrite")
+    assert "deny rule" in str(result) and (cwd / ".git").read_text(encoding="utf-8") == "gitdir: ../real/.git\n"
+
+
+def test_ordinary_files_are_written_by_the_real_tools_in_accept_edits(tmp_path):
+    app, _, cwd, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits")
+    for path in (".gitignore", ".github/workflows/ci.yml", "git_notes.txt"):
+        result = tool_named(app, "write_file").func(path=path, content="x\n", if_exists="refuse")
+        assert "deny rule" not in str(result) and (cwd / path).read_text(encoding="utf-8") == "x\n", path
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="8.3 short names exist on Windows only")
+def test_a_short_8_3_name_for_the_git_folder_does_not_dodge_the_rule(tmp_path):
+    import ctypes
+    app, _, cwd, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits")
+    git_project(cwd)
+    buffer = ctypes.create_unicode_buffer(500)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(cwd / ".git"), buffer, 500) or buffer.value.endswith(".git"):
+        pytest.skip("this volume has no short names")
+    short = Path(buffer.value).name
+    app.gate.ask = lambda request: pytest.fail("must be refused")
+    assert "deny rule" in str(tool_named(app, "write_file").func(path=f"{short}/commondir", content="x"))
+    assert "deny rule" in str(tool_named(app, "write_file").func(path=f"{short}/config", content="x"))
 
 
 def test_reading_the_settings_file_is_still_allowed(tmp_path):
@@ -598,3 +702,194 @@ class TestMain:
         assert main([]) == 1
         err = capsys.readouterr().err
         assert "OSError" in err and "boom" in err and "Traceback" not in err
+
+
+# -- fix round 1 ----------------------------------------------------------------------------------------------
+
+def test_a_model_cannot_swing_git_to_another_folder_through_the_whole_loop(tmp_path):
+    model = MockModel(script=[write_call(".git/commondir", "../evil"), make_final("could not")])
+    lines = Lines("redirect git", "/exit")
+    app, out, cwd, _ = make_app(tmp_path, lines, model, mode="accept-edits")
+    (cwd / ".git").mkdir()
+    app.start()
+    assert not (cwd / ".git" / "commondir").exists() and "Allow?" not in lines.prompts
+    assert "deny rule" in all_seen_by(model)
+
+
+def test_always_allow_for_edits_does_not_survive_a_new_conversation(tmp_path):
+    model = MockModel(script=[write_call("a.txt"), make_final("one"), write_call("b.txt"), make_final("two")])
+    lines = Lines("make a", "a", "/clear", "make b", "n", "", "/exit")
+    app, out, cwd, _ = make_app(tmp_path, lines, model)
+    app.start()
+    assert (cwd / "a.txt").exists() and not (cwd / "b.txt").exists()
+    assert lines.prompts.count("Allow? [y/a/n] ") == 2           # asked again after /clear
+    assert app.gate.mode == "default"
+    assert "Started a new conversation" in out.getvalue() and "mode: default" in out.getvalue()
+
+
+def test_a_mode_chosen_with_the_mode_command_survives_a_new_conversation(tmp_path):
+    model = MockModel(script=[write_call("a.txt"), make_final("one"), write_call("b.txt"), make_final("two")])
+    lines = Lines("make a", "a", "/mode accept-edits", "/clear", "make b", "/exit")
+    app, _, cwd, _ = make_app(tmp_path, lines, model)
+    app.start()
+    assert (cwd / "b.txt").exists() and app.gate.mode == "accept-edits"
+    assert lines.prompts.count("Allow? [y/a/n] ") == 1
+
+
+def test_a_mode_cycled_with_shift_tab_survives_a_new_conversation(tmp_path):
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]), read_short=Lines("a"))
+    app.start()
+    app.gate.check("write_file", {"path": "a.txt", "content": "x", "if_exists": "refuse"})   # answers "a"
+    assert app.gate.mode == "accept-edits"
+    app.cycle_mode()
+    assert app.gate.mode == "plan"
+    app.new_conversation()
+    assert app.gate.mode == "plan"
+
+
+def test_the_startup_mode_is_kept_by_a_new_conversation(tmp_path):
+    model = MockModel(script=[write_call("a.txt"), make_final("one")])
+    lines = Lines("/clear", "make a", "/exit")
+    app, _, cwd, _ = make_app(tmp_path, lines, model, mode="accept-edits")
+    app.start()
+    assert (cwd / "a.txt").exists() and "Allow?" not in lines.prompts and app.gate.mode == "accept-edits"
+
+
+def test_resume_also_restores_the_startup_mode(tmp_path):
+    first = MockModel(script=[make_final("saved")])
+    app1, _, _, _ = make_app(tmp_path, Lines("hello", "/exit"), first)
+    app1.start()
+    ident = app1.session.session_id[:8]
+    model = MockModel(script=[write_call("a.txt"), make_final("one")])
+    app2, out, _, _ = make_app(tmp_path, Lines("make a", "a", f"/resume {ident}", "/exit"), model)
+    app2.start()
+    assert app2.gate.mode == "default" and f"Resumed {ident}" in out.getvalue() and "mode: default" in out.getvalue()
+
+
+def test_agentx_md_written_during_the_session_is_picked_up_by_clear_and_resume(tmp_path):
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    write_rules = lambda: (cwd / "AGENTX.md").write_text("NEWRULE always use tabs", encoding="utf-8")
+    model = MockModel(script=[make_final("one"), make_final("two")])
+    app, _, _, _ = make_app(tmp_path, Lines("first", write_rules, "/clear", "second", "/exit"), model)
+    app.start()
+    assert "NEWRULE" not in str(model.calls[0]) and "NEWRULE" in str(model.calls[1])
+    assert "<project-instructions>" in str(model.calls[1])
+    # and /resume
+    ident = app.session.session_id[:8]
+    (cwd / "AGENTX.md").write_text("RESUMERULE be brief", encoding="utf-8")
+    model2 = MockModel(script=[make_final("again")])
+    app2, _, _, _ = make_app(tmp_path, Lines(f"/resume {ident}", "go on", "/exit"), model2)
+    app2.start()
+    assert "RESUMERULE" in str(model2.calls[0])
+
+
+def test_the_extra_folders_are_resolved_listed_and_checked(tmp_path):
+    (tmp_path / "shared").mkdir()
+    app, out, cwd, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]), width=400,
+                                add_dirs=[tmp_path / "proj" / ".." / "shared", tmp_path / "missing"])
+    app.start()
+    text = out.getvalue()
+    assert app.add_dirs == [(tmp_path / "shared").resolve(), (tmp_path / "missing").resolve()]
+    assert str((tmp_path / "shared").resolve()) in text and ".." not in text
+    assert "missing" in text and "does not exist" in text
+    assert not (tmp_path / "missing").exists()                          # never created
+
+
+@pytest.mark.parametrize("which, word", [("root", "filesystem root"), ("home", "home folder")])
+def test_a_root_or_home_extra_folder_gets_a_loud_warning(tmp_path, which, word):
+    home = tmp_path / "home"
+    home.mkdir()
+    folder = Path(tmp_path.anchor) if which == "root" else home
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]), add_dirs=[folder], width=300)
+    loud = []
+    app.screen.error = lambda text: loud.append(text)                    # the bold-red channel
+    app.start()
+    assert any(word in text for text in loud), loud
+
+
+def test_an_ordinary_extra_folder_gets_no_loud_warning(tmp_path):
+    (tmp_path / "shared").mkdir()
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]), add_dirs=[tmp_path / "shared"])
+    loud = []
+    app.screen.error = lambda text: loud.append(text)
+    app.start()
+    assert loud == []
+
+
+def _exits_with(code):
+    def run(ctx, line):
+        raise SystemExit(code)
+    return run
+
+
+def test_a_command_that_exits_with_a_message_exits_one_and_shows_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "run_command", _exits_with("bad \x1b thing"))
+    app, out, _, _ = make_app(tmp_path, Lines("/anything"), MockModel(script=[]))
+    assert app.start() == 1 and "bad \\x1b thing" in out.getvalue()
+
+
+@pytest.mark.parametrize("code, expected", [(None, 0), (0, 0), (3, 3)])
+def test_a_command_exit_code_is_used(tmp_path, monkeypatch, code, expected):
+    monkeypatch.setattr(app_module, "run_command", _exits_with(code))
+    app, _, _, _ = make_app(tmp_path, Lines("/anything"), MockModel(script=[]))
+    assert app.start() == expected
+
+
+def test_an_interrupted_turn_says_that_changes_made_stay_on_disk(tmp_path):
+    def script(messages):
+        raise KeyboardInterrupt
+
+    app, out, _, _ = make_app(tmp_path, Lines("go", "/exit"), MockModel(script=script), width=300)
+    app.start()
+    assert "remain on disk" in out.getvalue()
+
+
+class TestMainRoundOne:
+    def test_ctrl_c_during_setup_is_one_quiet_line_and_130(self, monkeypatch, capsys):
+        def interrupted(cwd, home):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+        monkeypatch.setattr(app_module, "load_settings", interrupted)
+        assert main([]) == 130
+        err = capsys.readouterr().err
+        assert "Traceback" not in err and len(err.strip().splitlines()) == 1
+
+    def test_a_startup_failure_never_prints_the_api_key(self, monkeypatch, capsys):
+        key = "sk-ant-api03-ZZZZSECRETVALUE"
+        monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+
+        def broken(cwd, home):
+            raise OSError(f"bad {key} \x1b[31m")
+
+        monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+        monkeypatch.setattr(app_module, "load_settings", broken)
+        assert main([]) == 1
+        err = capsys.readouterr().err
+        assert key not in err and "SECRETVALUE" not in err and "\x1b" not in err and "OSError" in err
+
+    def test_extra_folders_from_the_flag_are_resolved(self, tmp_path, monkeypatch):
+        captured = {}
+
+        class FakeApp:
+            def __init__(self, **kw):
+                captured.update(kw)
+
+            def start(self, resume=None):
+                return 0
+
+        class FakePrompt:
+            def __init__(self, **kw):
+                self.read = self.read_short = lambda prompt="": ""
+
+        proj = tmp_path / "proj"
+        (tmp_path / "shared").mkdir()
+        proj.mkdir()
+        monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+        monkeypatch.setattr(app_module, "ChatApp", FakeApp)
+        monkeypatch.setattr(app_module, "PromptInput", FakePrompt)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+        monkeypatch.chdir(proj)
+        main(["--add-dir", "../shared", "--add-dir", str(tmp_path / "proj" / ".." / "shared")])
+        assert captured["add_dirs"] == [(tmp_path / "shared").resolve()] * 2

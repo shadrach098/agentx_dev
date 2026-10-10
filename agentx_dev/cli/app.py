@@ -34,26 +34,64 @@ MAX_RULE_CHARS = 200
 MAX_ERROR_CHARS = 300
 
 
-def _default_deny() -> List[str]:
-    """Deny rules that are always present, in addition to the user's and the project's. A model must not be
-    able to rewrite its own permissions (``.agentx/``: the settings files), install a git hook or point git at
-    one (``.git/hooks/`` and ``.git/config``): those run later, outside the approval prompts. They cover
-    writing, editing, deleting and moving (either end of a move), the folder itself included, at the top of
-    the project and in any sub-folder (or any other folder the tools can reach, such as ``~/.agentx``)."""
-    protected = (".agentx", ".git/hooks", ".git/config")
+def _literal(path: str) -> str:
+    """``path`` as a glob that matches only itself (a folder name may hold ``[``, ``*`` or ``?``)."""
+    return path.replace("[", "[[]").replace("*", "[*]").replace("?", "[?]")
+
+
+def default_deny(home: Optional[Path] = None) -> List[str]:
+    """Deny rules that are always present, in addition to the user's and the project's.
+
+    * ``.git`` and everything under it, at the top of the project and in any sub-folder: git follows a
+      ``.git`` FILE (``gitdir:``), ``.git/commondir``, ``.git/config`` (``core.hooksPath``, aliases),
+      ``.git/hooks/*`` and ``.git/modules/<sub>/...``, and what runs from there runs later, outside the
+      approval prompts. A change under ``.git/`` is also invisible to ``git status`` and ``git diff``, unlike an
+      edit to ``conftest.py``, a ``Makefile`` or ``package.json``, so the user would never see it in review.
+    * ``.agentx`` and everything under it at the top of the project (the only place the project settings are
+      read from), and ``~/.agentx`` (``home``) when the tools can reach it: a model must not rewrite its own
+      permissions.
+
+    They refuse ``write_file``, ``edit_file``, ``delete_path`` and ``move_file`` (as source and as
+    destination). The patterns are matched against every spelling of the path the gate computes (relative,
+    absolute, ``./``, ``..``, backslashes, links followed, case folded on Windows)."""
+    places = [".git", ".git/*", "*/.git", "*/.git/*", ".agentx", ".agentx/*"]
+    if home is not None:
+        try:
+            base = Path(home).resolve().as_posix().rstrip("/")
+        except (OSError, RuntimeError, ValueError):
+            base = Path(home).as_posix().rstrip("/")
+        places += [_literal(base) + "/.agentx", _literal(base) + "/.agentx/*"]
     rules: List[str] = []
-    for base in protected:
-        for prefix in ("", "*/"):
-            places = [f"{prefix}{base}"] if base == ".git/config" else [f"{prefix}{base}", f"{prefix}{base}/*"]
-            for place in places:
-                for tool in ("write_file", "edit_file", "delete_path"):
-                    rules.append(f"{tool}:{place}")
-                rules.append(f"move_file:{place} -> *")
-                rules.append(f"move_file:* -> {place}")
+    for place in places:
+        for tool in ("write_file", "edit_file", "delete_path"):
+            rules.append(f"{tool}:{place}")
+        rules.append(f"move_file:{place} -> *")
+        rules.append(f"move_file:* -> {place}")
     return rules
 
 
-DEFAULT_DENY = tuple(_default_deny())
+DEFAULT_DENY = tuple(default_deny())
+
+
+def _redacted(value: Any, env: Mapping[str, str], limit: int = MAX_ERROR_CHARS) -> str:
+    """``value`` as one printable line without control characters, secrets (patterns that look like one, and
+    the actual key values in ``env``) or excess length."""
+    try:
+        text = value if isinstance(value, str) else str(value)
+    except Exception:
+        return "(cannot be shown)"
+    for name, secret in env.items():
+        if isinstance(secret, str) and len(secret) >= 8 and any(
+                word in str(name).upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
+            text = text.replace(secret, "[hidden]")
+    return _shown(text, limit)
+
+
+def _resolved(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return Path(os.path.abspath(path))
 
 
 def _version() -> str:
@@ -89,15 +127,39 @@ class ChatApp:
         self.requested_model = model_name
         self.problems = list(problems)
         self.project_allow = list(project_allow)
-        self.gate = Gate(mode=mode, allow=allow, deny=[*DEFAULT_DENY, *deny], cwd=self.cwd)
-        self.gate.ask = make_asker(console, self.read_short, self.gate.cwd)
-        self.tools = build_tools(self.cwd, [Path(d) for d in add_dirs], self.gate)
+        self.add_dirs = [_resolved(Path(d).expanduser()) for d in add_dirs]
+        self.gate = Gate(mode=mode, allow=allow, deny=[*default_deny(self.home), *deny], cwd=self.cwd)
+        self.startup_mode = self.gate.mode
+        self._edit_grant = False        # True while accept-edits comes from answering "a" at an edit prompt
+        self._watch_mode_changes()
+        self.gate.ask = self._remembering(make_asker(console, self.read_short, self.gate.cwd))
+        self.tools = build_tools(self.cwd, self.add_dirs, self.gate)
         self.addendum = build_addendum(self.cwd, self.home)
         self.model: Any = None
         self.session: Optional[Session] = None
         self.session_path: Optional[Path] = None
         self._exit = False
         self._exit_code = 0
+
+    def _remembering(self, ask: Callable[..., Any]) -> Callable[..., Any]:
+        """``ask`` that notes when the user answers "a" at an edit prompt: the gate then switches itself to
+        accept-edits, and that is a grant for this conversation, not a mode the user chose."""
+        def asking(request: Any) -> Any:
+            answer = ask(request)
+            if getattr(request, "kind", "") == "edit" and getattr(request, "remember", False)                     and getattr(answer, "choice", "") == "a" and self.gate.mode != "accept-edits":
+                self._edit_grant = True
+            return answer
+        return asking
+
+    def _watch_mode_changes(self) -> None:
+        """A mode the user sets (``/mode``) is theirs: it ends any edit grant, so a new conversation keeps it."""
+        set_mode = self.gate.set_mode
+
+        def watched(mode: str) -> None:
+            set_mode(mode)
+            self._edit_grant = False
+
+        self.gate.set_mode = watched
 
     # -- what is printed -----------------------------------------------------
 
@@ -110,15 +172,7 @@ class ChatApp:
     def _safe(self, value: Any, limit: int = MAX_ERROR_CHARS) -> str:
         """``value`` as one printable line: no control characters, no secrets (neither a pattern that looks
         like one nor the actual key values in the environment), not too long."""
-        try:
-            text = value if isinstance(value, str) else str(value)
-        except Exception:
-            return "(cannot be shown)"
-        for name, secret in self.env.items():
-            if isinstance(secret, str) and len(secret) >= 8 and any(
-                    word in str(name).upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
-                text = text.replace(secret, "[hidden]")
-        return _shown(text, limit)
+        return _redacted(value, self.env, limit)
 
     def _show_startup_warnings(self) -> None:
         for problem in self.problems:
@@ -132,6 +186,19 @@ class ChatApp:
                 lines.append(f"  ... and {len(self.project_allow) - MAX_RULES_SHOWN} more")
             lines.append("If you did not expect this, check that file before you go on (or leave with /exit).")
             self.notice("\n".join(lines))
+        self._check_extra_folders()
+
+    def _check_extra_folders(self) -> None:
+        for folder in self.add_dirs:
+            shown = self._safe(folder, 400)
+            if not folder.exists():
+                self.notice(f"Warning: the extra folder {shown} does not exist (it was not created).")
+            elif folder == _resolved(Path(folder.anchor or "/")):
+                self.error(f"Warning: the extra folder {shown} is the filesystem root: the tools can reach "
+                           "every file on this drive.")
+            elif folder == _resolved(self.home):
+                self.error(f"Warning: the extra folder {shown} is your home folder: the tools can reach "
+                           "everything in it.")
 
     # -- the context the slash commands use ----------------------------------
 
@@ -144,6 +211,7 @@ class ChatApp:
 
     def cycle_mode(self) -> None:
         self.gate.cycle_mode()
+        self._edit_grant = False                  # the user chose this mode
 
     def toolbar(self) -> str:
         session_id = self.session.session_id[:8] if self.session else "-"
@@ -159,8 +227,13 @@ class ChatApp:
                            max_iterations=50, auto_cache=False, verbose=False, parallel_tool_workers=1)
 
     def _new_conversation_state(self) -> None:
-        """A new conversation is a clean slate for "don't ask again" (session-wide command grants)."""
+        """A new conversation is a clean slate for "don't ask again": the session-wide command grants are
+        emptied, and accept-edits that came from answering "a" at an edit prompt goes back to the mode the app
+        started in. A mode the user chose (``--mode``, ``/mode``, Shift+Tab) is kept."""
         self.gate.grants.clear()
+        if self._edit_grant and self.gate.mode == "accept-edits":
+            self.gate.set_mode(self.startup_mode)
+        self._edit_grant = False
 
     def _fresh(self, runner: AgentRunner) -> None:
         self._new_conversation_state()
@@ -204,7 +277,8 @@ class ChatApp:
                 self._fresh(runner)
             else:
                 self._load(info, runner)
-        self.notice(f"agentx {_version()} - {self.model_label} - {self.cwd}\n"
+        extra = f"\nextra folders: {', '.join(str(d) for d in self.add_dirs)}" if self.add_dirs else ""
+        self.notice(f"agentx {_version()} - {self.model_label} - {self.cwd}{extra}\n"
                     f"mode: {self.gate.mode}. Type /help for commands, /exit or Ctrl+D to leave.")
         return self.loop()
 
@@ -236,7 +310,13 @@ class ChatApp:
                 self.notice("Command interrupted (Ctrl+C).")
                 continue
             except SystemExit as e:
-                self._exit_code = e.code if isinstance(e.code, int) else 0
+                if e.code is None:
+                    self._exit_code = 0
+                elif isinstance(e.code, int):
+                    self._exit_code = e.code
+                else:                                      # SystemExit("message"): show it, exit 1
+                    self.error(self._safe(e.code))
+                    self._exit_code = 1
                 break
             except Exception as e:
                 self.error(self._failure(e))
@@ -255,7 +335,8 @@ class ChatApp:
             for event in self.session.stream(text):
                 self.screen.show_event(event)
         except KeyboardInterrupt:
-            self.notice("Turn interrupted (Ctrl+C). Your earlier turns are kept; this one was not recorded.")
+            self.notice("Turn interrupted (Ctrl+C). Your earlier turns are kept; this one was not recorded. "
+                        "Changes already made in that turn remain on disk.")
         except Exception as e:
             self.error(self._failure(e))
         finally:
@@ -280,10 +361,15 @@ class ChatApp:
         assert self.session is not None
         self.session.attach(self._make_runner(model))
 
+    def _refresh_instructions(self) -> None:
+        """Read AGENTX.md again (``/init`` or the user may have written or changed it)."""
+        self.addendum = build_addendum(self.cwd, self.home)
+
     def new_conversation(self) -> None:
         self.save()
+        self._refresh_instructions()
         self._fresh(self._make_runner(self.model))
-        self.notice("Started a new conversation.")
+        self.notice(f"Started a new conversation (mode: {self.gate.mode}).")
 
     def _lines_for(self, infos: Sequence[SessionInfo]) -> List[str]:
         return [f"{n}. {info.updated_at[:19]}  {info.title}  ({info.session_id[:8]})"
@@ -314,8 +400,10 @@ class ChatApp:
                 self.error(f"No saved session '{self._safe(ident, 60)}' for this folder.")
             return
         self.save()
+        self._refresh_instructions()
         self._load(info, self._make_runner(self.model))
-        self.notice(f"Resumed {self._safe(info.session_id[:8], 20)}: {self._safe(info.title, 80)}")
+        self.notice(f"Resumed {self._safe(info.session_id[:8], 20)}: {self._safe(info.title, 80)} "
+                    f"(mode: {self.gate.mode})")
 
     def run_init(self) -> None:
         self.send(INIT_PROMPT)
@@ -347,7 +435,7 @@ def _is_terminal() -> bool:
 
 
 def _startup_failure(error: BaseException) -> int:
-    print(f"agentx could not start ({type(error).__name__}): {plain(error)}", file=sys.stderr)
+    print(f"agentx could not start ({type(error).__name__}): {_redacted(error, os.environ)}", file=sys.stderr)
     return 1
 
 
@@ -362,7 +450,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         add_dirs = []
         for entry in [*settings.add_dirs, *args.add_dir]:
             path = Path(entry).expanduser()
-            add_dirs.append(path if path.is_absolute() else (cwd / path).resolve())
+            add_dirs.append(_resolved(path if path.is_absolute() else cwd / path))
         console = Console()
         holder: List[Any] = []
         prompt = PromptInput(history_file=home / ".agentx" / "history", commands=command_names(),
@@ -373,6 +461,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                       allow=settings.allow, deny=settings.deny, add_dirs=add_dirs, problems=settings.problems,
                       project_allow=settings.project_allow)
         holder.append(app)
+    except KeyboardInterrupt:
+        print("agentx: interrupted while starting.", file=sys.stderr)
+        return 130
     except Exception as e:
         return _startup_failure(e)
     try:

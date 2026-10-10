@@ -179,3 +179,36 @@ def test_settings_field_order_ends_with_problems_then_project_allow():
     names = [f.name for f in dataclasses.fields(Settings)]
     assert names == ["model", "mode", "add_dirs", "allow", "deny", "problems", "project_allow"]
     assert Settings(None, None, [], [], [], ["p"]).project_allow == []
+
+
+def test_a_project_cannot_loosen_the_mode_to_accept_edits(tmp_path):
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    put(project_settings_path(cwd), {"mode": "accept-edits"})
+    s = load_settings(cwd, home)
+    assert s.mode is None
+    assert s.problems == ["project settings asked for accept-edits mode; ignored "
+                          "(set it in your own settings or with --mode)"]
+
+
+def test_a_project_cannot_override_the_users_mode_with_accept_edits(tmp_path):
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    put(user_settings_path(home), {"mode": "plan"})
+    put(project_settings_path(cwd), {"mode": "accept-edits"})
+    assert load_settings(cwd, home).mode == "plan"
+
+
+def test_a_project_may_tighten_or_keep_the_mode(tmp_path):
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    put(user_settings_path(home), {"mode": "accept-edits"})
+    put(project_settings_path(cwd), {"mode": "plan"})
+    s = load_settings(cwd, home)
+    assert s.mode == "plan" and s.problems == []
+    put(project_settings_path(cwd), {"mode": "default"})
+    assert load_settings(cwd, home).mode == "default"
+
+
+def test_the_users_own_accept_edits_is_honoured(tmp_path):
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    put(user_settings_path(home), {"mode": "accept-edits"})
+    s = load_settings(cwd, home)
+    assert s.mode == "accept-edits" and s.problems == []

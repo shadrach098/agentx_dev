@@ -58,7 +58,8 @@ def _help(ctx: Any, arg: str) -> None:
 
 
 def _clear(ctx: Any, arg: str) -> None:
-    # Permissions (Gate.grants, mode) are left as they are for now; Task 9 decides whether to reset grants.
+    # The app starts the new conversation: it clears the session-wide command grants and undoes an edit grant
+    # ("a" at an edit prompt); rules from settings and a mode the user chose explicitly stay.
     ctx.new_conversation()
 
 
