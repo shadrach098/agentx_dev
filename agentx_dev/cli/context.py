@@ -126,10 +126,10 @@ PROJECT_PREAMBLE = (
 def build_addendum(cwd: Path, home: Path, *, system: Optional[str] = None) -> str:
     """The base prompt, the user's own instructions, then the project instructions inside explicit markers. Cut at
     ``MAX_CONTEXT_CHARS`` in total, keeping the nearest files."""
-    where = _clean(cwd)
+    where = _defuse(_clean(cwd))
     if len(where) > MAX_PATH_CHARS:
         where = "..." + where[-MAX_PATH_CHARS:]
-    base = BASE_PROMPT.format(cwd=where, system=_clean(system or platform.system() or "unknown"))
+    base = BASE_PROMPT.format(cwd=where, system=_defuse(_clean(system or platform.system() or "unknown")))
     user_key = _resolve(_user_file(home))
     user_section: Optional[str] = None
     project: List[str] = []                                      # nearest first while collecting
