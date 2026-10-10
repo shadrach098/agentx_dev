@@ -1,10 +1,18 @@
 """The gate: what runs, what asks, what is refused."""
 
+import os
+
 import pytest
 
 from agentx_dev.cli.approval import (
-    MODES, NO_WAY_TO_ASK, PLAN_REFUSAL, Answer, Gate, command_prefix, kind_of, rule_matches, subject_of,
+    MODES, NO_WAY_TO_ASK, PLAN_REFUSAL, Answer, Gate, command_prefix, kind_of, normalize_path, rule_matches,
+    subject_of,
 )
+
+
+def _fold(path):
+    """What a normalized path looks like on this platform (case-folded on Windows)."""
+    return path.casefold() if os.name == "nt" else path
 
 
 class Asker:
@@ -136,11 +144,56 @@ class TestAnswers:
         g.check("run_shell", {"command": "git push"})
         assert [r.subject for r in asker.requests] == ["git status -s", "git push"]
 
-    def test_a_on_python_grants_run_python(self):
+    def test_a_on_python_approves_that_call_only(self):
         g, asker = gate(answers=[Answer("a")])
-        g.check("run_python", {"code": "print(1)"})
+        assert g.check("run_python", {"code": "print(1)"}) is None
         g.check("run_python", {"code": "print(2)"})
-        assert len(asker.requests) == 1
+        assert len(asker.requests) == 2 and g.grants == set()
+
+    @pytest.mark.parametrize("choice", ["", "x", None, "yes", "Y", "N"])
+    def test_any_answer_but_y_a_n_is_a_decline(self, choice):
+        g, asker = gate(answers=[Answer(choice, "ignored")])
+        assert g.check("run_shell", SHELL) == "The user declined this action."
+        assert g.check("write_file", WRITE) is None          # the asker's default answer is y
+        assert g.mode == "default"
+
+
+class TestRemember:
+    def test_remember_is_true_for_an_edit_and_a_plain_command(self):
+        g, asker = gate()
+        g.check("write_file", WRITE)
+        g.check("run_shell", SHELL)
+        assert [r.remember for r in asker.requests] == [True, True]
+
+    def test_remember_is_false_when_nothing_can_be_remembered(self):
+        g, asker = gate()
+        g.check("delete_path", {"path": "a"})
+        g.check("run_shell", {"command": "pytest && echo hi"})
+        g.check("run_shell", {"command": "python x.py"})
+        g.check("run_python", {"code": "print(1)"})
+        assert [r.remember for r in asker.requests] == [False, False, False, False]
+
+    @pytest.mark.parametrize("command", [
+        "python x.py", "python3 -c 'print(1)'", "node app.js", "bash run.sh", "sudo ls", "env FOO=1 ls",
+        "xargs rm", "npx cowsay", "timeout 5 ls", "/usr/bin/python x.py", "C:\\Python312\\python.exe x.py",
+        "PYTHON x.py", "python3.12 x.py",
+    ])
+    def test_a_on_an_interpreter_or_wrapper_grants_nothing(self, command):
+        g, asker = gate(answers=[Answer("a")])
+        assert g.check("run_shell", {"command": command}) is None
+        g.check("run_shell", {"command": command})
+        assert len(asker.requests) == 2 and g.grants == set()
+
+    def test_a_on_python_then_another_python_asks_again(self):
+        g, asker = gate(answers=[Answer("a")])
+        g.check("run_shell", {"command": "python x.py"})
+        g.check("run_shell", {"command": "python y.py"})
+        assert [r.subject for r in asker.requests] == ["python x.py", "python y.py"]
+
+    def test_an_allow_rule_for_an_interpreter_still_works(self):
+        g, asker = gate(allow=["run_shell:python -m pytest*"])
+        assert g.check("run_shell", {"command": "python -m pytest -q"}) is None
+        assert asker.requests == []
 
 
 class TestCompoundCommands:
@@ -161,6 +214,65 @@ class TestCompoundCommands:
         g2, asker2 = gate(answers=[Answer("a")])
         g2.check("run_shell", {"command": "ls && echo hi"})
         assert g2.grants == set()
+
+
+    def test_any_command_tool_with_a_command_argument_is_checked_for_compounds(self):
+        g, asker = gate(allow=["bash:ls*"])
+        assert g.check("bash", {"command": "ls -la"}) is None and asker.requests == []
+        assert g.check("bash", {"command": "ls; rm x"}) is None
+        assert [r.subject for r in asker.requests] == ["ls; rm x"]
+
+    def test_a_tool_that_is_not_a_command_kind_is_not_treated_as_a_shell(self):
+        g, asker = gate(allow=["write_file:*"])
+        assert g.check("write_file", {"path": "a;b", "content": "x", "command": "a; b"}) is None
+        assert asker.requests == []
+
+
+class TestPaths:
+    def test_normalize_path(self):
+        assert normalize_path("./src\\a.py") == _fold("src/a.py")
+        assert normalize_path("sub/../.env") == ".env"
+        assert normalize_path("a//b/./c") == _fold("a/b/c")
+
+    def test_an_absolute_path_inside_cwd_becomes_relative(self, tmp_path):
+        assert normalize_path(str(tmp_path / "src" / "a.py"), tmp_path) == _fold("src/a.py")
+        outside = normalize_path(str(tmp_path.parent / "other.txt"), tmp_path)
+        assert outside.endswith("other.txt") and outside != "other.txt"
+
+    @pytest.mark.parametrize("spelling", [".env", "./.env", "sub/../.env", ".\\.env", "sub\\..\\.env"])
+    def test_a_deny_rule_cannot_be_dodged_by_spelling(self, spelling):
+        g, asker = gate(deny=["read_path:.env"])
+        assert "deny rule" in g.check("read_path", {"path": spelling})
+        assert asker.requests == []
+
+    def test_a_deny_rule_blocks_the_absolute_path_of_a_file_in_cwd(self, tmp_path):
+        g = Gate(deny=["read_path:.env"], cwd=tmp_path)
+        assert g.cwd == tmp_path
+        assert "deny rule" in g.check("read_path", {"path": str(tmp_path / ".env")})
+        assert g.check("read_path", {"path": str(tmp_path / "other")}) is None
+
+    @pytest.mark.skipif(os.name != "nt", reason="case-insensitive file systems only")
+    def test_a_deny_rule_is_case_insensitive_on_windows(self):
+        g, _ = gate(deny=["read_path:.env"])
+        assert "deny rule" in g.check("read_path", {"path": ".ENV"})
+
+    def test_an_allow_rule_matches_any_spelling_of_the_path(self):
+        g, asker = gate(allow=["write_file:src/*"])
+        assert g.check("write_file", {"path": "./src/a.py", "content": ""}) is None
+        assert g.check("write_file", {"path": "src\\a.py", "content": ""}) is None
+        assert asker.requests == []
+        g.check("write_file", {"path": "other/a.py", "content": ""})
+        assert len(asker.requests) == 1
+
+    def test_move_file_normalizes_both_sides(self):
+        assert subject_of("move_file", {"source": "./a\\b", "destination": "x/../c"}) == _fold("a/b") + " -> c"
+
+    def test_subject_of_takes_an_optional_cwd(self, tmp_path):
+        assert subject_of("read_path", {"path": str(tmp_path / "a.py")}, tmp_path) == "a.py"
+
+    def test_shell_and_python_subjects_are_unchanged(self):
+        assert subject_of("run_shell", {"command": "cat ./A\\b/../c"}) == "cat ./A\\b/../c"
+        assert subject_of("run_python", {"code": "open('./X')"}) == "open('./X')"
 
 
 class TestModes:

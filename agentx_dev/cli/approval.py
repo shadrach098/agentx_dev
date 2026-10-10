@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import fnmatch
+import os
+import posixpath
+import re
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Mapping, Optional
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping, Optional, Union
 
 MODES = ("default", "accept-edits", "plan")
 
@@ -16,6 +20,15 @@ TOOL_KINDS = {
 }
 _TWO_WORD_COMMANDS = frozenset({"git", "npm", "pnpm", "yarn", "pip", "cargo", "go", "docker", "make"})
 _COMPOUND_MARKERS = (";", "&", "|", "`", "$(", "<", ">", "\n")
+_PATH_TOOLS = frozenset({"read_path", "list_directory", "find_files", "grep", "write_file", "edit_file", "delete_path"})
+# "Don't ask again" is never offered for these: they run whatever they are handed next.
+NO_GRANT = frozenset({
+    "python", "python3", "py", "node", "deno", "bun", "ruby", "perl", "php", "bash", "sh", "zsh", "fish",
+    "pwsh", "powershell", "cmd", "npx", "sudo", "su", "ssh", "eval", "exec", "env", "xargs", "nohup",
+    "timeout", "time",
+})
+_EXECUTABLE_SUFFIXES = (".exe", ".cmd", ".bat", ".com", ".ps1")
+_VERSIONED_INTERPRETER = re.compile(r"(python|pypy)[\d.]*")
 
 PLAN_REFUSAL = "Refused: plan mode is on. Propose a plan in your answer; do not change anything."
 NO_WAY_TO_ASK = "Refused: there is no way to ask the user here."
@@ -29,6 +42,7 @@ class Request:
     kind: str
     subject: str
     args: Mapping[str, Any]
+    remember: bool = True      # False when answering "a" could not be remembered, so the prompt must not offer it
 
 
 @dataclass
@@ -48,7 +62,23 @@ def _squash(text: Any) -> str:
     return " ".join(str(text).split())
 
 
-def subject_of(tool: str, args: Mapping[str, Any]) -> str:
+def normalize_path(path: Any, cwd: Optional[Union[str, Path]] = None) -> str:
+    """One spelling per path, so a rule cannot be dodged by ``./``, ``..``, backslashes, an absolute path
+    into the project, or (on Windows) letter case."""
+    text = str(path).replace("\\", "/")
+    if cwd is not None:
+        try:
+            if Path(str(path)).is_absolute() or posixpath.isabs(text):
+                text = Path(str(path)).resolve().relative_to(Path(cwd).resolve()).as_posix()
+        except (ValueError, OSError):
+            pass
+    text = posixpath.normpath(text)
+    while text.startswith("./"):
+        text = text[2:]
+    return text.casefold() if os.name == "nt" else text
+
+
+def subject_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Path]] = None) -> str:
     """The short text a rule is matched against and a prompt names."""
     if tool == "run_shell":
         return _squash(args.get("command", ""))
@@ -56,9 +86,9 @@ def subject_of(tool: str, args: Mapping[str, Any]) -> str:
         code = str(args.get("code", "")).strip()
         return _squash(code.splitlines()[0]) if code else ""
     if tool == "move_file":
-        return f"{args.get('source', '')} -> {args.get('destination', '')}"
+        return f"{normalize_path(args.get('source', ''), cwd)} -> {normalize_path(args.get('destination', ''), cwd)}"
     if "path" in args:
-        return str(args["path"])
+        return normalize_path(args["path"], cwd)
     for value in args.values():
         if isinstance(value, str):
             return value
@@ -80,16 +110,41 @@ def rule_matches(rule: str, tool: str, subject: str) -> bool:
     name, sep, pattern = rule.partition(":")
     if not fnmatch.fnmatchcase(tool, name.strip()):
         return False
-    return (not sep) or fnmatch.fnmatchcase(subject, pattern)
+    if not sep:
+        return True
+    if tool in _PATH_TOOLS:
+        pattern, subject = _path_spelling(pattern), _path_spelling(subject)
+    return fnmatch.fnmatchcase(subject, pattern)
+
+
+def _path_spelling(text: str) -> str:
+    """Slashes, a leading ``./`` and (on Windows) case, so a path rule and a path subject compare fairly."""
+    text = text.replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return text.casefold() if os.name == "nt" else text
 
 
 def _is_compound(tool: str, args: Mapping[str, Any]) -> bool:
-    """A shell command that chains, pipes, redirects or substitutes: a rule or grant for its first
-    word must not approve the rest of it."""
-    if tool != "run_shell":
+    """A command that chains, pipes, redirects or substitutes: a rule or grant for its first word must
+    not approve the rest of it. Applies to ``run_shell`` and to any command-kind tool (say, an MCP bash
+    tool) that takes a string ``command``."""
+    command = args.get("command")
+    if tool != "run_shell" and not (kind_of(tool) == "command" and isinstance(command, str)):
         return False
-    command = str(args.get("command", ""))
-    return any(marker in command for marker in _COMPOUND_MARKERS)
+    return any(marker in str(command or "") for marker in _COMPOUND_MARKERS)
+
+
+def _grantable_word(command: str) -> bool:
+    """False for an interpreter, shell or wrapper (``python``, ``/usr/bin/bash``, ``sudo.exe``...)."""
+    words = command.split()
+    if not words:
+        return False
+    name = words[0].replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    for suffix in _EXECUTABLE_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    return name not in NO_GRANT and not _VERSIONED_INTERPRETER.fullmatch(name)
 
 
 class Gate:
@@ -100,10 +155,11 @@ class Gate:
     hand back to the model as the tool's result."""
 
     def __init__(self, *, mode: str = "default", allow: Iterable[str] = (), deny: Iterable[str] = (),
-                 ask: Optional[Callable[[Request], Answer]] = None) -> None:
+                 ask: Optional[Callable[[Request], Answer]] = None, cwd: Optional[Path] = None) -> None:
         self.allow = list(allow)
         self.deny = list(deny)
         self.ask = ask
+        self.cwd = cwd
         self.grants: set = set()
         self._mode = "default"
         self.set_mode(mode)
@@ -123,7 +179,7 @@ class Gate:
 
     def check(self, tool: str, args: Mapping[str, Any]) -> Optional[str]:
         kind = kind_of(tool)
-        subject = subject_of(tool, args)
+        subject = subject_of(tool, args, self.cwd)
         for rule in self.deny:
             if rule_matches(rule, tool, subject):
                 return f"Refused: the settings deny rule '{rule}' blocks this."
@@ -139,17 +195,26 @@ class Gate:
             return None
         if self.ask is None:
             return NO_WAY_TO_ASK
-        answer = self.ask(Request(tool=tool, kind=kind, subject=subject, args=dict(args)))
-        if answer.choice == "n":
-            return f"The user declined: {answer.reason}" if answer.reason else "The user declined this action."
-        if answer.choice == "a" and kind != "destructive" and not compound:
+        can_remember = self._can_remember(tool, kind, subject, compound)
+        answer = self.ask(Request(tool=tool, kind=kind, subject=subject, args=dict(args), remember=can_remember))
+        if answer.choice == "n" and answer.reason:
+            return f"The user declined: {answer.reason}"
+        if answer.choice not in ("y", "a"):             # "n", and anything the gate does not understand
+            return "The user declined this action."
+        if answer.choice == "a" and can_remember:
             self._remember(tool, kind, subject)
         return None
 
     def _granted(self, tool: str, subject: str) -> bool:
-        if tool == "run_shell":
-            return command_prefix(subject) in self.grants
-        return tool == "run_python" and "run_python" in self.grants
+        return tool == "run_shell" and command_prefix(subject) in self.grants
+
+    @staticmethod
+    def _can_remember(tool: str, kind: str, subject: str, compound: bool) -> bool:
+        """Whether answering "a" can be honoured. Never for destructive tools, compound commands,
+        interpreters/shells/wrappers, or ``run_python`` (which approves only that one call)."""
+        if kind == "edit":
+            return True
+        return tool == "run_shell" and not compound and _grantable_word(subject)
 
     def _remember(self, tool: str, kind: str, subject: str) -> None:
         if kind == "edit":
@@ -158,5 +223,3 @@ class Gate:
             prefix = command_prefix(subject)
             if prefix:
                 self.grants.add(prefix)
-        elif tool == "run_python":
-            self.grants.add("run_python")

