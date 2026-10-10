@@ -1732,32 +1732,12 @@ class Supervisor(_SpawnMixin):
             if self.verbose:
                 _log_result(sub_result)
 
-    def stream(self, user_task: str):
-        """Yield structured events as the supervisor plans, dispatches,
-        and synthesizes.
-
-        Event shapes:
-          - {"type": "plan_start"}
-          - {"type": "plan",           "plan": <list of steps>}
-          - {"type": "spawn",          "name": str, "origin": "plan" | "delegate", "tools": list,
-                                        "dropped": list, "reused": str | None, "refused": str | None,
-                                        "capabilities": list, "rerouted_from": None}
-          - {"type": "delegate_result", "name": str, "outcome": str, "chars": int}
-          - {"type": "question",       "source": "planner" | <agent name>, "question": str, "context": str}
-          - {"type": "answer",         "source": str, "answered": bool, "reason": None | str}
-          - {"type": "memory",         "stage": "plan" | "step", "hits": int}
-          - {"type": "dispatch",       "agent": str, "query": str, "step": int}
-          - {"type": "subtask_result", "result": SubtaskResult, "step": int}
-          - {"type": "replan",         "round": int, "unresolved": list, "plan": list}  (persistent)
-          - {"type": "budget",         "reason": "time" | "cost"}  (persistent; before synthesis)
-          - {"type": "synthesize_start"}
-          - {"type": "final",          "content": str}
-          - {"type": "completion",     "result": SupervisorResult}   (last)
-
-        The last event is always ``completion`` so ``run()`` can build
-        on top of this and callers who want live UI updates can consume
-        the intermediate events.
-        """
+    def _stream_round(self, user_task: str, *, save_result: bool = True,
+                      seed: Optional[OperatorChannel] = None):
+        """One plan / dispatch / synthesize round, as a stream of events. ``save_result`` False
+        keeps the round's answer out of long-term memory (a follow-up round, whose task is a
+        composed one). ``seed`` is the previous round's operator channel, whose answers this
+        round's channel starts with. The last event is this round's ``completion``."""
         self._spawn_run_policy = self._new_spawn_policy()
         budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
         self._spawn_run_policy.budget = budget        # delegate falls back to it (see SpawnPolicy)
@@ -1765,6 +1745,8 @@ class Supervisor(_SpawnMixin):
         self._spawn_run_policy.operator = self._operator
         if self._operator is not None:
             self._operator.budget = budget            # waiting on the operator pauses the deadline
+        if self._operator is not None and seed is not None:
+            self._operator.seed_from(seed)
         self._run_memory = self._new_run_memory()
         if self._operator is not None:
             self._operator.memory = self._run_memory
@@ -1861,7 +1843,7 @@ class Supervisor(_SpawnMixin):
             _log_final(final)
 
         outcome = _supervisor_outcome(subtask_results, budget_reason)
-        if (self._run_memory is not None and outcome == OUTCOME_DONE
+        if (save_result and self._run_memory is not None and outcome == OUTCOME_DONE
                 and not self._synth_fell_back and str(final).strip()):
             self._run_memory.remember_result(user_task, final)
 
@@ -1875,6 +1857,80 @@ class Supervisor(_SpawnMixin):
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
+
+    def stream(self, user_task: str):
+        """Yield structured events as the supervisor plans, dispatches,
+        and synthesizes.
+
+        Event shapes:
+          - {"type": "plan_start"}
+          - {"type": "plan",           "plan": <list of steps>}
+          - {"type": "spawn",          "name": str, "origin": "plan" | "delegate", "tools": list,
+                                        "dropped": list, "reused": str | None, "refused": str | None,
+                                        "capabilities": list, "rerouted_from": None}
+          - {"type": "delegate_result", "name": str, "outcome": str, "chars": int}
+          - {"type": "question",       "source": "planner" | "supervisor" | <agent name>, "question": str, "context": str}
+          - {"type": "answer",         "source": str, "answered": bool, "reason": None | str}
+          - {"type": "memory",         "stage": "plan" | "step", "hits": int}
+          - {"type": "dispatch",       "agent": str, "query": str, "step": int}
+          - {"type": "subtask_result", "result": SubtaskResult, "step": int}
+          - {"type": "replan",         "round": int, "unresolved": list, "plan": list}  (persistent)
+          - {"type": "budget",         "reason": "time" | "cost"}  (persistent; before synthesis)
+          - {"type": "synthesize_start"}
+          - {"type": "final",          "content": str}   (once per round)
+          - {"type": "checkpoint",     "round": int, "outcome": str}  (ask_when_done; before the question)
+          - {"type": "round",          "round": int, "query": str}  (follow_up; starts each round after the first)
+          - {"type": "completion",     "result": SupervisorResult}   (last)
+
+        The last event is always ``completion`` so ``run()`` can build
+        on top of this and callers who want live UI updates can consume
+        the intermediate events. With ``ask_when_done`` / ``follow_up`` the
+        stream covers every round and ends with one ``completion`` for the
+        session.
+        """
+        if not self.ask_when_done:
+            yield from self._stream_round(user_task)
+            return
+        rounds: List[Dict[str, Any]] = []
+        asked: List[Dict[str, Any]] = []
+        task, instruction, seed = user_task, user_task, None
+        while True:
+            number = len(rounds) + 1
+            if number > 1:
+                yield {"type": "round", "round": number, "query": instruction}
+                if self.verbose:
+                    print(f"{_C_PLAN}[supervisor.round] round {number}: {_cap_text(instruction, 120)}{_C_RESET}")
+            result: Optional[SupervisorResult] = None
+            for event in self._stream_round(task, save_result=number == 1, seed=seed):
+                if event["type"] == "completion":
+                    result = event["result"]
+                else:
+                    yield event
+            assert result is not None, "a round must yield a completion event"
+            rounds.append({"round": number, "query": instruction, "content": result.content,
+                           "outcome": result.outcome})
+            asked.extend(result.asked)
+            channel = self._operator
+            assert channel is not None, "ask_when_done needs the operator channel"
+            if self.follow_up and number > 1 and number == 1 + self.max_follow_ups:
+                if self.verbose:
+                    print(f"{_C_PLAN}[supervisor.round] follow-up limit reached{_C_RESET}")
+                next_step = None
+                break
+            yield {"type": "checkpoint", "round": number, "outcome": result.outcome}
+            before = len(channel.records)
+            reply = channel.checkpoint(checkpoint_text(result.content, _outcome_line(result)))
+            asked.extend(channel.records[before:])
+            yield from self._drain_operator_events()
+            next_step = reply.text
+            more = (self.follow_up and number <= self.max_follow_ups
+                    and result.outcome != OUTCOME_OUT_OF_BUDGET and not is_stop_reply(reply.text))
+            if not more:
+                break
+            task, instruction, seed = _follow_up_task(user_task, rounds, reply.text), reply.text, channel
+        yield {"type": "completion", "result": result.model_copy(update={
+            "query": instruction, "asked": asked, "next_step": next_step,
+            "rounds": rounds if len(rounds) > 1 else []})}
 
     def run(self, user_task: str) -> SupervisorResult:
         """Plan, execute sub-tasks sequentially, and synthesize.
