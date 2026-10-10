@@ -28,16 +28,20 @@ _PATH_TOOLS = frozenset({
     "read_path", "list_directory", "find_files", "grep", "write_file", "edit_file", "delete_path", "move_file",
 })
 _FOLDS_CASE = sys.platform in ("win32", "darwin")
-# "Don't ask again" is never offered for these: they run whatever they are handed next.
-NO_GRANT = frozenset({
-    "python", "python3", "py", "node", "deno", "bun", "ruby", "perl", "php", "bash", "sh", "zsh", "fish",
-    "pwsh", "powershell", "cmd", "npx", "sudo", "su", "ssh", "eval", "exec", "env", "xargs", "nohup",
-    "timeout", "time", "pythonw", "nodejs", "wsl", "start", "uv", "uvx", "pipx", ".", "source", "call",
-})
+# "Don't ask again" is never offered for a first word that is, or starts with, one of these stems: they
+# run whatever they are handed next (``python3.12-dbg``, ``php8.2``, ``ts-node``, ``pythonw``...).
+NO_GRANT_PREFIXES = (
+    "python", "pypy", "ipython", "node", "deno", "bun", "tsx", "ts-node", "ruby", "perl", "php", "lua", "java",
+    "dotnet", "awk", "gawk", "rscript", "cscript", "wscript", "mshta", "pwsh", "powershell", "bash", "zsh",
+    "fish", "wsl", "uv", "uvx", "pipx", "npx", "sudo", "ssh", "eval", "exec", "xargs", "nohup", "timeout",
+    "source",
+)
+# Short stems that would also catch harmless names (``shellcheck``, ``environment-cli``) match by equality only.
+NO_GRANT_EXACT = frozenset({"sh", "su", "cmd", "time", "env", "call", "start", "py", "."})
+NO_GRANT = frozenset(NO_GRANT_PREFIXES) | NO_GRANT_EXACT
 # Two-word prefixes that run a package the model names.
 _NO_GRANT_RUNNERS = frozenset({"npm exec", "npm x", "pnpm dlx", "pnpm exec", "yarn dlx", "yarn exec"})
 _EXECUTABLE_SUFFIXES = (".exe", ".cmd", ".bat", ".com", ".ps1")
-_VERSIONED_INTERPRETER = re.compile(r"(python|pypy)[\d.]*")
 _PLAIN_WORD = re.compile(r"[A-Za-z0-9._+/-]+")
 _MAX_SUBJECTS = 200        # strings of an unknown tool's arguments a rule is matched against
 _MAX_NODES = 10_000        # nodes the argument walk visits before giving up (and treating the call as compound)
@@ -48,6 +52,7 @@ PLAN_REFUSAL = "Refused: plan mode is on. Propose a plan in your answer; do not 
 NO_WAY_TO_ASK = "Refused: there is no way to ask the user here."
 UNSUPPORTED_PATH = "Refused: that path form is not supported. Use a normal relative or absolute path."
 NOT_AN_OBJECT = "Refused: the tool arguments were not an object."
+TOO_LARGE = "Refused: the tool arguments are too large to check."
 DECLINED = "The user declined this action."
 
 
@@ -130,17 +135,35 @@ def _finish(text: str) -> str:
     return text.casefold() if _FOLDS_CASE else text
 
 
+def _lexical(text: str, cwd: Optional[Union[str, Path]]) -> str:
+    """``text`` with ``.`` and ``..`` folded away on the text alone (the file system is never touched). With
+    ``cwd``, a path that lies lexically inside it becomes the relative remainder, so ``../proj/src/a.py``
+    and ``<abs>/proj/src/a.py`` both give ``src/a.py``; any other path keeps its normalized spelling."""
+    plain = posixpath.normpath(text)
+    if cwd is None:
+        return plain
+    try:
+        base = os.path.abspath(os.fspath(cwd))
+        joined = os.path.abspath(os.path.join(base, text))
+        if os.path.normcase(os.path.commonpath([base, joined])) != os.path.normcase(base):
+            return plain
+        return os.path.relpath(joined, base).replace("\\", "/")
+    except (ValueError, OSError, TypeError):
+        return plain
+
+
 def path_forms(path: Any, cwd: Optional[Union[str, Path]] = None) -> list:
     """The two spellings a path rule is matched against. ``~`` is not expanded (the tools do not).
 
     * the lexical form: backslashes as ``/``, ``.`` and ``..`` folded away on the text alone (no file system),
-      so ``../x`` stays ``../x`` and a link named ``secrets`` is still ``secrets/...``;
+      relative to ``cwd`` when the path lies lexically inside it, so ``../x`` stays ``../x`` and a link named
+      ``secrets`` is still ``secrets/...``;
     * the resolved form (only with ``cwd``): the path resolved against ``cwd``, links followed, relative to
       ``cwd`` when it lies inside and absolute otherwise.
 
     Letter case is folded on Windows and macOS. The list holds one entry when the two agree."""
     text = _text(path).replace("\\", "/")
-    forms = [_finish(posixpath.normpath(text))]
+    forms = [_finish(_lexical(text, cwd))]
     if cwd is not None:
         resolved = _resolve(text, cwd)
         if resolved is not None and _finish(resolved) not in forms:
@@ -183,8 +206,7 @@ def subjects_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Pat
     if tool == "move_file":
         sources = path_forms(args.get("source", ""), cwd)
         destinations = path_forms(args.get("destination", ""), cwd)
-        pairs = [f"{sources[0]} -> {destinations[0]}", f"{sources[-1]} -> {destinations[-1]}"]
-        return pairs if pairs[0] != pairs[1] else pairs[:1]
+        return list(dict.fromkeys(f"{source} -> {destination}" for source in sources for destination in destinations))
     if tool in _PATH_TOOLS and "path" in args:
         return path_forms(args["path"], cwd)
     if isinstance(args.get("command"), str):
@@ -213,40 +235,55 @@ def _path_spelling(text: str) -> str:
     return text.casefold() if _FOLDS_CASE else text
 
 
-def _anchor_pattern(pattern: str, cwd: Optional[Union[str, Path]]) -> str:
-    """Spell an absolute pattern the way subjects are spelled: relative to ``cwd`` when its literal
-    directory lies inside it, otherwise as the resolved absolute path."""
-    if cwd is None or not _ABSOLUTE_PATTERN.match(pattern):
-        return pattern
+def _pattern_variants(pattern: str, cwd: Optional[Union[str, Path]]) -> list:
+    """The spellings of one path pattern to try: as written, and (with ``cwd``) anchored against the project
+    folder the way subjects are spelled, when the pattern is absolute or its literal directory climbs out
+    with ``..`` (``../shared/*``). The anchored form is relative to ``cwd`` when the directory lies inside
+    it, and the resolved absolute path otherwise."""
+    variants = [pattern]
+    if cwd is None:
+        return variants
     glob = _GLOB_CHARS.search(pattern)
     literal = pattern[:glob.start()] if glob else pattern
     cut = literal.rfind("/") + 1
     directory, tail = pattern[:cut], pattern[cut:]
+    if not _ABSOLUTE_PATTERN.match(pattern):
+        folded = posixpath.normpath(directory) if directory else ""
+        if folded != ".." and not folded.startswith("../"):
+            return variants
     resolved = _resolve(directory, cwd)
-    if resolved is None:
-        return pattern
-    if resolved == ".":
-        return tail
-    return resolved.rstrip("/") + "/" + tail
+    if resolved is not None:
+        variants.append(tail if resolved == "." else resolved.rstrip("/") + "/" + tail)
+    return variants
+
+
+def _path_patterns(tool: str, pattern: str, cwd: Optional[Union[str, Path]]) -> list:
+    """Every spelling of a path rule's pattern to match a subject against. A leading ``~`` is the home
+    folder here (the user wrote the settings file); a ``move_file`` pattern ``a -> b`` is handled per side."""
+    sides = pattern.split(" -> ", 1) if tool == "move_file" and " -> " in pattern else [pattern]
+    options = []
+    for side in sides:
+        if side.startswith("~"):
+            side = os.path.expanduser(side)
+        side = side.replace("\\", "/")
+        options.append([_path_spelling(variant) for variant in _pattern_variants(side, cwd)])
+    if len(options) == 1:
+        return options[0]
+    return [f"{left} -> {right}" for left in options[0] for right in options[1]]
 
 
 def rule_matches(rule: str, tool: str, subject: str, *, cwd: Optional[Union[str, Path]] = None) -> bool:
     """``"tool:glob"`` matches that tool when the glob matches the subject; ``"tool"`` matches every call.
-    For the path tools both sides are compared in one spelling (see ``normalize_path``); ``cwd`` lets an
-    absolute pattern inside the project match the relative subjects."""
+    For the path tools both sides are compared in one spelling (see ``path_forms``); ``cwd`` lets an
+    absolute pattern, or one that climbs out with ``..``, also match the subject spelled the other way."""
     name, sep, pattern = rule.partition(":")
     if not fnmatch.fnmatchcase(tool, name.strip()):
         return False
     if not sep:
         return True
     if tool in _PATH_TOOLS:
-        pattern = pattern.replace("\\", "/")
-        if tool == "move_file" and " -> " in pattern:
-            source, destination = pattern.split(" -> ", 1)
-            pattern = f"{_anchor_pattern(source, cwd)} -> {_anchor_pattern(destination, cwd)}"
-        else:
-            pattern = _anchor_pattern(pattern, cwd)
-        pattern, subject = _path_spelling(pattern), _path_spelling(subject)
+        subject = _path_spelling(subject)
+        return any(fnmatch.fnmatchcase(subject, variant) for variant in _path_patterns(tool, pattern, cwd))
     return fnmatch.fnmatchcase(subject, pattern)
 
 
@@ -306,7 +343,7 @@ def _grantable_prefix(command: str) -> Optional[str]:
     for suffix in _EXECUTABLE_SUFFIXES:
         if name.endswith(suffix):
             name = name[: -len(suffix)]
-    if name in NO_GRANT or _VERSIONED_INTERPRETER.fullmatch(name):
+    if name in NO_GRANT_EXACT or name.startswith(NO_GRANT_PREFIXES):
         return None
     prefix = command_prefix(command)
     if first in _TWO_WORD_COMMANDS and len(words) > 1:
@@ -354,6 +391,10 @@ class Gate:
         if not isinstance(args, Mapping):
             return NOT_AN_OBJECT
         kind = kind_of(tool)
+        if tool not in TOOL_KINDS:
+            strings, truncated = _strings(args)
+            if truncated or len(strings) > _MAX_SUBJECTS:         # a deny rule could not see all of it
+                return TOO_LARGE
         if any(unusual_path(path) for path in self._path_arguments(tool, args)):
             return UNSUPPORTED_PATH
         subject = subject_of(tool, args, self.cwd)

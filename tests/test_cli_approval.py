@@ -16,6 +16,7 @@ FOLDS_CASE = sys.platform in ("win32", "darwin")
 ON_WINDOWS = os.name == "nt"
 UNSUPPORTED = "Refused: that path form is not supported. Use a normal relative or absolute path."
 NOT_AN_OBJECT = "Refused: the tool arguments were not an object."
+TOO_LARGE = "Refused: the tool arguments are too large to check."
 
 
 def _fold(path):
@@ -609,12 +610,11 @@ class TestRound3TwoForms:
         assert path_forms("sub\\x.py", tmp_path) == [_fold("sub/x.py")]
         forms = path_forms("../x", tmp_path)
         assert forms[0] == "../x" and forms[1] != "../x" and forms[1].endswith("x")
-        assert path_forms(str(tmp_path / "a.py"), tmp_path) == [_fold(tmp_path.as_posix() + "/a.py"), "a.py"]
+        assert path_forms(str(tmp_path / "a.py"), tmp_path) == ["a.py"]      # lexically inside: both forms agree
 
-    def test_subjects_of_a_move_are_both_pairs(self, tmp_path):
+    def test_subjects_of_a_move_are_all_pairs(self, tmp_path):
         assert subjects_of("move_file", {"source": "./a", "destination": "b/../c"}, tmp_path) == ["a -> c"]
-        assert subjects_of("move_file", {"source": str(tmp_path / "a"), "destination": "c"}, tmp_path) == [
-            _fold(tmp_path.as_posix() + "/a") + " -> c", "a -> c"]
+        assert subjects_of("move_file", {"source": str(tmp_path / "a"), "destination": "c"}, tmp_path) == ["a -> c"]
 
     def test_a_relative_deny_pattern_that_leaves_the_project_is_matched_as_written(self, tmp_path):
         g = Gate(deny=["read_path:../*"], cwd=tmp_path)
@@ -681,12 +681,12 @@ class TestRound3TwoForms:
         assert "deny rule" in g2.check("move_file", {"source": "a", "destination": str(tmp_path / "b")})
         assert g2.check("move_file", {"source": "a", "destination": "c"}) is None
 
-    def test_a_tilde_is_a_literal_folder_name_in_patterns_too(self, tmp_path, monkeypatch):
+    def test_a_tilde_in_a_subject_is_a_literal_folder_name(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        assert subjects_of("read_path", {"path": "~/x"}, tmp_path) == ["~/x"]
         g = Gate(deny=["read_path:~/.ssh/*"], cwd=tmp_path)
-        assert "deny rule" in g.check("read_path", {"path": "~/.ssh/id"})
-        assert g.check("read_path", {"path": ".ssh/id"}) is None
+        assert g.check("read_path", {"path": "~/.ssh/id"}) is None     # a folder named "~", not the home folder
 
     @pytest.mark.skipif(not ON_WINDOWS, reason="Windows path forms")
     @pytest.mark.parametrize("text", [" /.env", ".../.env", ". /.env", "\\??\\UNC\\localhost\\c$\\x"])
@@ -744,10 +744,10 @@ class TestRound3UnknownToolSubjects:
         assert g.check("run_shell", {"command": ["ls"]}) is None
         assert len(asker.requests) == 1
 
-    def test_more_than_the_cap_of_values_fails_closed(self):
+    def test_more_than_the_cap_of_values_is_refused_not_asked(self):
         g, asker = gate(allow=["shell:*"])
-        assert g.check("shell", {"items": ["ls"] * 250}) is None
-        assert len(asker.requests) == 1
+        assert g.check("shell", {"items": ["ls"] * 250}) == TOO_LARGE
+        assert asker.requests == []
         assert len(subjects_of("shell", {"items": ["ls"] * 250})) == 200
 
 
@@ -788,8 +788,147 @@ class TestRound3NoRecursion:
         cycle = []
         cycle.append(cycle)
         g, asker = gate()
-        assert g.check("mcp_tool", {"a": cycle}) is None
-        assert len(asker.requests) == 1
+        assert g.check("mcp_tool", {"a": cycle}) == TOO_LARGE      # the walk gives up and the call is refused
+        assert asker.requests == []
+
+
+class TestRound4:
+    @pytest.fixture
+    def project(self, tmp_path):
+        project = tmp_path / "proj"
+        project.mkdir()
+        return project
+
+    # 1. relative patterns that start with ".." are also anchored
+    def test_a_dotdot_deny_pattern_catches_the_absolute_spelling(self, project, tmp_path):
+        g = Gate(deny=["read_path:../*"], cwd=project)
+        assert "deny rule" in g.check("read_path", {"path": str(tmp_path / "x")})
+        assert "deny rule" in g.check("read_path", {"path": "sub/../../x"})
+        assert "deny rule" in g.check("read_path", {"path": "../x"})
+        assert g.check("read_path", {"path": "x"}) is None
+
+    def test_a_dotdot_directory_deny_pattern_in_accept_edits_mode(self, project, tmp_path):
+        asker = Asker()
+        g = Gate(mode="accept-edits", deny=["write_file:../shared/*"], cwd=project, ask=asker)
+        shared = str(tmp_path / "shared" / "x")
+        assert "deny rule" in g.check("write_file", {"path": shared, "content": "x"})
+        assert "deny rule" in g.check("write_file", {"path": "../shared/x", "content": "x"})
+        assert g.check("write_file", {"path": "ok.txt", "content": "x"}) is None
+        assert asker.requests == []
+
+    def test_a_dotdot_pattern_that_points_back_into_the_project(self, project):
+        g = Gate(deny=[f"read_path:../{project.name}/secret/*"], cwd=project)
+        assert "deny rule" in g.check("read_path", {"path": "secret/k"})
+        assert "deny rule" in g.check("read_path", {"path": str(project / "secret" / "k")})
+
+    def test_an_allow_rule_with_dotdot_still_needs_every_form(self, project, tmp_path):
+        (tmp_path / "shared").mkdir()
+        make_link(project / "alias", tmp_path / "shared")
+        asker = Asker()
+        g = Gate(allow=["write_file:../shared/*"], cwd=project, ask=asker)
+        assert g.check("write_file", {"path": "../shared/x", "content": ""}) is None
+        assert g.check("write_file", {"path": str(tmp_path / "shared" / "x"), "content": ""}) is None
+        assert asker.requests == []                              # both spellings match in both forms
+        g.check("write_file", {"path": "alias/x", "content": ""})   # L is alias/x: not covered by the rule
+        g.check("write_file", {"path": "other/x", "content": ""})
+        assert len(asker.requests) == 2
+
+    # 2. the lexical form knows the project folder
+    def test_lexical_form_of_an_in_project_path_is_relative_whatever_the_spelling(self, project):
+        for spelling in ("src/a.py", "./src/a.py", f"../{project.name}/src/a.py", str(project / "src" / "a.py"),
+                         "src\\a.py", "x/../src/a.py"):
+            assert path_forms(spelling, project) == ["src/a.py"], spelling
+        assert path_forms("../x", project)[0] == "../x"
+        assert path_forms(".", project) == ["."]
+
+    def test_an_allow_rule_covers_every_spelling_of_an_in_project_file(self, project):
+        asker = Asker()
+        g = Gate(allow=["write_file:src/*"], cwd=project, ask=asker)
+        for spelling in ("src/a.py", f"../{project.name}/src/a.py", str(project / "src" / "a.py")):
+            assert g.check("write_file", {"path": spelling, "content": ""}) is None
+        assert asker.requests == []
+
+    # 3. too large to check: refuse, do not ask
+    def test_a_value_past_the_200_cap_cannot_hide_a_denied_command(self):
+        g, asker = gate(deny=["shell:*rm -rf*"])
+        assert g.check("shell", {"pad": ["ls"] * 200, "cmd": "rm -rf ~"}) == TOO_LARGE
+        assert asker.requests == []
+
+    def test_a_structure_past_10000_nodes_is_refused(self):
+        g, asker = gate(deny=["shell:*rm -rf*"])
+        assert g.check("shell", {"pad": [1] * 10001, "cmd": "rm -rf ~"}) == TOO_LARGE
+        assert asker.requests == []
+
+    def test_exactly_200_strings_are_still_checked_normally(self):
+        g, asker = gate(deny=["shell:*rm -rf*"])
+        assert "deny rule" in g.check("shell", {"pad": ["ls"] * 199, "cmd": "rm -rf ~"})
+        g2, asker2 = gate()
+        assert g2.check("shell", {"pad": ["ls"] * 199, "cmd": "ls"}) is None and len(asker2.requests) == 1
+
+    def test_a_known_tool_with_a_big_argument_is_not_refused(self):
+        g, asker = gate(mode="accept-edits")
+        assert g.check("write_file", {"path": "a.py", "content": "x" * 100000, "more": ["y"] * 20000}) is None
+
+    # 4. move_file: every combination of forms
+    def test_a_move_is_judged_in_every_combination_of_forms(self, project):
+        (project / "config").mkdir()
+        (project / "out").mkdir()
+        make_link(project / "alias", project / "config")
+        make_link(project / "link", project / "out")
+        subjects = subjects_of("move_file", {"source": "alias/x", "destination": "link/y"}, project)
+        assert set(subjects) == {"alias/x -> link/y", "config/x -> out/y", "alias/x -> out/y", "config/x -> link/y"}
+        g = Gate(deny=["move_file:alias/* -> out/*"], cwd=project, ask=Asker())
+        assert "deny rule" in g.check("move_file", {"source": "alias/x", "destination": "link/y"})
+
+    def test_the_probe_move_with_an_alias_source_and_an_absolute_destination(self, project):
+        (project / "config").mkdir()
+        make_link(project / "alias", project / "config")
+        g = Gate(deny=["move_file:alias/* -> out"], cwd=project, ask=Asker())
+        args = {"source": "alias/x", "destination": str(project / "out")}
+        assert "deny rule" in g.check("move_file", args)
+
+    def test_a_move_with_one_form_is_deduplicated(self, project):
+        assert subjects_of("move_file", {"source": "a", "destination": "b"}, project) == ["a -> b"]
+
+    # 5. interpreter names by stem
+    @pytest.mark.parametrize("command", [
+        "python3.12-dbg x.py", "ipython x", "tsx x.ts", "ts-node x.ts", "./node_modules/.bin/ts-node x", "php8.2 x.php",
+        "node18 x.js", "pypy3 x", "deno run x", "bun run x", "bunx x", "lua x.lua", "java -jar x.jar", "dotnet run",
+        "awk 1 x", "gawk 1 x", "Rscript x.R", "cscript x.vbs", "wscript x.vbs", "mshta x", "pwsh -c x", "zsh x",
+        "fish x", "bash x", "sh x", "cmd /c x", "wsl ls", "start x", "uv run x", "uvx x", "pipx run x", "npx x",
+        "sudo x", "su x", "ssh host", "eval x", "exec x", "env x", "xargs x", "nohup x", "timeout 5 x", "time x",
+        "source x", "call x", "py x.py", "PYTHON.EXE x", "C:/Python/python.exe x", "pythonw x", "nodejs x",
+        "powershell.exe -c x", "sh.exe x", "ruby x", "perl x", ". x",
+    ])
+    def test_these_names_are_never_remembered(self, command):
+        assert _grantable_prefix(command) is None, command
+
+    @pytest.mark.parametrize("command,prefix", [
+        ("pytest -q", "pytest"), ("git status", "git status"), ("make all", "make all"),("./gradlew build", "./gradlew"),
+        ("shellcheck x.sh", "shellcheck"), ("environment-cli x", "environment-cli"), ("timeline x", "timeline"),
+        ("suite x", "suite"), ("callgraph x", "callgraph"), ("starter x", "starter"), ("commander x", "commander"),
+        ("ls -la", "ls"), ("cargo test", "cargo test"),
+    ])
+    def test_ordinary_names_with_a_short_stem_inside_still_grant(self, command, prefix):
+        assert _grantable_prefix(command) == prefix
+
+    # 6. ~ in rule patterns only
+    def test_a_tilde_in_a_rule_pattern_means_the_home_folder(self, project, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        g = Gate(deny=["read_path:~/.ssh/*", "move_file:~/.ssh/*"], cwd=project, ask=Asker())
+        assert "deny rule" in g.check("read_path", {"path": str(Path.home() / ".ssh" / "id_rsa")})
+        assert "deny rule" in g.check("move_file", {"source": str(Path.home() / ".ssh" / "k"), "destination": "b"})
+        assert g.check("read_path", {"path": str(Path.home() / "notes.txt")}) is None
+
+    def test_a_tilde_in_a_subject_stays_a_folder_named_tilde(self, project, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+        assert normalize_path("~/x", project) == "~/x"
+        g = Gate(deny=["read_path:~/.ssh/*"], cwd=project)
+        assert g.check("read_path", {"path": "~/.ssh/id_rsa"}) is None
 
 
 class TestModes:

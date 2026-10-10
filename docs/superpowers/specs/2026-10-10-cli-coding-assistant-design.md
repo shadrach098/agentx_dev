@@ -153,17 +153,24 @@ Two safety refinements to the matching:
   and a link `secrets/` stays `secrets/`) and the path resolved against the project folder (links followed,
   relative to the project when inside, absolute otherwise); case is folded on Windows and macOS. `~` is not
   expanded (the tools do not expand it). A **deny** rule refuses the call if either form matches; an
-  **allow** rule applies only if both do. Relative patterns are matched as written; an absolute pattern
-  inside the project is rewritten relative to it. So `deny read_path:.env` cannot be dodged by `./.env`,
+  **allow** rule applies only if both do. A path inside the project is written relative to it in the first
+  form too, so `../proj/src/a.py` and the absolute path read `src/a.py`. A pattern is matched as written, and
+  also anchored against the project folder when it is absolute or starts with `..` (`../shared/*` also
+  matches the absolute path of that folder); a leading `~` in a rule pattern (not in a path the model passes)
+  is the home folder. `move_file` is judged in every combination of its two paths' forms. So `deny read_path:.env` cannot be dodged by `./.env`,
   `sub/../.env` or the absolute path, and `read_path:secrets/*` still blocks a link named `secrets`.
   On Windows the gate refuses outright, before any rule: UNC and device paths (`\\host\x`, `\\?\C:\x`,
   `\??\C:\x`), alternate data streams (`file::$DATA`), drive-relative paths (`C:file`) and any path with a
   component ending in a dot or a space (`README.md.`, `. /.env`, `.../x`).
 - **Unknown tools.** For a tool the gate does not know and that has no string `command`, every string value in
   its arguments (found by an iterative walk, at most 200) is a subject: a deny rule matches if any does, an
-  allow rule applies only if all do; a structure too big to scan counts as compound.
+  allow rule applies only if all do. Arguments with more than 200 strings or more than 10,000 nodes are
+  refused ("too large to check"), not asked about.
 - **Limits.** Deny globs on shell commands are best effort: start them with `*`, and a model can spell a
-  command another way. A `run_python` rule sees only the first line of the code.
+  command another way. A `run_python` rule sees only the first line of the code. Deny rules apply to calls of
+  the path tools by name; `grep`, `find_files` and `list_directory` pointed at a folder above a denied file
+  can still read its contents or name. Deny rules are a convenience layer, not a secrets vault: keep
+  secrets out of the project folder.
 
 `run_python` has no command to take a prefix from, so `a` approves that one call and remembers nothing.
 
@@ -175,10 +182,13 @@ against the file on disk; for a new file, the whole content as additions), the e
 - `a`: don't ask again. For edits it switches the session to accept-edits. For commands it grants the
   command prefix for the session: the first word, or the first two words for `git`, `npm`, `pnpm`,
   `yarn`, `pip`, `cargo`, `go`, `docker`, `make`. It remembers nothing for interpreters, shells and
-  wrappers (`python`, `python3`, `py`, `node`, `deno`, `bun`, `ruby`, `perl`, `php`, `bash`, `sh`, `zsh`,
-  `fish`, `pwsh`, `powershell`, `cmd`, `npx`, `sudo`, `su`, `ssh`, `eval`, `exec`, `env`, `xargs`, `nohup`,
-  `timeout`, `time`, `pythonw`, `nodejs`, `wsl`, `start`, `uv`, `uvx`, `pipx`, `.`, `source`, `call`;
-  matched by file name, so `/usr/bin/python3.12` counts), nor unless the first word is made only of
+  wrappers: the file name of the first word (lower-cased, `.exe`/`.cmd`/`.bat`/`.com`/`.ps1` dropped) may
+  not start with `python`, `pypy`, `ipython`, `node`, `deno`, `bun`, `tsx`, `ts-node`, `ruby`, `perl`, `php`,
+  `lua`, `java`, `dotnet`, `awk`, `gawk`, `rscript`, `cscript`, `wscript`, `mshta`, `pwsh`, `powershell`,
+  `bash`, `zsh`, `fish`, `wsl`, `uv`, `uvx`, `pipx`, `npx`, `sudo`, `ssh`, `eval`, `exec`, `xargs`, `nohup`,
+  `timeout` or `source` (so `php8.2`, `node18`, `python3.12-dbg` and `/usr/bin/python` count), and may not
+  equal `sh`, `su`, `cmd`, `time`, `env`, `call`, `start`, `py` or `.` (equality only, so `shellcheck`
+  is fine), nor unless the first word is made only of
   letters, digits and `. _ + / -` (so `CI=1 pytest`, quotes, `$`, globs, braces and backslashes grant
   nothing), nor for `git -c ...` or any two-word command whose second word is an
   option, nor for `npm exec`, `npm x`, `pnpm dlx`, `pnpm exec`, `yarn dlx`, `yarn exec`, nor for compound
