@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional
@@ -17,6 +18,7 @@ class Settings:
     add_dirs: List[str] = field(default_factory=list)
     allow: List[str] = field(default_factory=list)
     deny: List[str] = field(default_factory=list)
+    project_allow: List[str] = field(default_factory=list)   # the allow rules that came from the project file
     problems: List[str] = field(default_factory=list)     # one line per unreadable file or bad value
 
 
@@ -28,13 +30,19 @@ def project_settings_path(cwd: Path) -> Path:
     return Path(cwd) / ".agentx" / "settings.json"
 
 
+def _clean(text: object, limit: int = 200) -> str:
+    """Error text made safe to print: control characters become '?', and it is cut at ``limit``."""
+    text = "".join(c if c.isprintable() else "?" for c in str(text))
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 def _read(path: Path, problems: List[str]) -> dict:
-    if not path.is_file():
-        return {}
     try:
+        if not path.is_file():
+            return {}
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError) as e:
-        problems.append(f"settings file {path}: {e}; ignored")
+        problems.append(f"settings file {path}: {_clean(e)}; ignored")
         return {}
     if not isinstance(data, dict):
         problems.append(f"settings file {path}: expected a JSON object; ignored")
@@ -54,10 +62,26 @@ def _strings(value: Any, where: str, path: Path, problems: List[str]) -> List[st
     return kept
 
 
+def _absolute(entry: str, base: Path, home: Path) -> str:
+    """An addDirs entry as an absolute path: '~' means ``home``, relative entries start at ``base``."""
+    text = entry.strip()
+    if text == "~" or text.startswith(("~/", "~\\")):
+        target = Path(home) / text[2:] if len(text) > 1 else Path(home)
+    else:
+        target = Path(text)
+        if not target.is_absolute():
+            target = Path(base) / target
+    try:
+        return str(target.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return os.path.abspath(target)
+
+
 def load_settings(cwd: Path, home: Path) -> Settings:
     """User settings first, then the project's: scalars from the project win, lists are concatenated."""
     settings = Settings()
-    for path in (user_settings_path(home), project_settings_path(cwd)):
+    sources = ((user_settings_path(home), Path(home), False), (project_settings_path(cwd), Path(cwd), True))
+    for path, base, is_project in sources:
         data = _read(path, settings.problems)
         model = data.get("model")
         if isinstance(model, str) and model.strip():
@@ -71,12 +95,16 @@ def load_settings(cwd: Path, home: Path) -> Settings:
             else:
                 settings.problems.append(
                     f"settings file {path}: 'mode' must be one of {', '.join(MODES)}; ignored")
-        settings.add_dirs += _strings(data.get("addDirs"), "addDirs", path, settings.problems)
+        dirs = _strings(data.get("addDirs"), "addDirs", path, settings.problems)
+        settings.add_dirs += [_absolute(d, base, home) for d in dirs]
         permissions = data.get("permissions")
         if permissions is not None and not isinstance(permissions, dict):
             settings.problems.append(f"settings file {path}: 'permissions' must be an object; ignored")
             permissions = None
         permissions = permissions or {}
-        settings.allow += _strings(permissions.get("allow"), "permissions.allow", path, settings.problems)
+        allowed = _strings(permissions.get("allow"), "permissions.allow", path, settings.problems)
+        settings.allow += allowed
+        if is_project:
+            settings.project_allow += allowed
         settings.deny += _strings(permissions.get("deny"), "permissions.deny", path, settings.problems)
     return settings

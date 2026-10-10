@@ -86,3 +86,51 @@ def test_an_unexpected_constructor_error_never_echoes_its_message(monkeypatch):
     with pytest.raises(ModelError) as info:
         choose_model("gpt-4o", OAI)
     assert "RuntimeError" in str(info.value) and "sk-secret" not in str(info.value)
+
+
+def test_model_label_reads_a_gpt_style_defaults_dict():
+    class GptLike:
+        def __init__(self):
+            self.defaults = {"model": "gpt-4o"}
+    assert model_label(GptLike()) == "gpt-4o"
+
+    class NoModel:
+        defaults = {"temperature": 1}
+    assert model_label(NoModel()) == "NoModel"
+
+    class BadDefaults:
+        defaults = "not a dict"
+    assert model_label(BadDefaults()) == "BadDefaults"
+
+
+def test_model_label_of_the_real_gpt_class():
+    from agentx_dev.ChatModel import GPT
+    assert model_label(GPT(model="gpt-4o-mini", api_key="dummy")) == "gpt-4o-mini"
+
+
+def test_an_unknown_name_is_quoted_not_echoed_raw():
+    with pytest.raises(ModelError) as info:
+        choose_model("llama\x1b[2J", {**ANT, **OAI})
+    assert "\x1b" not in str(info.value) and "llama" in str(info.value)
+
+
+def test_a_very_long_name_is_capped():
+    with pytest.raises(ModelError) as info:
+        choose_model("x" * 5000, {**ANT, **OAI})
+    assert len(str(info.value)) < 400
+
+
+@pytest.mark.parametrize("env,expected", [
+    ({"ANTHROPIC_API_KEY": "  ", "OPENAI_API_KEY": " ok "}, ("GPT", {"api_key": "ok"})),
+    ({"ANTHROPIC_API_KEY": "\t\n", "OPENAI_API_KEY": "ok"}, ("GPT", {"api_key": "ok"})),
+])
+def test_a_blank_key_counts_as_missing(env, expected):
+    m = choose_model(None, env)
+    assert (type(m).__name__, m.kw) == expected
+
+
+def test_a_blank_key_for_a_named_model_is_missing():
+    with pytest.raises(ModelError, match="ANTHROPIC_API_KEY"):
+        choose_model("claude-x", {"ANTHROPIC_API_KEY": "   "})
+    with pytest.raises(ModelError):
+        choose_model(None, {"ANTHROPIC_API_KEY": " ", "OPENAI_API_KEY": ""})
