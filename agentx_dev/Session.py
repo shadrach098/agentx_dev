@@ -197,6 +197,19 @@ class Session(BaseModel):
         self._absorb(result)
         return result
 
+    def stream(self, user_input: str, **kw: Any):
+        """Run a sync turn as a stream of events and absorb the result into session state.
+
+        Yields every event of ``runner.stream``; on the final ``completion`` event the completion
+        is absorbed exactly as ``invoke`` does. A turn the caller abandons before the completion
+        (Ctrl+C, closing the generator) is not recorded, because the runner reports the whole turn
+        only when it completes."""
+        runner = self._require_runner()
+        for event in runner.stream(user_input, chat_history=self.history or None, **kw):
+            if event.get("type") == "completion":
+                self._absorb(event["completion"])
+            yield event
+
     async def ainvoke(self, user_input: str) -> AgentCompletion:
         """Run an async turn and absorb the result into session state."""
         runner = self._require_runner()
