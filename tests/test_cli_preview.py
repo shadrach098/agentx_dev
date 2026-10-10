@@ -78,3 +78,148 @@ def test_an_unreadable_target_does_not_crash(tmp_path):
     (tmp_path / "adir").mkdir()
     p = preview_for("write_file", {"path": "adir", "content": "x", "if_exists": "refuse"}, tmp_path)
     assert p.kind == "diff"          # a directory cannot be read, so it is previewed like a new file
+
+
+# --- fix round 1: never raise, mirror the tools, bound reads ---------------
+
+import os
+import sys
+
+import pytest
+
+
+def test_a_path_with_a_nul_byte_does_not_crash(tmp_path):
+    p = preview_for("write_file", {"path": "a\x00b", "content": "x", "if_exists": "refuse"}, tmp_path)
+    assert p.kind == "diff" and p.title.startswith("Create")
+    assert "file not found" in preview_for("edit_file", {"path": "a\x00b", "find": "a", "replace": "b"}, tmp_path).body
+
+
+def test_a_tilde_user_path_does_not_crash(tmp_path):
+    p = preview_for("write_file", {"path": "~nosuchuser_zz/x", "content": "x"}, tmp_path)
+    assert p.kind == "diff"
+    assert "file not found" in preview_for("edit_file", {"path": "~nosuchuser_zz/x", "find": "a", "replace": "b"}, tmp_path).body
+
+
+def test_tilde_is_not_expanded(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".bashrc").write_text("SECRET_HOME_CONTENT\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    work = tmp_path / "work"
+    work.mkdir()
+    p = preview_for("write_file", {"path": "~/.bashrc", "content": "mine\n", "if_exists": "overwrite"}, work)
+    assert "SECRET_HOME_CONTENT" not in p.body and p.title == "Create ~/.bashrc"
+    e = preview_for("edit_file", {"path": "~/.bashrc", "find": "SECRET", "replace": "x"}, work)
+    assert "SECRET_HOME_CONTENT" not in e.body and "file not found" in e.body
+
+
+def test_an_invalid_utf8_file_does_not_crash(tmp_path):
+    (tmp_path / "b.txt").write_bytes(b"caf\xe9\nline\n")
+    p = preview_for("write_file", {"path": "b.txt", "content": "new\n", "if_exists": "overwrite"}, tmp_path)
+    assert p.kind == "diff" and "+new" in p.body
+    e = preview_for("edit_file", {"path": "b.txt", "find": "line", "replace": "x"}, tmp_path)
+    assert e.kind == "text" and "UTF-8" in e.body
+
+
+def test_a_binary_file_is_not_diffed(tmp_path):
+    (tmp_path / "b.bin").write_bytes(b"\x00\x01\x02" * 10)
+    p = preview_for("write_file", {"path": "b.bin", "content": "x", "if_exists": "overwrite"}, tmp_path)
+    assert p.kind == "text" and "binary" in p.body
+
+
+def test_a_file_over_the_cap_is_not_read(tmp_path):
+    (tmp_path / "big.txt").write_bytes(b"a\n" * 600_000)
+    p = preview_for("write_file", {"path": "big.txt", "content": "x", "if_exists": "overwrite"}, tmp_path)
+    assert p.kind == "text" and "too large" in p.body and "1200000" in p.body
+    e = preview_for("edit_file", {"path": "big.txt", "find": "a", "replace": "b"}, tmp_path)
+    assert "too large" in e.body
+
+
+def test_huge_new_content_is_not_diffed(tmp_path):
+    p = preview_for("write_file", {"path": "n.txt", "content": "x" * 5_000_000}, tmp_path)
+    assert p.kind == "text" and "too large" in p.body
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this platform")
+def test_a_fifo_is_not_opened(tmp_path):
+    os.mkfifo(tmp_path / "pipe")
+    p = preview_for("write_file", {"path": "pipe", "content": "x", "if_exists": "overwrite"}, tmp_path)
+    assert p.kind == "diff" and "not a regular file" in p.title
+    assert "not a regular file" in preview_for("edit_file", {"path": "pipe", "find": "a", "replace": "b"}, tmp_path).body
+
+
+def test_edit_file_refuses_a_text_that_appears_twice(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1\nx = 1\n", encoding="utf-8")
+    p = preview_for("edit_file", {"path": "a.py", "find": "x = 1", "replace": "x = 2"}, tmp_path)
+    assert p.kind == "text" and "2 times" in p.body and "refused" in p.body
+
+
+def test_edit_file_unescapes_json_escaped_find_like_the_tool(tmp_path):
+    (tmp_path / "a.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+    bs = chr(92)                      # the model sent a backslash and an n, not a newline
+    find, replace = f"a = 1{bs}nb = 2", f"a = 9{bs}nb = 8"
+    p = preview_for("edit_file", {"path": "a.py", "find": find, "replace": replace}, tmp_path)
+    assert p.kind == "diff" and "-a = 1" in p.body and "+b = 8" in p.body
+
+
+@pytest.mark.parametrize("args", [["a", "b"], "just a string", None, 5])
+def test_non_dict_args_do_not_crash(tmp_path, args):
+    for tool in ("write_file", "edit_file", "run_shell", "mystery"):
+        p = preview_for(tool, args, tmp_path)
+        assert p.kind == "text" and p.title == tool
+
+
+def test_an_unknown_tool_with_tuple_keys_and_odd_values(tmp_path):
+    p = preview_for("mcp_thing", {("a", 1): object(), 2: {3}}, tmp_path)
+    assert p.title == "mcp_thing" and p.kind == "text" and p.body
+
+
+def test_the_unknown_tool_fallback_marks_a_cut(tmp_path):
+    p = preview_for("mcp_thing", {"q": "z" * 5000}, tmp_path)
+    assert p.body.endswith("(truncated)") and len(p.body) < 2100
+
+
+def test_a_long_shell_command_and_code_are_cut(tmp_path):
+    cmd = "\n".join(f"echo {i}" for i in range(MAX_PREVIEW_LINES + 30))
+    for tool, key in (("run_shell", "command"), ("run_python", "code")):
+        lines = preview_for(tool, {key: cmd}, tmp_path).body.splitlines()
+        assert len(lines) == MAX_PREVIEW_LINES + 1 and lines[-1] == "... 30 more lines"
+    one = preview_for("run_shell", {"command": "x" * 100_000}, tmp_path).body
+    assert len(one) < 5000
+
+
+def test_a_line_ending_only_change_is_not_called_no_change(tmp_path):
+    (tmp_path / "f.txt").write_text("a", encoding="utf-8")
+    p = preview_for("write_file", {"path": "f.txt", "content": "a\n", "if_exists": "overwrite"}, tmp_path)
+    assert "no change" not in p.body and "final newline" in p.body
+    (tmp_path / "g.txt").write_bytes(b"a\r\nb\r\n")
+    q = preview_for("write_file", {"path": "g.txt", "content": "a\nb\n", "if_exists": "overwrite"}, tmp_path)
+    assert "line endings" in q.body
+    (tmp_path / "h.txt").write_bytes(b"a\n")
+    r = preview_for("write_file", {"path": "h.txt", "content": "a\n", "if_exists": "overwrite"}, tmp_path)
+    assert r.body == "(no change)"
+
+
+def test_if_exists_is_normalised_like_the_tool(tmp_path):
+    (tmp_path / "f.txt").write_text("one\n", encoding="utf-8")
+    p = preview_for("write_file", {"path": "f.txt", "content": "two\n", "if_exists": " Append "}, tmp_path)
+    assert p.title == "Append to f.txt"
+    p = preview_for("write_file", {"path": "f.txt", "content": "two\n", "if_exists": None}, tmp_path)
+    assert "refused unless" in p.title
+    bad = preview_for("write_file", {"path": "f.txt", "content": "two\n", "if_exists": "clobber"}, tmp_path)
+    assert bad.kind == "text" and "not valid" in bad.body
+
+
+def test_refuse_mode_on_an_existing_file_does_not_promise_a_write(tmp_path):
+    (tmp_path / "f.txt").write_text("one\n", encoding="utf-8")
+    p = preview_for("write_file", {"path": "f.txt", "content": "two\n"}, tmp_path)
+    assert p.title.startswith("Write f.txt") and "refused unless it was read" in p.title
+    assert "-one" in p.body and "+two" in p.body
+
+
+def test_rename_mode_names_the_file_the_tool_would_pick(tmp_path):
+    (tmp_path / "r.md").write_text("old\n", encoding="utf-8")
+    (tmp_path / "r_1.md").write_text("old\n", encoding="utf-8")
+    p = preview_for("write_file", {"path": "r.md", "content": "n\n", "if_exists": "rename"}, tmp_path)
+    assert "new name" in p.title and "r_2.md" in p.title
