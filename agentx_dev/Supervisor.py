@@ -38,7 +38,7 @@ from agentx_dev.SubAgents import (   # noqa: F401  (SpawnConfig/SpawnRequest are
 )
 from agentx_dev.Operator import (
     ASK_TOOL_NAME, NO_ANSWER_PLAN_NOTE, PLANNER_SOURCE, OperatorChannel, ask_instruction, attach_ask_user,
-    parse_ask_request, validate_ask_user,
+    checkpoint_text, is_stop_reply, parse_ask_request, validate_ask_user,
 )
 from agentx_dev.SupervisorMemory import MEMORY_ASK_LINE, RunMemory, validate_memory
 from agentx_dev.Runner.Persistence import (
@@ -180,6 +180,12 @@ class SupervisorResult(BaseModel):
     # What this run saved to long-term memory (3.6): kind, id, text (first 80 characters).
     # Empty when memory is off, read-only, or nothing qualified.
     memory: List[Dict[str, Any]] = Field(default_factory=list)
+    # The operator's reply to "what should I do next?" (3.6.2), as typed; None when
+    # ask_when_done is off or nobody answered.
+    next_step: Optional[str] = None
+    # One {"round", "query", "content", "outcome"} per round, filled only once a follow-up round
+    # has run (follow_up=True). Empty for a single-round run.
+    rounds: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 # ----------------------------------------------------------------------------
@@ -296,6 +302,52 @@ def _result_failed(r: "SubtaskResult") -> bool:
 
 def _result_done(r: "SubtaskResult") -> bool:
     return r.agent != "__spawn__" and not r.skipped and not r.superseded and not _result_failed(r)
+
+
+SESSION_ANSWER_CHARS = 3000        # how much of an earlier round's answer a follow-up round is shown
+
+
+def _session_settings(ask_user: Any, ask_when_done: bool, follow_up: bool, max_follow_ups: int):
+    """``(follow_up, ask_when_done, max_follow_ups)`` for a constructor. ``follow_up`` implies
+    ``ask_when_done``; either needs ``ask_user``."""
+    follow = bool(follow_up)
+    when_done = bool(ask_when_done) or follow
+    if when_done and (ask_user is None or ask_user is False):
+        raise ValueError("ask_when_done and follow_up need ask_user: pass ask_user=True or a function")
+    return follow, when_done, max(0, int(max_follow_ups))
+
+
+def _cap_text(text: Any, limit: int) -> str:
+    s = str(text or "").strip()
+    return s if len(s) <= limit else s[:limit].rstrip() + " ..."
+
+
+def _outcome_line(result: "SupervisorResult") -> str:
+    """The sentence under the answer in a checkpoint prompt: how the round ended."""
+    outcome = result.outcome
+    if outcome == OUTCOME_OUT_OF_TIME:
+        return f"Outcome: {outcome} (time limit reached)."
+    if outcome == OUTCOME_OUT_OF_BUDGET:
+        return f"Outcome: {outcome} (cost limit reached)."
+    steps = [r for r in result.subtasks if r.agent != "__spawn__" and not r.superseded]
+    failed = [r for r in steps if _result_failed(r)]
+    if outcome in (OUTCOME_PARTIAL, OUTCOME_STUCK) and failed:
+        return f"Outcome: {outcome} ({len(failed)} of {len(steps)} steps failed)."
+    return f"Outcome: {outcome}."
+
+
+def _follow_up_task(original: str, rounds: List[Dict[str, Any]], reply: str) -> str:
+    """The task a follow-up round plans: the original, what each earlier round produced, and the
+    operator's new instruction. The operator's earlier answers are not repeated here: the round's
+    channel is seeded with them and the Supervisor appends its OPERATOR ANSWERS block."""
+    lines = [original, "", "WHAT HAS HAPPENED SO FAR"]
+    for r in rounds:
+        asked = "" if r["round"] == 1 else f" (the operator asked: {_cap_text(r['query'], 500)})"
+        lines += [f"Round {r['round']}{asked}, outcome {r['outcome']}:",
+                  _cap_text(r["content"], SESSION_ANSWER_CHARS), ""]
+    lines += [f"The operator now asks: {reply}",
+              "Do this now, building on the results above. Do not repeat work that is already done."]
+    return "\n".join(lines)
 
 
 def _supervisor_outcome(results: List["SubtaskResult"], budget_reason: Optional[str] = None) -> str:
@@ -1114,6 +1166,9 @@ class Supervisor(_SpawnMixin):
         memory_top_k: int = 4,
         memory_min_score: float = 0.2,
         memory_write: bool = True,
+        ask_when_done: bool = False,
+        follow_up: bool = False,
+        max_follow_ups: int = 5,
     ):
         """
         Args:
@@ -1200,6 +1255,16 @@ class Supervisor(_SpawnMixin):
             memory_min_score: Matches below this score are dropped (default 0.2; about 0.5
                 for OpenAI embeddings, about 0.1 for HashEmbeddings).
             memory_write: False makes the store read-only.
+            ask_when_done: (3.6.2) When a round's answer is ready, the framework itself asks the
+                operator "What should I do next?" through the same asker as ``ask_user`` (the
+                answer is shown in the prompt) and returns the reply in ``result.next_step``
+                (``None`` if nobody answered). Asked whatever the outcome. Needs ``ask_user``.
+            follow_up: (3.6.2) Run another round on the operator's reply, with the earlier
+                results as context, until the operator replies blank or with a stop word
+                ("done", "stop", "quit", "exit", "no", "nothing", "that's all"). Implies
+                ``ask_when_done``. ``result.rounds`` lists every round.
+            max_follow_ups: (3.6.2) Rounds allowed after the first (default 5). After the last
+                one no question is asked.
         """
         self.model = model
         # Normalize (and copy) so run-time spawns don't mutate the
@@ -1226,6 +1291,8 @@ class Supervisor(_SpawnMixin):
         self.max_questions = max(0, int(max_questions))
         self.ask_timeout = ask_timeout
         self._operator: Optional[OperatorChannel] = None
+        self.follow_up, self.ask_when_done, self.max_follow_ups = _session_settings(
+            self.ask_user, ask_when_done, follow_up, max_follow_ups)
         self.memory = validate_memory(memory)
         if int(memory_top_k) < 0:
             raise ValueError("memory_top_k must be >= 0")
@@ -1867,6 +1934,9 @@ class AsyncSupervisor(_SpawnMixin):
         memory_top_k: int = 4,
         memory_min_score: float = 0.2,
         memory_write: bool = True,
+        ask_when_done: bool = False,
+        follow_up: bool = False,
+        max_follow_ups: int = 5,
     ):
         """
         Args:
@@ -1930,6 +2000,16 @@ class AsyncSupervisor(_SpawnMixin):
             memory_min_score: Matches below this score are dropped (default 0.2; about 0.5
                 for OpenAI embeddings, about 0.1 for HashEmbeddings).
             memory_write: False makes the store read-only.
+            ask_when_done: (3.6.2) When a round's answer is ready, the framework itself asks the
+                operator "What should I do next?" through the same asker as ``ask_user`` (the
+                answer is shown in the prompt) and returns the reply in ``result.next_step``
+                (``None`` if nobody answered). Asked whatever the outcome. Needs ``ask_user``.
+            follow_up: (3.6.2) Run another round on the operator's reply, with the earlier
+                results as context, until the operator replies blank or with a stop word
+                ("done", "stop", "quit", "exit", "no", "nothing", "that's all"). Implies
+                ``ask_when_done``. ``result.rounds`` lists every round.
+            max_follow_ups: (3.6.2) Rounds allowed after the first (default 5). After the last
+                one no question is asked.
         """
         self.model = model
         self.agents = _normalize_agents(agents)
@@ -1947,6 +2027,8 @@ class AsyncSupervisor(_SpawnMixin):
         self.max_questions = max(0, int(max_questions))
         self.ask_timeout = ask_timeout
         self._operator: Optional[OperatorChannel] = None
+        self.follow_up, self.ask_when_done, self.max_follow_ups = _session_settings(
+            self.ask_user, ask_when_done, follow_up, max_follow_ups)
         self.memory = validate_memory(memory)
         if int(memory_top_k) < 0:
             raise ValueError("memory_top_k must be >= 0")
