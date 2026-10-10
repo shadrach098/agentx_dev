@@ -34,6 +34,10 @@ MAX_RULE_CHARS = 200
 MAX_ERROR_CHARS = 300
 
 
+HOME_PROTECTED = (".agentx", ".gitconfig", ".config/git", ".bashrc", ".bash_profile", ".bash_login", ".profile",
+                  ".zshrc", ".zprofile", ".config/fish/config.fish")
+
+
 def _literal(path: str) -> str:
     """``path`` as a glob that matches only itself (a folder name may hold ``[``, ``*`` or ``?``)."""
     return path.replace("[", "[[]").replace("*", "[*]").replace("?", "[?]")
@@ -49,7 +53,9 @@ def default_deny(home: Optional[Path] = None) -> List[str]:
       edit to ``conftest.py``, a ``Makefile`` or ``package.json``, so the user would never see it in review.
     * ``.agentx`` and everything under it at the top of the project (the only place the project settings are
       read from), and ``~/.agentx`` (``home``) when the tools can reach it: a model must not rewrite its own
-      permissions.
+      permissions;
+    * in the home folder, for the same reason as ``.git``: ``.gitconfig``, ``.config/git`` and the common shell
+      profiles (``HOME_PROTECTED``). Other files outside the project that run later are not protected.
 
     They refuse ``write_file``, ``edit_file``, ``delete_path`` and ``move_file`` (as source and as
     destination). The patterns are matched against every spelling of the path the gate computes (relative,
@@ -60,7 +66,12 @@ def default_deny(home: Optional[Path] = None) -> List[str]:
             base = Path(home).resolve().as_posix().rstrip("/")
         except (OSError, RuntimeError, ValueError):
             base = Path(home).as_posix().rstrip("/")
-        places += [_literal(base) + "/.agentx", _literal(base) + "/.agentx/*"]
+        # Files in the home folder that run later (git config, shell profiles) and the user's own settings.
+        # An absolute pattern also matches the relative spelling when the project is the home folder.
+        for name in HOME_PROTECTED:
+            places.append(f"{_literal(base)}/{name}")
+            if name in (".agentx", ".config/git"):
+                places.append(f"{_literal(base)}/{name}/*")
     rules: List[str] = []
     for place in places:
         for tool in ("write_file", "edit_file", "delete_path"):
@@ -129,8 +140,8 @@ class ChatApp:
         self.project_allow = list(project_allow)
         self.add_dirs = [_resolved(Path(d).expanduser()) for d in add_dirs]
         self.gate = Gate(mode=mode, allow=allow, deny=[*default_deny(self.home), *deny], cwd=self.cwd)
-        self.startup_mode = self.gate.mode
-        self._edit_grant = False        # True while accept-edits comes from answering "a" at an edit prompt
+        # The mode in force when "a" was answered at an edit prompt (None: accept-edits, if on, was chosen)
+        self._mode_before_grant: Optional[str] = None
         self._watch_mode_changes()
         self.gate.ask = self._remembering(make_asker(console, self.read_short, self.gate.cwd))
         self.tools = build_tools(self.cwd, self.add_dirs, self.gate)
@@ -146,8 +157,12 @@ class ChatApp:
         accept-edits, and that is a grant for this conversation, not a mode the user chose."""
         def asking(request: Any) -> Any:
             answer = ask(request)
-            if getattr(request, "kind", "") == "edit" and getattr(request, "remember", False)                     and getattr(answer, "choice", "") == "a" and self.gate.mode != "accept-edits":
-                self._edit_grant = True
+            grants_edits = (getattr(request, "kind", "") == "edit" and getattr(request, "remember", False)
+                            and getattr(answer, "choice", "") == "a")
+            # Relies on Gate.check calling ask BEFORE _remember switches the mode: here the mode is still the
+            # one the user had when they answered, and that is what a new conversation goes back to.
+            if grants_edits and self.gate.mode != "accept-edits":
+                self._mode_before_grant = self.gate.mode
             return answer
         return asking
 
@@ -157,7 +172,7 @@ class ChatApp:
 
         def watched(mode: str) -> None:
             set_mode(mode)
-            self._edit_grant = False
+            self._mode_before_grant = None
 
         self.gate.set_mode = watched
 
@@ -198,7 +213,8 @@ class ChatApp:
                            "every file on this drive.")
             elif folder == _resolved(self.home):
                 self.error(f"Warning: the extra folder {shown} is your home folder: the tools can reach "
-                           "everything in it.")
+                           "everything in it. Files outside the project that run later are not protected "
+                           "beyond a short list (git config, common shell profiles, ~/.agentx).")
 
     # -- the context the slash commands use ----------------------------------
 
@@ -211,7 +227,7 @@ class ChatApp:
 
     def cycle_mode(self) -> None:
         self.gate.cycle_mode()
-        self._edit_grant = False                  # the user chose this mode
+        self._mode_before_grant = None            # the user chose this mode
 
     def toolbar(self) -> str:
         session_id = self.session.session_id[:8] if self.session else "-"
@@ -228,12 +244,12 @@ class ChatApp:
 
     def _new_conversation_state(self) -> None:
         """A new conversation is a clean slate for "don't ask again": the session-wide command grants are
-        emptied, and accept-edits that came from answering "a" at an edit prompt goes back to the mode the app
-        started in. A mode the user chose (``--mode``, ``/mode``, Shift+Tab) is kept."""
+        emptied, and accept-edits that came from answering "a" at an edit prompt goes back to the mode that was
+        in force when the user answered. A mode the user chose since (``/mode``, Shift+Tab) is kept."""
         self.gate.grants.clear()
-        if self._edit_grant and self.gate.mode == "accept-edits":
-            self.gate.set_mode(self.startup_mode)
-        self._edit_grant = False
+        if self._mode_before_grant is not None and self.gate.mode == "accept-edits":
+            self.gate.set_mode(self._mode_before_grant)
+        self._mode_before_grant = None
 
     def _fresh(self, runner: AgentRunner) -> None:
         self._new_conversation_state()

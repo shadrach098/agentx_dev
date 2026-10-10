@@ -216,7 +216,11 @@ They refuse `write_file`, `edit_file`, `delete_path` and `move_file` (as source 
   default is to refuse outright;
 - `.agentx` and everything under it at the top of the project (`.agentx`, `.agentx/*`; the only place the
   project settings are read from), and `~/.agentx` when the tools can reach the home folder: a model must not
-  rewrite its own permissions.
+  rewrite its own permissions;
+- in the home folder, when the tools can reach it (the project is the home folder, or it is an extra folder):
+  `~/.gitconfig`, `~/.config/git` and everything under it, `~/.bashrc`, `~/.bash_profile`, `~/.bash_login`,
+  `~/.profile`, `~/.zshrc`, `~/.zprofile` and `~/.config/fish/config.fish`. Other files outside the project that
+  run later are not protected; putting the home folder in reach earns a bold warning that says so.
 
 They hold in every mode, `accept-edits` included, are matched against every spelling of the path the gate
 computes (relative, absolute, `./`, `..`, backslashes, links followed, case folded on Windows, short 8.3
@@ -230,7 +234,7 @@ the user sees the command first; the approval prompt, not a deny rule, is the pr
 **A new conversation is a clean slate.** `/clear`, `/resume` (and a conversation started with
 `--continue`/`--resume`) empty the session-wide command grants ("don't ask again") and undo an edit grant: when
 the user answered `a` at an edit prompt (which switches the gate to `accept-edits`), the gate returns to the mode
-the app started in. A mode the user chose, with `--mode`, the settings, `/mode` or Shift+Tab, is kept. The rules
+that was in force when the user answered. A mode the user chose, with `--mode`, the settings, `/mode` or Shift+Tab, is kept. The rules
 from settings stay. The notice for a new or resumed conversation shows the mode in force. The system
 instructions (`AGENTX.md` files) are read again, so a file written by `/init` is used by the next conversation.
 

@@ -893,3 +893,93 @@ class TestMainRoundOne:
         monkeypatch.chdir(proj)
         main(["--add-dir", "../shared", "--add-dir", str(tmp_path / "proj" / ".." / "shared")])
         assert captured["add_dirs"] == [(tmp_path / "shared").resolve()] * 2
+
+
+# -- polish round ---------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("startup", ["accept-edits", "plan"])
+def test_the_mode_in_force_before_an_a_answer_comes_back_on_clear(tmp_path, startup):
+    """--mode X, /mode default, a, /clear => default (the mode the user had when they answered), not X."""
+    model = MockModel(script=[write_call("a.txt"), make_final("one"), write_call("b.txt"), make_final("two")])
+    lines = Lines("/mode default", "make a", "a", "/clear", "make b", "n", "", "/exit")
+    app, _, cwd, _ = make_app(tmp_path, lines, model, mode=startup)
+    app.start()
+    assert (cwd / "a.txt").exists() and not (cwd / "b.txt").exists()
+    assert lines.prompts.count("Allow? [y/a/n] ") == 2 and app.gate.mode == "default"
+
+
+def test_the_saved_mode_is_used_by_resume_too(tmp_path):
+    first = MockModel(script=[make_final("saved")])
+    app1, _, _, _ = make_app(tmp_path, Lines("hello", "/exit"), first)
+    app1.start()
+    ident = app1.session.session_id[:8]
+    model = MockModel(script=[write_call("a.txt"), make_final("one")])
+    app2, _, _, _ = make_app(tmp_path, Lines("/mode default", "make a", "a", f"/resume {ident}", "/exit"), model,
+                             mode="plan")
+    app2.start()
+    assert app2.gate.mode == "default"
+
+
+def test_a_mode_chosen_after_the_a_answer_is_kept_by_clear(tmp_path):
+    model = MockModel(script=[write_call("a.txt"), make_final("one")])
+    lines = Lines("/mode default", "make a", "a", "/mode plan", "/clear", "/exit")
+    app, _, _, _ = make_app(tmp_path, lines, model, mode="accept-edits")
+    app.start()
+    assert app.gate.mode == "plan"
+
+
+HOME_FILES = [".gitconfig", ".config/git", ".config/git/config", ".config/git/ignore", ".bashrc", ".bash_profile",
+              ".zshrc", ".profile", ".zprofile", ".bash_login", ".config/fish/config.fish", ".agentx/settings.json"]
+
+
+def test_git_config_and_shell_profiles_in_a_reachable_home_are_protected(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits", add_dirs=[home])
+    app.gate.ask = lambda request: pytest.fail("must be refused")
+    for name in HOME_FILES:
+        target = str(home.resolve() / name)
+        for tool, args in (("write_file", {"path": target, "content": "x"}),
+                           ("edit_file", {"path": target, "find": "a", "replace": "b"}),
+                           ("delete_path", {"path": target}),
+                           ("move_file", {"source": target, "destination": "x.txt"}),
+                           ("move_file", {"source": "x.txt", "destination": target})):
+            assert "deny rule" in str(app.gate.check(tool, args)), (tool, name)
+    for name in (".bashrc.bak", ".config/other/x", ".gitconfig.txt", ".config/gitx", "notes.txt"):
+        assert app.gate.check("write_file", {"path": str(home.resolve() / name), "content": "x"}) is None, name
+
+
+def test_the_same_files_are_protected_when_the_project_is_the_home_folder(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    out = io.StringIO()
+    app = ChatApp(cwd=home, home=home, console=Console(file=out, color_system=None), read_line=Lines(),
+                  mode="accept-edits", env={})
+    app.gate.ask = lambda request: pytest.fail("must be refused")
+    for name in HOME_FILES:
+        assert "deny rule" in str(app.gate.check("write_file", {"path": name, "content": "x"})), name
+        assert "deny rule" in str(app.gate.check("move_file", {"source": "x.txt", "destination": name})), name
+
+
+def test_the_home_warning_says_what_is_not_protected(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]), add_dirs=[home], width=400)
+    loud = []
+    app.screen.error = lambda text: loud.append(text)
+    app.start()
+    assert any("not protected" in text and "run later" in text for text in loud), loud
+
+
+def test_an_a_answer_is_noticed_even_though_the_gate_switches_the_mode_right_after(tmp_path):
+    """Gate.check calls ask first and only then switches to accept-edits; the app's note of the grant relies on
+    that order (it checks the mode is not yet accept-edits when the answer comes back)."""
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]), read_short=Lines("a"))
+    app.start()
+    seen = []
+    inner = app.gate.ask
+    app.gate.ask = lambda request: (seen.append(app.gate.mode), inner(request))[1]
+    assert app.gate.check("write_file", {"path": "a.txt", "content": "x", "if_exists": "refuse"}) is None
+    assert seen == ["default"] and app.gate.mode == "accept-edits"
+    app.new_conversation()
+    assert app.gate.mode == "default"
