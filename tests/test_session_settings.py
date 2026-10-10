@@ -90,6 +90,12 @@ class TestFollowUpTask:
         rounds = [{"round": 1, "query": "q", "content": "y" * 9000, "outcome": "done"}]
         assert _follow_up_task("q", rounds, "go").count("y") < 3100
 
+    def test_an_earlier_instruction_is_capped_at_the_reply_limit(self):
+        rounds = [{"round": 1, "query": "Task", "content": "ok", "outcome": "done"},
+                  {"round": 2, "query": "j" * 5000, "content": "ok", "outcome": "done"}]
+        text = _follow_up_task("Task", rounds, "go")
+        assert text.count("j") == 2000 and "j" * 2000 + " ..." in text
+
     def test_cap_text(self):
         assert _cap_text("short", 10) == "short"
         assert _cap_text("z" * 50, 10) == "z" * 10 + " ..."

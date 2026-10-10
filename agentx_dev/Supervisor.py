@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import aclosing, contextmanager
+from contextlib import aclosing, closing, contextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union, Any
 
@@ -37,8 +37,8 @@ from agentx_dev.SubAgents import (   # noqa: F401  (SpawnConfig/SpawnRequest are
     spec_from_legacy_spawn,
 )
 from agentx_dev.Operator import (
-    ASK_TOOL_NAME, NO_ANSWER_PLAN_NOTE, PLANNER_SOURCE, OperatorChannel, ask_instruction, attach_ask_user,
-    checkpoint_text, is_stop_reply, parse_ask_request, validate_ask_user,
+    ASK_TOOL_NAME, MAX_ANSWER_CHARS, NO_ANSWER_PLAN_NOTE, PLANNER_SOURCE, OperatorChannel, ask_instruction,
+    attach_ask_user, checkpoint_text, is_stop_reply, parse_ask_request, validate_ask_user,
 )
 from agentx_dev.SupervisorMemory import MEMORY_ASK_LINE, RunMemory, validate_memory
 from agentx_dev.Runner.Persistence import (
@@ -342,7 +342,7 @@ def _follow_up_task(original: str, rounds: List[Dict[str, Any]], reply: str) -> 
     channel is seeded with them and the Supervisor appends its OPERATOR ANSWERS block."""
     lines = [original, "", "WHAT HAS HAPPENED SO FAR"]
     for r in rounds:
-        asked = "" if r["round"] == 1 else f" (the operator asked: {_cap_text(r['query'], 500)})"
+        asked = "" if r["round"] == 1 else f" (the operator asked: {_cap_text(r['query'], MAX_ANSWER_CHARS)})"
         lines += [f"Round {r['round']}{asked}, outcome {r['outcome']}:",
                   _cap_text(r["content"], SESSION_ANSWER_CHARS), ""]
     lines += [f"The operator now asks: {reply}",
@@ -1037,9 +1037,13 @@ class _SpawnMixin:
             yield from self._run_memory.drain()
 
     def _new_operator_channel(self) -> Optional[OperatorChannel]:
-        return OperatorChannel.create(self.ask_user, max_questions=self.max_questions,
-                                      timeout=self.ask_timeout, is_async=self._SPAWN_ASYNC,
-                                      verbose=self.verbose)
+        channel = OperatorChannel.create(self.ask_user, max_questions=self.max_questions,
+                                         timeout=self.ask_timeout, is_async=self._SPAWN_ASYNC,
+                                         verbose=self.verbose)
+        if channel is not None:
+            # the Supervisor asks "what next?" itself: the planner and the helpers are told not to
+            channel.session_checkpoint = bool(self.ask_when_done)
+        return channel
 
     def _task_for_model(self, user_task: str) -> str:
         """The task as every model prompt sees it: the original plus any operator answers."""
@@ -1259,10 +1263,14 @@ class Supervisor(_SpawnMixin):
                 operator "What should I do next?" through the same asker as ``ask_user`` (the
                 answer is shown in the prompt) and returns the reply in ``result.next_step``
                 (``None`` if nobody answered). Asked whatever the outcome. Needs ``ask_user``.
+                The planner and the helpers are told the Supervisor asks it, so they do not.
             follow_up: (3.6.2) Run another round on the operator's reply, with the earlier
-                results as context, until the operator replies blank or with a stop word
-                ("done", "stop", "quit", "exit", "no", "nothing", "that's all"). Implies
-                ``ask_when_done``. ``result.rounds`` lists every round.
+                results as context, until the operator replies blank or with a closing word
+                (any of "done", "stop", "quit", "exit", "no", "nothing", "that's all", "that's
+                it", "all done", "nope", "bye", "goodbye", "thanks", "thank you", "no thanks",
+                "no thank you", "done thanks", "done thank you", "nothing thanks", "stop
+                thanks"; case-insensitive, commas and trailing ``.``, ``!``, ``?`` ignored).
+                Implies ``ask_when_done``. ``result.rounds`` lists every round.
             max_follow_ups: (3.6.2) Rounds allowed after the first (default 5). After the last
                 one no question is asked.
         """
@@ -1750,6 +1758,9 @@ class Supervisor(_SpawnMixin):
         self._run_memory = self._new_run_memory()
         if self._operator is not None:
             self._operator.memory = self._run_memory
+            if seed is not None and self._run_memory is not None:
+                for question, _answer in seed._answers:       # OPERATOR ANSWERS already has these
+                    self._run_memory.note_answered(question)
         self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
                           if budget is not None else None)
 
@@ -1901,17 +1912,21 @@ class Supervisor(_SpawnMixin):
                 if self.verbose:
                     print(f"{_C_PLAN}[supervisor.round] round {number}: {_cap_text(instruction, 120)}{_C_RESET}")
             result: Optional[SupervisorResult] = None
-            for event in self._stream_round(task, save_result=number == 1, seed=seed):
-                if event["type"] == "completion":
-                    result = event["result"]
-                else:
-                    yield event
+            # closing: closing this stream early closes the round generator too, as aclosing does in astream
+            with closing(self._stream_round(task, save_result=number == 1, seed=seed)) as stream:
+                for event in stream:
+                    if event["type"] == "completion":
+                        result = event["result"]
+                    else:
+                        yield event
             assert result is not None, "a round must yield a completion event"
             rounds.append({"round": number, "query": instruction, "content": result.content,
                            "outcome": result.outcome})
             asked.extend(result.asked)
             channel = self._operator
-            assert channel is not None, "ask_when_done needs the operator channel"
+            if channel is None:                           # ask_user was cleared after construction: nobody to ask
+                next_step = None
+                break
             if self.follow_up and number > 1 and number == 1 + self.max_follow_ups:
                 if self.verbose:
                     print(f"{_C_PLAN}[supervisor.round] follow-up limit reached{_C_RESET}")
@@ -1919,7 +1934,8 @@ class Supervisor(_SpawnMixin):
                 break
             yield {"type": "checkpoint", "round": number, "outcome": result.outcome}
             before = len(channel.records)
-            reply = channel.checkpoint(checkpoint_text(result.content, _outcome_line(result)))
+            reply = channel.checkpoint(checkpoint_text(
+                result.content, _outcome_line(result), question_first=channel.builtin))
             asked.extend(channel.records[before:])
             yield from self._drain_operator_events()
             next_step = reply.text
@@ -2060,10 +2076,14 @@ class AsyncSupervisor(_SpawnMixin):
                 operator "What should I do next?" through the same asker as ``ask_user`` (the
                 answer is shown in the prompt) and returns the reply in ``result.next_step``
                 (``None`` if nobody answered). Asked whatever the outcome. Needs ``ask_user``.
+                The planner and the helpers are told the Supervisor asks it, so they do not.
             follow_up: (3.6.2) Run another round on the operator's reply, with the earlier
-                results as context, until the operator replies blank or with a stop word
-                ("done", "stop", "quit", "exit", "no", "nothing", "that's all"). Implies
-                ``ask_when_done``. ``result.rounds`` lists every round.
+                results as context, until the operator replies blank or with a closing word
+                (any of "done", "stop", "quit", "exit", "no", "nothing", "that's all", "that's
+                it", "all done", "nope", "bye", "goodbye", "thanks", "thank you", "no thanks",
+                "no thank you", "done thanks", "done thank you", "nothing thanks", "stop
+                thanks"; case-insensitive, commas and trailing ``.``, ``!``, ``?`` ignored).
+                Implies ``ask_when_done``. ``result.rounds`` lists every round.
             max_follow_ups: (3.6.2) Rounds allowed after the first (default 5). After the last
                 one no question is asked.
         """
@@ -2610,6 +2630,9 @@ class AsyncSupervisor(_SpawnMixin):
         self._run_memory = self._new_run_memory()
         if self._operator is not None:
             self._operator.memory = self._run_memory
+            if seed is not None and self._run_memory is not None:
+                for question, _answer in seed._answers:       # OPERATOR ANSWERS already has these
+                    self._run_memory.note_answered(question)
         self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
                           if budget is not None else None)
         yield {"type": "plan_start"}
@@ -2764,7 +2787,9 @@ class AsyncSupervisor(_SpawnMixin):
                            "outcome": result.outcome})
             asked.extend(result.asked)
             channel = self._operator
-            assert channel is not None, "ask_when_done needs the operator channel"
+            if channel is None:                           # ask_user was cleared after construction: nobody to ask
+                next_step = None
+                break
             if self.follow_up and number > 1 and number == 1 + self.max_follow_ups:
                 if self.verbose:
                     print(f"{_C_PLAN}[supervisor.round] follow-up limit reached{_C_RESET}")
@@ -2772,7 +2797,8 @@ class AsyncSupervisor(_SpawnMixin):
                 break
             yield {"type": "checkpoint", "round": number, "outcome": result.outcome}
             before = len(channel.records)
-            reply = await channel.acheckpoint(checkpoint_text(result.content, _outcome_line(result)))
+            reply = await channel.acheckpoint(checkpoint_text(
+                result.content, _outcome_line(result), question_first=channel.builtin))
             asked.extend(channel.records[before:])
             for event in self._drain_operator_events():
                 yield event

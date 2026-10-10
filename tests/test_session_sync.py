@@ -5,11 +5,13 @@ import json
 import pytest
 
 from agentx_dev import CostBudgetExceeded, Persistence, Supervisor
+from agentx_dev import Operator as op
 from agentx_dev.Operator import NoChannel
 from agentx_dev.Runner.Persistence import RunBudget
-from tests.conftest import MockModel
-from tests.memory_helpers import FakeStore
-from tests.subagent_helpers import PLANNER_MARK, ScriptedRunner, plan_json, router, step
+from agentx_dev.Supervisor import SpawnConfig
+from tests.conftest import MockModel, make_final
+from tests.memory_helpers import FakeStore, answer_hit
+from tests.subagent_helpers import PLANNER_MARK, ScriptedRunner, new_agent_step, plan_json, router, step
 
 PLAN = plan_json(step("s1", "worker", "do it"))
 ASK_PLAN = json.dumps({"ask": [{"question": "Which three competitors should I compare?",
@@ -180,3 +182,94 @@ class TestFollowUp:
         assert result.outcome == "out_of_budget" and "cost limit reached" in checkpoints(ask)[0]
         assert result.next_step == "try again" and result.rounds == []
         assert len(model.planner_prompts()) == 1
+
+    def test_the_saved_result_is_round_ones_task_not_the_composed_follow_up(self):
+        store = FakeStore()
+        sup(router(plans=[PLAN, PLAN], synth="Final."), asker_of("more", "done"), follow_up=True,
+            memory=store).run("task")
+        saved = [(texts[0], meta[0]) for texts, _ids, meta in store.added if meta[0]["kind"] == "run_result"]
+        assert len(saved) == 1
+        text, meta = saved[0]
+        assert meta["task"] == "task" and text == "Task: task\nResult: Final."
+        assert "WHAT HAS HAPPENED SO FAR" not in text and "more" not in meta["task"]
+
+    def test_a_reply_that_matches_memory_is_not_shown_twice_in_round_two(self):
+        question = "Which three competitors should I compare?"
+        store = FakeStore([answer_hit(question, "Notion, Obsidian, Coda")])
+        model = router(plans=[ASK_PLAN, PLAN, PLAN])
+        sup(model, asker_of("more", "done"), follow_up=True, memory=store).run("Compare")
+        second = model.planner_prompts()[-1]
+        assert "OPERATOR ANSWERS" in second and second.count("Notion, Obsidian, Coda") == 1
+        assert "FROM MEMORY" not in second
+
+    def test_the_max_follow_ups_of_one_allows_a_single_extra_round(self):
+        ask = asker_of("a", "b", "c")
+        model = router(plans=[PLAN, PLAN, PLAN])
+        result = sup(model, ask, follow_up=True, max_follow_ups=1).run("task")
+        assert len(model.planner_prompts()) == 2 and len(checkpoints(ask)) == 1
+        assert len(result.rounds) == 2 and result.next_step is None
+
+    def test_a_reply_over_the_cap_reaches_the_next_round_cut_to_2000(self):
+        model = router(plans=[PLAN, PLAN])
+        result = sup(model, asker_of("j" * 5000, "done"), follow_up=True).run("task")
+        second = model.planner_prompts()[1]
+        assert "j" * 2000 in second and "j" * 2001 not in second
+        assert result.rounds[1]["query"] == "j" * 2000
+
+
+class TestSessionDetails:
+    def test_the_built_in_prompt_puts_the_question_first(self, monkeypatch):
+        shown = []
+
+        def fake(text, prefix="", timeout=None):
+            shown.append(text)
+            return "done"
+        monkeypatch.setattr(op, "builtin_asker", fake)
+        result = Supervisor(model=router(plans=[PLAN], synth="Final."), ask_user=True, verbose=False,
+                            agents={"worker": ("does the work", ScriptedRunner())}, ask_when_done=True).run("task")
+        assert shown[0].startswith('What should I do next? (blank or "done" to finish)')
+        assert "Outcome: done." in shown[0] and shown[0].endswith("Final.")
+        assert result.next_step == "done"
+
+    def test_a_function_asker_keeps_the_question_last(self):
+        ask = asker_of("done")
+        sup(router(plans=[PLAN], synth="Final."), ask, ask_when_done=True).run("task")
+        assert checkpoints(ask)[0].startswith("Final.")
+
+    def test_a_missing_channel_is_a_no_answer_not_an_assertion_error(self):
+        s = sup(router(plans=[PLAN]), asker_of("never used"), ask_when_done=True)
+        s.ask_user = None
+        result = s.run("task")
+        assert result.next_step is None and result.rounds == [] and result.content
+
+    def test_a_missing_channel_ends_a_follow_up_session_after_one_round(self):
+        model = router(plans=[PLAN, PLAN])
+        s = sup(model, asker_of("more"), follow_up=True)
+        s.ask_user = None
+        result = s.run("task")
+        assert len(model.planner_prompts()) == 1 and result.next_step is None
+
+
+SPAWN_WEB = SpawnConfig(enabled=True, capabilities={"web"})
+SPAWN_PLAN = plan_json(new_agent_step("s1", "scout", "Find things.", ["web"]), step("s2", "worker", deps=["s1"]))
+
+
+class TestEarlyClose:
+    @pytest.mark.parametrize("closed_in_round", [1, 2])
+    def test_closing_the_session_stream_mid_round_releases_the_per_run_state(self, closed_in_round):
+        ask = asker_of("more")
+        model = router(plans=[SPAWN_PLAN, SPAWN_PLAN], sub=lambda m: make_final("found"))
+        s = Supervisor(model=model, agents={"worker": ("does the work", ScriptedRunner())}, ask_user=ask,
+                       verbose=False, follow_up=True, spawn_config=SPAWN_WEB)
+        base = s.agents
+        gen = s.stream("task")
+        in_round = 1
+        for ev in gen:
+            if ev["type"] == "round":
+                in_round = ev["round"]
+            if ev["type"] == "dispatch" and in_round == closed_in_round:
+                assert s.agents is not base                 # the run's own registry copy is live here
+                break
+        gen.close()
+        assert s.agents is base and list(base) == ["worker"]
+        assert len(checkpoints(ask)) == closed_in_round - 1  # no question after the close

@@ -352,7 +352,9 @@ both at once.
 Pass `ask_user=True` and `ask_when_done=True`. When the answer is ready the framework asks "What should
 I do next?" itself (it does not rely on a model calling the tool) and returns your reply in
 `result.next_step`. Add `follow_up=True` to run another round on each reply until you answer blank or
-"done" (`max_follow_ups`, default 5). See [Sub-agents](../guides/sub-agents.md#asking-when-the-work-is-done).
+with a closing word such as "done", "no thanks", "thanks!" or "that's it" (any of a fixed list,
+case-insensitive, commas and trailing `.`, `!`, `?` ignored; `max_follow_ups`, default 5). The planner
+and the helpers are told not to ask that question themselves. See [Sub-agents](../guides/sub-agents.md#asking-when-the-work-is-done).
 
 ## How do I let a Supervisor's helpers write files? *(3.6)*
 

@@ -80,11 +80,21 @@ checkpoint due?  (ask_when_done or follow_up, and a round is allowed to be follo
 ```
 
 - **Who answers.** `next_step` is the reply exactly as typed, including "done" (a stop word is still a
-  reply). It is `None` when nobody answered: no channel (headless), the read timed out, the asker
-  raised, or the reply was empty.
-- **Stop words.** A reply that, lowercased with surrounding whitespace and trailing `.!` removed, is one of
-  `done`, `stop`, `quit`, `exit`, `no`, `nothing`, `that's all` ends the loop. Anything else is an
-  instruction.
+  reply). It is `None` when nobody answered: no channel (headless, or `ask_user` set to `None` after
+  construction, which ends the session without a question), the read timed out, the asker raised, or the
+  reply was empty.
+- **Stop words.** A fixed list; no model classifies the reply. A reply that, lowercased, with the curly
+  apostrophe replaced, commas removed and surrounding whitespace and trailing `.`, `!`, `?` stripped, is one
+  of `done`, `stop`, `quit`, `exit`, `no`, `nothing`, `that's all`, `that's it`, `all done`, `nope`, `bye`,
+  `goodbye`, `thanks`, `thank you`, `no thanks`, `no thank you`, `done thanks`, `done thank you`,
+  `nothing thanks`, `stop thanks` ends the loop (so does a blank reply). Anything else is an instruction
+  ("no, tell me more" and "thanks, now write the emails" are instructions). "ok" and "okay" are not on the
+  list: they can be an instruction.
+- **No double question.** With `ask_when_done` on, the Supervisor asks "what next?" itself, so the run's
+  operator channel is marked `session_checkpoint`: the planner gets `SESSION_PLAN_NOTE` instead of
+  `CHECKPOINT_PLAN_NOTE` (do not plan a step to ask it, do not tell a specialist to ask it) and a spawned
+  helper's ask line omits the "check with the user at some point" clause and says the Supervisor asks what
+  to do next. With the flags off both are exactly as in 3.6.2 (the model-driven route).
 - **The cap.** After a follow-up round that is the last one allowed (round `1 + max_follow_ups`, with
   `max_follow_ups >= 1`) no question is asked, because a reply could not be acted on. The verbose log says
   "follow-up limit reached"; `next_step` is `None` and `len(result.rounds)` equals `1 + max_follow_ups`.
@@ -118,6 +128,11 @@ What should I do next? (blank or "done" to finish)
 
 The built-in asker labels it `[supervisor]`. A function asker receives the string and adds its own label.
 
+The built-in asker prints the first line of the text after `question:`, so for it (and only for it, the
+channel's `builtin` property) the order is question first: `What should I do next? (blank or "done" to
+finish)`, a blank line, the outcome line, a blank line, then the answer (cut the same way). A function asker
+keeps the order above.
+
 The outcome line is `Outcome: <outcome>` plus, for `partial` and `stuck`, the count of failed steps
 (`_result_failed`), and for `out_of_time` / `out_of_budget` the words "time limit reached" / "cost limit
 reached".
@@ -129,12 +144,14 @@ do today. The code reuses the existing per-run setup, which already rebuilds the
 operator channel, the run memory and `RunBudget` at the start of every `stream()`.
 
 - **The task the planner sees** from round 2 is, in order: the original task; "WHAT HAS HAPPENED SO FAR"
-  with each earlier round's operator instruction and answer (each answer capped at 3,000 characters); the
+  with each earlier round's operator instruction (capped at 2,000 characters) and answer (capped at 3,000
+  characters); the
   operator's answers so far (the existing OPERATOR ANSWERS block); and "The operator now asks: <reply>. Do
   this now." The reply is capped at 2,000 characters, the channel's existing cap on any operator answer.
 - **Operator answers carry over.** The new round's channel is seeded with the earlier channel's answers
   and the questions already asked. A repeated question gets the first answer without a prompt, and the
-  planner still sees the OPERATOR ANSWERS block and the "do the work" note.
+  planner still sees the OPERATOR ANSWERS block and the "do the work" note. Those questions are also
+  marked answered in the new round's run memory, so the FROM MEMORY block does not repeat them.
 - **Fresh per round:** the question budget, the per-agent limit, the spawned helpers, and the persistent
   time budget (`max_minutes`). The model's cost cap is cumulative and not reset.
 - **Memory.** Only round 1's result is saved as a run result, under the original task, as today. A

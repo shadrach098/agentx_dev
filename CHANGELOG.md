@@ -12,10 +12,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   round's answer is ready the framework itself asks the operator "What should I do next?" through the
   `ask_user` asker (the answer, the outcome and the question in one prompt) and returns the reply in
   `SupervisorResult.next_step`. `follow_up=True` runs another round on each reply, with the earlier
-  results as context, until the operator replies blank or with a stop word; `max_follow_ups` (default
+  results as context, until the operator replies blank or with a closing word (any of `done`, `stop`,
+  `quit`, `exit`, `no`, `nothing`, `that's all`, `that's it`, `all done`, `nope`, `bye`, `goodbye`,
+  `thanks`, `thank you`, `no thanks`, `no thank you`, `done thanks`, `done thank you`, `nothing thanks`,
+  `stop thanks`; case-insensitive, commas and trailing `.`, `!`, `?` ignored); `max_follow_ups` (default
   5) bounds it and `SupervisorResult.rounds` lists the rounds. Asked whatever the outcome. The
   checkpoint uses no `max_questions` slot and is never saved to memory; only round 1's result is.
-  New `checkpoint` and `round` stream events. Either setting needs `ask_user`.
+  New `checkpoint` and `round` stream events. Either setting needs `ask_user`. With `ask_when_done`
+  on, the Supervisor asks itself, so the planner and the helpers are told not to ask "what next?"
+  (no double question); the built-in terminal prompt puts the question first.
 
 ### Fixed
 

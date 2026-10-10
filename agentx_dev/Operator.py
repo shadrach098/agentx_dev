@@ -52,7 +52,11 @@ PLANNER_SOURCE = "planner"
 CHECKPOINT_SOURCE = "supervisor"                    # who asks "what next?" at the end of a round
 CHECKPOINT_QUESTION = "What should I do next?"
 CHECKPOINT_SHOWN_CHARS = 3000                       # how much of the answer the checkpoint prompt shows
-_STOP_WORDS = frozenset({"done", "stop", "quit", "exit", "no", "nothing", "that's all"})
+_STOP_WORDS = frozenset({
+    "done", "stop", "quit", "exit", "no", "nothing", "that's all", "that's it", "all done", "nope",
+    "bye", "goodbye", "thanks", "thank you", "no thanks", "no thank you", "done thanks",
+    "done thank you", "nothing thanks", "stop thanks",
+})
 MAX_QUESTIONS_PER_AGENT = 1     # one agent should not spend the whole shared budget clarifying
 
 
@@ -363,22 +367,30 @@ def _shown(question: str, context: str = "") -> str:
 
 
 def is_stop_reply(text: Optional[str]) -> bool:
-    """True when ``text`` ends a follow-up session: no reply, a blank one, or a stop word
-    ("Done!", " quit. ", "That's all")."""
+    """True when ``text`` ends a follow-up session: no reply, a blank one, or one of the fixed
+    closing words ("Done!", " quit. ", "That's all", "No, thanks"). The match is
+    case-insensitive; commas and trailing ``.``, ``!``, ``?`` are ignored."""
     if text is None:
         return True
-    word = text.strip().lower().replace("’", "'").rstrip(".!").strip()
+    word = text.strip().lower().replace("’", "'").replace(",", "").rstrip(".!? \t\r\n").strip()
     return word == "" or word in _STOP_WORDS
 
 
-def checkpoint_text(answer: Any, outcome_line: str) -> str:
+def checkpoint_text(answer: Any, outcome_line: str, *, question_first: bool = False) -> str:
     """The one string the asker receives at the end of a round: the answer (cut at
-    ``CHECKPOINT_SHOWN_CHARS``), how the round ended, and the question."""
+    ``CHECKPOINT_SHOWN_CHARS``), how the round ended, and the question.
+
+    ``question_first`` is for the built-in terminal prompt, which labels the first line
+    ``question:``: the order is then the question, the outcome, the answer."""
     shown = str(answer or "").strip()
     if len(shown) > CHECKPOINT_SHOWN_CHARS:
         shown = shown[:CHECKPOINT_SHOWN_CHARS].rstrip() + "\n(full text in result.content)"
+    question = f'{CHECKPOINT_QUESTION} (blank or "done" to finish)'
+    if question_first:
+        tail = f"\n\n{shown}" if shown else ""
+        return f"{question}\n\n{outcome_line}{tail}"
     head = f"{shown}\n\n" if shown else ""
-    return f'{head}{outcome_line}\n{CHECKPOINT_QUESTION} (blank or "done" to finish)'
+    return f"{head}{outcome_line}\n{question}"
 
 
 def reply_text(reply: Reply) -> str:
@@ -417,6 +429,7 @@ class OperatorChannel:
                  per_agent_limit: int = MAX_QUESTIONS_PER_AGENT):
         self._asker = asker
         self._builtin = builtin
+        self.session_checkpoint = False               # True when the Supervisor asks "what next?" itself (ask_when_done)
         self.max_questions = max(0, int(max_questions))
         self.per_agent_limit = max(0, int(per_agent_limit))    # the planner is exempt
         self._by_source: Dict[str, int] = {}
@@ -476,8 +489,18 @@ class OperatorChannel:
     def plan_note(self) -> str:
         """Appended to a planning prompt once the operator has answered something: do the
         work, do not plan another step that only asks."""
-        note = CHECKPOINT_PLAN_NOTE
+        note = SESSION_PLAN_NOTE if self.session_checkpoint else CHECKPOINT_PLAN_NOTE
         return note + ANSWERED_PLAN_NOTE if self._answers else note
+
+    def addendum_line(self) -> str:
+        """The ask_user paragraph a spawned helper's prompt carries. When the Supervisor asks
+        "what next?" itself (``session_checkpoint``) the helper is told not to."""
+        return ASK_ADDENDUM_BASE + ASK_ADDENDUM_SESSION if self.session_checkpoint else ASK_ADDENDUM_LINE
+
+    @property
+    def builtin(self) -> bool:
+        """True when the built-in terminal asker is in use (``ask_user=True``)."""
+        return self._builtin
 
     def emit(self, event: Dict[str, Any]) -> None:
         with self._events_lock:
@@ -770,12 +793,21 @@ ASK_USER_DESCRIPTION = (
     "assumption)."
 )
 
-ASK_ADDENDUM_LINE = (
+ASK_ADDENDUM_BASE = (
     "\n\n- If a fact you need is missing and your tools cannot find it, call ask_user with one "
-    "specific question (you may ask at most once, so search with your tools first). Do not guess. "
-    "If your task tells you to check with the user at some point (for example \"when done, ask what "
+    "specific question (you may ask at most once, so search with your tools first). Do not guess."
+)
+ASK_ADDENDUM_CHECKIN = (
+    " If your task tells you to check with the user at some point (for example \"when done, ask what "
     "to do next\"), call ask_user at that point instead of writing the question in your answer, "
     "then act on the reply."
+)
+ASK_ADDENDUM_LINE = ASK_ADDENDUM_BASE + ASK_ADDENDUM_CHECKIN
+
+# Used instead of the check-in clause when the Supervisor asks "what next?" itself (ask_when_done).
+ASK_ADDENDUM_SESSION = (
+    " The Supervisor itself asks the operator what to do next once the work is finished, so do not "
+    "ask that yourself: finish your step and give your answer."
 )
 
 # Added to every planning prompt when the operator can be asked. A task that says "ask me when
@@ -786,6 +818,15 @@ CHECKPOINT_PLAN_NOTE = (
     "me what to do next\"), do not plan a step whose only job is to ask. Tell the specialist doing "
     "that work, in its step query, to call ask_user at that point and to act on the reply. A "
     "question written into a specialist's answer is never shown to the operator."
+)
+
+# Replaces CHECKPOINT_PLAN_NOTE when ask_when_done / follow_up is on: the Supervisor asks "what
+# next?" itself after the final answer, so neither the plan nor a specialist should.
+SESSION_PLAN_NOTE = (
+    "\n\nThe Supervisor itself asks the operator what to do next once the final answer is written. "
+    "If the task says to check with the operator when done (for example \"when done, ask me what "
+    "to do next\"), do not plan a step to ask it and do not tell any specialist to ask it. Plan "
+    "only the work."
 )
 
 

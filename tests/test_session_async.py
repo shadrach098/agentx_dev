@@ -4,10 +4,12 @@ import asyncio
 import json
 
 from agentx_dev import AsyncSupervisor, CostBudgetExceeded, Persistence
+from agentx_dev import Operator as op
 from agentx_dev.Operator import NoChannel
-from tests.conftest import MockModel
-from tests.memory_helpers import FakeStore
-from tests.subagent_helpers import PLANNER_MARK, ScriptedRunner, plan_json, router, step
+from agentx_dev.Supervisor import SpawnConfig
+from tests.conftest import MockModel, make_final
+from tests.memory_helpers import FakeStore, answer_hit
+from tests.subagent_helpers import PLANNER_MARK, ScriptedRunner, new_agent_step, plan_json, router, step
 
 PLAN = plan_json(step("s1", "worker", "do it"))
 ASK_PLAN = json.dumps({"ask": [{"question": "Which three competitors should I compare?",
@@ -126,3 +128,101 @@ class TestFollowUp:
         assert result.outcome == "out_of_budget" and "cost limit reached" in checkpoints(ask)[0]
         assert result.next_step == "try again" and result.rounds == []
         assert len(model.planner_prompts()) == 1
+
+    def test_an_async_asker_is_awaited_through_the_checkpoint(self):
+        seen = []
+
+        async def ask(question):
+            seen.append(question)
+            await asyncio.sleep(0)
+            return "write the emails"
+        result = run(sup(router(plans=[PLAN], synth="Final."), ask, ask_when_done=True))
+        assert len(seen) == 1 and "Final." in seen[0] and "What should I do next?" in seen[0]
+        assert result.next_step == "write the emails" and result.asked[0]["answered"] is True
+
+    def test_an_async_asker_can_drive_a_follow_up_round(self):
+        replies = ["compare pricing", "done"]
+
+        async def ask(question):
+            return replies.pop(0)
+        model = router(plans=[PLAN, PLAN], synth="Final.")
+        result = run(sup(model, ask, follow_up=True))
+        assert len(model.planner_prompts()) == 2 and result.next_step == "done"
+        assert [r["round"] for r in result.rounds] == [1, 2]
+
+    def test_a_huge_answer_is_cut_in_the_prompt_but_not_in_the_result(self):
+        ask = asker_of("go")
+        result = run(sup(router(plans=[PLAN], synth="A" * 10000), ask, ask_when_done=True))
+        assert len(result.content) == 10000
+        assert len(checkpoints(ask)[0]) < 3300 and "(full text in result.content)" in checkpoints(ask)[0]
+
+    def test_a_blank_reply_is_none(self):
+        result = run(sup(router(plans=[PLAN]), asker_of("   "), follow_up=True))
+        assert result.next_step is None and result.asked[-1]["reason"] == "declined"
+
+    def test_it_uses_no_question_slot(self):
+        result = run(sup(router(plans=[PLAN]), asker_of("thanks"), ask_when_done=True, max_questions=0))
+        assert result.next_step == "thanks"
+
+    def test_a_missing_channel_is_a_no_answer_not_an_assertion_error(self):
+        s = sup(router(plans=[PLAN]), asker_of("never used"), ask_when_done=True)
+        s.ask_user = None
+        result = run(s)
+        assert result.next_step is None and result.rounds == [] and result.content
+
+    def test_a_reply_over_the_cap_reaches_the_next_round_cut_to_2000(self):
+        model = router(plans=[PLAN, PLAN])
+        run(sup(model, asker_of("j" * 5000, "done"), follow_up=True))
+        second = model.planner_prompts()[1]
+        assert "j" * 2000 in second and "j" * 2001 not in second
+
+    def test_a_reply_that_matches_memory_is_not_shown_twice_in_round_two(self):
+        question = "Which three competitors should I compare?"
+        store = FakeStore([answer_hit(question, "Notion, Obsidian, Coda")])
+        model = router(plans=[ASK_PLAN, PLAN, PLAN])
+        run(sup(model, asker_of("more", "done"), follow_up=True, memory=store), "Compare")
+        second = model.planner_prompts()[-1]
+        assert second.count("Notion, Obsidian, Coda") == 1 and "FROM MEMORY" not in second
+
+    def test_the_built_in_prompt_puts_the_question_first(self, monkeypatch):
+        shown = []
+
+        def fake(text, prefix="", timeout=None):
+            shown.append(text)
+            return "done"
+        monkeypatch.setattr(op, "builtin_asker", fake)
+        s = AsyncSupervisor(model=router(plans=[PLAN], synth="Final."), ask_user=True, verbose=False,
+                            agents={"worker": ("does the work", ScriptedRunner())}, ask_when_done=True)
+        result = run(s)
+        assert shown[0].startswith('What should I do next? (blank or "done" to finish)')
+        assert shown[0].endswith("Final.") and result.next_step == "done"
+
+
+SPAWN_WEB = SpawnConfig(enabled=True, capabilities={"web"})
+SPAWN_PLAN = plan_json(new_agent_step("s1", "scout", "Find things.", ["web"]), step("s2", "worker", deps=["s1"]))
+
+
+class AsyncWorker(ScriptedRunner):
+    async def Initialize(self, query, _budget=None):
+        return ScriptedRunner.Initialize(self, query, _budget)
+
+
+class TestEarlyClose:
+    def test_closing_the_session_stream_mid_round_releases_the_per_run_state(self):
+        ask = asker_of("more")
+        model = router(plans=[SPAWN_PLAN, SPAWN_PLAN], sub=lambda m: make_final("found"))
+        s = AsyncSupervisor(model=model, agents={"worker": ("does the work", AsyncWorker())}, ask_user=ask,
+                            verbose=False, follow_up=True, spawn_config=SPAWN_WEB)
+        base = s.agents
+
+        async def scenario():
+            gen = s.astream("task")
+            async for ev in gen:
+                if ev["type"] == "dispatch":
+                    assert s.agents is not base             # the run's own registry copy is live here
+                    break
+            await gen.aclose()
+            return s.agents                                 # must already be released when aclose() returns
+
+        assert asyncio.run(scenario()) is base
+        assert list(base) == ["worker"] and checkpoints(ask) == []

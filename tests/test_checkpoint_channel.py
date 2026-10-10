@@ -13,11 +13,16 @@ from agentx_dev.Operator import (
 
 class TestStopReply:
     @pytest.mark.parametrize("text", [None, "", "   ", "done", "Done!", " QUIT. ", "stop", "exit", "no",
+                                      "No thanks", "no, thanks", "No thank you.", "thanks!", "Thank you.",
+                                      "thanks", "that's it", "That's it!", "nope", "all done", "All done.",
+                                      "done, thanks", "Done, thank you!", "nothing, thanks", "stop thanks",
+                                      "bye", "Goodbye!", "Done?", "no?", "quit?!", "no thanks...",
                                       "Nothing", "That's all", "that’s all."])
     def test_these_end_the_session(self, text):
         assert is_stop_reply(text)
 
-    @pytest.mark.parametrize("text", ["write the emails", "do it again", "not done", "nothing special, check pricing"])
+    @pytest.mark.parametrize("text", ["write the emails", "do it again", "not done", "nothing special, check pricing",
+                                      "no, tell me more", "thanks, now write the emails", "ok", "okay"])
     def test_these_are_instructions(self, text):
         assert not is_stop_reply(text)
 
@@ -33,6 +38,36 @@ class TestCheckpointText:
 
     def test_an_empty_answer_leaves_just_the_outcome_and_question(self):
         assert checkpoint_text("", "Outcome: stuck.").startswith("Outcome: stuck.")
+
+    def test_question_first_puts_the_question_on_top(self):
+        text = checkpoint_text("Answer body", "Outcome: done.", question_first=True)
+        assert text == ('What should I do next? (blank or "done" to finish)\n\n'
+                        'Outcome: done.\n\nAnswer body')
+
+    def test_question_first_still_cuts_a_long_answer(self):
+        text = checkpoint_text("z" * 5000, "Outcome: done.", question_first=True)
+        assert text.startswith(CHECKPOINT_QUESTION) and text.count("z") == 3000
+        assert text.endswith("(full text in result.content)")
+
+    def test_question_first_with_no_answer_is_the_question_and_the_outcome(self):
+        assert checkpoint_text("", "Outcome: stuck.", question_first=True) == (
+            'What should I do next? (blank or "done" to finish)\n\nOutcome: stuck.')
+
+    def test_the_built_in_terminal_prompt_starts_with_the_question(self, monkeypatch):
+        shown = {}
+
+        def fake(text, prefix="", timeout=None):
+            shown["text"] = text
+            return "go"
+        monkeypatch.setattr(op, "builtin_asker", fake)
+        built_in = OperatorChannel.create(True)
+        assert built_in.builtin is True
+        built_in.checkpoint(checkpoint_text("Answer", "Outcome: done.", question_first=built_in.builtin))
+        assert shown["text"].startswith("What should I do next?")
+        function = OperatorChannel.create(lambda q: shown.update(text=q) or "go")
+        assert function.builtin is False
+        function.checkpoint(checkpoint_text("Answer", "Outcome: done.", question_first=function.builtin))
+        assert shown["text"].endswith('(blank or "done" to finish)')
 
 
 def channel(asker, **kw):

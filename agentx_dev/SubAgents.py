@@ -32,7 +32,7 @@ from agentx_dev.AsyncTools import AsyncStructuredTool
 from agentx_dev.Runner.AgentRun import AgentRunner
 from agentx_dev.Runner.AsyncAgentRun import AsyncAgentRunner
 from agentx_dev.Runner.Persistence import Persistence, RunBudget, accepts_budget
-from agentx_dev.Operator import ASK_ADDENDUM_LINE, ASK_TOOL_NAME, make_ask_tool
+from agentx_dev.Operator import ASK_TOOL_NAME, make_ask_tool
 from agentx_dev.Tools import StructuredTool, logger
 
 
@@ -530,7 +530,7 @@ class SpawnPolicy:
             max_iterations=steps,
             verbose=False,
             system_addendum=(_SPAWNED_SPECIALIST_ADDENDUM
-                             + (ASK_ADDENDUM_LINE if self.operator is not None else "")
+                             + (self.operator.addendum_line() if self.operator is not None else "")
                              + _step_budget_line(steps)
                              + "\n\nYour role:\n" + spec.instructions),
         )
