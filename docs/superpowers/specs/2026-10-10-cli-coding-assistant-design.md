@@ -100,7 +100,8 @@ Exit codes: 0 normal; 1 setup failure (no API key, not a terminal, unusable `--r
 4. On the `completion` event the session absorbs the result and autosaves.
 5. Ctrl+C during a turn cancels that turn: the conversation up to the last finished turn is kept, the
    interrupted turn is not recorded (the framework records a turn only when it completes), and
-   "interrupted" is printed. At an idle prompt Ctrl+C clears the line; Ctrl+D or `/exit` leaves.
+   "interrupted" is printed. At an idle prompt Ctrl+C prints a reminder; Ctrl+D or `/exit` leaves. At an
+approval prompt Ctrl+C declines that one call only.
 
 ## 7. The gate (`approval.py`, `tools.py`)
 
@@ -335,8 +336,9 @@ Pure logic, no terminal: the gate's decision order and rule matching, prefix gra
 choice, `Session.stream`.
 
 End to end: a scripted `MockModel`, an injected `read_line` function in place of `prompt_toolkit`, an
-injected `ask` function for approvals, and a rich `Console` writing to a string: a whole turn (message, tool
-call, approval, answer, autosave) and a resume.
+injected `read_short` (or a scripted `ask`) for approvals, and a rich `Console` writing to a string: a whole turn (message, tool
+call, approval, answer, autosave) and a resume. The end-to-end tests inject `read_line` (and `read_short` for
+approvals) in place of `prompt_toolkit` and use a string-backed `Console`, so no real terminal is involved.
 
 By hand, on a real terminal (a checklist in the plan): history across runs, Alt+Enter, Tab completion, the
 status bar, Ctrl+C mid-turn, a Windows legacy console.

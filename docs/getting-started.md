@@ -19,6 +19,10 @@ The vector-store clients (Chroma, Qdrant, psycopg) come with the base install. I
 Python that runs your code (`python -m pip install agentx-dev`); `pip` and `python` can point at
 different installs on one machine.
 
+If you want a coding assistant in your terminal before you write any code, the install also gives you the
+`agentx` command: set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, `cd` into a project and run `agentx`. It asks
+before it edits a file or runs a command. See [the agentx command](guides/cli.md).
+
 ## Providers — you get both
 
 The framework is provider-agnostic. Two chat-model classes ship

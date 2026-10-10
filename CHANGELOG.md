@@ -4,6 +4,38 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.7.0] - Unreleased
+
+### Added
+
+- **The `agentx` command**: a terminal coding assistant (`agentx`, or `python -m agentx_dev`), built on
+  `AgentRunner`, `DefaultTools` and `Session`. Run it in a project folder; it works with GPT and Claude from
+  `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. Flags: `--model`, `--mode`, `--add-dir`, `--continue`,
+  `--resume [ID]`, `--version`. See the new [guide](docs/guides/cli.md).
+  - **Approvals and modes.** Reads run; edits, commands and delete / move ask first, with a diff or the full
+    command shown. Modes `default`, `accept-edits` and `plan`. Answering `a` ("don't ask again") remembers
+    all edits or a plain command prefix for the conversation, never for interpreters, shells, compound
+    commands, `run_python`, delete or move. A preview that cannot be shown, or a command over 20,000
+    characters, is declined with the reason.
+  - **Default protections.** Writes, edits, deletes and moves of the whole `.git`, of `.agentx/*` in the
+    project, and (when the home folder is reachable) of `~/.agentx`, git config files and common shell
+    profiles are always refused, in every mode. Deny and allow rules are a convenience layer, not a secrets
+    vault: `grep`, `find_files` and `list_directory` can still read a file a read rule denies, and
+    `run_shell` / `run_python` are not covered by path rules.
+  - **Settings and rules.** `~/.agentx/settings.json` and `.agentx/settings.json` (`model`, `mode`,
+    `addDirs`, `permissions.allow` / `deny` as `tool:glob`). Project settings are untrusted: an
+    `accept-edits` mode and `addDirs` outside the project are ignored with a warning, and the project's
+    allow rules are listed at startup.
+  - **`AGENTX.md` context.** `~/.agentx/AGENTX.md` and the files from the working folder up through its
+    parents are passed to the model as instructions (nearest last, 20,000 characters); `/init` drafts one.
+  - **Sessions.** Conversations autosave to `~/.agentx/sessions/` and resume with `--continue`,
+    `--resume` and `/resume`. The files hold tool results (file contents) and are not encrypted.
+  - **Slash commands.** `/help`, `/clear`, `/model`, `/mode`, `/resume`, `/sessions`, `/init`, `/exit`.
+- **`Session.stream(user_input, **kw)`**: like `Session.invoke`, but yields the runner's events and absorbs the
+  result on the final `completion` event. A turn abandoned before then is not recorded.
+- **New base dependency: `prompt_toolkit>=3.0`** (the input line: history, multi-line, completion, status
+  bar). `rich` was already a dependency.
+
 ## [3.6.2] - 2026-10-09
 
 ### Added

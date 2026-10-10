@@ -140,6 +140,13 @@ CLI: `python -m agentx_dev.Evals run <dir> --config <yaml>`
 | Symbol | Kind | Doc |
 |---|---|---|
 | `Session` | class | Serializable conversation state |
+| `Session.stream(user_input, **kw)` *(3.7)* | method | Like `invoke`, but yields the runner's events (`thought`, `tool_call`, `tool_result`, `final`, `completion`) and absorbs the result on the `completion` event. A turn abandoned before then (Ctrl+C, closing the generator) is not recorded |
+
+## Command line
+
+| Symbol | Kind | Doc |
+|---|---|---|
+| `agentx` *(3.7)* | command | Terminal coding assistant: chat loop, file and shell tools behind approval prompts, `AGENTX.md` context, saved conversations. Also `python -m agentx_dev`. Needs `prompt_toolkit>=3.0` (a base dependency). See [the agentx command](../guides/cli.md) |
 
 ## Streaming
 

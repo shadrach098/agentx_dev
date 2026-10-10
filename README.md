@@ -445,6 +445,22 @@ $env:OPENAI_API_KEY = "sk-..."           # Windows PowerShell
 $env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
+### The `agentx` command
+
+`pip install agentx-dev` also gives you `agentx`, a terminal coding assistant: run it in a project folder and
+ask for changes. It reads files, edits them and runs commands there, and asks you before it edits a file, runs
+a command, or deletes or moves anything. Conversations are saved and can be resumed. It has no headless mode
+and does not stream the answer token by token yet.
+
+```bash
+pip install agentx-dev          # Claude also needs: pip install "agentx-dev[anthropic]"
+export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY
+agentx                          # in your project folder
+```
+
+See the [agentx command guide](docs/guides/cli.md) for the approval modes, settings and rules, the protections
+that are always on, and what it does not cover.
+
 ---
 
 ## Your first agent — 5 lines
