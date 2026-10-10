@@ -49,6 +49,10 @@ NO_QUESTIONS_LEFT_TEXT = (
 )
 
 PLANNER_SOURCE = "planner"
+CHECKPOINT_SOURCE = "supervisor"                    # who asks "what next?" at the end of a round
+CHECKPOINT_QUESTION = "What should I do next?"
+CHECKPOINT_SHOWN_CHARS = 3000                       # how much of the answer the checkpoint prompt shows
+_STOP_WORDS = frozenset({"done", "stop", "quit", "exit", "no", "nothing", "that's all"})
 MAX_QUESTIONS_PER_AGENT = 1     # one agent should not spend the whole shared budget clarifying
 
 
@@ -358,6 +362,25 @@ def _shown(question: str, context: str = "") -> str:
     return f"{question}\n(context: {context})" if context else question
 
 
+def is_stop_reply(text: Optional[str]) -> bool:
+    """True when ``text`` ends a follow-up session: no reply, a blank one, or a stop word
+    ("Done!", " quit. ", "That's all")."""
+    if text is None:
+        return True
+    word = text.strip().lower().replace("’", "'").rstrip(".!").strip()
+    return word == "" or word in _STOP_WORDS
+
+
+def checkpoint_text(answer: Any, outcome_line: str) -> str:
+    """The one string the asker receives at the end of a round: the answer (cut at
+    ``CHECKPOINT_SHOWN_CHARS``), how the round ended, and the question."""
+    shown = str(answer or "").strip()
+    if len(shown) > CHECKPOINT_SHOWN_CHARS:
+        shown = shown[:CHECKPOINT_SHOWN_CHARS].rstrip() + "\n(full text in result.content)"
+    head = f"{shown}\n\n" if shown else ""
+    return f'{head}{outcome_line}\n{CHECKPOINT_QUESTION} (blank or "done" to finish)'
+
+
 def reply_text(reply: Reply) -> str:
     """The tool result an agent sees. Never an error, so its stuck logic is not triggered."""
     if reply.answered:
@@ -570,6 +593,49 @@ class OperatorChannel:
         if self._pending_writes:
             await asyncio.to_thread(self._flush_writes)
         return result
+
+    # -- the checkpoint (3.6.2) -----------------------------------------------
+
+    def seed_from(self, previous: "OperatorChannel") -> None:
+        """Start a later round knowing what the operator already told this session: the answers
+        (so the planner sees them) and the questions already answered (so none is asked twice).
+        Questions nobody answered are not carried over, so they may be asked again."""
+        self._answers = list(previous._answers)
+        self._seen = {key: reply for key, reply in previous._seen.items() if reply.answered}
+
+    def _checkpoint_asked(self) -> None:
+        self.emit({"type": "question", "source": CHECKPOINT_SOURCE, "question": CHECKPOINT_QUESTION,
+                   "context": ""})
+        self._say(f"{CHECKPOINT_SOURCE} asks: {CHECKPOINT_QUESTION}")
+
+    def _checkpoint_answered(self, reply: Reply) -> Reply:
+        self.records.append({"source": CHECKPOINT_SOURCE, "question": CHECKPOINT_QUESTION,
+                             "answered": reply.answered, "reason": reply.reason, "deduped": False})
+        self.emit({"type": "answer", "source": CHECKPOINT_SOURCE, "answered": reply.answered,
+                   "reason": reply.reason})
+        self._say("answered" if reply.answered else f"no answer ({reply.reason})")
+        return reply
+
+    def checkpoint(self, shown: str) -> Reply:
+        """Ask what to do next, with ``shown`` as the prompt. Unlike ``ask`` this uses no question
+        slot, ignores the per-agent limit, is not de-duplicated and never touches memory (a next
+        instruction is a command, not a fact). It shares the ask lock, the timeout, the headless
+        handling and the pause of the persistent deadline."""
+        self._checkpoint_asked()
+        with self._lock:
+            reply = self._ask_sync(shown, CHECKPOINT_SOURCE)
+        return self._checkpoint_answered(reply)
+
+    async def acheckpoint(self, shown: str) -> Reply:
+        """The async form of :meth:`checkpoint`."""
+        self._checkpoint_asked()
+        while not self._lock.acquire(blocking=False):      # never blocks the loop; a cancel cannot leak the lock
+            await asyncio.sleep(0.02)
+        try:
+            reply = await self._ask_async(shown, CHECKPOINT_SOURCE)
+        finally:
+            self._lock.release()
+        return self._checkpoint_answered(reply)
 
     def _ask_sync(self, shown: str, source: str = "") -> Reply:
         try:
