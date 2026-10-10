@@ -1,5 +1,6 @@
 """The gate: what runs, what asks, what is refused."""
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -8,7 +9,7 @@ import pytest
 
 from agentx_dev.cli.approval import (
     MODES, NO_WAY_TO_ASK, PLAN_REFUSAL, Answer, Gate, _grantable_prefix, command_prefix, kind_of, normalize_path,
-    rule_matches, subject_of, unusual_path,
+    path_forms, rule_matches, subject_of, subjects_of, unusual_path,
 )
 
 FOLDS_CASE = sys.platform in ("win32", "darwin")
@@ -299,8 +300,7 @@ class TestReviewItem1GrantablePrefix:
         g.check("run_shell", {"command": "CI=1 rm -rf ~"})
         assert [r.subject for r in asker.requests] == ["CI=1 pytest -q", "CI=1 rm -rf ~"]
 
-    @pytest.mark.skipif(ON_WINDOWS, reason="a backslash is a path separator on Windows")
-    def test_a_backslash_in_the_first_word_grants_nothing_off_windows(self):
+    def test_a_backslash_in_the_first_word_grants_nothing_on_any_platform(self):
         assert _grantable_prefix("py\\test -q") is None
         assert _grantable_prefix("./bin/tool -q") == "./bin/tool"
 
@@ -344,12 +344,13 @@ class TestReviewItem2PathForms:
         assert "deny rule" in g.check("write_file", {"path": str(tmp_path / ".git" / "config"), "content": "x"})
         assert asker.requests == []
 
-    def test_the_home_folder_is_expanded(self, tmp_path, monkeypatch):
+    def test_the_home_folder_is_not_expanded(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
-        assert normalize_path("~/x.txt", tmp_path) == "x.txt"
+        assert normalize_path("~/x.txt", tmp_path) == "~/x.txt"
         g = Gate(deny=["read_path:.env"], cwd=tmp_path)
-        assert "deny rule" in g.check("read_path", {"path": "~/.env"})
+        assert g.check("read_path", {"path": "~/.env"}) is None          # a literal folder named "~"
+        assert "deny rule" in g.check("read_path", {"path": "~/../.env"})  # which resolves to .env
 
     def test_a_relative_path_is_resolved_against_cwd_not_the_process(self, tmp_path):
         assert normalize_path("a/../b.txt", tmp_path) == "b.txt"
@@ -365,13 +366,17 @@ class TestReviewItem2PathForms:
 
     @pytest.mark.skipif(ON_WINDOWS, reason="the forms below are only special on Windows")
     def test_the_windows_forms_are_not_special_elsewhere(self):
-        for text in ("README.md::$DATA", "C:README.md", "\\\\?\\C:\\x", "//host/share/x"):
+        for text in ("README.md::$DATA", "C:README.md", "\\\\?\\C:\\x", "//host/share/x", " /.env", ".../.env",
+                     ". /.env", "README.md.", "\\??\\UNC\\localhost\\c$\\x"):
             assert unusual_path(text) is False
 
     @pytest.mark.skipif(not ON_WINDOWS, reason="Windows path forms")
     @pytest.mark.parametrize("text", [
         "README.md::$DATA", "README.md:stream", "C:README.md", "C:", "\\\\?\\C:\\proj\\a.py",
         "\\\\.\\C:\\proj\\a.py", "\\\\localhost\\c$\\proj\\a.py", "//localhost/c$/a.py", "\\/host/x",
+        "\\??\\C:\\x", "\\??\\UNC\\localhost\\c$\\x", "\\??\\GLOBALROOT\\Device\\HarddiskVolume3\\x", "/??/Volume{1}/x",
+        " /.env", ".../.env", ". /.env", "sub/.. /.env", "x/.../.env", "README.md.", "README.md ", "README.md. .",
+        "sub. /README.md", "a\\b.\\c",
     ])
     def test_unusual_windows_forms_are_refused_before_anything_else(self, tmp_path, text):
         assert unusual_path(text) is True
@@ -384,10 +389,9 @@ class TestReviewItem2PathForms:
         assert asker.requests == []
 
     @pytest.mark.skipif(not ON_WINDOWS, reason="Windows path forms")
-    @pytest.mark.parametrize("text", ["README.md.", "README.md ", "README.md. .", "sub. /README.md"])
-    def test_trailing_dots_and_spaces_cannot_dodge_a_deny_rule_on_windows(self, tmp_path, text):
-        g = Gate(deny=["read_path:readme.md", "read_path:sub/readme.md"], cwd=tmp_path)
-        assert "deny rule" in g.check("read_path", {"path": text})
+    def test_dot_and_dotdot_components_are_still_fine_on_windows(self, tmp_path):
+        for text in ("a/./b", "a/../b", "..\\a", ".", ".."):
+            assert unusual_path(text) is False
 
     @pytest.mark.skipif(not ON_WINDOWS, reason="Windows path forms")
     def test_a_drive_path_is_still_fine_on_windows(self, tmp_path):
@@ -551,6 +555,241 @@ class TestReviewItem8GrantText:
         g.check("run_shell", {"command": "CI=1 pytest"})
         g.check("run_python", {"code": "print(1)"})
         assert [(r.remember, r.grant) for r in asker.requests] == [(False, "")] * 5
+
+
+def make_link(link, target):
+    """A directory junction on Windows, a symlink elsewhere; skips the test when the OS will not make one."""
+    try:
+        if ON_WINDOWS:
+            import _winapi
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            os.symlink(target, link, target_is_directory=True)
+    except (OSError, ImportError, AttributeError, NotImplementedError) as error:
+        pytest.skip(f"cannot create a link here: {error}")
+
+
+def make_file_link(link, target):
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"cannot create a file symlink here: {error}")
+
+
+class TestRound3GrantNames:
+    @pytest.mark.parametrize("command", [
+        "py\\thon x.py", "/usr/bin/pytho? x.py", "pytho[n] x.py", "{python,} x.py", "C:\\Python\\python.exe x",
+        "%COMSPEC% /c x", "a\"b x", "~/bin/tool x", "tool* x", "$(x) y", "\xa0pytest x",
+    ])
+    def test_a_first_word_outside_the_plain_alphabet_grants_nothing(self, command):
+        assert _grantable_prefix(command) is None
+        g, asker = gate(answers=[Answer("a")])
+        assert g.check("run_shell", {"command": command}) is None
+        assert asker.requests[0].remember is False and asker.requests[0].grant == ""
+        g.check("run_shell", {"command": command})
+        assert len(asker.requests) == 2 and g.grants == set()
+
+    def test_the_evil_variant_asks_after_a_on_a_backslash_word(self):
+        g, asker = gate(answers=[Answer("a")])
+        g.check("run_shell", {"command": "py\\thon ok.py"})
+        g.check("run_shell", {"command": "py\\thon evil.py"})
+        assert len(asker.requests) == 2
+
+    @pytest.mark.parametrize("command,prefix", [
+        ("pytest -q", "pytest"), ("./bin/tool-x_1.2+b a", "./bin/tool-x_1.2+b"), ("/usr/bin/make all", "/usr/bin/make"),
+        ("git status", "git status"),
+    ])
+    def test_plain_words_still_grant(self, command, prefix):
+        assert _grantable_prefix(command) == prefix
+
+
+class TestRound3TwoForms:
+    def test_path_forms_are_lexical_then_resolved(self, tmp_path):
+        assert path_forms("./a/../b.txt", None) == ["b.txt"]
+        assert path_forms("sub\\x.py", tmp_path) == [_fold("sub/x.py")]
+        forms = path_forms("../x", tmp_path)
+        assert forms[0] == "../x" and forms[1] != "../x" and forms[1].endswith("x")
+        assert path_forms(str(tmp_path / "a.py"), tmp_path) == [_fold(tmp_path.as_posix() + "/a.py"), "a.py"]
+
+    def test_subjects_of_a_move_are_both_pairs(self, tmp_path):
+        assert subjects_of("move_file", {"source": "./a", "destination": "b/../c"}, tmp_path) == ["a -> c"]
+        assert subjects_of("move_file", {"source": str(tmp_path / "a"), "destination": "c"}, tmp_path) == [
+            _fold(tmp_path.as_posix() + "/a") + " -> c", "a -> c"]
+
+    def test_a_relative_deny_pattern_that_leaves_the_project_is_matched_as_written(self, tmp_path):
+        g = Gate(deny=["read_path:../*"], cwd=tmp_path)
+        assert "deny rule" in g.check("read_path", {"path": "../x"})
+        g2 = Gate(mode="accept-edits", deny=["write_file:../*"], cwd=tmp_path)
+        assert "deny rule" in g2.check("write_file", {"path": "../evil", "content": "x"})
+        assert g2.check("write_file", {"path": "ok.txt", "content": "x"}) is None
+
+    def test_a_link_to_elsewhere_is_still_judged_by_the_name_used(self, tmp_path):
+        project, shared = tmp_path / "proj", tmp_path / "shared"
+        project.mkdir()
+        shared.mkdir()
+        (shared / "key").write_text("K")
+        make_link(project / "secrets", shared)
+        g = Gate(mode="accept-edits", deny=["read_path:secrets/*", "write_file:secrets/*"], cwd=project)
+        assert "deny rule" in g.check("read_path", {"path": "secrets/key"})
+        assert "deny rule" in g.check("write_file", {"path": "secrets/key", "content": "x"})
+        assert g.check("read_path", {"path": "other/key"}) is None
+
+    def test_a_link_into_the_project_is_judged_by_its_target_too(self, tmp_path):
+        (tmp_path / "config").mkdir()
+        make_link(tmp_path / "alias", tmp_path / "config")
+        g = Gate(deny=["read_path:config/*"], cwd=tmp_path)
+        assert "deny rule" in g.check("read_path", {"path": "alias/.env.prod"})
+
+    def test_a_file_symlink_to_a_denied_file_is_blocked(self, tmp_path):
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / ".env.prod").write_text("S")
+        make_file_link(tmp_path / ".env", tmp_path / "config" / ".env.prod")
+        g = Gate(deny=["read_path:config/*"], cwd=tmp_path)
+        assert "deny rule" in g.check("read_path", {"path": ".env"})
+
+    def test_a_symlink_to_outside_is_blocked_by_a_rule_on_its_name(self, tmp_path):
+        project = tmp_path / "proj"
+        project.mkdir()
+        (tmp_path / "shared.env").write_text("S")
+        make_file_link(project / ".env2", tmp_path / "shared.env")
+        g = Gate(deny=["read_path:.env2"], cwd=project)
+        assert "deny rule" in g.check("read_path", {"path": ".env2"})
+
+    def test_an_allow_rule_needs_both_forms_to_match(self, tmp_path):
+        project, outside = tmp_path / "proj", tmp_path / "outside"
+        project.mkdir()
+        outside.mkdir()
+        make_link(project / "src", outside)
+        asker = Asker()
+        g = Gate(allow=["write_file:src/*"], cwd=project, ask=asker)
+        assert g.check("write_file", {"path": "src/a.py", "content": ""}) is None
+        assert len(asker.requests) == 1                                 # L matches, R (outside) does not: asks
+        (project / "real").mkdir()
+        g2 = Gate(allow=["write_file:real/*"], cwd=project, ask=asker)
+        assert g2.check("write_file", {"path": "real/a.py", "content": ""}) is None
+        assert len(asker.requests) == 1                                 # both forms match: no prompt
+
+    def test_the_accept_edits_shortcut_is_unaffected(self, tmp_path):
+        asker = Asker()
+        g = Gate(mode="accept-edits", cwd=tmp_path, ask=asker)
+        assert g.check("write_file", {"path": "a.py", "content": ""}) is None and asker.requests == []
+
+    def test_a_move_file_pattern_with_an_absolute_part_is_anchored(self, tmp_path):
+        g = Gate(deny=[f"move_file:{tmp_path.as_posix()}/secrets/*"], cwd=tmp_path, ask=Asker())
+        assert "deny rule" in g.check("move_file", {"source": "secrets/a", "destination": "b"})
+        g2 = Gate(deny=[f"move_file:{tmp_path.as_posix()}/a -> {tmp_path.as_posix()}/b"], cwd=tmp_path, ask=Asker())
+        assert "deny rule" in g2.check("move_file", {"source": "a", "destination": str(tmp_path / "b")})
+        assert g2.check("move_file", {"source": "a", "destination": "c"}) is None
+
+    def test_a_tilde_is_a_literal_folder_name_in_patterns_too(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        g = Gate(deny=["read_path:~/.ssh/*"], cwd=tmp_path)
+        assert "deny rule" in g.check("read_path", {"path": "~/.ssh/id"})
+        assert g.check("read_path", {"path": ".ssh/id"}) is None
+
+    @pytest.mark.skipif(not ON_WINDOWS, reason="Windows path forms")
+    @pytest.mark.parametrize("text", [" /.env", ".../.env", ". /.env", "\\??\\UNC\\localhost\\c$\\x"])
+    def test_the_probe_spellings_are_refused_on_windows(self, tmp_path, text):
+        g = Gate(deny=["read_path:.env"], cwd=tmp_path)
+        assert g.check("read_path", {"path": text}) == UNSUPPORTED
+
+    @pytest.mark.skipif(ON_WINDOWS, reason="elsewhere these are ordinary folder names")
+    @pytest.mark.parametrize("text", [" /.env", ".../.env", ". /.env"])
+    def test_the_probe_spellings_are_judged_normally_elsewhere(self, tmp_path, text):
+        g = Gate(deny=["read_path:.env"], cwd=tmp_path)
+        assert g.check("read_path", {"path": text}) is None
+        g2 = Gate(deny=["read_path:*.env"], cwd=tmp_path)
+        assert "deny rule" in g2.check("read_path", {"path": text})
+
+
+class TestRound3UnknownToolSubjects:
+    def test_every_string_value_is_a_subject_when_there_is_no_command(self):
+        assert subjects_of("shell", {"description": "ls", "cmd": "rm   -rf ~"}) == ["ls", "rm -rf ~"]
+        assert subjects_of("shell", {}) == [""]
+        assert subjects_of("shell", {"n": 1}) == [""]
+
+    def test_a_string_command_alone_is_the_subject(self):
+        assert subjects_of("bash", {"description": "ls -la", "command": "rm  x"}) == ["rm x"]
+
+    def test_a_command_that_is_not_a_string_falls_back_to_every_string(self):
+        assert subjects_of("bash", {"description": "ls", "command": ["rm -rf ~"]}) == ["ls", "rm -rf ~"]
+
+    def test_a_decoy_description_cannot_get_an_allow_rule_to_approve_it(self):
+        g, asker = gate(allow=["shell:ls*"])
+        assert g.check("shell", {"description": "ls", "cmd": "rm -rf ~"}) is None
+        assert len(asker.requests) == 1
+        assert g.check("shell", {"description": "ls", "cmd": "ls -la"}) is None
+        assert len(asker.requests) == 1
+
+    def test_a_deny_rule_matches_any_of_the_values(self):
+        g, asker = gate(deny=["shell:*rm -rf*"], allow=["shell:ls*"])
+        assert "deny rule" in g.check("shell", {"description": "ls", "cmd": "rm -rf ~"})
+        assert asker.requests == []
+
+    def test_a_list_command_decoy(self):
+        g, asker = gate(allow=["bash:ls*"], deny=["bash:*rm -rf*"])
+        assert "deny rule" in g.check("bash", {"description": "ls -la", "command": ["rm -rf ~"]})
+        g2, asker2 = gate(allow=["bash:ls*"])
+        assert g2.check("bash", {"description": "ls -la", "command": ["rm x"]}) is None
+        assert len(asker2.requests) == 1
+
+    def test_an_empty_argument_set_is_not_vacuously_allowed(self):
+        g, asker = gate(allow=["shell:ls*"])
+        assert g.check("shell", {}) is None
+        assert len(asker.requests) == 1
+
+    def test_a_non_string_command_for_run_shell_always_asks(self):
+        g, asker = gate(allow=["run_shell:*"])
+        assert g.check("run_shell", {"command": ["ls"]}) is None
+        assert len(asker.requests) == 1
+
+    def test_more_than_the_cap_of_values_fails_closed(self):
+        g, asker = gate(allow=["shell:*"])
+        assert g.check("shell", {"items": ["ls"] * 250}) is None
+        assert len(asker.requests) == 1
+        assert len(subjects_of("shell", {"items": ["ls"] * 250})) == 200
+
+
+class TestRound3NoRecursion:
+    def test_json_nested_close_to_the_limit(self):
+        try:
+            nested = json.loads("[" * 995 + '"x"' + "]" * 995)
+        except RecursionError:
+            pytest.skip("json cannot parse this deep under pytest")
+        g, asker = gate()
+        assert g.check("mcp_tool", {"a": nested}) is None
+        assert len(asker.requests) == 1
+
+    def test_5000_levels_built_in_a_loop(self):
+        nested = "x"
+        for _ in range(5000):
+            nested = [nested]
+        g, asker = gate()
+        assert g.check("mcp_tool", {"a": nested}) is None            # no raise; the call asks (the asker says y)
+        assert len(asker.requests) == 1
+        deep_dict = "x"
+        for _ in range(5000):
+            deep_dict = {"k": deep_dict}
+        assert g.check("mcp_tool", {"a": deep_dict}) is None
+        assert len(asker.requests) == 2
+
+    def test_a_deep_value_where_a_string_is_expected_does_not_raise(self):
+        nested = "x"
+        for _ in range(5000):
+            nested = [nested]
+        g, asker = gate()
+        for tool, args in (("run_shell", {"command": nested}), ("run_python", {"code": nested}),
+                           ("read_path", {"path": nested}), ("move_file", {"source": nested, "destination": nested}),
+                           ("write_file", {"path": nested, "content": ""})):
+            g.check(tool, args)
+
+    def test_a_cyclic_structure_does_not_hang(self):
+        cycle = []
+        cycle.append(cycle)
+        g, asker = gate()
+        assert g.check("mcp_tool", {"a": cycle}) is None
+        assert len(asker.requests) == 1
 
 
 class TestModes:

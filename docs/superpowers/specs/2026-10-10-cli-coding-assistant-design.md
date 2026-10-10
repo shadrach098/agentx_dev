@@ -148,13 +148,20 @@ Two safety refinements to the matching:
   `a` to it grants nothing. Deny rules still match anywhere in it. The rule covers `run_shell` and every
   command-kind tool that takes a string `command` argument (an MCP bash tool); for a tool the gate does not
   know, a marker in any string argument counts. For any such tool the rule subject is its `command`.
-- **Path subjects and patterns are normalized.** For the path tools the subject (both sides of `move_file`)
-  and the glob of a rule are compared with backslashes turned into `/`, `~` expanded, the path resolved
-  against the project folder (so `./`, `..`, `../<project>/x` and the absolute path all become the same
-  relative path), trailing dots and spaces dropped on Windows, and case folded on Windows and macOS. An
-  absolute pattern inside the project is rewritten relative to it. A deny rule such as `read_path:.env` cannot
-  be dodged by spelling. On Windows, UNC and device paths (`\\host\x`, `\\?\C:\x`), alternate data streams
-  (`file::$DATA`) and drive-relative paths (`C:file`) are refused outright, before any rule.
+- **Paths are matched in two forms.** For the path tools (and both sides of `move_file`) the gate computes
+  the path as written (backslashes as `/`, `./` and `..` folded on the text alone, so `../x` stays `../x`
+  and a link `secrets/` stays `secrets/`) and the path resolved against the project folder (links followed,
+  relative to the project when inside, absolute otherwise); case is folded on Windows and macOS. `~` is not
+  expanded (the tools do not expand it). A **deny** rule refuses the call if either form matches; an
+  **allow** rule applies only if both do. Relative patterns are matched as written; an absolute pattern
+  inside the project is rewritten relative to it. So `deny read_path:.env` cannot be dodged by `./.env`,
+  `sub/../.env` or the absolute path, and `read_path:secrets/*` still blocks a link named `secrets`.
+  On Windows the gate refuses outright, before any rule: UNC and device paths (`\\host\x`, `\\?\C:\x`,
+  `\??\C:\x`), alternate data streams (`file::$DATA`), drive-relative paths (`C:file`) and any path with a
+  component ending in a dot or a space (`README.md.`, `. /.env`, `.../x`).
+- **Unknown tools.** For a tool the gate does not know and that has no string `command`, every string value in
+  its arguments (found by an iterative walk, at most 200) is a subject: a deny rule matches if any does, an
+  allow rule applies only if all do; a structure too big to scan counts as compound.
 - **Limits.** Deny globs on shell commands are best effort: start them with `*`, and a model can spell a
   command another way. A `run_python` rule sees only the first line of the code.
 
@@ -171,8 +178,9 @@ against the file on disk; for a new file, the whole content as additions), the e
   wrappers (`python`, `python3`, `py`, `node`, `deno`, `bun`, `ruby`, `perl`, `php`, `bash`, `sh`, `zsh`,
   `fish`, `pwsh`, `powershell`, `cmd`, `npx`, `sudo`, `su`, `ssh`, `eval`, `exec`, `env`, `xargs`, `nohup`,
   `timeout`, `time`, `pythonw`, `nodejs`, `wsl`, `start`, `uv`, `uvx`, `pipx`, `.`, `source`, `call`;
-  matched by file name, so `/usr/bin/python3.12` counts), nor when the first word has an `=`, a quote, a
-  backtick or `$` (`CI=1 pytest`), nor for `git -c ...` or any two-word command whose second word is an
+  matched by file name, so `/usr/bin/python3.12` counts), nor unless the first word is made only of
+  letters, digits and `. _ + / -` (so `CI=1 pytest`, quotes, `$`, globs, braces and backslashes grant
+  nothing), nor for `git -c ...` or any two-word command whose second word is an
   option, nor for `npm exec`, `npm x`, `pnpm dlx`, `pnpm exec`, `yarn dlx`, `yarn exec`, nor for compound
   commands, `run_python` or destructive tools: it approves that one call. The prompt offers `a` only when
   the gate can remember (`Request.remember`) and prints what it will remember (`Request.grant`).

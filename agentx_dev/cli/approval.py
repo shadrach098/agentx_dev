@@ -9,7 +9,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Union
+from typing import Any, Callable, Iterable, Mapping, Optional, Union
 
 MODES = ("default", "accept-edits", "plan")
 
@@ -38,6 +38,9 @@ NO_GRANT = frozenset({
 _NO_GRANT_RUNNERS = frozenset({"npm exec", "npm x", "pnpm dlx", "pnpm exec", "yarn dlx", "yarn exec"})
 _EXECUTABLE_SUFFIXES = (".exe", ".cmd", ".bat", ".com", ".ps1")
 _VERSIONED_INTERPRETER = re.compile(r"(python|pypy)[\d.]*")
+_PLAIN_WORD = re.compile(r"[A-Za-z0-9._+/-]+")
+_MAX_SUBJECTS = 200        # strings of an unknown tool's arguments a rule is matched against
+_MAX_NODES = 10_000        # nodes the argument walk visits before giving up (and treating the call as compound)
 _ABSOLUTE_PATTERN = re.compile(r"(/|[A-Za-z]:/)")
 _GLOB_CHARS = re.compile(r"[*?\[]")
 
@@ -73,23 +76,38 @@ def kind_of(tool: str) -> str:
     return TOOL_KINDS.get(tool, "command")
 
 
+def _text(value: Any) -> str:
+    """``str(value)`` that cannot raise on a model-supplied object (a 5000-deep list, say)."""
+    if isinstance(value, str):
+        return value
+    try:
+        return str(value)
+    except Exception:       # includes RecursionError
+        return ""
+
+
 def _squash(text: Any) -> str:
-    return " ".join(str(text).split())
+    return " ".join(_text(text).split())
 
 
 def unusual_path(path: Any) -> bool:
-    """Windows path forms the gate cannot judge by name: UNC and device paths (``\\\\host\\x``, ``\\\\?\\C:\\x``),
-    alternate data streams (``README.md::$DATA``) and drive-relative paths (``C:README.md``). Always False
-    off Windows, where these are ordinary file names."""
+    """Windows path forms the gate cannot judge by name, so it refuses them: UNC and device paths
+    (``\\\\host\\x``, ``\\\\?\\C:\\x``, ``\\??\\C:\\x``), alternate data streams (``README.md::$DATA``),
+    drive-relative paths (``C:README.md``) and any component that ends in a dot or a space (Windows drops
+    those, so ``README.md.`` or ``. /.env`` name a different file than they read). Always False off
+    Windows, where these are ordinary file names."""
     if os.name != "nt":
         return False
-    text = str(path)
-    if text[:2] in ("\\\\", "//", "\\/", "/\\"):
+    text = _text(path)
+    unified = text.replace("\\", "/")
+    if unified.startswith("//") or unified.startswith("/??/"):
         return True
     for index, char in enumerate(text):
         if char == ":" and not (index == 1 and text[0].isalpha()):
             return True
-    return len(text) >= 2 and text[1] == ":" and text[0].isalpha() and (len(text) == 2 or text[2] not in "\\/")
+    if len(text) >= 2 and text[1] == ":" and text[0].isalpha() and (len(text) == 2 or text[2] not in "\\/"):
+        return True
+    return any(part not in ("", ".", "..") and part.endswith((".", " ")) for part in unified.split("/"))
 
 
 def _resolve(text: str, cwd: Union[str, Path]) -> Optional[str]:
@@ -106,50 +124,82 @@ def _resolve(text: str, cwd: Union[str, Path]) -> Optional[str]:
         return None
 
 
-def normalize_path(path: Any, cwd: Optional[Union[str, Path]] = None) -> str:
-    """One spelling per path, so a rule cannot be dodged by ``~``, ``./``, ``..``, backslashes, an absolute
-    path into the project, trailing dots or spaces (Windows) or letter case (Windows, macOS). With ``cwd``
-    the path is resolved against it and made relative when it lies inside."""
-    text = str(path)
-    if text.startswith("~"):
-        text = os.path.expanduser(text)
-    text = text.replace("\\", "/")
-    if os.name == "nt":
-        text = "/".join(part if part in ("", ".", "..") else part.rstrip(". ") for part in text.split("/"))
-    resolved = _resolve(text, cwd) if cwd is not None else None
-    text = resolved if resolved is not None else posixpath.normpath(text)
+def _finish(text: str) -> str:
     while text.startswith("./"):
         text = text[2:]
     return text.casefold() if _FOLDS_CASE else text
 
 
+def path_forms(path: Any, cwd: Optional[Union[str, Path]] = None) -> list:
+    """The two spellings a path rule is matched against. ``~`` is not expanded (the tools do not).
+
+    * the lexical form: backslashes as ``/``, ``.`` and ``..`` folded away on the text alone (no file system),
+      so ``../x`` stays ``../x`` and a link named ``secrets`` is still ``secrets/...``;
+    * the resolved form (only with ``cwd``): the path resolved against ``cwd``, links followed, relative to
+      ``cwd`` when it lies inside and absolute otherwise.
+
+    Letter case is folded on Windows and macOS. The list holds one entry when the two agree."""
+    text = _text(path).replace("\\", "/")
+    forms = [_finish(posixpath.normpath(text))]
+    if cwd is not None:
+        resolved = _resolve(text, cwd)
+        if resolved is not None and _finish(resolved) not in forms:
+            forms.append(_finish(resolved))
+    return forms
+
+
+def normalize_path(path: Any, cwd: Optional[Union[str, Path]] = None) -> str:
+    """The resolved form of ``path`` (the lexical form when there is no ``cwd``): what a prompt shows."""
+    return path_forms(path, cwd)[-1]
+
+
+def _first_line(code: Any) -> str:
+    text = _text(code).strip()
+    return _squash(text.splitlines()[0]) if text else ""
+
+
 def subject_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Path]] = None) -> str:
-    """The short text a rule is matched against and a prompt names."""
-    if tool == "run_shell":
-        return _squash(args.get("command", ""))
-    if tool == "run_python":
-        code = str(args.get("code", "")).strip()
-        return _squash(code.splitlines()[0]) if code else ""
+    """The short text a prompt names (the resolved path, the command, the first line of code)."""
     if tool == "move_file":
-        return f"{normalize_path(args.get('source', ''), cwd)} -> {normalize_path(args.get('destination', ''), cwd)}"
+        return (f"{normalize_path(args.get('source', ''), cwd)} -> "
+                f"{normalize_path(args.get('destination', ''), cwd)}")
     if tool in _PATH_TOOLS and "path" in args:
         return normalize_path(args["path"], cwd)
-    if isinstance(args.get("command"), str):          # whatever the tool is called, the command is the subject
-        return _squash(args["command"])
-    if "path" in args:
-        return normalize_path(args["path"], cwd)
-    for value in args.values():
-        if isinstance(value, str):
-            return value
-    return ""
+    return subjects_of(tool, args, cwd)[0]
+
+
+def subjects_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Path]] = None) -> list:
+    """Every text a rule is matched against for this call. A deny rule refuses if any matches; an allow
+    rule applies only if all do. Never empty.
+
+    * ``run_shell``: the command; ``run_python``: the first line of the code;
+    * a path tool: the lexical and the resolved form of the path (``move_file``: of the pair);
+    * a tool with a string ``command``: that command alone;
+    * anything else: every string in the arguments (at most ``_MAX_SUBJECTS``)."""
+    if tool == "run_shell":
+        return [_squash(args.get("command", ""))]
+    if tool == "run_python":
+        return [_first_line(args.get("code", ""))]
+    if tool == "move_file":
+        sources = path_forms(args.get("source", ""), cwd)
+        destinations = path_forms(args.get("destination", ""), cwd)
+        pairs = [f"{sources[0]} -> {destinations[0]}", f"{sources[-1]} -> {destinations[-1]}"]
+        return pairs if pairs[0] != pairs[1] else pairs[:1]
+    if tool in _PATH_TOOLS and "path" in args:
+        return path_forms(args["path"], cwd)
+    if isinstance(args.get("command"), str):
+        return [_squash(args["command"])]
+    found, _ = _strings(args)
+    return [_squash(text) for text in found[:_MAX_SUBJECTS]] or [""]
 
 
 def command_prefix(command: str) -> str:
     """What "don't ask again" remembers: the first word, or the first two for git, npm, pip and friends.
     Words are split on spaces and tabs only, never on Unicode whitespace."""
-    if not command.strip():
+    command = command.strip(" \t")
+    if not command:
         return ""
-    words = re.split(r"[ \t]+", command.strip())
+    words = re.split(r"[ \t]+", command)
     if words[0] in _TWO_WORD_COMMANDS and len(words) > 1:
         return " ".join(words[:2])
     return words[0]
@@ -166,8 +216,6 @@ def _path_spelling(text: str) -> str:
 def _anchor_pattern(pattern: str, cwd: Optional[Union[str, Path]]) -> str:
     """Spell an absolute pattern the way subjects are spelled: relative to ``cwd`` when its literal
     directory lies inside it, otherwise as the resolved absolute path."""
-    if pattern.startswith("~"):
-        pattern = os.path.expanduser(pattern).replace("\\", "/")
     if cwd is None or not _ABSOLUTE_PATTERN.match(pattern):
         return pattern
     glob = _GLOB_CHARS.search(pattern)
@@ -193,7 +241,10 @@ def rule_matches(rule: str, tool: str, subject: str, *, cwd: Optional[Union[str,
         return True
     if tool in _PATH_TOOLS:
         pattern = pattern.replace("\\", "/")
-        if tool != "move_file":
+        if tool == "move_file" and " -> " in pattern:
+            source, destination = pattern.split(" -> ", 1)
+            pattern = f"{_anchor_pattern(source, cwd)} -> {_anchor_pattern(destination, cwd)}"
+        else:
             pattern = _anchor_pattern(pattern, cwd)
         pattern, subject = _path_spelling(pattern), _path_spelling(subject)
     return fnmatch.fnmatchcase(subject, pattern)
@@ -206,39 +257,52 @@ def _is_marked(text: str) -> bool:
     return any((ord(char) < 32 and char != "\t") or ord(char) > 126 for char in text)
 
 
-def _strings(value: Any) -> Iterator[str]:
-    """Every string inside an argument value, looking into lists, tuples and mappings."""
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, Mapping):
-        for item in value.values():
-            yield from _strings(item)
-    elif isinstance(value, (list, tuple, set, frozenset)):
-        for item in value:
-            yield from _strings(item)
+def _strings(value: Any) -> tuple:
+    """``(strings, truncated)``: every string inside an argument value, in order, found by an iterative walk
+    over lists, tuples, sets and mappings (model-controlled input must never recurse). ``truncated`` is True
+    when the walk stopped at ``_MAX_NODES`` (a huge or cyclic structure)."""
+    found: list = []
+    stack = [value]
+    nodes = 0
+    while stack:
+        item = stack.pop()
+        nodes += 1
+        if nodes > _MAX_NODES:
+            return found, True
+        if isinstance(item, str):
+            found.append(item)
+        elif isinstance(item, Mapping):
+            stack.extend(reversed(list(item.values())))
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            stack.extend(reversed(list(item)))
+    return found, False
 
 
 def _is_compound(tool: str, args: Mapping[str, Any]) -> bool:
     """A command that chains, pipes, redirects, substitutes or groups: a rule or grant for its first word
-    must not approve the rest of it. Covers ``run_shell`` and any command-kind tool that takes a string
-    ``command``; for a tool the gate does not know, any string argument may be the command, so all are checked."""
+    must not approve the rest of it. Covers ``run_shell`` (a command that is not a string counts as
+    compound) and any command-kind tool that takes a string ``command``; for a tool the gate does not know,
+    any string argument may be the command, so all are checked, and a structure too big to scan counts as
+    compound."""
     if tool not in TOOL_KINDS:
-        return any(_is_marked(text) for text in _strings(args))
+        found, truncated = _strings(args)
+        return truncated or len(found) > _MAX_SUBJECTS or any(_is_marked(text) for text in found)
     command = args.get("command")
-    if tool != "run_shell" and not (kind_of(tool) == "command" and isinstance(command, str)):
-        return False
-    return _is_marked(str(command or ""))
+    if tool == "run_shell":
+        return not isinstance(command, str) or _is_marked(command)
+    return kind_of(tool) == "command" and isinstance(command, str) and _is_marked(command)
 
 
 def _grantable_prefix(command: str) -> Optional[str]:
     """What answering "a" to ``command`` may remember, or None when it must approve only that one call: the
-    first word is an assignment, quoted, expanded, an interpreter, shell or wrapper, or a two-word command
-    whose second word is an option or a package runner."""
-    words = re.split(r"[ \t]+", command.strip())
+    first word is not plain (letters, digits and ``. _ + / -`` only, so no assignment, quote, expansion,
+    glob, brace or backslash), is an interpreter, shell or wrapper, or the command is a two-word one whose
+    second word is an option or a package runner."""
+    words = re.split(r"[ \t]+", command.strip(" \t"))
     first = words[0]
-    if not first or any(char in first for char in "=\"'`$") or (os.name != "nt" and "\\" in first):
+    if not _PLAIN_WORD.fullmatch(first):
         return None
-    name = first.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    name = first.rsplit("/", 1)[-1].casefold()
     for suffix in _EXECUTABLE_SUFFIXES:
         if name.endswith(suffix):
             name = name[: -len(suffix)]
@@ -293,8 +357,9 @@ class Gate:
         if any(unusual_path(path) for path in self._path_arguments(tool, args)):
             return UNSUPPORTED_PATH
         subject = subject_of(tool, args, self.cwd)
-        for rule in self.deny:
-            if rule_matches(rule, tool, subject, cwd=self.cwd):
+        subjects = subjects_of(tool, args, self.cwd)
+        for rule in self.deny:                                  # a deny rule refuses if ANY form matches
+            if any(rule_matches(rule, tool, text, cwd=self.cwd) for text in subjects):
                 return f"Refused: the settings deny rule '{rule}' blocks this."
         if self._mode == "plan" and kind != "read":
             return PLAN_REFUSAL
@@ -302,7 +367,8 @@ class Gate:
             return None
         compound = _is_compound(tool, args)
         if kind != "destructive" and not compound:
-            if any(rule_matches(rule, tool, subject, cwd=self.cwd) for rule in self.allow) \
+            # an allow rule applies only if EVERY form matches it
+            if any(all(rule_matches(rule, tool, text, cwd=self.cwd) for text in subjects) for rule in self.allow) \
                     or self._granted(tool, subject):
                 return None
         if kind == "edit" and self._mode == "accept-edits":
