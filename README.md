@@ -425,13 +425,13 @@ Add optional providers / integrations as extras:
 pip install agentx-dev[anthropic]      # enables agentx_dev.Claude
 pip install agentx-dev[mcp]            # enables MCPClient (stdio / sse / http)
 pip install agentx-dev[otel]           # OpenTelemetry observability adapter
-pip install agentx-dev[chroma]         # ChromaVectorStore (also [qdrant], [pgvector])
 pip install agentx-dev[all]            # everything above
 ```
 
-A plain `pip install agentx-dev` does not install these on purpose (most users need one provider
-and one store). If a class says it needs a package, install the extra it names, with the same
-Python that runs your code: `python -m pip install "agentx-dev[chroma]"`.
+The vector-store clients (`chromadb`, `qdrant-client`, `psycopg`) install with the base package, so
+`ChromaVectorStore`, `QdrantVectorStore` and `PgVectorStore` work right away. (`[chroma]`, `[qdrant]`
+and `[pgvector]` still exist as aliases.) If a class says a package is missing, install it into the
+same Python that runs your code: `python -m pip install agentx-dev`.
 
 Requires Python **3.10+** (the codebase uses PEP 604 union types).
 

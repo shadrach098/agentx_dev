@@ -59,6 +59,13 @@ class TestHelper:
                                     modules=("qdrant_client",), pip="qdrant-client", extra="qdrant")
         assert "DLL load failed" in str(err) and "pip install" not in str(err)
 
+    def test_a_core_dependency_says_to_install_agentx_dev_itself(self):
+        err = optional_import_error("ChromaVectorStore", missing("chromadb"),
+                                    modules=("chromadb",), pip="chromadb", core=True)
+        text = str(err)
+        assert "python -m pip install --upgrade agentx-dev" in text and "pip install chromadb" in text
+        assert "agentx-dev[" not in text and sys.executable in text
+
     def test_without_an_extra_only_the_package_is_named(self):
         err = optional_import_error("PgVectorStore", missing("psycopg2"),
                                     modules=("psycopg2",), pip="psycopg2-binary")
@@ -105,9 +112,9 @@ def make_mcp_http():
 
 
 CASES = [
-    ("chroma", make_chroma, ("chromadb",), 'agentx-dev[chroma]'),
-    ("qdrant", make_qdrant, ("qdrant_client",), 'agentx-dev[qdrant]'),
-    ("pgvector", make_pg, ("psycopg", "psycopg2"), 'agentx-dev[pgvector]'),
+    ("chroma", make_chroma, ("chromadb",), "pip install --upgrade agentx-dev"),
+    ("qdrant", make_qdrant, ("qdrant_client",), "pip install --upgrade agentx-dev"),
+    ("pgvector", make_pg, ("psycopg", "psycopg2"), "pip install --upgrade agentx-dev"),
     ("claude", make_claude, ("anthropic",), 'agentx-dev[anthropic]'),
     ("otel", make_otel, ("opentelemetry",), 'agentx-dev[otel]'),
     ("mcp-stdio", make_mcp_stdio, ("mcp",), 'agentx-dev[mcp]'),

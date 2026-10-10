@@ -53,7 +53,7 @@ def _load_psycopg():
         # (the fallback) being absent.
         cause = first if (first is not None and not _is_missing(first, modules)) else e
         raise optional_import_error(
-            "PgVectorStore", cause, modules=modules, pip="psycopg[binary]", extra="pgvector",
+            "PgVectorStore", cause, modules=modules, pip="psycopg[binary]", core=True,
         ) from cause
 
 

@@ -12,13 +12,12 @@ pip install agentx-dev            # OpenAI provider ships in the base install
 pip install agentx-dev[anthropic] # adds Claude support
 pip install agentx-dev[mcp]       # adds MCP client (stdio / sse / http)
 pip install agentx-dev[otel]      # OpenTelemetry adapter
-pip install agentx-dev[chroma]    # ChromaVectorStore (also [qdrant], [pgvector])
 pip install agentx-dev[all]       # everything above
 ```
 
-The base install is small on purpose, so each of these is opt-in. Install the extra into the same
-Python that runs your code (`python -m pip install "agentx-dev[chroma]"`); `pip` and `python` can
-point at different installs on one machine.
+The vector-store clients (Chroma, Qdrant, psycopg) come with the base install. Install into the same
+Python that runs your code (`python -m pip install agentx-dev`); `pip` and `python` can point at
+different installs on one machine.
 
 ## Providers — you get both
 

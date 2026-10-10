@@ -8,11 +8,11 @@ accept them without any other code changes.
 
 Adapters ship in `agentx_dev.VectorStores`:
 
-| Adapter | Backing store | Extra install |
+| Adapter | Backing store | Package (installed with `agentx-dev` since 3.6.2) |
 |---|---|---|
-| `ChromaVectorStore` | Chroma (local persistent or client/server) | `pip install "agentx-dev[chroma]"` (or `chromadb`) |
-| `QdrantVectorStore` | Qdrant (local or remote) | `pip install "agentx-dev[qdrant]"` (or `qdrant-client`) |
-| `PgVectorStore` | Postgres + pgvector | `pip install "agentx-dev[pgvector]"` (or `psycopg[binary]` / `psycopg2-binary`) |
+| `ChromaVectorStore` | Chroma (local persistent or client/server) | `chromadb` |
+| `QdrantVectorStore` | Qdrant (local or remote) | `qdrant-client` |
+| `PgVectorStore` | Postgres + pgvector | `psycopg[binary]` (v3; `psycopg2` is used if only that is present) |
 
 ## Chroma
 

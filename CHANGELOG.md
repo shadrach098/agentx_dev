@@ -17,6 +17,11 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Changed
 
+- **The vector-store clients are core dependencies.** `chromadb`, `qdrant-client` and `psycopg[binary]`
+  now install with `pip install agentx-dev`, so `ChromaVectorStore`, `QdrantVectorStore` and
+  `PgVectorStore` work without an extra. `[chroma]`, `[qdrant]` and `[pgvector]` remain as aliases.
+  The base install is larger (chromadb brings onnxruntime and others); `anthropic`, `mcp` and
+  `opentelemetry` are still extras.
 - The planner's catalog lists each registered agent's tools under its description (framework tools
   `ask_user` and `delegate` left out, long lists cut at 12), so a description no longer has to say
   that an agent can write files. Registered agents whose runner has no tool registry are unchanged.

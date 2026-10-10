@@ -531,10 +531,11 @@ addendum if `holdset` score improves too.
 ## Vector store adapter errors *(3.1)*
 
 **`ImportError: ChromaVectorStore requires the chromadb package, which is not installed`**
-Install the extra: `python -m pip install "agentx-dev[chroma]"` (or `[qdrant]` /
-`[pgvector]`). The message also prints the Python that is running; install into that one.
-If `pip` installed it but the error stays, `pip` and your `python` are different installs
-(`py -m pip`, or the interpreter your IDE uses).
+Since 3.6.2 the vector-store clients install with `agentx-dev`, so this means `pip` put the
+package in a different Python from the one running your script, or the install used `--no-deps`.
+The message prints the Python that is running; install into that one:
+`python -m pip install --upgrade agentx-dev` (use `py -m pip` on Windows if that is what you run).
+On 3.6.1 and earlier install the extra: `python -m pip install "agentx-dev[chroma]"` (or `[qdrant]` / `[pgvector]`).
 
 **`ImportError: ChromaVectorStore could not import chromadb: ModuleNotFoundError: No module named 'flask'`** *(3.6.1)*
 The package is installed, but importing it failed, and the text after `could not import` is the
