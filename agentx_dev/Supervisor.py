@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import contextmanager
+from contextlib import aclosing, contextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union, Any
 
@@ -2592,13 +2592,12 @@ class AsyncSupervisor(_SpawnMixin):
                 await asyncio.gather(*running, return_exceptions=True)
             running.clear()
 
-    async def astream(self, user_task: str):
-        """Async event stream. Same event shapes as ``Supervisor.stream``.
-
-        Concurrent-dispatch mode (``sequential=False``) yields
-        ``subtask_result`` events as each sub-task finishes -- so the
-        UI sees whichever completes first, not the plan order.
-        """
+    async def _astream_round(self, user_task: str, *, save_result: bool = True,
+                             seed: Optional[OperatorChannel] = None):
+        """One plan / dispatch / synthesize round, as an async stream of events. See
+        ``Supervisor._stream_round``. Concurrent-dispatch mode (``sequential=False``) yields
+        ``subtask_result`` events as each sub-task finishes, so the UI sees whichever
+        completes first, not the plan order."""
         self._spawn_run_policy = self._new_spawn_policy()
         budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
         self._spawn_run_policy.budget = budget        # delegate falls back to it (see SpawnPolicy)
@@ -2606,6 +2605,8 @@ class AsyncSupervisor(_SpawnMixin):
         self._spawn_run_policy.operator = self._operator
         if self._operator is not None:
             self._operator.budget = budget            # waiting on the operator pauses the deadline
+        if self._operator is not None and seed is not None:
+            self._operator.seed_from(seed)
         self._run_memory = self._new_run_memory()
         if self._operator is not None:
             self._operator.memory = self._run_memory
@@ -2711,7 +2712,7 @@ class AsyncSupervisor(_SpawnMixin):
             _log_final(final)
 
         outcome = _supervisor_outcome(subtask_results, budget_reason)
-        if (self._run_memory is not None and outcome == OUTCOME_DONE
+        if (save_result and self._run_memory is not None and outcome == OUTCOME_DONE
                 and not self._synth_fell_back and str(final).strip()):
             await asyncio.to_thread(self._run_memory.remember_result, user_task, final)
 
@@ -2725,6 +2726,65 @@ class AsyncSupervisor(_SpawnMixin):
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
+
+    async def astream(self, user_task: str):
+        """Async event stream. Same event shapes as ``Supervisor.stream``, including the
+        ``checkpoint`` and ``round`` events of ``ask_when_done`` / ``follow_up``.
+
+        Concurrent-dispatch mode (``sequential=False``) yields
+        ``subtask_result`` events as each sub-task finishes -- so the
+        UI sees whichever completes first, not the plan order.
+        """
+        # aclosing: closing this stream early must close the round generator too, so its
+        # running sub-tasks are cancelled before aclose() returns (``yield from`` did this
+        # implicitly in the sync version).
+        if not self.ask_when_done:
+            async with aclosing(self._astream_round(user_task)) as stream:
+                async for event in stream:
+                    yield event
+            return
+        rounds: List[Dict[str, Any]] = []
+        asked: List[Dict[str, Any]] = []
+        task, instruction, seed = user_task, user_task, None
+        while True:
+            number = len(rounds) + 1
+            if number > 1:
+                yield {"type": "round", "round": number, "query": instruction}
+                if self.verbose:
+                    print(f"{_C_PLAN}[supervisor.round] round {number}: {_cap_text(instruction, 120)}{_C_RESET}")
+            result: Optional[SupervisorResult] = None
+            async with aclosing(self._astream_round(task, save_result=number == 1, seed=seed)) as stream:
+                async for event in stream:
+                    if event["type"] == "completion":
+                        result = event["result"]
+                    else:
+                        yield event
+            assert result is not None, "a round must yield a completion event"
+            rounds.append({"round": number, "query": instruction, "content": result.content,
+                           "outcome": result.outcome})
+            asked.extend(result.asked)
+            channel = self._operator
+            assert channel is not None, "ask_when_done needs the operator channel"
+            if self.follow_up and number > 1 and number == 1 + self.max_follow_ups:
+                if self.verbose:
+                    print(f"{_C_PLAN}[supervisor.round] follow-up limit reached{_C_RESET}")
+                next_step = None
+                break
+            yield {"type": "checkpoint", "round": number, "outcome": result.outcome}
+            before = len(channel.records)
+            reply = await channel.acheckpoint(checkpoint_text(result.content, _outcome_line(result)))
+            asked.extend(channel.records[before:])
+            for event in self._drain_operator_events():
+                yield event
+            next_step = reply.text
+            more = (self.follow_up and number <= self.max_follow_ups
+                    and result.outcome != OUTCOME_OUT_OF_BUDGET and not is_stop_reply(reply.text))
+            if not more:
+                break
+            task, instruction, seed = _follow_up_task(user_task, rounds, reply.text), reply.text, channel
+        yield {"type": "completion", "result": result.model_copy(update={
+            "query": instruction, "asked": asked, "next_step": next_step,
+            "rounds": rounds if len(rounds) > 1 else []})}
 
     async def run(self, user_task: str) -> SupervisorResult:
         """Plan, execute sub-tasks concurrently, and synthesize.
