@@ -6,6 +6,17 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [3.6.2] - 2026-10-09
 
+### Added
+
+- **`Supervisor(ask_when_done=True)` / `follow_up=True`** (and the same on `AsyncSupervisor`): when a
+  round's answer is ready the framework itself asks the operator "What should I do next?" through the
+  `ask_user` asker (the answer, the outcome and the question in one prompt) and returns the reply in
+  `SupervisorResult.next_step`. `follow_up=True` runs another round on each reply, with the earlier
+  results as context, until the operator replies blank or with a stop word; `max_follow_ups` (default
+  5) bounds it and `SupervisorResult.rounds` lists the rounds. Asked whatever the outcome. The
+  checkpoint uses no `max_questions` slot and is never saved to memory; only round 1's result is.
+  New `checkpoint` and `round` stream events. Either setting needs `ask_user`.
+
 ### Fixed
 
 - **"When done, ask me" now reaches `ask_user`.** With `ask_user=True` and a task that said to ask the

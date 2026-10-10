@@ -236,6 +236,35 @@ Things to know:
 
 For a standalone `AgentRunner` that needs a human step, give it `agentx_dev.ask_human_tool()`: the same asker as a tool called `ask_human` (arguments `question` and optional `context`), so it works in a notebook's input box as well as a terminal. `ask_human_tool(prompt_prefix="[agent]", ask_timeout=None)`.
 
+### Asking when the work is done
+
+A model has to choose to call `ask_user`; the framework does not have to. Two settings make it ask by itself when a round's answer is ready:
+
+```python
+sup = Supervisor(model=model, agents=agents, ask_user=True, ask_when_done=True)
+result = sup.run("Research veltehub.com and find 10 prospects in Barrie")
+print(result.next_step)        # what you replied to "What should I do next?", or None
+
+sup = Supervisor(model=model, agents=agents, ask_user=True, follow_up=True, max_follow_ups=5)
+result = sup.run("Research veltehub.com and find 10 prospects in Barrie")   # keeps going on your replies
+```
+
+| Setting | Default | What it does |
+|---|---|---|
+| `ask_when_done` | `False` | After the answer is ready, ask "What should I do next?" through the `ask_user` asker. The prompt shows the answer (cut at 3,000 characters), how the round ended, and the question. The reply goes in `result.next_step`. |
+| `follow_up` | `False` | Run another round on your reply, until you reply blank or with a stop word. Implies `ask_when_done`. |
+| `max_follow_ups` | `5` | Rounds allowed after the first. After the last one no question is asked. |
+
+- Either setting without `ask_user` raises `ValueError`.
+- It asks whatever the outcome (`done`, `partial`, `stuck`, `out_of_time`, `out_of_budget`) and says which in the prompt.
+- Stop words: `done`, `stop`, `quit`, `exit`, `no`, `nothing`, `that's all` (any case, trailing `.` or `!` ignored), or a blank reply. `next_step` keeps what you typed, so it can be `"done"`; it is `None` when nobody answered (headless, timed out, empty reply).
+- **Your reply is cut at 2,000 characters**, the same cap as any other answer.
+- **A follow-up round is a new run.** It plans on your original task, what each earlier round produced (each capped at 3,000 characters) and your new instruction. Your earlier answers carry over, and a question you already answered is not asked again. The question budget, the helpers and the persistent time budget start over each round; a model cost cap does not. No round starts after `out_of_budget`, though you are still asked.
+- **The checkpoint is not a question to a helper.** It uses no `max_questions` slot, is not looked up in or saved to memory, and appears in `result.asked` and as `question` / `answer` events with source `supervisor`.
+- **What you get back.** `run()` returns the last round's result. `result.rounds` lists every round (`round`, `query`, `content`, `outcome`) once a follow-up has run, and `result.asked` holds every question across rounds. In memory, only round 1's result is saved.
+- **Streaming.** `stream()` / `astream()` add `{"type": "checkpoint", "round", "outcome"}` before each question and `{"type": "round", "round", "query"}` when a round after the first starts. Each round's `final` is yielded, and one `completion` ends the stream.
+- **Closing a stream early** still cancels a round's running sub-tasks before the close returns, in both modes.
+
 ## Long-term memory
 
 Every run starts from nothing: a fact you gave once ("our competitors are Notion, Obsidian, Coda") is asked for again next time, and earlier research is not available to the planner. Give the Supervisor a vector store and it remembers.
@@ -305,6 +334,8 @@ Things to know:
 | `{"type": "question", "source": "planner"\|<agent name>, "question", "context"}` | A question was put to the operator (`ask_user` set). |
 | `{"type": "answer", "source", "answered", "reason": None\|"no_channel"\|"declined"\|"timeout"\|"limit"\|"error"}` | The reply, or why there was none. The answer text is not in the event. `"from_memory": True` is added when the answer came from long-term memory. |
 | `{"type": "memory", "stage": "plan"\|"step", "hits": int}` | Items from long-term memory were added to a prompt (`memory=` set). |
+| `{"type": "checkpoint", "round", "outcome"}` | The framework is about to ask what to do next (`ask_when_done`). |
+| `{"type": "round", "round", "query"}` | A follow-up round starts (`follow_up`); `query` is your reply. |
 
 With `verbose=True` the same moments print as `[spawn]`, `[ask]` and `[memory]` lines.
 
