@@ -203,6 +203,20 @@ with "no way to ask the user here".
 Sandbox: `allowed_paths` stays as the second line of defence; a path outside it fails in the tool itself.
 Deny rules and the sandbox cannot be overridden from the prompt.
 
+**Default deny rules.** The application always adds a set of deny rules to the user's and the project's, so a
+model cannot rewrite its own permissions or plant something that runs later, outside the approval prompts.
+They refuse `write_file`, `edit_file`, `delete_path` and `move_file` (as source or destination) on
+`.agentx` and everything under it (the settings files), `.git/hooks` and everything under it (git hooks), and
+`.git/config` (which can point git at other hooks or commands), at the top of the project and in any
+sub-folder (`*/.agentx/*`, `*/.git/hooks/*`, `*/.git/config`; this also covers `~/.agentx` when the home folder is
+reachable). They hold in every mode, `accept-edits` included, and are not asked about. Reading those files is
+still allowed. `run_shell` is not covered (it can reach any file the shell can), but it is never auto-approved
+for such a command unless an allow rule or a "don't ask again" grant covers it, so the user sees it first.
+
+**A new conversation is a clean slate.** `/clear` and `/resume` (and a conversation started with
+`--continue`/`--resume`) empty the session-wide command grants ("don't ask again"); the rules from settings
+stay. Switching to `accept-edits` with `a` on an edit prompt is a mode change, not a grant, and survives `/clear`.
+
 ## 8. The chat experience (`ui.py`, `commands.py`, `context.py`)
 
 Output: a tool call is one line (`● edit_file src/app.py`); a result is collapsed to its first lines with
@@ -273,6 +287,10 @@ file's `addDirs` entry that resolves (symlinks followed) outside the project fol
 warning, so a cloned repository cannot widen the tool sandbox; the user's own file and `--add-dir` are not
 restricted. A file with invalid JSON is reported by path and ignored. Flags override
 settings.
+
+Before the first prompt the app prints every line of `Settings.problems` as a warning and, when the project's
+file contributes any `allow` rules, one block listing them as coming from the project's settings, so the user
+sees what a cloned repository is allowing before anything runs.
 
 ## 11. Errors
 

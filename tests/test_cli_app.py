@@ -1,0 +1,600 @@
+"""The whole chat app, end to end, with a scripted model and scripted input. No terminal needed."""
+
+import io
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+from rich.console import Console
+
+from agentx_dev.cli import app as app_module
+from agentx_dev.cli.app import DEFAULT_DENY, ChatApp, build_parser, main
+from agentx_dev.cli.approval import Answer, Gate
+from agentx_dev.cli.models import ModelError
+from agentx_dev.cli.sessions import list_sessions, sessions_dir
+from tests.conftest import MockModel, make_final, make_react_response
+
+
+class Lines:
+    """read_line answering from a list; an exception in the list is raised; EOFError when it runs out."""
+
+    def __init__(self, *items):
+        self.items = list(items)
+        self.prompts = []
+
+    def __call__(self, prompt=""):
+        self.prompts.append(prompt)
+        if not self.items:
+            raise EOFError
+        item = self.items.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+def make_app(tmp_path, lines, model, **kw):
+    out = io.StringIO()
+    console = Console(file=out, width=100, force_terminal=False, color_system=None)
+    cwd, home = tmp_path / "proj", tmp_path / "home"
+    cwd.mkdir(exist_ok=True)
+    home.mkdir(exist_ok=True)
+    kw.setdefault("env", {})
+    kw.setdefault("model_factory", lambda name, env: model)
+    app = ChatApp(cwd=cwd, home=home, console=console, read_line=lines, **kw)
+    return app, out, cwd, home
+
+
+def write_call(path="hello.txt", content="hi\n"):
+    return make_react_response("write_file", {"path": path, "content": content, "if_exists": "refuse"})
+
+
+def seen_by(model):
+    return " ".join(str(call[0]) for call in model.calls)
+
+
+def all_seen_by(model):
+    return " ".join(str(message) for call in model.calls for message in call)
+
+
+# -- a whole turn ---------------------------------------------------------------------------------------------
+
+def test_an_approved_edit_is_made_shown_and_saved(tmp_path):
+    model = MockModel(script=[write_call(), make_final("Created hello.txt")])
+    app, out, cwd, home = make_app(tmp_path, Lines("create hello.txt", "y", "/exit"), model)
+    assert app.start() == 0
+    assert (cwd / "hello.txt").read_text() == "hi\n"
+    text = out.getvalue()
+    assert "Create hello.txt" in text and "+hi" in text and "Created hello.txt" in text
+    assert len(list_sessions(home, cwd)) == 1
+
+
+def test_a_declined_edit_is_not_made_and_the_model_hears_why(tmp_path):
+    model = MockModel(script=[write_call(), make_final("Understood, I did not write it")])
+    app, out, cwd, _ = make_app(tmp_path, Lines("create hello.txt", "n", "too risky", "/exit"), model)
+    app.start()
+    assert not (cwd / "hello.txt").exists()
+    assert "The user declined: too risky" in all_seen_by(model)
+
+
+def test_plan_mode_refuses_without_asking(tmp_path):
+    lines = Lines("create hello.txt", "/exit")
+    model = MockModel(script=[write_call(), make_final("Here is my plan")])
+    app, out, cwd, _ = make_app(tmp_path, lines, model, mode="plan")
+    app.start()
+    assert not (cwd / "hello.txt").exists()
+    assert "Allow?" not in lines.prompts and "Here is my plan" in out.getvalue()
+
+
+def test_mode_command_switches_to_accept_edits(tmp_path):
+    lines = Lines("/mode accept-edits", "create hello.txt", "/exit")
+    model = MockModel(script=[write_call(), make_final("done")])
+    app, out, cwd, _ = make_app(tmp_path, lines, model)
+    app.start()
+    assert (cwd / "hello.txt").exists() and "Allow?" not in lines.prompts and "Mode: accept-edits" in out.getvalue()
+
+
+# -- one folder, no cache, no timeouts ------------------------------------------------------------------------
+
+def test_every_part_is_built_for_the_same_folder(tmp_path, monkeypatch):
+    seen = {}
+    real_asker, real_tools, real_addendum = app_module.make_asker, app_module.build_tools, app_module.build_addendum
+
+    def spy_asker(console, read_line, cwd):
+        seen["asker"] = cwd
+        return real_asker(console, read_line, cwd)
+
+    def spy_tools(cwd, add_dirs, gate):
+        seen["tools"], seen["tools_gate"] = cwd, gate
+        return real_tools(cwd, add_dirs, gate)
+
+    def spy_addendum(cwd, home, **kw):
+        seen["addendum"] = cwd
+        return real_addendum(cwd, home, **kw)
+
+    monkeypatch.setattr(app_module, "make_asker", spy_asker)
+    monkeypatch.setattr(app_module, "build_tools", spy_tools)
+    monkeypatch.setattr(app_module, "build_addendum", spy_addendum)
+    app, _, cwd, _ = make_app(tmp_path, Lines(), MockModel(script=[]))
+    assert {app.cwd, app.gate.cwd, seen["asker"], seen["tools"], seen["addendum"]} == {cwd.resolve()}
+    assert seen["tools_gate"] is app.gate
+
+
+def test_the_tool_cache_is_off_and_nothing_has_a_timeout(tmp_path):
+    app, _, _, _ = make_app(tmp_path, Lines("hi", "/exit"), MockModel(script=[make_final("ok")]))
+    app.start()
+    runner = app.session.runner
+    assert runner.auto_cache is False
+    assert runner.registry._default_timeout_sec is None
+    assert all(getattr(tool, "timeout_sec", None) is None for tool in app.tools)
+    assert runner.parallel_tool_workers == 1          # one approval prompt at a time, on the main thread
+
+
+# -- the built-in deny rules ----------------------------------------------------------------------------------
+
+PROTECTED = [".git/hooks/pre-commit", ".git/hooks/sub/x", ".agentx/settings.json", ".agentx/new.json",
+             "sub/.git/hooks/pre-push", "sub/.agentx/settings.json", "./.agentx/../.agentx/settings.json"]
+
+
+def check(gate, tool, **args):
+    return gate.check(tool, args)
+
+
+@pytest.mark.parametrize("path", PROTECTED)
+def test_hooks_and_settings_cannot_be_written_edited_or_deleted_even_in_accept_edits(tmp_path, path):
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits")
+    gate = app.gate
+    gate.ask = lambda request: pytest.fail("a protected path must be refused, not asked about")
+    for tool, args in (("write_file", {"path": path, "content": "x"}),
+                       ("edit_file", {"path": path, "old_string": "a", "new_string": "b"}),
+                       ("delete_path", {"path": path})):
+        refusal = gate.check(tool, args)
+        assert refusal is not None and "deny rule" in refusal, (tool, path)
+
+
+@pytest.mark.parametrize("path", PROTECTED)
+def test_hooks_and_settings_cannot_be_moved_from_or_to(tmp_path, path):
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits")
+    app.gate.ask = lambda request: pytest.fail("a protected path must be refused, not asked about")
+    for args in ({"source": path, "destination": "elsewhere.txt"}, {"source": "evil.txt", "destination": path}):
+        refusal = app.gate.check("move_file", args)
+        assert refusal is not None and "deny rule" in refusal, args
+
+
+def test_the_protected_folders_themselves_cannot_be_deleted_or_moved(tmp_path):
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits")
+    app.gate.ask = lambda request: pytest.fail("must be refused")
+    for folder in (".agentx", ".git/hooks"):
+        assert "deny rule" in app.gate.check("delete_path", {"path": folder})
+        assert "deny rule" in app.gate.check("move_file", {"source": folder, "destination": "gone"})
+
+
+def test_ordinary_files_are_still_editable_in_accept_edits(tmp_path):
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="accept-edits")
+    for path in ("src/app.py", ".gitignore", ".github/workflows/ci.yml", "agentx.md", ".git/config.txt"):
+        assert app.gate.check("write_file", {"path": path, "content": "x"}) is None, path
+
+
+def test_reading_the_settings_file_is_still_allowed(tmp_path):
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]))
+    assert app.gate.check("read_path", {"path": ".agentx/settings.json"}) is None
+
+
+def test_the_defaults_are_added_to_the_users_deny_rules_not_replaced(tmp_path):
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]), deny=["run_shell:*sudo*"], mode="accept-edits")
+    assert "run_shell:*sudo*" in app.gate.deny and set(DEFAULT_DENY) <= set(app.gate.deny)
+    assert "deny rule" in app.gate.check("run_shell", {"command": "sudo ls"})
+
+
+def test_a_model_cannot_install_a_hook_through_the_whole_loop(tmp_path):
+    model = MockModel(script=[write_call(".git/hooks/pre-commit", "evil"), make_final("could not")])
+    lines = Lines("install a hook", "/exit")
+    app, out, cwd, _ = make_app(tmp_path, lines, model, mode="accept-edits")
+    app.start()
+    assert not (cwd / ".git").exists()
+    assert "Allow?" not in lines.prompts and "deny rule" in all_seen_by(model)
+
+
+def test_a_model_cannot_rewrite_its_own_settings_through_the_whole_loop(tmp_path):
+    model = MockModel(script=[write_call(".agentx/settings.json", "{}"), make_final("could not")])
+    app, _, cwd, _ = make_app(tmp_path, Lines("loosen permissions", "/exit"), model, mode="accept-edits")
+    app.start()
+    assert not (cwd / ".agentx").exists() and "deny rule" in all_seen_by(model)
+
+
+# -- startup warnings -----------------------------------------------------------------------------------------
+
+def test_every_settings_problem_is_printed_before_the_first_prompt(tmp_path):
+    lines = Lines("/exit")
+    app, out, _, _ = make_app(tmp_path, lines, MockModel(script=[]),
+                              problems=["settings file a.json: bad JSON; ignored", "second \x1b[31mproblem\x1b[0m"])
+    app.start()
+    text = out.getvalue()
+    assert "bad JSON; ignored" in text and "second" in text
+    assert "\x1b" not in text and "\\x1b" in text                  # control characters defused
+
+
+def test_project_allow_rules_are_listed_as_coming_from_the_project(tmp_path):
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]),
+                              project_allow=["run_shell:curl*", "write_file:*\x07evil"])
+    app.start()
+    text = out.getvalue()
+    assert "project" in text.lower() and "run_shell:curl*" in text and "write_file:*\\x07evil" in text
+    assert "\x07" not in text
+    assert text.index("run_shell:curl*") < text.index("Type /help")        # before the prompt
+
+
+def test_no_warnings_block_when_there_is_nothing_to_warn_about(tmp_path):
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]))
+    app.start()
+    assert "project's settings" not in out.getvalue()
+
+
+def test_warnings_are_shown_even_when_the_model_cannot_be_built(tmp_path):
+    def refuse(name, env):
+        raise ModelError("No API key found: set ANTHROPIC_API_KEY.")
+    app, out, _, _ = make_app(tmp_path, Lines(), None, model_factory=refuse, project_allow=["run_shell:make*"])
+    assert app.start() == 1 and "run_shell:make*" in out.getvalue()
+
+
+# -- Ctrl-C, exit, errors -------------------------------------------------------------------------------------
+
+def test_ctrl_c_at_the_prompt_keeps_going_and_ctrl_d_leaves(tmp_path):
+    model = MockModel(script=[make_final("hi")])
+    app, out, _, _ = make_app(tmp_path, Lines(KeyboardInterrupt(), "hello"), model)
+    assert app.start() == 0 and "hi" in out.getvalue() and "/exit" in out.getvalue()
+
+
+def test_ctrl_c_during_a_turn_cancels_it_and_the_next_one_works(tmp_path):
+    calls = []
+
+    def script(messages):
+        calls.append(1)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+        return make_final("second answer")
+
+    app, out, _, _ = make_app(tmp_path, Lines("first", "second", "/exit"), MockModel(script=script))
+    assert app.start() == 0
+    assert "Turn interrupted" in out.getvalue() and "second answer" in out.getvalue()
+
+
+def test_ctrl_c_at_an_approval_prompt_only_declines_that_call(tmp_path):
+    model = MockModel(script=[write_call(), make_final("ok, not written")])
+    lines = Lines("create hello.txt", KeyboardInterrupt(), "/exit")
+    app, out, cwd, _ = make_app(tmp_path, lines, model)
+    assert app.start() == 0
+    assert not (cwd / "hello.txt").exists()
+    assert "ok, not written" in out.getvalue() and "Turn interrupted" not in out.getvalue()
+
+
+def test_ctrl_c_inside_a_command_is_handled_and_the_loop_goes_on(tmp_path, monkeypatch):
+    real = app_module.run_command
+    state = {"n": 0}
+
+    def flaky(ctx, line):
+        if line == "/mode" and state["n"] == 0:
+            state["n"] += 1
+            raise KeyboardInterrupt
+        return real(ctx, line)
+
+    monkeypatch.setattr(app_module, "run_command", flaky)
+    model = MockModel(script=[make_final("still here")])
+    app, out, _, _ = make_app(tmp_path, Lines("/mode", "hello", "/exit"), model)
+    assert app.start() == 0 and "still here" in out.getvalue()
+
+
+def test_system_exit_inside_a_command_leaves_cleanly_and_saves(tmp_path, monkeypatch):
+    def leave(ctx, line):
+        raise SystemExit(0)
+
+    monkeypatch.setattr(app_module, "run_command", leave)
+    model = MockModel(script=[])
+    app, _, cwd, home = make_app(tmp_path, Lines("/anything", "never read"), model)
+    assert app.start() == 0 and model.calls == []
+
+
+def test_exit_leaves_and_later_lines_are_never_read(tmp_path):
+    lines = Lines("/exit", "never read")
+    app, _, _, _ = make_app(tmp_path, lines, MockModel(script=[]))
+    assert app.start() == 0 and lines.items == ["never read"]
+
+
+def test_an_unknown_slash_command_is_never_sent_to_the_model(tmp_path):
+    model = MockModel(script=[make_final("should not happen")])
+    app, out, _, _ = make_app(tmp_path, Lines("/frobnicate now", "/exit"), model)
+    app.start()
+    assert model.calls == [] and "Unknown command" in out.getvalue()
+
+
+def test_a_model_error_is_shown_in_one_line_and_the_session_continues(tmp_path):
+    calls = []
+
+    def script(messages):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("rate limited")
+        return make_final("recovered")
+
+    app, out, _, _ = make_app(tmp_path, Lines("first", "second", "/exit"), MockModel(script=script))
+    app.start()
+    text = out.getvalue()
+    assert "Something went wrong (RuntimeError): rate limited" in text and "recovered" in text
+    assert "Traceback" not in text
+
+
+def test_an_error_message_is_defused_and_never_shows_the_api_key(tmp_path):
+    key = "sk-ant-api03-SECRETSECRETSECRET"
+
+    def script(messages):
+        raise RuntimeError(f"401 invalid key {key}\nline two \x1b[31mred")
+
+    app, out, _, _ = make_app(tmp_path, Lines("go", "/exit"), MockModel(script=script),
+                              env={"ANTHROPIC_API_KEY": key})
+    app.start()
+    text = out.getvalue()
+    assert key not in text and "SECRETSECRET" not in text and "\x1b" not in text
+    assert "Something went wrong (RuntimeError)" in text
+    assert len([line for line in text.splitlines() if "Something went wrong" in line]) == 1
+
+
+def test_a_failing_save_does_not_end_the_session(tmp_path, monkeypatch):
+    model = MockModel(script=[make_final("one"), make_final("two")])
+    app, out, _, _ = make_app(tmp_path, Lines("a", "b", "/exit"), model)
+    monkeypatch.setattr(app_module.Session, "save", lambda self, path: (_ for _ in ()).throw(OSError("disk full")))
+    assert app.start() == 0 and "two" in out.getvalue() and "Could not save" in out.getvalue()
+
+
+# -- sessions -------------------------------------------------------------------------------------------------
+
+def test_continue_resumes_the_latest_conversation(tmp_path):
+    first = MockModel(script=[make_final("noted: blue")])
+    app, _, cwd, home = make_app(tmp_path, Lines("my favourite colour is blue", "/exit"), first)
+    app.start()
+    second = MockModel(script=[make_final("it was blue")])
+    app2, out2, _, _ = make_app(tmp_path, Lines("what colour did I say?", "/exit"), second)
+    assert app2.start(resume="latest") == 0
+    assert "my favourite colour is blue" in all_seen_by(second)
+    assert len(list_sessions(home, cwd)) == 1            # the same file was continued
+
+
+def test_clear_starts_a_new_session_file(tmp_path):
+    model = MockModel(script=[make_final("one"), make_final("two")])
+    app, _, cwd, home = make_app(tmp_path, Lines("first", "/clear", "second", "/exit"), model)
+    app.start()
+    assert len(list_sessions(home, cwd)) == 2
+
+
+def test_clear_forgets_the_always_allow_grants(tmp_path):
+    lines = Lines("/clear", "/exit")
+    app, _, _, _ = make_app(tmp_path, lines, MockModel(script=[]))
+    app.gate.grants.add("pytest")
+    app.start()
+    assert app.gate.grants == set()
+
+
+def test_a_command_granted_for_the_session_asks_again_after_clear(tmp_path):
+    shell = make_react_response("run_shell", {"command": "echo hi"})
+    model = MockModel(script=[shell, make_final("ran"), shell, make_final("ran again")])
+    lines = Lines("run tests", "a", "/clear", "run tests again", "n", "", "/exit")
+    app, out, _, _ = make_app(tmp_path, lines, model)
+    answers = []
+    real_ask = app.gate.ask
+    app.gate.ask = lambda request: (answers.append(request.subject), real_ask(request))[1]
+    app.start()
+    assert answers == ["echo hi", "echo hi"]                       # asked again after /clear
+
+
+def test_resume_also_forgets_the_grants(tmp_path):
+    model = MockModel(script=[make_final("saved")])
+    app, _, cwd, home = make_app(tmp_path, Lines("hello", "/exit"), model)
+    app.start()
+    app2, _, _, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]), read_short=Lines("1"))
+    app2.start()
+    app2.gate.grants.add("git status")
+    app2.resume(None)
+    assert app2.gate.grants == set()
+    app2.gate.grants.add("git status")
+    app2.resume(list_sessions(home, cwd)[0].session_id[:8])
+    assert app2.gate.grants == set()
+
+
+def test_resume_with_an_id_that_cannot_be_used_exits_one(tmp_path):
+    model = MockModel(script=[make_final("ok")])
+    app, out, cwd, home = make_app(tmp_path, Lines("hello", "/exit"), model)
+    folder = sessions_dir(home, cwd)
+    folder.mkdir(parents=True)
+    (folder / "20261010T000000Z-deadbeef.json").write_text("{broken", encoding="utf-8")   # skipped when listing
+    assert app.start(resume="deadbeef") == 1
+    assert "No saved session" in out.getvalue()
+
+
+def test_a_session_that_loads_but_is_invalid_starts_a_fresh_one(tmp_path):
+    model = MockModel(script=[make_final("ok")])
+    app, out, cwd, home = make_app(tmp_path, Lines("hello", "/exit"), model)
+    folder = sessions_dir(home, cwd)
+    folder.mkdir(parents=True)
+    # valid JSON that lists as a session but cannot be loaded as one (history is not a list)
+    (folder / "20261010T000000Z-cafebabe.json").write_text(
+        '{"session_id": "cafebabe-x", "updated_at": "9", "version": 1, "history": "not a list"}', encoding="utf-8")
+    assert app.start(resume="latest") == 0
+    text = out.getvalue()
+    assert "Could not read" in text and "ok" in text and "Traceback" not in text
+    assert "not a list" not in text                                     # file content is not echoed back
+
+
+def test_resume_command_with_a_bad_file_reports_and_starts_fresh(tmp_path):
+    model = MockModel(script=[make_final("fine")])
+    app, out, cwd, home = make_app(tmp_path, Lines("/resume cafebabe", "hello", "/exit"), model)
+    folder = sessions_dir(home, cwd)
+    folder.mkdir(parents=True)
+    (folder / "20261010T000000Z-cafebabe.json").write_text(
+        '{"session_id": "cafebabe-x", "updated_at": "9", "version": 1, "history": "no"}', encoding="utf-8")
+    assert app.start() == 0 and "Could not read" in out.getvalue() and "fine" in out.getvalue()
+
+
+def test_no_api_key_exits_one_with_the_instruction(tmp_path):
+    def refuse(name, env):
+        raise ModelError("No API key found: set ANTHROPIC_API_KEY or OPENAI_API_KEY.")
+    out = io.StringIO()
+    app = ChatApp(cwd=tmp_path, home=tmp_path / "h", console=Console(file=out, color_system=None),
+                  read_line=Lines(), model_factory=refuse, env={})
+    assert app.start() == 1 and "ANTHROPIC_API_KEY" in out.getvalue()
+
+
+# -- models ---------------------------------------------------------------------------------------------------
+
+def test_model_command_switches_and_keeps_the_conversation(tmp_path):
+    model = MockModel(script=[make_final("one")])
+    other = MockModel(script=[make_final("two")])
+    models = {"first": model, "other": other}
+    app, out, _, _ = make_app(tmp_path, Lines("hello", "/model other", "again", "/exit"), None, model_name="first",
+                              model_factory=lambda name, env: models[name])
+    app.start()
+    assert "hello" in all_seen_by(other) and app.model is other
+
+
+def test_a_model_switch_that_fails_keeps_the_old_model(tmp_path):
+    model = MockModel(script=[make_final("still the old one")])
+
+    def factory(name, env):
+        if name == "bad":
+            raise ModelError("No API key for gpt: set the OPENAI_API_KEY environment variable.")
+        return model
+
+    app, out, _, _ = make_app(tmp_path, Lines("/model bad", "hello", "/exit"), None, model_factory=factory)
+    assert app.start() == 0
+    assert app.model is model and "OPENAI_API_KEY" in out.getvalue() and "still the old one" in out.getvalue()
+
+
+def test_init_sends_the_drafting_prompt(tmp_path):
+    model = MockModel(script=[make_final("I drafted it")])
+    app, out, _, _ = make_app(tmp_path, Lines("/init", "/exit"), model)
+    app.start()
+    assert "AGENTX.md" in all_seen_by(model)
+
+
+def test_toolbar_names_the_model_mode_and_folder(tmp_path):
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]))
+    app.start()
+    bar = app.toolbar()
+    assert "default" in bar and str(app.cwd) in bar
+    app.cycle_mode()
+    assert "accept-edits" in app.toolbar()
+
+
+# -- the command line -----------------------------------------------------------------------------------------
+
+class TestMain:
+    def test_version_and_help_work_without_a_terminal(self, capsys):
+        with pytest.raises(SystemExit) as info:
+            main(["--version"])
+        assert info.value.code == 0 and capsys.readouterr().out.startswith("agentx ")
+        with pytest.raises(SystemExit) as info:
+            main(["--help"])
+        assert info.value.code == 0 and "--add-dir" in capsys.readouterr().out
+
+    def test_a_bad_flag_is_a_usage_error(self, capsys):
+        with pytest.raises(SystemExit) as info:
+            main(["--mode", "yolo"])
+        assert info.value.code == 2
+
+    def test_continue_and_resume_exclude_each_other(self):
+        with pytest.raises(SystemExit) as info:
+            main(["--continue", "--resume"])
+        assert info.value.code == 2
+
+    def test_no_terminal_exits_one_with_a_message(self, monkeypatch, capsys):
+        monkeypatch.setattr(app_module, "_is_terminal", lambda: False)
+        assert main([]) == 1
+        captured = capsys.readouterr()
+        assert "interactive terminal" in captured.err and "Traceback" not in captured.err
+
+    def test_piped_stdin_in_a_real_process_is_one_message_and_exit_one(self, tmp_path):
+        done = subprocess.run([sys.executable, "-m", "agentx_dev"], input="hi\n", capture_output=True, text=True,
+                              cwd=tmp_path, env={**__import__("os").environ, "PYTHONPATH": str(Path.cwd())},
+                              timeout=120)
+        assert done.returncode == 1
+        assert "interactive terminal" in done.stderr and "Traceback" not in done.stderr
+
+    def test_the_parser_reads_every_flag(self):
+        args = build_parser().parse_args(
+            ["--model", "gpt-4o", "--mode", "plan", "--add-dir", "a", "--add-dir", "b", "--resume"])
+        assert (args.model, args.mode, args.add_dir, args.resume) == ("gpt-4o", "plan", ["a", "b"], "pick")
+        assert build_parser().parse_args(["--resume", "abcd1234"]).resume == "abcd1234"
+        assert build_parser().parse_args(["--continue"]).continue_ is True
+
+    def test_there_is_no_debug_flag(self):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["--debug"])
+
+    def test_main_wires_settings_flags_and_warnings_into_the_app(self, tmp_path, monkeypatch):
+        proj, home = tmp_path / "proj", tmp_path / "home"
+        (proj / ".agentx").mkdir(parents=True)
+        home.mkdir()
+        (proj / ".agentx" / "settings.json").write_text(
+            '{"model": "gpt-4o", "mode": "plan", "permissions": {"allow": ["run_shell:make*"], '
+            '"deny": ["run_shell:*sudo*"]}, "addDirs": ["../outside"]}', encoding="utf-8")
+        (home / ".agentx").mkdir()
+        (home / ".agentx" / "settings.json").write_text("{not json", encoding="utf-8")
+        captured = {}
+
+        class FakeApp:
+            def __init__(self, **kw):
+                captured.update(kw)
+
+            def start(self, resume=None):
+                captured["resume"] = resume
+                return 7
+
+        class FakePrompt:
+            def __init__(self, **kw):
+                self.read = self.read_short = lambda prompt="": ""
+
+        monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+        monkeypatch.setattr(app_module, "ChatApp", FakeApp)
+        monkeypatch.setattr(app_module, "PromptInput", FakePrompt)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.chdir(proj)
+        assert main(["--add-dir", "extra", "--continue"]) == 7
+        assert captured["cwd"] == proj.resolve() and captured["home"] == home
+        assert captured["model_name"] == "gpt-4o" and captured["mode"] == "plan"
+        assert captured["resume"] == "latest"
+        assert captured["allow"] == ["run_shell:make*"] and captured["project_allow"] == ["run_shell:make*"]
+        assert captured["deny"] == ["run_shell:*sudo*"]
+        assert captured["add_dirs"] == [(proj / "extra").resolve()]
+        assert any("settings.json" in problem for problem in captured["problems"])        # the user's broken file
+        assert any("outside the project" in problem for problem in captured["problems"])
+
+    def test_a_flag_beats_the_settings(self, tmp_path, monkeypatch):
+        proj, home = tmp_path / "proj", tmp_path / "home"
+        (proj / ".agentx").mkdir(parents=True)
+        home.mkdir()
+        (proj / ".agentx" / "settings.json").write_text('{"model": "gpt-4o", "mode": "plan"}', encoding="utf-8")
+        captured = {}
+
+        class FakeApp:
+            def __init__(self, **kw):
+                captured.update(kw)
+
+            def start(self, resume=None):
+                return 0
+
+        class FakePrompt:
+            def __init__(self, **kw):
+                self.read = self.read_short = lambda prompt="": ""
+
+        monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+        monkeypatch.setattr(app_module, "ChatApp", FakeApp)
+        monkeypatch.setattr(app_module, "PromptInput", FakePrompt)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.chdir(proj)
+        main(["--model", "claude-sonnet-4-6", "--mode", "accept-edits"])
+        assert captured["model_name"] == "claude-sonnet-4-6" and captured["mode"] == "accept-edits"
+
+    def test_a_crash_while_starting_up_is_one_line_not_a_traceback(self, monkeypatch, capsys):
+        monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+        monkeypatch.setattr(app_module, "load_settings", lambda cwd, home: (_ for _ in ()).throw(OSError("boom")))
+        assert main([]) == 1
+        err = capsys.readouterr().err
+        assert "OSError" in err and "boom" in err and "Traceback" not in err

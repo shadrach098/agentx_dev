@@ -24,6 +24,7 @@ dependencies = [
     "chromadb>=0.4",       # ChromaVectorStore
     "qdrant-client>=1.6",  # QdrantVectorStore
     "psycopg[binary]>=3.1",  # PgVectorStore (psycopg v3)
+    "prompt_toolkit>=3.0",   # the agentx command's input line
 ]
 
 [project.optional-dependencies]
@@ -65,6 +66,9 @@ all = [
     "pandas>=1.5",
     "openpyxl>=3.1",
 ]
+
+[project.scripts]
+agentx = "agentx_dev.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/shadrach098/agentx_dev"
