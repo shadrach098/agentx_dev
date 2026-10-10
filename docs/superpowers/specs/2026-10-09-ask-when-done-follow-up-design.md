@@ -83,8 +83,9 @@ checkpoint due?  (ask_when_done or follow_up, and a round is allowed to be follo
   reply). It is `None` when nobody answered: no channel (headless, or `ask_user` set to `None` after
   construction, which ends the session without a question), the read timed out, the asker raised, or the
   reply was empty.
-- **Stop words.** A fixed list; no model classifies the reply. A reply that, lowercased, with the curly
-  apostrophe replaced, commas removed and surrounding whitespace and trailing `.`, `!`, `?` stripped, is one
+- **Stop words.** A fixed list; no model classifies the reply. A reply that, lowercased, with
+  apostrophes (straight or curly) removed, commas turned into spaces, runs of spaces collapsed and trailing
+  `.`, `!`, `?` stripped (so `thats all` and `that's all` are the same reply), is one
   of `done`, `stop`, `quit`, `exit`, `no`, `nothing`, `that's all`, `that's it`, `all done`, `nope`, `bye`,
   `goodbye`, `thanks`, `thank you`, `no thanks`, `no thank you`, `done thanks`, `done thank you`,
   `nothing thanks`, `stop thanks` ends the loop (so does a blank reply). Anything else is an instruction

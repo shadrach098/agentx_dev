@@ -17,7 +17,9 @@ class TestStopReply:
                                       "thanks", "that's it", "That's it!", "nope", "all done", "All done.",
                                       "done, thanks", "Done, thank you!", "nothing, thanks", "stop thanks",
                                       "bye", "Goodbye!", "Done?", "no?", "quit?!", "no thanks...",
-                                      "Nothing", "That's all", "that’s all."])
+                                      "Nothing", "That's all", "that’s all.",
+                                      "thats all", "Thats all!", "thats it", "THATS ALL.", "no,thanks",
+                                      "no  thanks", "NOPE!!", "done .", "all  done"])
     def test_these_end_the_session(self, text):
         assert is_stop_reply(text)
 

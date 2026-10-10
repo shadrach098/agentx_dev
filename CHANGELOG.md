@@ -15,7 +15,7 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   results as context, until the operator replies blank or with a closing word (any of `done`, `stop`,
   `quit`, `exit`, `no`, `nothing`, `that's all`, `that's it`, `all done`, `nope`, `bye`, `goodbye`,
   `thanks`, `thank you`, `no thanks`, `no thank you`, `done thanks`, `done thank you`, `nothing thanks`,
-  `stop thanks`; case-insensitive, commas and trailing `.`, `!`, `?` ignored); `max_follow_ups` (default
+  `stop thanks`; case-insensitive; apostrophes (`thats all` works), commas, extra spaces and trailing `.`, `!`, `?` ignored); `max_follow_ups` (default
   5) bounds it and `SupervisorResult.rounds` lists the rounds. Asked whatever the outcome. The
   checkpoint uses no `max_questions` slot and is never saved to memory; only round 1's result is.
   New `checkpoint` and `round` stream events. Either setting needs `ask_user`. With `ask_when_done`

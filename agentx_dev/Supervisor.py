@@ -1269,7 +1269,7 @@ class Supervisor(_SpawnMixin):
                 (any of "done", "stop", "quit", "exit", "no", "nothing", "that's all", "that's
                 it", "all done", "nope", "bye", "goodbye", "thanks", "thank you", "no thanks",
                 "no thank you", "done thanks", "done thank you", "nothing thanks", "stop
-                thanks"; case-insensitive, commas and trailing ``.``, ``!``, ``?`` ignored).
+                thanks"; case-insensitive; apostrophes (``thats all`` works), commas, extra spaces and trailing ``.``, ``!``, ``?`` ignored).
                 Implies ``ask_when_done``. ``result.rounds`` lists every round.
             max_follow_ups: (3.6.2) Rounds allowed after the first (default 5). After the last
                 one no question is asked.
@@ -2082,7 +2082,7 @@ class AsyncSupervisor(_SpawnMixin):
                 (any of "done", "stop", "quit", "exit", "no", "nothing", "that's all", "that's
                 it", "all done", "nope", "bye", "goodbye", "thanks", "thank you", "no thanks",
                 "no thank you", "done thanks", "done thank you", "nothing thanks", "stop
-                thanks"; case-insensitive, commas and trailing ``.``, ``!``, ``?`` ignored).
+                thanks"; case-insensitive; apostrophes (``thats all`` works), commas, extra spaces and trailing ``.``, ``!``, ``?`` ignored).
                 Implies ``ask_when_done``. ``result.rounds`` lists every round.
             max_follow_ups: (3.6.2) Rounds allowed after the first (default 5). After the last
                 one no question is asked.

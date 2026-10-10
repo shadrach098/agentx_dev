@@ -52,11 +52,23 @@ PLANNER_SOURCE = "planner"
 CHECKPOINT_SOURCE = "supervisor"                    # who asks "what next?" at the end of a round
 CHECKPOINT_QUESTION = "What should I do next?"
 CHECKPOINT_SHOWN_CHARS = 3000                       # how much of the answer the checkpoint prompt shows
-_STOP_WORDS = frozenset({
+
+
+def _closing_form(text: str) -> str:
+    """``text`` as it is compared with the closing words: lower case, apostrophes (straight or
+    curly) and commas removed, runs of spaces collapsed, trailing ``.``, ``!``, ``?`` dropped. So
+    "That's all", "thats all" and "THATS ALL!" are the same reply, and so are "no, thanks" and
+    "No  thanks"."""
+    word = text.lower().replace("’", "").replace("'", "").replace(",", " ")
+    return " ".join(word.split()).rstrip(".!? ")
+
+
+_STOP_WORDS = frozenset(_closing_form(w) for w in (
     "done", "stop", "quit", "exit", "no", "nothing", "that's all", "that's it", "all done", "nope",
     "bye", "goodbye", "thanks", "thank you", "no thanks", "no thank you", "done thanks",
     "done thank you", "nothing thanks", "stop thanks",
-})
+))
+
 MAX_QUESTIONS_PER_AGENT = 1     # one agent should not spend the whole shared budget clarifying
 
 
@@ -368,11 +380,12 @@ def _shown(question: str, context: str = "") -> str:
 
 def is_stop_reply(text: Optional[str]) -> bool:
     """True when ``text`` ends a follow-up session: no reply, a blank one, or one of the fixed
-    closing words ("Done!", " quit. ", "That's all", "No, thanks"). The match is
-    case-insensitive; commas and trailing ``.``, ``!``, ``?`` are ignored."""
+    closing words ("Done!", " quit. ", "That's all", "thats all", "No, thanks"). The match is
+    case-insensitive; apostrophes, commas, extra spaces and trailing ``.``, ``!``, ``?`` are
+    ignored."""
     if text is None:
         return True
-    word = text.strip().lower().replace("’", "'").replace(",", "").rstrip(".!? \t\r\n").strip()
+    word = _closing_form(text)
     return word == "" or word in _STOP_WORDS
 
 
