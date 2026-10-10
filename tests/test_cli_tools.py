@@ -199,7 +199,7 @@ def test_a_real_tool_is_gated_on_the_coerced_arguments(tmp_path):
 
     tools = tools_by_name(build_tools(tmp_path, [], Spy()))
     assert "b" in str(tools["read_path"].func(path="f.txt", offset="2", limit="1"))
-    assert seen == [("read_path", {"path": str((tmp_path / "f.txt").resolve()), "offset": 2, "limit": 1})]
+    assert seen == [("read_path", {"path": "f.txt", "offset": 2, "limit": 1})]
 
 
 # --- the gate judges the path the tool will really touch ---------------------------------------------------
@@ -277,13 +277,13 @@ def test_the_prompt_names_the_real_file_for_a_rooted_path(tmp_path):
     assert (project / "secrets").is_dir()
 
 
-def test_the_gate_and_the_tool_get_the_same_resolved_path(tmp_path):
+def test_the_gate_and_the_tool_get_the_same_reroot_of_a_rooted_path(tmp_path):
     project = _project(tmp_path)
     gate = Recording(mode="accept-edits", cwd=project)
     tools = tools_by_name(build_tools(project, [], gate))
     tools["write_file"].func(path="/sub/a.txt", content="x", if_exists="refuse")
     assert (project / "sub" / "a.txt").read_text() == "x"
-    assert gate.seen[0][1]["path"] == str((project / "sub" / "a.txt").resolve())
+    assert gate.seen[0][1]["path"] == "sub/a.txt"          # the project-relative text, not a resolved path
 
 
 @pytest.mark.parametrize("spelling", [
@@ -326,13 +326,13 @@ def test_a_path_the_tool_rejects_reaches_the_gate_as_written_and_the_tool_still_
     assert gate.seen[0][1]["path"] == str(outside) and not outside.exists()
 
 
-def test_run_shell_cwd_is_gated_as_the_folder_the_tool_will_use(tmp_path):
+def test_run_shell_cwd_is_rerooted_like_a_path(tmp_path):
     project = _project(tmp_path)
     (project / "sub").mkdir()
     gate = Recording(mode="accept-edits", cwd=project, ask=SubjectAsker("n"))
     tools = tools_by_name(build_tools(project, [], gate))
     tools["run_shell"].func(command="echo hi", cwd="/sub")
-    assert gate.seen[0][1]["cwd"] == str((project / "sub").resolve())
+    assert gate.seen[0][1]["cwd"] == "sub"
     tools["run_shell"].func(command="echo hi")                       # no cwd: nothing to rewrite
     assert gate.seen[1][1]["cwd"] is None
 
@@ -399,3 +399,133 @@ def test_a_mistyped_added_folder_is_not_created(tmp_path):
     project, typo = _project(tmp_path), tmp_path / "typo"
     tools = tools_by_name(build_tools(project, [typo], Gate(cwd=project)))
     assert not typo.exists() and "write_file" in tools
+
+
+# --- link names stay visible to the gate; only a re-rooted path is rewritten --------------------------------
+
+import os
+import sys
+
+ON_WINDOWS = sys.platform == "win32"
+
+
+def make_link(link, target):
+    """A directory junction on Windows, a symlink elsewhere; skips the test when the OS will not make one."""
+    try:
+        if ON_WINDOWS:
+            import _winapi
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            os.symlink(target, link, target_is_directory=True)
+    except (OSError, ImportError, AttributeError, NotImplementedError) as error:
+        pytest.skip(f"cannot create a link here: {error}")
+
+
+def make_file_link(link, target):
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"cannot create a file symlink here: {error}")
+
+
+def _linked_project(tmp_path):
+    project = _project(tmp_path)
+    (project / "secrets").mkdir()
+    (project / "secrets" / "k.txt").write_text("KEY", encoding="utf-8")
+    make_link(project / "link", project / "secrets")
+    return project
+
+
+def test_a_deny_rule_on_a_link_name_blocks_write_file_through_the_link(tmp_path):
+    project = _linked_project(tmp_path)
+    gate = Gate(mode="accept-edits", deny=["write_file:link/*"], cwd=project)
+    tools = tools_by_name(build_tools(project, [], gate))
+    assert "deny rule" in tools["write_file"].func(path="link/new.txt", content="x", if_exists="refuse")
+    assert not (project / "secrets" / "new.txt").exists()
+
+
+def test_a_deny_rule_on_a_link_name_blocks_read_edit_delete_and_move(tmp_path):
+    project = _linked_project(tmp_path)
+    gate = Gate(mode="accept-edits", cwd=project, ask=SubjectAsker("y"),
+                deny=["read_path:link/*", "edit_file:link/*", "delete_path:link/*", "move_file:link/*"])
+    tools = tools_by_name(build_tools(project, [], gate))
+    assert "deny rule" in tools["read_path"].func(path="link/k.txt")
+    assert "deny rule" in tools["edit_file"].func(path="link/k.txt", find="KEY", replace="X")
+    assert "deny rule" in tools["delete_path"].func(path="link/k.txt")
+    assert "deny rule" in tools["move_file"].func(source="link/k.txt", destination="moved.txt")
+    assert (project / "secrets" / "k.txt").read_text() == "KEY" and not (project / "moved.txt").exists()
+
+
+def test_the_gate_sees_a_link_path_as_the_model_wrote_it(tmp_path):
+    project = _linked_project(tmp_path)
+    gate = Recording(mode="accept-edits", cwd=project)
+    tools = tools_by_name(build_tools(project, [], gate))
+    tools["read_path"].func(path="link/k.txt")
+    assert gate.seen[0][1]["path"] == "link/k.txt"
+
+
+def test_a_dotenv_symlinked_to_another_file_is_still_denied_by_name(tmp_path):
+    project = _project(tmp_path)
+    (project / "config").mkdir()
+    (project / "config" / "prod.env").write_text("SECRET", encoding="utf-8")
+    make_file_link(project / ".env", project / "config" / "prod.env")
+    gate = Gate(mode="accept-edits", deny=["read_path:.env", "edit_file:.env"], cwd=project)
+    tools = tools_by_name(build_tools(project, [], gate))
+    assert "deny rule" in tools["read_path"].func(path=".env")
+    assert "deny rule" in tools["edit_file"].func(path=".env", find="SECRET", replace="X")
+    assert (project / "config" / "prod.env").read_text() == "SECRET"
+
+
+def test_a_rooted_path_inside_the_sandbox_is_left_as_written(tmp_path):
+    project = _project(tmp_path)
+    rooted = (project / "a.txt").as_posix()
+    if ON_WINDOWS:
+        rooted = rooted[2:]                        # no drive letter: rooted on the current drive
+    gate = Recording(mode="accept-edits", cwd=project)
+    tools = tools_by_name(build_tools(project, [], gate))
+    tools["write_file"].func(path=rooted, content="x", if_exists="refuse")
+    assert gate.seen[0][1]["path"] == rooted and (project / "a.txt").read_text() == "x"
+
+
+def test_a_path_with_a_drive_or_relative_is_left_as_written(tmp_path):
+    project = _project(tmp_path)
+    gate = Recording(mode="accept-edits", cwd=project)
+    tools = tools_by_name(build_tools(project, [], gate))
+    absolute = str(project / "a.txt")
+    tools["write_file"].func(path=absolute, content="x", if_exists="refuse")
+    tools["write_file"].func(path="./b.txt", content="x", if_exists="refuse")
+    assert [seen[1]["path"] for seen in gate.seen] == [absolute, "./b.txt"]
+
+
+def test_the_error_text_for_a_relative_path_is_what_the_tool_produced(tmp_path):
+    project = _project(tmp_path)
+    tools = tools_by_name(build_tools(project, [], Gate(mode="accept-edits", cwd=project)))
+    result = tools["edit_file"].func(path="missing.txt", find="a", replace="b")
+    assert "missing.txt" in result and str(project) not in result.replace(str(project / "missing.txt"), "")
+
+
+def test_two_tool_sets_sharing_one_gate_share_one_approval_lock(tmp_path):
+    import threading
+    import time
+    active, worst, lock = [0], [0], threading.Lock()
+
+    def slow_ask(request):
+        with lock:
+            active[0] += 1
+            worst[0] = max(worst[0], active[0])
+        time.sleep(0.15)
+        with lock:
+            active[0] -= 1
+        return Answer("y")
+
+    gate = Gate(cwd=tmp_path, ask=slow_ask)
+    first = tools_by_name(build_tools(tmp_path, [], gate))
+    second = tools_by_name(build_tools(tmp_path, [], gate))
+    threads = [threading.Thread(target=t["write_file"].func,
+                                kwargs=dict(path=f"g{i}.txt", content="x", if_exists="refuse"))
+               for i, t in enumerate([first, second])]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert worst[0] == 1 and (tmp_path / "g0.txt").exists() and (tmp_path / "g1.txt").exists()
