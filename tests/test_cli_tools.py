@@ -199,4 +199,203 @@ def test_a_real_tool_is_gated_on_the_coerced_arguments(tmp_path):
 
     tools = tools_by_name(build_tools(tmp_path, [], Spy()))
     assert "b" in str(tools["read_path"].func(path="f.txt", offset="2", limit="1"))
-    assert seen == [("read_path", {"path": "f.txt", "offset": 2, "limit": 1})]
+    assert seen == [("read_path", {"path": str((tmp_path / "f.txt").resolve()), "offset": 2, "limit": 1})]
+
+
+# --- the gate judges the path the tool will really touch ---------------------------------------------------
+
+class Recording(Gate):
+    """A real gate that remembers the arguments it was asked about."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.seen = []
+
+    def check(self, tool, args):
+        self.seen.append((tool, dict(args)))
+        return super().check(tool, args)
+
+
+class SubjectAsker:
+    def __init__(self, choice="n"):
+        self.choice, self.subjects = choice, []
+
+    def __call__(self, request):
+        self.subjects.append((request.tool, request.subject))
+        return Answer(self.choice)
+
+
+def _project(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    return project
+
+
+@pytest.mark.parametrize("spelling", ["/secrets/k.txt", "\\secrets\\k.txt"])
+def test_a_rooted_path_is_gated_as_the_file_inside_the_project_the_tool_will_write(tmp_path, spelling):
+    project = _project(tmp_path)
+    gate = Gate(mode="accept-edits", deny=["write_file:secrets/*", "write_file:.env"], cwd=project)
+    tools = tools_by_name(build_tools(project, [], gate))
+    result = tools["write_file"].func(path=spelling, content="PWNED", if_exists="overwrite")
+    assert "deny rule" in result
+    assert not (project / "secrets" / "k.txt").exists()
+
+
+@pytest.mark.parametrize("spelling", ["/.env", "\\.env"])
+def test_a_rooted_dotenv_write_is_denied(tmp_path, spelling):
+    project = _project(tmp_path)
+    gate = Gate(mode="accept-edits", deny=["write_file:.env"], cwd=project)
+    tools = tools_by_name(build_tools(project, [], gate))
+    assert "deny rule" in tools["write_file"].func(path=spelling, content="PWNED", if_exists="overwrite")
+    assert not (project / ".env").exists()
+
+
+def test_a_rooted_read_edit_delete_and_move_are_denied_like_the_real_file(tmp_path):
+    project = _project(tmp_path)
+    (project / ".env").write_text("SECRET", encoding="utf-8")
+    (project / "secrets").mkdir()
+    gate = Gate(mode="accept-edits", cwd=project, ask=SubjectAsker("y"),
+                deny=["read_path:.env", "edit_file:.env", "delete_path:secrets", "move_file:*.env*"])
+    tools = tools_by_name(build_tools(project, [], gate))
+    assert "deny rule" in tools["read_path"].func(path="/.env")
+    assert "deny rule" in tools["edit_file"].func(path="/.env", find="SECRET", replace="X")
+    assert "deny rule" in tools["delete_path"].func(path="/secrets", recursive=True)
+    assert "deny rule" in tools["move_file"].func(source="/.env", destination="stolen.txt")
+    assert (project / ".env").read_text() == "SECRET" and (project / "secrets").is_dir()
+    assert not (project / "stolen.txt").exists()
+    assert "deny rule" in tools["move_file"].func(source="ok.txt", destination="/.env")
+
+
+def test_the_prompt_names_the_real_file_for_a_rooted_path(tmp_path):
+    project = _project(tmp_path)
+    (project / "secrets").mkdir()
+    asker = SubjectAsker("n")
+    tools = tools_by_name(build_tools(project, [], Gate(cwd=project, ask=asker)))
+    tools["delete_path"].func(path="/secrets", recursive=True)
+    tools["write_file"].func(path="/notes/a.txt", content="x", if_exists="refuse")
+    assert asker.subjects == [("delete_path", "secrets"), ("write_file", "notes/a.txt")]
+    assert (project / "secrets").is_dir()
+
+
+def test_the_gate_and_the_tool_get_the_same_resolved_path(tmp_path):
+    project = _project(tmp_path)
+    gate = Recording(mode="accept-edits", cwd=project)
+    tools = tools_by_name(build_tools(project, [], gate))
+    tools["write_file"].func(path="/sub/a.txt", content="x", if_exists="refuse")
+    assert (project / "sub" / "a.txt").read_text() == "x"
+    assert gate.seen[0][1]["path"] == str((project / "sub" / "a.txt").resolve())
+
+
+@pytest.mark.parametrize("spelling", [
+    "secrets/a.txt", "./secrets/a.txt", "sub/../secrets/a.txt", "../proj/secrets/a.txt", "SECRETS_ABS"])
+def test_ordinary_spellings_are_still_denied(tmp_path, spelling):
+    project = _project(tmp_path)
+    if spelling == "SECRETS_ABS":
+        spelling = str(project / "secrets" / "a.txt")
+    gate = Gate(mode="accept-edits", deny=["write_file:secrets/*"], cwd=project)
+    tools = tools_by_name(build_tools(project, [], gate))
+    assert "deny rule" in tools["write_file"].func(path=spelling, content="x", if_exists="refuse")
+    assert not (project / "secrets").exists()
+
+
+@pytest.mark.parametrize("spelling", ["ok.txt", "./ok.txt", "sub/../ok.txt"])
+def test_ordinary_spellings_still_run_when_allowed(tmp_path, spelling):
+    project = _project(tmp_path)
+    gate = Gate(mode="accept-edits", deny=["write_file:secrets/*"], cwd=project)
+    tools = tools_by_name(build_tools(project, [], gate))
+    tools["write_file"].func(path=spelling, content="x", if_exists="refuse")
+    assert (project / "ok.txt").read_text() == "x"
+
+
+def test_a_path_in_an_added_folder_is_gated_as_that_file(tmp_path):
+    project, extra = _project(tmp_path), tmp_path / "extra"
+    extra.mkdir()
+    gate = Gate(mode="accept-edits", deny=[f"write_file:{(extra / 'k.txt').as_posix()}"], cwd=project)
+    tools = tools_by_name(build_tools(project, [extra], gate))
+    assert "deny rule" in tools["write_file"].func(path=str(extra / "k.txt"), content="x", if_exists="refuse")
+    assert not (extra / "k.txt").exists()
+
+
+def test_a_path_the_tool_rejects_reaches_the_gate_as_written_and_the_tool_still_raises(tmp_path):
+    project = _project(tmp_path)
+    outside = tmp_path / "outside.txt"
+    gate = Recording(mode="accept-edits", cwd=project)
+    tools = tools_by_name(build_tools(project, [], gate))
+    with pytest.raises(PermissionError):
+        tools["write_file"].func(path=str(outside), content="x", if_exists="refuse")
+    assert gate.seen[0][1]["path"] == str(outside) and not outside.exists()
+
+
+def test_run_shell_cwd_is_gated_as_the_folder_the_tool_will_use(tmp_path):
+    project = _project(tmp_path)
+    (project / "sub").mkdir()
+    gate = Recording(mode="accept-edits", cwd=project, ask=SubjectAsker("n"))
+    tools = tools_by_name(build_tools(project, [], gate))
+    tools["run_shell"].func(command="echo hi", cwd="/sub")
+    assert gate.seen[0][1]["cwd"] == str((project / "sub").resolve())
+    tools["run_shell"].func(command="echo hi")                       # no cwd: nothing to rewrite
+    assert gate.seen[1][1]["cwd"] is None
+
+
+# --- one prompt at a time, per-tool identity, no folder creation ------------------------------------------
+
+def test_approvals_are_serialised_across_parallel_calls(tmp_path):
+    import threading
+    import time
+    active, worst, lock = [0], [0], threading.Lock()
+
+    def slow_ask(request):
+        with lock:
+            active[0] += 1
+            worst[0] = max(worst[0], active[0])
+        time.sleep(0.15)
+        with lock:
+            active[0] -= 1
+        return Answer("y")
+
+    tools = tools_by_name(build_tools(tmp_path, [], Gate(cwd=tmp_path, ask=slow_ask)))
+    threads = [threading.Thread(target=tools["write_file"].func,
+                                kwargs=dict(path=f"f{i}.txt", content="x", if_exists="refuse"))
+               for i in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert worst[0] == 1 and all((tmp_path / f"f{i}.txt").exists() for i in range(3))
+
+
+def test_the_tool_itself_is_not_run_under_the_approval_lock(tmp_path):
+    import threading
+    gate = _Recorder()
+    tool, _ = _spy_tool()
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(**kwargs):
+        entered.set()
+        release.wait(2)
+        return "done"
+
+    slow_tool = StructuredTool(func=slow, args_schema=_SpyArgs, name="slow_tool", description="slow")
+    lock = threading.Lock()
+    first = gate_tool(slow_tool, gate, lock=lock)
+    second = gate_tool(tool, gate, lock=lock)
+    thread = threading.Thread(target=first.func, kwargs=dict(path="a"))
+    thread.start()
+    assert entered.wait(2)
+    assert lock.acquire(timeout=1)          # the first call is mid-run, yet the lock is free
+    lock.release()
+    assert second.func(path="b") == "ran"
+    release.set()
+    thread.join()
+
+
+def test_each_wrapped_tool_has_its_own_function_identity(tmp_path):
+    tools = build_tools(tmp_path, [], Gate())
+    assert len({t.func.__qualname__ for t in tools}) == len(tools)
+    assert all(t.name in t.func.__qualname__ for t in tools)
+
+
+def test_a_mistyped_added_folder_is_not_created(tmp_path):
+    project, typo = _project(tmp_path), tmp_path / "typo"
+    tools = tools_by_name(build_tools(project, [typo], Gate(cwd=project)))
+    assert not typo.exists() and "write_file" in tools
