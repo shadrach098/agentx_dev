@@ -3,7 +3,7 @@
 import pytest
 
 from agentx_dev.cli.approval import Gate
-from agentx_dev.cli.commands import command_names, parse_slash, run_command
+from agentx_dev.cli.commands import _shown, command_names, parse_slash, run_command
 from agentx_dev.cli.models import ModelError
 
 
@@ -103,10 +103,22 @@ def test_mode_cannot_reach_anything_but_the_known_modes(word):
     assert ctx.gate.mode in ("default",)  # unchanged ("" only shows the mode)
 
 
-def test_a_slash_alone_is_an_unknown_command_not_a_crash():
+def test_a_slash_alone_or_followed_by_a_space_is_a_message():
     ctx = Ctx()
-    assert run_command(ctx, "/") is True
-    assert ctx.errors and "Unknown command" in ctx.errors[0]
+    for line in ("/", "/ is the root dir, why?", "/ mode plan"):
+        assert parse_slash(line) is None
+        assert run_command(ctx, line) is False
+    assert not ctx.errors and ctx.gate.mode == "default"
+
+
+@pytest.mark.parametrize("line", ["/README.md please summarise", "/a.b", "/[31m[red]boom", "/mode! plan", "/café"])
+def test_a_first_word_with_odd_characters_is_a_message(line):
+    assert parse_slash(line) is None
+
+
+def test_names_stay_case_insensitive_and_allow_dash_and_underscore():
+    assert parse_slash("/MODE plan") == ("mode", "plan")
+    assert parse_slash("/accept-edits_1 x") == ("accept-edits_1", "x")
 
 
 def test_whitespace_other_than_a_space_separates_the_argument():
@@ -125,9 +137,9 @@ def test_a_path_is_a_message_not_a_command():
 
 def test_unknown_command_text_is_neutralised_and_short():
     ctx = Ctx()
-    run_command(ctx, "/\x1b[31m[red]boom" + "x" * 500)
+    assert run_command(ctx, "/" + "x" * 500 + " now") is True
     text = ctx.errors[0]
-    assert "\x1b" not in text and len(text) < 300
+    assert "Unknown command" in text and len(text) < 300
 
 
 def test_a_failing_handler_is_reported_on_one_line_and_never_raises():
@@ -192,3 +204,43 @@ def test_extra_text_after_argument_free_commands_is_ignored():
     ctx = Ctx()
     run_command(ctx, "/clear everything please")
     assert ctx.calls == [("clear",)]
+
+
+# ---- redaction ----------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("secret", [
+    "sk-abcdefghijkl", "sk-ant-api03-abcdefghijkl", "sk_live_abcdefghijkl", "pk_test_abcdefghijkl",
+    "ghp_abcdefghijklmnop1234", "gho_abcdefghijklmnop1234",
+    "xoxb-123456789-abcdefghij", "xoxa-123456789-abcdefghij", "xoxp-123456789-abcdefghij",
+    "AKIAIOSFODNN7EXAMPLE", "AIzaSyA-abcdefghijklmnopqrstuv",
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0",
+    "a" * 40, "0123456789abcdef" * 3,
+    "key-abcdefghij1", "tok-abcdefghijklmnopqrst",
+    "Bearer abcdefghijklmnop1234", "Bearer abc.def-ghi_jkl~mno+pqr/stu=",
+])
+def test_secret_shaped_text_is_hidden(secret):
+    out = _shown(f"failed with {secret} at start")
+    assert secret not in out and "[hidden]" in out and "failed with" in out
+
+
+@pytest.mark.parametrize("line", [
+    "api_key=abc123", "apikey=abc123", "API_KEY = abc123", "password=hunter2", "secret=shh", "token=abc",
+    "OPENAI_API_KEY=whatever", "access_token=xyz",
+])
+def test_name_value_secrets_are_hidden(line):
+    out = _shown(f"bad {line} here")
+    assert "[hidden]" in out and line.split("=")[-1].strip() not in out.replace("[hidden]", "")
+
+
+@pytest.mark.parametrize("text", [
+    "Bearer authentication failed", "api-key-configuration", "key-value-store", "tok-bucket",
+    "the token is expired", "password policy", "a" * 39, "disk-quota-exceeded",
+])
+def test_ordinary_text_is_left_alone(text):
+    assert _shown(text) == text
+
+
+def test_clear_help_line_is_neutral():
+    ctx = Ctx()
+    run_command(ctx, "/help")
+    assert "/clear     Start a new conversation." in ctx.said[0]

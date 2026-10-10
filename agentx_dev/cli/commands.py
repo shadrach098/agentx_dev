@@ -16,7 +16,24 @@ from agentx_dev.cli.models import ModelError
 from agentx_dev.cli.ui import plain
 
 _MAX_SHOWN = 160
-_SECRET = re.compile(r"(?i)\b(?:sk|pk|key|tok)-[A-Za-z0-9_\-]{8,}|\bBearer\s+\S+")
+_NAME = re.compile(r"/([A-Za-z0-9_-]+)(?:\s+(.*))?", re.DOTALL)
+_TAIL = r"[A-Za-z0-9_\-]"
+_SECRET = re.compile(
+    "|".join((
+        r"\b[\w.-]*(?:api[_-]?key|password|secret|token)\s*=\s*\S+",   # name=value
+        rf"\b(?:sk|pk)[-_]{_TAIL}{{8,}}",                              # sk-..., sk_live_..., pk_test_...
+        rf"\b(?:key|tok)-(?={_TAIL}*\d){_TAIL}{{8,}}",                 # key-/tok- with a digit in it
+        rf"\b(?:key|tok)-{_TAIL}{{20,}}",                              # ... or long enough
+        r"\bgh[pousr]_[A-Za-z0-9]{8,}",                                # GitHub tokens
+        r"\bxox[bap]-[A-Za-z0-9-]{8,}",                                # Slack tokens
+        r"\bAKIA[0-9A-Z]{12,}",                                        # AWS access key id
+        r"\bAIza[\w-]{20,}",                                           # Google API key
+        r"\beyJ[\w-]+\.[\w-]+(?:\.[\w-]+)?",                           # JWT
+        r"\b[0-9a-fA-F]{40,}\b",                                       # long hex
+        r"\bBearer\s+[\w.~+/=-]{16,}",                                 # bearer token
+    )),
+    re.IGNORECASE,
+)
 
 
 def _shown(value: Any, limit: int = _MAX_SHOWN) -> str:
@@ -28,16 +45,12 @@ def _shown(value: Any, limit: int = _MAX_SHOWN) -> str:
 def parse_slash(line: str) -> Optional[Tuple[str, str]]:
     """``("mode", "plan")`` for ``/mode plan``; None when the line is not a slash command.
 
-    A first word that contains a path separator (``/tmp/build.log fails``) is a message, not a command."""
-    text = line.strip()
-    if not text.startswith("/"):
+    A first word that is not a plain name (``/tmp/build.log fails``, ``/README.md``) or a space right after
+    the slash (``/ is the root``) makes the line a message, not a command."""
+    match = _NAME.fullmatch(line.strip())
+    if match is None:
         return None
-    parts = text[1:].split(None, 1)
-    name = parts[0] if parts else ""
-    if "/" in name or "\\" in name:
-        return None
-    arg = parts[1].strip() if len(parts) > 1 else ""
-    return name.lower(), arg
+    return match.group(1).lower(), (match.group(2) or "").strip()
 
 
 def _help(ctx: Any, arg: str) -> None:
@@ -45,6 +58,7 @@ def _help(ctx: Any, arg: str) -> None:
 
 
 def _clear(ctx: Any, arg: str) -> None:
+    # Permissions (Gate.grants, mode) are left as they are for now; Task 9 decides whether to reset grants.
     ctx.new_conversation()
 
 
@@ -97,7 +111,7 @@ class Command:
 
 COMMANDS = (
     Command("help", "List the commands", _help),
-    Command("clear", "Start a new conversation", _clear),
+    Command("clear", "Start a new conversation.", _clear),
     Command("model", "Show or switch the model: /model [name]", _model),
     Command("mode", "Show or set the mode: /mode [default|accept-edits|plan]", _mode),
     Command("resume", "Load a saved conversation: /resume [id]", _resume),
