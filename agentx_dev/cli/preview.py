@@ -32,7 +32,20 @@ class Preview:
     title: str
     body: str
     kind: str          # "diff" | "command" | "code" | "text"
-    truncated: bool = False    # a command / code / argument text was cut at MAX_COMMAND_CHARS
+    # True when the change cannot be shown (a command / code / argument text cut at MAX_COMMAND_CHARS, content
+    # or a file too large, too many lines to diff, a binary or non-UTF-8 file). The prompt then declines it
+    # unseen with ``reason``. A diff cut at MAX_PREVIEW_LINES is NOT this: its "... N more lines" marker
+    # counts what is hidden, so it stays approvable.
+    truncated: bool = False
+    reason: str = ""
+
+
+COMMAND_TOO_LONG = "command too long to review"
+
+
+def _unavailable(title: str, body: str, what: str) -> "Preview":
+    """A preview that cannot show the change: ``what`` names the reason ("content too large")."""
+    return Preview(title, body, "text", True, f"preview unavailable ({what}); nothing was run")
 
 
 @dataclass(frozen=True)
@@ -115,9 +128,10 @@ def _diff(old: str, new: str, shown: str) -> str:
 
 def _diff_preview(title: str, old: str, new: str, shown: str) -> Preview:
     if len(old) > MAX_CONTENT_CHARS or len(new) > MAX_CONTENT_CHARS:
-        return Preview(title, f"(content too large to preview: {max(len(old), len(new))} characters)", "text")
+        return _unavailable(title, f"(content too large to preview: {max(len(old), len(new))} characters)",
+                            "content too large")
     if old.count("\n") > MAX_DIFF_LINES or new.count("\n") > MAX_DIFF_LINES:
-        return Preview(title, "(too many lines to preview as a diff)", "text")
+        return _unavailable(title, "(too many lines to preview as a diff)", "too many lines")
     return Preview(title, _diff(old, new, shown), "diff")
 
 
@@ -163,9 +177,11 @@ def _write_file(args: Mapping[str, Any], cwd: Path) -> Preview:
         old = disk.text if disk.state == "ok" else ""
         return _diff_preview(f"Append to {shown}", old, old + content, shown)
     if disk.state == "large":
-        return Preview(f"Write {shown}", f"(file too large to preview: {disk.size} bytes)", "text")
+        return _unavailable(f"Write {shown}", f"(file too large to preview: {disk.size} bytes)",
+                            "existing file too large")
     if disk.state == "binary":
-        return Preview(f"Write {shown}", "(the existing file is binary; no preview)", "text")
+        return _unavailable(f"Write {shown}", "(the existing file is binary; no preview)",
+                            "existing file is binary")
     if mode == "overwrite":
         return _diff_preview(f"Overwrite {shown}", disk.text, content, shown)
     title = f"Write {shown} (already exists; refused unless it was read this session)"
@@ -181,9 +197,10 @@ def _edit_file(args: Mapping[str, Any], cwd: Path) -> Preview:
     if disk.state == "other":
         return Preview(title, "(not a regular file; the edit will fail)", "text")
     if disk.state == "large":
-        return Preview(title, f"(file too large to preview: {disk.size} bytes)", "text")
+        return _unavailable(title, f"(file too large to preview: {disk.size} bytes)", "file too large")
     if disk.state == "binary" or not disk.valid_utf8:
-        return Preview(title, "(the file is not valid UTF-8 text; the edit will fail)", "text")
+        return _unavailable(title, "(the file is not valid UTF-8 text; the edit will fail)",
+                            "file is binary or not UTF-8")
     find = _unescape_json_escapes(str(args.get("find", "")))
     replace = _unescape_json_escapes(str(args.get("replace", "")))
     # The tool reads with Path.read_text, which turns \r\n and \r into \n.
@@ -209,7 +226,7 @@ def _generic(tool: Any, args: Any) -> Preview:
         except Exception:
             body = "(arguments cannot be shown)"
     body, truncated = _whole(body)
-    return Preview(title, body, "text", truncated)
+    return Preview(title, body, "text", truncated, COMMAND_TOO_LONG if truncated else "")
 
 
 def _build(tool: str, args: Mapping[str, Any], cwd: Path) -> Preview:
@@ -222,10 +239,11 @@ def _build(tool: str, args: Mapping[str, Any], cwd: Path) -> Preview:
     if tool == "run_shell":
         where = f" in {args['cwd']}" if args.get("cwd") else ""
         body, truncated = _whole(str(args.get("command", "")))
-        return Preview(f"Run shell command{where}", body, "command", truncated)
+        return Preview(f"Run shell command{where}", body, "command", truncated,
+                       COMMAND_TOO_LONG if truncated else "")
     if tool == "run_python":
         body, truncated = _whole(str(args.get("code", "")))
-        return Preview("Run Python", body, "code", truncated)
+        return Preview("Run Python", body, "code", truncated, COMMAND_TOO_LONG if truncated else "")
     if tool == "delete_path":
         extra = " and everything inside it" if args.get("recursive") else ""
         return Preview(f"Delete {args.get('path', '')}{extra}", "", "text")

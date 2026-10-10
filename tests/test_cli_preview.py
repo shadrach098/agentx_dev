@@ -234,3 +234,46 @@ def test_rename_mode_names_the_file_the_tool_would_pick(tmp_path):
     (tmp_path / "r_1.md").write_text("old\n", encoding="utf-8")
     p = preview_for("write_file", {"path": "r.md", "content": "n\n", "if_exists": "rename"}, tmp_path)
     assert "new name" in p.title and "r_2.md" in p.title
+
+
+def _write(tmp_path, name, data):
+    (tmp_path / name).write_bytes(data)
+
+
+def test_every_preview_that_cannot_show_the_content_is_marked_unavailable(tmp_path):
+    from agentx_dev.cli.preview import MAX_READ_BYTES
+    _write(tmp_path, "small.txt", b"old\n")
+    _write(tmp_path, "big.bin", b"x" * (MAX_READ_BYTES + 1))
+    _write(tmp_path, "bin.dat", b"\x00\x01\x02")
+    _write(tmp_path, "latin.txt", b"caf\xe9\n")
+    cases = {
+        "content too large": ("write_file", {"path": "small.txt", "content": "y" * 1_200_000,
+                                              "if_exists": "overwrite"}),
+        "too many lines": ("write_file", {"path": "small.txt", "content": "y\n" * 25_000,
+                                          "if_exists": "overwrite"}),
+        "file too large": ("write_file", {"path": "big.bin", "content": "z", "if_exists": "overwrite"}),
+        "file is binary": ("write_file", {"path": "bin.dat", "content": "z", "if_exists": "overwrite"}),
+        "edit: file too large": ("edit_file", {"path": "big.bin", "find": "x", "replace": "y"}),
+        "edit: binary": ("edit_file", {"path": "bin.dat", "find": "x", "replace": "y"}),
+        "edit: not utf-8": ("edit_file", {"path": "latin.txt", "find": "caf", "replace": "tea"}),
+        "new file too large": ("write_file", {"path": "new.txt", "content": "y" * 1_200_000,
+                                              "if_exists": "refuse"}),
+    }
+    for label, (tool, args) in cases.items():
+        p = preview_for(tool, args, tmp_path)
+        assert p.truncated, label
+        assert p.reason.startswith("preview unavailable (") and p.reason.endswith("); nothing was run"), label
+
+
+def test_the_counted_200_line_cut_stays_reviewable(tmp_path):
+    content = "".join(f"line {i}\n" for i in range(MAX_PREVIEW_LINES + 50))
+    p = preview_for("write_file", {"path": "n.txt", "content": content, "if_exists": "refuse"}, tmp_path)
+    assert not p.truncated and p.body.endswith("more lines")
+
+
+def test_ordinary_previews_are_not_marked(tmp_path):
+    (tmp_path / "f.txt").write_text("a\n", encoding="utf-8")
+    for tool, args in (("write_file", {"path": "f.txt", "content": "b\n", "if_exists": "overwrite"}),
+                       ("edit_file", {"path": "f.txt", "find": "a", "replace": "b"}),
+                       ("run_shell", {"command": "ls"}), ("delete_path", {"path": "f.txt"})):
+        assert not preview_for(tool, args, tmp_path).truncated

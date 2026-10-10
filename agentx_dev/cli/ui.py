@@ -27,11 +27,13 @@ from agentx_dev.cli.preview import Preview, preview_for
 MAX_RESULT_LINES = 3
 MAX_SUMMARY_CHARS = 100
 
-# Characters that hide, reorder or fake text but are not caught by the "Cf" (format) category: line and
-# paragraph separators, Hangul/Braille-style blank fillers, the combining grapheme joiner. Every "Cf"
-# character (bidi controls, zero-width spaces, word joiners, BOM, soft hyphen, tag characters, interlinear
-# annotation marks...) is escaped too, except the two joiners emoji sequences need (U+200C, U+200D).
-_UNSAFE = frozenset([0x2028, 0x2029, 0x3164, 0x115F, 0x1160, 0x034F, 0xFFA0])
+# What ``plain`` escapes: control characters (Cc), lone surrogates (Cs) and every format character (Cf: bidi
+# controls, zero-width spaces, word joiners, BOM, soft hyphen, tag characters, interlinear annotation marks...)
+# except the two joiners emoji sequences need (U+200C, U+200D); every space-separator (Zs) other than the plain
+# space (NBSP, U+3000, U+2000-200A, U+202F, U+205F, U+1680); and the look-alike blanks that no category catches:
+# line and paragraph separators, the Hangul and Braille fillers, the combining grapheme joiner.
+_ESCAPED = ("Cc", "Cs", "Cf")
+_UNSAFE = frozenset([0x2028, 0x2029, 0x3164, 0x115F, 0x1160, 0x034F, 0xFFA0, 0x2800])
 _JOINERS = frozenset([0x200C, 0x200D])
 
 
@@ -63,7 +65,8 @@ def plain(text: Any, *, keep_newlines: bool = False) -> str:
             out.append(char)
         elif char == "\n":
             out.append("\\n")
-        elif code in _UNSAFE or (unicodedata.category(char) in ("Cc", "Cs", "Cf") and code not in _JOINERS):
+        elif code in _UNSAFE or (unicodedata.category(char) in _ESCAPED and code not in _JOINERS) \
+                or (char != " " and unicodedata.category(char) == "Zs"):
             out.append(_escape(char))
         else:
             out.append(char)
@@ -183,10 +186,16 @@ def _request_body(request: Request, preview: Preview) -> Text:
     everything inside it" or "saved under a new name") and the subject the gate judged are ordinary wrapped
     lines here, never a panel title, which would cut them."""
     body = Text()
+    action = plain(preview.title)
+    subject = plain(request.subject)
     body.append("Action: ", style="bold")
-    body.append(plain(preview.title) + "\n")
-    body.append("Subject: ", style="bold")
-    body.append(plain(request.subject) + "\n")
+    body.append(action + "\n")
+    # The subject is what the gate judged. Skip it only when it adds nothing: it is the action text itself,
+    # or (for a command) the very command the body already shows.
+    shown_command = preview.kind == "command" and subject == " ".join(plain(preview.body).split())
+    if subject != action and not shown_command:
+        body.append("Subject: ", style="bold")
+        body.append(subject + "\n")
     if preview.body:
         body.append("\n")
         body.append_text(_preview_text(preview))
@@ -212,9 +221,10 @@ def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
     def ask(request: Request) -> Answer:
         preview = preview_for(request.tool, request.args, cwd)
         if preview.truncated:
-            _print(console, Text(f"Declined without asking: {plain(request.tool)} is too long to review.",
+            reason = preview.reason or "preview unavailable; nothing was run"
+            _print(console, Text(f"Declined without asking ({plain(request.tool)}): {plain(reason)}.",
                                  style="bold red"))
-            return Answer("n", "command too long to review")
+            return Answer("n", reason)
         _print(console, Panel(_request_body(request, preview), title=Text(plain(request.tool)),
                               title_align="left"))
         always = bool(request.remember and request.grant)

