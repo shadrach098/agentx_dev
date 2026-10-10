@@ -6,13 +6,15 @@ works without it and can be tested without a terminal.
 Everything the model or the project supplies (tool arguments, previews, file content, thoughts, titles, the
 final answer) is printed as rich ``Text`` after ``plain`` has defused control characters and escape
 sequences, so it can neither style nor spoof the interface. Only the final answer is rendered as Markdown
-(with hyperlinks off)."""
+(with hyperlinks off). Nothing here may kill a turn because of the console: text the console cannot encode is
+printed with backslash escapes, and any failure to read an answer is a "no"."""
 
 from __future__ import annotations
 
+import sys
 import unicodedata
 from pathlib import Path
-from typing import Any, Callable, Dict, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -25,13 +27,12 @@ from agentx_dev.cli.preview import Preview, preview_for
 MAX_RESULT_LINES = 3
 MAX_SUMMARY_CHARS = 100
 
-# Format and separator characters that can reorder, hide or break up text (bidi overrides and isolates,
-# zero-width spaces, word joiners, line and paragraph separators, BOM, soft hyphen). Joiners that emoji
-# sequences need (U+200C, U+200D) are left alone.
-_UNSAFE = frozenset(
-    [0x00AD, 0x061C, 0x200B, 0x200E, 0x200F, 0x2028, 0x2029, 0xFEFF]
-    + list(range(0x202A, 0x202F)) + list(range(0x2060, 0x2065)) + list(range(0x2066, 0x206A))
-)
+# Characters that hide, reorder or fake text but are not caught by the "Cf" (format) category: line and
+# paragraph separators, Hangul/Braille-style blank fillers, the combining grapheme joiner. Every "Cf"
+# character (bidi controls, zero-width spaces, word joiners, BOM, soft hyphen, tag characters, interlinear
+# annotation marks...) is escaped too, except the two joiners emoji sequences need (U+200C, U+200D).
+_UNSAFE = frozenset([0x2028, 0x2029, 0x3164, 0x115F, 0x1160, 0x034F, 0xFFA0])
+_JOINERS = frozenset([0x200C, 0x200D])
 
 
 def _escape(char: str) -> str:
@@ -41,28 +42,41 @@ def _escape(char: str) -> str:
     return f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
 
 
+def _normalised(text: str) -> str:
+    return text.replace("\r\n", "\n")
+
+
 def plain(text: Any, *, keep_newlines: bool = False) -> str:
-    """``text`` made safe to print: control characters (ESC, BEL, CR, C1 codes...), lone surrogates and
-    direction overrides are replaced by a visible escape such as ``\\x1b``. Tabs stay. Line breaks stay when
-    ``keep_newlines`` is true (the text is first split into lines, so CR LF becomes one break) and become a
-    visible ``\\n`` otherwise."""
+    """``text`` made safe to print: control characters (ESC, BEL, CR, C1 codes, VT, FF...), lone surrogates,
+    format characters and invisible fillers are replaced by a visible escape such as ``\\x1b``. Tabs stay.
+    Line breaks stay when ``keep_newlines`` is true (CR LF counts as one; every other break character is
+    escaped, not treated as a break) and become a visible ``\\n`` otherwise."""
     try:
         text = text if isinstance(text, str) else str(text)
     except Exception:
         return "(cannot be shown)"
-    if keep_newlines:
-        text = "\n".join(text.splitlines())
+    text = _normalised(text)
     out = []
     for char in text:
+        code = ord(char)
         if char == "\t" or (char == "\n" and keep_newlines):
             out.append(char)
         elif char == "\n":
             out.append("\\n")
-        elif ord(char) in _UNSAFE or unicodedata.category(char) in ("Cc", "Cs"):
+        elif code in _UNSAFE or (unicodedata.category(char) in ("Cc", "Cs", "Cf") and code not in _JOINERS):
             out.append(_escape(char))
         else:
             out.append(char)
     return "".join(out)
+
+
+def _lines(text: str) -> List[str]:
+    """Split on ``\\n`` only (after CR LF is normalised), so ``plain`` has already escaped every other break
+    character instead of it silently splitting a line. One trailing newline does not add an empty line."""
+    parts = _normalised(text).split("\n")
+    if len(parts) > 1 and parts[-1] == "":
+        parts.pop()
+    return parts
 
 
 def bullet(console: Console) -> str:
@@ -75,6 +89,27 @@ def _short(text: Any, limit: int = MAX_SUMMARY_CHARS) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
+def _print(console: Console, *renderables: Any) -> None:
+    """``console.print`` that survives a console which cannot encode what is printed (a cp1252 or ASCII
+    stdout): the output is rendered to a string and written with unencodable characters as backslash
+    escapes."""
+    try:
+        console.print(*renderables)
+        return
+    except UnicodeEncodeError:
+        pass
+    with console.capture() as capture:
+        console.print(*renderables)
+    data = capture.get()
+    encoding = console.encoding or "ascii"
+    try:
+        safe = data.encode(encoding, "backslashreplace").decode(encoding)
+    except LookupError:
+        safe = data.encode("ascii", "backslashreplace").decode("ascii")
+    console.file.write(safe)
+    console.file.flush()
+
+
 class Screen:
     """Draws what the agent does. Everything is printed as ``Text``, so square brackets in tool output are
     never read as rich markup."""
@@ -83,11 +118,13 @@ class Screen:
         self.console = console
 
     def show_event(self, event: Dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
         kind = event.get("type")
         if kind == "thought":
-            text = plain(event.get("content", ""), keep_newlines=True).strip()
+            text = plain(_nothing_if_none(event.get("content")), keep_newlines=True).strip()
             if text:
-                self.console.print(Text(text, style="dim italic"))
+                _print(self.console, Text(text, style="dim italic"))
         elif kind == "tool_call":
             name = _short(event.get("name", ""))
             args = event.get("args")
@@ -98,30 +135,35 @@ class Screen:
             line = Text(f"{bullet(self.console)} {name}", style="bold")
             if summary:
                 line.append(f"  {summary}", style="dim")
-            self.console.print(line)
+            _print(self.console, line)
         elif kind == "tool_result":
-            self._result(event.get("result", ""), bool(event.get("is_error")))
+            self._result(event.get("result"), bool(event.get("is_error")))
         elif kind == "final":
-            self.console.print(Markdown(plain(event.get("content", ""), keep_newlines=True), hyperlinks=False))
+            content = plain(_nothing_if_none(event.get("content")), keep_newlines=True)
+            _print(self.console, Markdown(content, hyperlinks=False))
 
     def _result(self, result: Any, is_error: bool) -> None:
         style = "red" if is_error else "dim"
-        lines = str(result).splitlines() or [""]
+        lines = _lines(plain(_nothing_if_none(result), keep_newlines=True))
         for line in lines[:MAX_RESULT_LINES]:
-            self.console.print(Text("  " + _short(line, 160), style=style))
+            _print(self.console, Text("  " + _short(line, 160), style=style))
         if len(lines) > MAX_RESULT_LINES:
-            self.console.print(Text(f"  ... {len(lines) - MAX_RESULT_LINES} more lines", style=style))
+            _print(self.console, Text(f"  ... {len(lines) - MAX_RESULT_LINES} more lines", style=style))
 
     def notice(self, text: str) -> None:
-        self.console.print(Text(plain(text, keep_newlines=True), style="cyan"))
+        _print(self.console, Text(plain(text, keep_newlines=True), style="cyan"))
 
     def error(self, text: str) -> None:
-        self.console.print(Text(plain(text, keep_newlines=True), style="bold red"))
+        _print(self.console, Text(plain(text, keep_newlines=True), style="bold red"))
+
+
+def _nothing_if_none(value: Any) -> Any:
+    return "" if value is None else value
 
 
 def _preview_text(preview: Preview) -> Text:
     text = Text()
-    for line in preview.body.splitlines() or [""]:
+    for line in _lines(preview.body):
         style = ""
         if preview.kind == "diff":
             if line.startswith(("+++", "---")):
@@ -136,41 +178,76 @@ def _preview_text(preview: Preview) -> Text:
     return text
 
 
-def make_asker(console: Console, read_line: Callable[[str], str], cwd: Path) -> Callable[[Request], Answer]:
+def _request_body(request: Request, preview: Preview) -> Text:
+    """The panel's content. The full action text (the preview title, which carries qualifiers such as "and
+    everything inside it" or "saved under a new name") and the subject the gate judged are ordinary wrapped
+    lines here, never a panel title, which would cut them."""
+    body = Text()
+    body.append("Action: ", style="bold")
+    body.append(plain(preview.title) + "\n")
+    body.append("Subject: ", style="bold")
+    body.append(plain(request.subject) + "\n")
+    if preview.body:
+        body.append("\n")
+        body.append_text(_preview_text(preview))
+    return body
+
+
+def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
+               cwd: Path) -> Callable[[Request], Answer]:
     """The gate's ``ask`` function: show what is about to happen, read y / a / n.
 
-    Fails closed: bare Enter, end of input (Ctrl-D) and Ctrl-C are all a "no". "Don't ask again" is offered
-    only when the gate says it can remember it (``Request.remember``), and the prompt prints the exact rule
-    (``Request.grant``) that answering ``a`` will remember."""
+    ``cwd`` must be the SAME folder the gate was built with (the application passes the gate's ``cwd``), or the
+    preview and the gate would look at different files. ``read_line`` defaults to plain ``input``.
+
+    The prompt shows the full action text and ``Request.subject`` (what the gate judged, in its resolved
+    form), never cut. A command, code or tool-argument text longer than ``MAX_COMMAND_CHARS`` cannot be shown
+    whole, so it is declined unseen ("command too long to review") rather than approved on a partial view.
+
+    Fails closed: bare Enter, end of input (Ctrl-D), Ctrl-C and any error reading an answer are all a "no".
+    "Don't ask again" is offered only when the gate says it can remember it (``Request.remember``), and the
+    prompt prints the exact rule (``Request.grant``) that answering ``a`` will remember."""
+    read_line = read_line or input
 
     def ask(request: Request) -> Answer:
         preview = preview_for(request.tool, request.args, cwd)
-        console.print(Panel(_preview_text(preview), title=Text(plain(preview.title)), title_align="left"))
+        if preview.truncated:
+            _print(console, Text(f"Declined without asking: {plain(request.tool)} is too long to review.",
+                                 style="bold red"))
+            return Answer("n", "command too long to review")
+        _print(console, Panel(_request_body(request, preview), title=Text(plain(request.tool)),
+                              title_align="left"))
         always = bool(request.remember and request.grant)
         if always:
-            console.print(Text("[y] yes   [a] yes, don't ask again   [n] no", style="bold"))
-            console.print(Text("'a' will remember: " + plain(request.grant), style="yellow"))
+            _print(console, Text("[y] yes   [a] yes, don't ask again   [n] no", style="bold"))
+            if request.kind == "command":
+                what = f"{plain(request.tool)} commands starting with '{plain(request.grant)}'"
+            else:
+                what = plain(request.grant)
+            _print(console, Text("'a' will remember: " + what, style="yellow"))
         else:
-            console.print(Text("[y] yes   [n] no", style="bold"))
+            _print(console, Text("[y] yes   [n] no", style="bold"))
         choices = {"y": "y", "yes": "y", "n": "n", "no": "n", "": "n"}
         if always:
             choices.update({"a": "a", "always": "a"})
         while True:
             try:
-                raw = read_line("Allow? [y/n] " if not always else "Allow? [y/a/n] ")
+                raw = read_line("Allow? [y/a/n] " if always else "Allow? [y/n] ")
             except EOFError:
                 return Answer("n", "no answer was given")
             except KeyboardInterrupt:
                 return Answer("n", "the user interrupted the question")
-            choice = choices.get(raw.strip().lower())
+            except Exception:
+                return Answer("n", "could not read an answer")
+            choice = choices.get(str(raw).strip().lower())
             if choice is None:
-                console.print(Text("Please answer y, a or n." if always else "Please answer y or n.",
-                                   style="yellow"))
+                _print(console, Text("Please answer y, a or n." if always else "Please answer y or n.",
+                                     style="yellow"))
                 continue
             if choice == "n":
                 try:
-                    reason = read_line("Reason (optional): ").strip()
-                except (EOFError, KeyboardInterrupt):
+                    reason = str(read_line("Reason (optional): ")).strip()
+                except (Exception, KeyboardInterrupt):     # already declined; the reason is optional
                     reason = ""
                 return Answer("n", reason)
             return Answer(choice)
@@ -201,19 +278,60 @@ def make_completer(commands: Sequence[str]):
     return _Completer()
 
 
+def _has_console() -> bool:
+    try:
+        return bool(sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def safe_toolbar(toolbar: Callable[[], Any]) -> Callable[[], Any]:
+    """The status bar text with control characters defused; an error building it gives an empty bar."""
+    def render() -> Any:
+        try:
+            text = toolbar()
+        except Exception:
+            return ""
+        return plain(text) if isinstance(text, str) else text
+    return render
+
+
 class PromptInput:
     """The chat prompt: history kept between runs, Alt+Enter for a new line, Tab completion, a status bar,
     Shift+Tab to cycle the mode. ``read_short`` is a plain one-line prompt (approvals, choices) that does not
-    touch the history."""
+    touch the history.
+
+    Without a console (stdin or stdout is not a terminal, or prompt_toolkit cannot start, as on Windows
+    without a console buffer) both fall back to plain ``input()``.
+
+    The history file stores whatever the user types, and is made readable by the user only where the platform
+    allows it."""
 
     def __init__(self, *, history_file: Path, commands: Sequence[str], toolbar: Callable[[], str],
                  cycle_mode: Callable[[], object]) -> None:
+        self._chat = None
+        self._short = None
+        history_file = Path(history_file)
+        try:
+            history_file.parent.mkdir(parents=True, exist_ok=True)
+            history_file.touch(exist_ok=True)
+            history_file.chmod(0o600)
+        except OSError:
+            pass
+        if not _has_console():
+            return
+        try:
+            self._chat, self._short = self._sessions(history_file, commands, safe_toolbar(toolbar), cycle_mode)
+        except Exception:
+            self._chat = self._short = None
+
+    @staticmethod
+    def _sessions(history_file: Path, commands: Sequence[str], toolbar: Callable[[], Any],
+                  cycle_mode: Callable[[], object]):
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.key_binding import KeyBindings
 
-        history_file = Path(history_file)
-        history_file.parent.mkdir(parents=True, exist_ok=True)
         bindings = KeyBindings()
 
         @bindings.add("enter")
@@ -229,13 +347,18 @@ class PromptInput:
             cycle_mode()
             event.app.invalidate()
 
-        self._chat = PromptSession(history=FileHistory(str(history_file)), multiline=True,
-                                   key_bindings=bindings, completer=make_completer(commands),
-                                   bottom_toolbar=toolbar, complete_while_typing=False)
-        self._short = PromptSession(multiline=False, bottom_toolbar=toolbar)
+        chat = PromptSession(history=FileHistory(str(history_file)), multiline=True,
+                             key_bindings=bindings, completer=make_completer(commands),
+                             bottom_toolbar=toolbar, complete_while_typing=False)
+        short = PromptSession(multiline=False, bottom_toolbar=toolbar)
+        return chat, short
 
     def read(self, prompt: str = "> ") -> str:
+        if self._chat is None:
+            return input(prompt)
         return self._chat.prompt(prompt)
 
     def read_short(self, prompt: str = "") -> str:
+        if self._short is None:
+            return input(prompt)
         return self._short.prompt(prompt)

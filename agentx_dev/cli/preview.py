@@ -21,7 +21,10 @@ MAX_READ_BYTES = 1_000_000        # larger existing files are not read for a pre
 MAX_CONTENT_CHARS = 1_000_000     # larger new content is not diffed
 MAX_DIFF_LINES = 20_000           # more lines than this on either side is not diffed
 MAX_LINE_CHARS = 2_000
-MAX_FALLBACK_CHARS = 2_000
+# A command, a piece of code or an unknown tool's arguments are shown WHOLE up to this many characters, never
+# cut short (a dangerous tail must not hide behind a cut). Past it the preview is cut with a note saying how
+# much is hidden and ``Preview.truncated`` is set; the prompt then declines the action unseen.
+MAX_COMMAND_CHARS = 20_000
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,7 @@ class Preview:
     title: str
     body: str
     kind: str          # "diff" | "command" | "code" | "text"
+    truncated: bool = False    # a command / code / argument text was cut at MAX_COMMAND_CHARS
 
 
 @dataclass(frozen=True)
@@ -80,16 +84,18 @@ def _read(path: Optional[Path]) -> _Disk:
     return _Disk("ok", data.decode("utf-8", errors="replace"), len(data), valid)
 
 
-def _clip(text: str) -> str:
-    """Bound a block of text: at most MAX_PREVIEW_LINES lines of MAX_LINE_CHARS."""
-    lines = text.splitlines()
-    extra = len(lines) - MAX_PREVIEW_LINES
-    if extra > 0:
-        lines = lines[:MAX_PREVIEW_LINES] + [f"... {extra} more lines"]
-    return "\n".join(
-        line if len(line) <= MAX_LINE_CHARS else line[:MAX_LINE_CHARS] + " ..."
-        for line in lines
-    )
+def _cut_line(line: str) -> str:
+    """One line bounded to MAX_LINE_CHARS; a cut says how many characters it hides."""
+    if len(line) <= MAX_LINE_CHARS:
+        return line
+    return f"{line[:MAX_LINE_CHARS]} ... [{len(line) - MAX_LINE_CHARS} more characters hidden]"
+
+
+def _whole(text: str) -> tuple:
+    """``(body, truncated)``: the text whole up to MAX_COMMAND_CHARS, else cut there with a note."""
+    if len(text) <= MAX_COMMAND_CHARS:
+        return text, False
+    return f"{text[:MAX_COMMAND_CHARS]}\n... [{len(text) - MAX_COMMAND_CHARS} more characters hidden]", True
 
 
 def _diff(old: str, new: str, shown: str) -> str:
@@ -104,10 +110,7 @@ def _diff(old: str, new: str, shown: str) -> str:
     if len(lines) > MAX_PREVIEW_LINES:
         extra = 1 + sum(1 for _ in stream)
         lines = lines[:MAX_PREVIEW_LINES] + [f"... {extra} more lines"]
-    return "\n".join(
-        line if len(line) <= MAX_LINE_CHARS else line[:MAX_LINE_CHARS] + " ..."
-        for line in lines
-    )
+    return "\n".join(_cut_line(line) for line in lines)
 
 
 def _diff_preview(title: str, old: str, new: str, shown: str) -> Preview:
@@ -205,9 +208,8 @@ def _generic(tool: Any, args: Any) -> Preview:
             body = repr(args)
         except Exception:
             body = "(arguments cannot be shown)"
-    if len(body) > MAX_FALLBACK_CHARS:
-        body = body[:MAX_FALLBACK_CHARS] + "\n... (truncated)"
-    return Preview(title, body, "text")
+    body, truncated = _whole(body)
+    return Preview(title, body, "text", truncated)
 
 
 def _build(tool: str, args: Mapping[str, Any], cwd: Path) -> Preview:
@@ -219,9 +221,11 @@ def _build(tool: str, args: Mapping[str, Any], cwd: Path) -> Preview:
         return _edit_file(args, cwd)
     if tool == "run_shell":
         where = f" in {args['cwd']}" if args.get("cwd") else ""
-        return Preview(f"Run shell command{where}", _clip(str(args.get("command", ""))), "command")
+        body, truncated = _whole(str(args.get("command", "")))
+        return Preview(f"Run shell command{where}", body, "command", truncated)
     if tool == "run_python":
-        return Preview("Run Python", _clip(str(args.get("code", ""))), "code")
+        body, truncated = _whole(str(args.get("code", "")))
+        return Preview("Run Python", body, "code", truncated)
     if tool == "delete_path":
         extra = " and everything inside it" if args.get("recursive") else ""
         return Preview(f"Delete {args.get('path', '')}{extra}", "", "text")

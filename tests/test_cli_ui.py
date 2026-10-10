@@ -1,12 +1,15 @@
 """Rendering, the approval prompt, and the completer. No real terminal needed."""
 
 import io
+import os
+import re
 
 import pytest
 from rich.console import Console
 
 from agentx_dev.cli.approval import Request
-from agentx_dev.cli.ui import Screen, bullet, make_asker, make_completer, plain
+from agentx_dev.cli.preview import MAX_COMMAND_CHARS
+from agentx_dev.cli.ui import PromptInput, Screen, bullet, make_asker, make_completer, plain, safe_toolbar
 
 
 def console(**kw):
@@ -73,6 +76,37 @@ class TestNothingModelSuppliedCanStyleOrSpoofTheScreen:
         assert "‮" not in text and "\x9b" not in text
         assert plain("tab\tand\nnewline", keep_newlines=True) == "tab\tand\nnewline"
         assert plain("héllo ✓ 日本 👨‍👩") == "héllo ✓ 日本 👨‍👩"
+
+    def test_plain_escapes_invisible_fillers_and_tag_characters(self):
+        hidden = "ㅤ\U000e0041⁯͏ᅟᅠ￹⁤"
+        text = plain("a" + hidden + "b")
+        for char in hidden:
+            assert char not in text
+        assert "\\u3164" in text and "\\U000e0041" in text and text.startswith("a") and text.endswith("b")
+
+    def test_odd_line_breaks_are_escaped_not_split(self):
+        c, out = console()
+        Screen(c).show_event({"type": "tool_result", "name": "x", "is_error": False,
+                              "result": "a\x0bb\x0cc\x1cd\x85e\rf"})
+        text = out.getvalue()
+        assert len(text.splitlines()) == 1 and "more lines" not in text
+        assert "\\x0b" in text and "\\x85" in text and "\\x0d" in text
+
+    def test_crlf_is_one_break(self):
+        c, out = console()
+        Screen(c).show_event({"type": "tool_result", "name": "x", "is_error": False, "result": "a\r\nb\r\n"})
+        assert [l.strip() for l in out.getvalue().splitlines()] == ["a", "b"]
+
+    def test_an_odd_event_or_result_cannot_raise(self):
+        class Bad:
+            def __str__(self):
+                raise RuntimeError("no")
+        c, out = console()
+        s = Screen(c)
+        s.show_event(None)
+        s.show_event({"type": "tool_result", "name": "x", "is_error": False, "result": Bad()})
+        s.show_event({"type": "tool_call", "name": Bad(), "args": {"path": Bad()}})
+        s.show_event({"type": "final", "content": None})
 
     def test_results_thoughts_calls_notices_and_errors_carry_no_escape_sequences(self):
         c, out = styled_console()
@@ -194,13 +228,173 @@ class TestApprovalPrompt:
         assert "\x1b[2J" not in text and "‮" not in text
         assert "[bold red]ok[/]" in text and "[green]dir" in text and "[red]x[/red]" in text
 
-    def test_a_file_name_cannot_break_the_title_onto_a_line_of_its_own(self, tmp_path):
+    def test_a_file_name_cannot_forge_an_options_line(self, tmp_path):
         c, out = console()
         request = Request(tool="delete_path", kind="destructive", subject="x",
                           args={"path": "x\n[a] yes, don't ask again"}, remember=False)
         make_asker(c, lines("y"), tmp_path)(request)
-        first = out.getvalue().splitlines()[0]
-        assert "Delete x" in first and "[a] yes, don't ask again" in first   # all on the one border line
+        shown = [line.strip("│ ").strip() for line in out.getvalue().splitlines()]
+        assert not any(line.startswith("[a]") for line in shown)
+        assert any("Action: Delete x\\n[a] yes" in line for line in shown)   # the break is shown, not made
+
+
+def squash(text):
+    """Output with panel borders and all whitespace removed, so wrapped text can be searched."""
+    return re.sub(r"[\s│╭╮╰╯─|+\-]", "", text)
+
+
+def squash_spaces(text):
+    return " ".join(text.split())
+
+
+def legacy_console(encoding="cp1252", width=100):
+    raw = io.BytesIO()
+    file = io.TextIOWrapper(raw, encoding=encoding, newline="")
+    return Console(file=file, width=width, force_terminal=False, color_system=None), file, raw
+
+
+class TestLegacyConsoles:
+    def test_screen_does_not_die_on_text_the_console_cannot_encode(self):
+        c, file, raw = legacy_console()
+        s = Screen(c)
+        s.show_event({"type": "tool_result", "name": "x", "is_error": False, "result": "日本語"})
+        s.show_event({"type": "final", "content": "done ✓ 日本"})
+        s.show_event({"type": "thought", "content": "考える"})
+        s.notice("日本")
+        s.error("日本")
+        file.flush()
+        text = raw.getvalue().decode("cp1252")
+        assert "\\u65e5" in text and "done" in text and "\\u2713" in text
+
+    def test_the_asker_does_not_die_on_it_either(self, tmp_path):
+        c, file, raw = legacy_console("ascii")
+        request = Request(tool="run_shell", kind="command", subject="echo 日本",
+                          args={"command": "echo 日本"}, remember=True, grant="echo")
+        assert make_asker(c, lines("y"), tmp_path)(request).choice == "y"
+        file.flush()
+        assert "\\u65e5" in raw.getvalue().decode("ascii")
+
+
+class TestWhatTheGateJudgesIsWhatTheUserSees:
+    def test_a_long_destructive_path_keeps_its_qualifier(self, tmp_path):
+        c, out = console()
+        path = "a/" * 40
+        request = Request(tool="delete_path", kind="destructive", subject=path.rstrip("/"),
+                          args={"path": path, "recursive": True}, remember=False)
+        make_asker(c, lines("n", ""), tmp_path)(request)
+        assert "everythinginsideit" in squash(out.getvalue())
+
+    def test_a_move_shows_both_ends(self, tmp_path):
+        c, out = console()
+        dest = "d/" * 30 + "final-name.txt"
+        request = Request(tool="move_file", kind="destructive", subject=f"src.txt -> {dest}",
+                          args={"source": "src.txt", "destination": dest}, remember=False)
+        make_asker(c, lines("n", ""), tmp_path)(request)
+        text = squash(out.getvalue())
+        assert squash("final-name.txt") in text and "src.txt" in text
+
+    def test_write_qualifiers_are_not_lost(self, tmp_path):
+        (tmp_path / "a.txt").write_text("old", encoding="utf-8")
+        c, out = console()
+        request = Request(tool="write_file", kind="edit", subject="a.txt",
+                          args={"path": "a.txt", "content": "new", "if_exists": "rename"},
+                          remember=True, grant="all edits this session")
+        make_asker(c, lines("n", ""), tmp_path)(request)
+        assert "savedunderanewname" in squash(out.getvalue())
+
+    def test_the_subject_the_gate_judges_is_printed(self, tmp_path):
+        c, out = console()
+        request = Request(tool="edit_file", kind="edit", subject="secret/real.txt",
+                          args={"path": "notes/link.txt", "find": "a", "replace": "b"},
+                          remember=True, grant="all edits this session")
+        make_asker(c, lines("n", ""), tmp_path)(request)
+        assert "Subject: secret/real.txt" in out.getvalue()
+
+    def test_a_long_subject_is_wrapped_not_cut(self, tmp_path):
+        c, out = console()
+        subject = "deep/" * 40 + "end.txt"
+        request = Request(tool="edit_file", kind="edit", subject=subject,
+                          args={"path": subject, "find": "a", "replace": "b"}, remember=False)
+        make_asker(c, lines("n", ""), tmp_path)(request)
+        assert squash(subject) in squash(out.getvalue())
+
+    def test_the_dangerous_tail_of_a_long_command_is_shown(self, tmp_path):
+        c, out = console()
+        command = "echo " + "a" * 2100 + "; rm -rf ~"
+        request = Request(tool="run_shell", kind="command", subject=command, args={"command": command})
+        make_asker(c, lines("n", ""), tmp_path)(request)
+        assert "rm -rf ~" in squash_spaces(out.getvalue())
+
+    def test_a_command_too_long_to_review_is_declined_unseen(self, tmp_path):
+        c, out = console()
+        read = lines("y")
+        command = "echo " + "a" * (MAX_COMMAND_CHARS + 1)
+        request = Request(tool="run_shell", kind="command", subject="echo", args={"command": command},
+                          remember=True, grant="echo")
+        answer = make_asker(c, read, tmp_path)(request)
+        assert answer.choice == "n" and answer.reason == "command too long to review"
+        assert read.prompts == [] and "too long" in out.getvalue()
+
+    def test_an_unknown_tool_with_a_huge_argument_is_declined_too(self, tmp_path):
+        c, _ = console()
+        request = Request(tool="mcp_thing", kind="command", subject="s",
+                          args={"q": "z" * (MAX_COMMAND_CHARS + 10)})
+        assert make_asker(c, lines("y"), tmp_path)(request).reason == "command too long to review"
+
+    def test_command_grants_say_which_commands(self, tmp_path):
+        c, out = console()
+        request = Request(tool="run_shell", kind="command", subject="pytest -q", args={"command": "pytest -q"},
+                          remember=True, grant="pytest")
+        make_asker(c, lines("y"), tmp_path)(request)
+        assert "run_shell commands starting with 'pytest'" in squash_spaces(out.getvalue())
+
+
+class TestInputFailures:
+    @pytest.mark.parametrize("error", [OSError("no console"), UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad"),
+                                       RuntimeError("x")])
+    def test_any_read_error_is_a_no(self, tmp_path, error):
+        c, _ = console()
+        answer = make_asker(c, lines(error), tmp_path)(edit_request())
+        assert (answer.choice, answer.reason) == ("n", "could not read an answer")
+
+    def test_a_read_error_at_the_reason_prompt_is_just_no_reason(self, tmp_path):
+        c, _ = console()
+        answer = make_asker(c, lines("n", OSError("x")), tmp_path)(edit_request())
+        assert (answer.choice, answer.reason) == ("n", "")
+
+    def test_the_default_reader_is_plain_input(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+        c, _ = console()
+        assert make_asker(c, None, tmp_path)(edit_request()).choice == "y"
+
+
+class TestPromptInputWithoutAConsole:
+    def test_falls_back_to_input_and_keeps_a_private_history_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agentx_dev.cli.ui._has_console", lambda: False)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "hello")
+        history = tmp_path / "sub" / "history"
+        prompt = PromptInput(history_file=history, commands=["/help"], toolbar=lambda: "x",
+                             cycle_mode=lambda: None)
+        assert prompt.read("> ") == "hello" and prompt.read_short("? ") == "hello"
+        assert history.exists()
+        if os.name != "nt":
+            assert (history.stat().st_mode & 0o777) == 0o600
+
+    def test_a_prompt_toolkit_that_cannot_start_falls_back(self, tmp_path, monkeypatch):
+        import prompt_toolkit
+
+        def broken(*args, **kwargs):
+            raise OSError("NoConsoleScreenBufferError")
+        monkeypatch.setattr("agentx_dev.cli.ui._has_console", lambda: True)
+        monkeypatch.setattr(prompt_toolkit, "PromptSession", broken)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "typed")
+        prompt = PromptInput(history_file=tmp_path / "h", commands=[], toolbar=lambda: "x",
+                             cycle_mode=lambda: None)
+        assert prompt.read() == "typed"
+
+    def test_the_toolbar_text_is_neutralised(self):
+        assert safe_toolbar(lambda: "mode \x1b[31mred")() == "mode \\x1b[31mred"
+        assert safe_toolbar(lambda: 1 / 0)() == ""
 
 
 class TestCompleter:

@@ -1,6 +1,6 @@
 """What an approval prompt shows."""
 
-from agentx_dev.cli.preview import MAX_PREVIEW_LINES, preview_for
+from agentx_dev.cli.preview import MAX_COMMAND_CHARS, MAX_PREVIEW_LINES, preview_for
 
 
 def test_a_new_file_is_all_additions(tmp_path):
@@ -176,17 +176,28 @@ def test_an_unknown_tool_with_tuple_keys_and_odd_values(tmp_path):
 
 
 def test_the_unknown_tool_fallback_marks_a_cut(tmp_path):
-    p = preview_for("mcp_thing", {"q": "z" * 5000}, tmp_path)
-    assert p.body.endswith("(truncated)") and len(p.body) < 2100
+    p = preview_for("mcp_thing", {"q": "z" * (MAX_COMMAND_CHARS + 5000)}, tmp_path)
+    assert p.truncated and "more characters hidden]" in p.body.splitlines()[-1]
+    assert len(p.body) < MAX_COMMAND_CHARS + 100
 
 
-def test_a_long_shell_command_and_code_are_cut(tmp_path):
-    cmd = "\n".join(f"echo {i}" for i in range(MAX_PREVIEW_LINES + 30))
+def test_a_shell_command_and_code_are_shown_whole_up_to_the_cap(tmp_path):
+    cmd = "\n".join(f"echo {i}" for i in range(MAX_PREVIEW_LINES + 300)) + "\n" + "x" * 2500 + "; rm -rf ~"
     for tool, key in (("run_shell", "command"), ("run_python", "code")):
-        lines = preview_for(tool, {key: cmd}, tmp_path).body.splitlines()
-        assert len(lines) == MAX_PREVIEW_LINES + 1 and lines[-1] == "... 30 more lines"
-    one = preview_for("run_shell", {"command": "x" * 100_000}, tmp_path).body
-    assert len(one) < 5000
+        p = preview_for(tool, {key: cmd}, tmp_path)
+        assert p.body == cmd and not p.truncated
+
+
+def test_a_shell_command_over_the_cap_is_cut_and_says_how_much(tmp_path):
+    for tool, key in (("run_shell", "command"), ("run_python", "code")):
+        p = preview_for(tool, {key: "x" * (MAX_COMMAND_CHARS + 80_000)}, tmp_path)
+        assert p.truncated and p.body.endswith("... [80000 more characters hidden]")
+        assert len(p.body) < MAX_COMMAND_CHARS + 100
+
+
+def test_a_cut_line_says_how_many_characters_are_hidden(tmp_path):
+    p = preview_for("write_file", {"path": "n.txt", "content": "y" * 2499 + "\n", "if_exists": "refuse"}, tmp_path)
+    assert "... [500 more characters hidden]" in p.body
 
 
 def test_a_line_ending_only_change_is_not_called_no_change(tmp_path):
