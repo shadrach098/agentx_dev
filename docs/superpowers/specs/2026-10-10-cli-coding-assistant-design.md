@@ -267,7 +267,11 @@ same inside a session. A missing or unreadable session file is reported and a ne
 ```
 
 Merge: scalar keys, project over user; `addDirs` and the allow and deny lists are concatenated. A deny
-rule from either file wins. A file with invalid JSON is reported by path and ignored. Flags override
+rule from either file wins. `addDirs` entries are made absolute when loaded (`~` is the home folder; relative
+entries start at the project for the project file and at the home folder for the user file). A project
+file's `addDirs` entry that resolves (symlinks followed) outside the project folder is ignored with a
+warning, so a cloned repository cannot widen the tool sandbox; the user's own file and `--add-dir` are not
+restricted. A file with invalid JSON is reported by path and ignored. Flags override
 settings.
 
 ## 11. Errors

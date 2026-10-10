@@ -18,8 +18,8 @@ class Settings:
     add_dirs: List[str] = field(default_factory=list)
     allow: List[str] = field(default_factory=list)
     deny: List[str] = field(default_factory=list)
-    project_allow: List[str] = field(default_factory=list)   # the allow rules that came from the project file
     problems: List[str] = field(default_factory=list)     # one line per unreadable file or bad value
+    project_allow: List[str] = field(default_factory=list)   # the allow rules that came from the project file
 
 
 def user_settings_path(home: Path) -> Path:
@@ -62,7 +62,22 @@ def _strings(value: Any, where: str, path: Path, problems: List[str]) -> List[st
     return kept
 
 
-def _absolute(entry: str, base: Path, home: Path) -> str:
+def _resolve(target: Path) -> Path:
+    try:
+        return target.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return Path(os.path.abspath(target))
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _absolute(entry: str, base: Path, home: Path) -> Path:
     """An addDirs entry as an absolute path: '~' means ``home``, relative entries start at ``base``."""
     text = entry.strip()
     if text == "~" or text.startswith(("~/", "~\\")):
@@ -71,10 +86,7 @@ def _absolute(entry: str, base: Path, home: Path) -> str:
         target = Path(text)
         if not target.is_absolute():
             target = Path(base) / target
-    try:
-        return str(target.resolve())
-    except (OSError, RuntimeError, ValueError):
-        return os.path.abspath(target)
+    return _resolve(target)
 
 
 def load_settings(cwd: Path, home: Path) -> Settings:
@@ -96,7 +108,15 @@ def load_settings(cwd: Path, home: Path) -> Settings:
                 settings.problems.append(
                     f"settings file {path}: 'mode' must be one of {', '.join(MODES)}; ignored")
         dirs = _strings(data.get("addDirs"), "addDirs", path, settings.problems)
-        settings.add_dirs += [_absolute(d, base, home) for d in dirs]
+        for entry in dirs:
+            resolved = _absolute(entry, base, home)
+            if is_project and not _inside(resolved, _resolve(Path(cwd))):
+                # a cloned repository must not widen the tool sandbox on its own
+                settings.problems.append(
+                    f"project settings tried to add {str(resolved)!r} outside the project; ignored "
+                    "(add it in your own settings or with --add-dir)")
+                continue
+            settings.add_dirs.append(str(resolved))
         permissions = data.get("permissions")
         if permissions is not None and not isinstance(permissions, dict):
             settings.problems.append(f"settings file {path}: 'permissions' must be an object; ignored")

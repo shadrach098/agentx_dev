@@ -20,11 +20,11 @@ def test_user_and_project_merge(tmp_path):
     home, cwd = tmp_path / "home", tmp_path / "proj"
     put(user_settings_path(home), {"model": "gpt-x", "mode": "plan", "addDirs": ["../a"],
                                    "permissions": {"allow": ["run_shell:ls*"], "deny": ["run_shell:*sudo*"]}})
-    put(project_settings_path(cwd), {"model": "claude-y", "addDirs": ["../b"],
+    put(project_settings_path(cwd), {"model": "claude-y", "addDirs": ["b"],
                                      "permissions": {"allow": ["run_shell:pytest*"], "deny": ["write_file:.env"]}})
     s = load_settings(cwd, home)
     assert s.model == "claude-y" and s.mode == "plan"                       # project over user, scalars
-    assert s.add_dirs == [str((tmp_path / "a").resolve()), str((tmp_path / "b").resolve())]   # concatenated, absolute
+    assert s.add_dirs == [str((tmp_path / "a").resolve()), str((cwd / "b").resolve())]   # concatenated, absolute
     assert s.allow == ["run_shell:ls*", "run_shell:pytest*"]
     assert s.deny == ["run_shell:*sudo*", "write_file:.env"]
     assert s.problems == []
@@ -101,11 +101,11 @@ def test_untrusted_text_is_quoted_in_warnings(tmp_path):
 def test_add_dirs_are_absolute_and_resolved_per_file(tmp_path):
     home, cwd = tmp_path / "home", tmp_path / "proj"
     put(user_settings_path(home), {"addDirs": ["~/notes", "shared", str(tmp_path / "abs")]})
-    put(project_settings_path(cwd), {"addDirs": ["../b", "sub/dir", "~"]})
+    put(project_settings_path(cwd), {"addDirs": ["sub/dir", "./x/../y"]})
     s = load_settings(cwd, home)
     expect = [
         (home / "notes").resolve(), (home / "shared").resolve(), (tmp_path / "abs").resolve(),
-        (tmp_path / "b").resolve(), (cwd / "sub" / "dir").resolve(), home.resolve(),
+        (cwd / "sub" / "dir").resolve(), (cwd / "y").resolve(),
     ]
     assert [Path(p) for p in s.add_dirs] == expect
     assert all(Path(p).is_absolute() for p in s.add_dirs)
@@ -125,3 +125,57 @@ def test_project_allow_when_project_and_home_are_the_same_folder(tmp_path):
     put(user_settings_path(tmp_path), {"permissions": {"allow": ["u:1"]}})
     s = load_settings(tmp_path, tmp_path)
     assert s.allow == ["u:1", "u:1"] and s.project_allow == ["u:1"]
+
+
+def _link(link, target):
+    import os
+    import subprocess
+    import sys
+    import pytest
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError, AttributeError):
+        if sys.platform != "win32":
+            pytest.skip("cannot create a symlink")
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True)
+        if made.returncode != 0:
+            pytest.skip("cannot create a symlink or junction")
+
+
+def test_project_add_dirs_outside_the_project_are_dropped_with_a_warning(tmp_path):
+    cwd, outside = tmp_path / "proj", tmp_path / "elsewhere"
+    (cwd / "sub").mkdir(parents=True)
+    outside.mkdir()
+    put(project_settings_path(cwd), {"addDirs": ["/", "~", "../../..", "../elsewhere", "sub", "."]})
+    s = load_settings(cwd, tmp_path / "home")
+    assert s.add_dirs == [str((cwd / "sub").resolve()), str(cwd.resolve())]
+    assert len(s.problems) == 4
+    assert all("outside the project; ignored" in p and "--add-dir" in p for p in s.problems)
+    assert repr(str(outside.resolve())) in s.problems[3]
+
+
+def test_project_add_dir_symlink_to_an_outside_directory_is_dropped(tmp_path):
+    cwd, outside = tmp_path / "proj", tmp_path / "elsewhere"
+    cwd.mkdir()
+    outside.mkdir()
+    _link(cwd / "link", outside)
+    put(project_settings_path(cwd), {"addDirs": ["link"]})
+    s = load_settings(cwd, tmp_path / "home")
+    assert s.add_dirs == [] and len(s.problems) == 1
+    assert repr(str(outside.resolve())) in s.problems[0]
+
+
+def test_user_add_dirs_outside_the_project_are_kept(tmp_path):
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    cwd.mkdir()
+    put(user_settings_path(home), {"addDirs": ["/", "../elsewhere", "~/notes"]})
+    s = load_settings(cwd, home)
+    assert len(s.add_dirs) == 3 and s.problems == []
+
+
+def test_settings_field_order_ends_with_problems_then_project_allow():
+    import dataclasses
+    from agentx_dev.cli.settings import Settings
+    names = [f.name for f in dataclasses.fields(Settings)]
+    assert names == ["model", "mode", "add_dirs", "allow", "deny", "problems", "project_allow"]
+    assert Settings(None, None, [], [], [], ["p"]).project_allow == []
