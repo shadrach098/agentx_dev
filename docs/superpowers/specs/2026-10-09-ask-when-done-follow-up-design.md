@@ -131,7 +131,7 @@ operator channel, the run memory and `RunBudget` at the start of every `stream()
 - **The task the planner sees** from round 2 is, in order: the original task; "WHAT HAS HAPPENED SO FAR"
   with each earlier round's operator instruction and answer (each answer capped at 3,000 characters); the
   operator's answers so far (the existing OPERATOR ANSWERS block); and "The operator now asks: <reply>. Do
-  this now." The reply is capped at 4,000 characters.
+  this now." The reply is capped at 2,000 characters, the channel's existing cap on any operator answer.
 - **Operator answers carry over.** The new round's channel is seeded with the earlier channel's answers
   and the questions already asked. A repeated question gets the first answer without a prompt, and the
   planner still sees the OPERATOR ANSWERS block and the "do the work" note.
@@ -201,4 +201,4 @@ Scripted askers on both classes, using the existing helpers in `tests/subagent_h
 
 - Always ask whatever the outcome (chosen by the user on 2026-10-09; the alternative was to ask only on
   `done`).
-- Defaults: `max_follow_ups=5`; the answer shown is capped at 3,000 characters; the reply at 4,000.
+- Defaults: `max_follow_ups=5`; the answer shown is capped at 3,000 characters; the reply at 2,000 (the channel's existing cap).
