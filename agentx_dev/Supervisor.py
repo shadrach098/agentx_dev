@@ -37,7 +37,7 @@ from agentx_dev.SubAgents import (   # noqa: F401  (SpawnConfig/SpawnRequest are
     spec_from_legacy_spawn,
 )
 from agentx_dev.Operator import (
-    NO_ANSWER_PLAN_NOTE, PLANNER_SOURCE, OperatorChannel, ask_instruction, attach_ask_user,
+    ASK_TOOL_NAME, NO_ANSWER_PLAN_NOTE, PLANNER_SOURCE, OperatorChannel, ask_instruction, attach_ask_user,
     parse_ask_request, validate_ask_user,
 )
 from agentx_dev.SupervisorMemory import MEMORY_ASK_LINE, RunMemory, validate_memory
@@ -1042,7 +1042,7 @@ class _SpawnMixin:
     def _overlapping(self, built) -> Optional[str]:
         """Name of a registered specialist that already has every tool ``built`` has (log only)."""
         have = {getattr(t, "name", None) for t in getattr(built.runner, "tools", [])}
-        have -= {DELEGATE_TOOL_NAME, None}
+        have -= {DELEGATE_TOOL_NAME, ASK_TOOL_NAME, None}      # the framework gives these to every agent
         if not have:
             return None
         for n, (_d, runner) in self.agents.items():

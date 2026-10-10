@@ -249,7 +249,9 @@ def parse_agent_spec(raw: Any, origin: str = "plan", *, reserve_dunder: bool = T
     instructions = raw.get("instructions")
     if not isinstance(instructions, str) or not instructions.strip():
         raise SpecError("instructions must be a non-empty string")
-    tools = raw.get("tools", [])
+    tools = raw.get("tools")
+    if tools is None:
+        tools = raw.get("capabilities")      # the 3.5 spelling; a planner trained on it still uses it
     if tools is None:
         tools = []
     if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
@@ -352,6 +354,7 @@ Rules:
   - "tools" may only name tools from the menu below; anything else is dropped.
   - A specialist can only use the tools you give it. One that must look something up needs the matching tool from the menu<<WEBHINT>>; a specialist with no tools can only reason from the instructions you write and cannot fetch anything.
   - A step uses EITHER "agent" OR "new_agent", never both. "name" is letters, digits, "_" or "-" (max 40).
+  - Before you reply, check every new_agent: if its job involves a website, a search, or reading or writing files, its "tools" must name the matching tool from the menu. An empty "tools" list is only for a specialist that just reasons or writes from what its instructions already contain; one with no tools cannot look anything up.
 
 Tools you can grant:
 <<MENU>>
@@ -634,7 +637,8 @@ class SpawnPolicy:
         what = f"reusing {built.reused} agent" if built.reused else "built"
         registry = getattr(built.runner, "registry", None)
         asks = " + ask_user" if registry is not None and registry.has(ASK_TOOL_NAME) else ""
-        self._say(f"{what} '{built.spec.name}' ({built.spec.origin}) tools={built.granted or 'none'}{asks}"
+        quiet = " -- no tools, so it can only reason" if not built.granted and not built.reused else ""
+        self._say(f"{what} '{built.spec.name}' ({built.spec.origin}) tools={built.granted or 'none'}{asks}{quiet}"
                   + (f" dropped={built.dropped}" if built.dropped else ""))
 
 

@@ -15,6 +15,13 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   The planner is told to put that instruction in the step's query rather than plan a step that only
   asks.
 
+- A planner-defined helper built with no tools (a research step the planner forgot to give `web`) is
+  now called out in the verbose `[spawn]` line ("no tools, so it can only reason"). The planner is
+  reminded, as the last rule of the helper instructions, to give every `new_agent` the tools its job
+  needs, and `capabilities` is accepted as an alias for `tools` in a `new_agent` (the 3.5 spelling).
+- The verbose line "has the same tools as the registered specialist" no longer fires because both
+  agents were given `ask_user`.
+
 ### Changed
 
 - **The vector-store clients are core dependencies.** `chromadb`, `qdrant-client` and `psycopg[binary]`
