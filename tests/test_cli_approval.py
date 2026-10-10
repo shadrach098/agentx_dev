@@ -899,6 +899,8 @@ class TestRound4:
         "sudo x", "su x", "ssh host", "eval x", "exec x", "env x", "xargs x", "nohup x", "timeout 5 x", "time x",
         "source x", "call x", "py x.py", "PYTHON.EXE x", "C:/Python/python.exe x", "pythonw x", "nodejs x",
         "powershell.exe -c x", "sh.exe x", "ruby x", "perl x", ". x",
+        "nice make", "doas x", "setsid x", "stdbuf x", "watch x", "busybox sh", "dash x", "ksh x", "tclsh x",
+        "julia x.jl", "osascript x", "pyw x.py", "rundll32 x", "forfiles x",
     ])
     def test_these_names_are_never_remembered(self, command):
         assert _grantable_prefix(command) is None, command

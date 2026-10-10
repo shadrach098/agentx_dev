@@ -37,7 +37,9 @@ NO_GRANT_PREFIXES = (
     "source",
 )
 # Short stems that would also catch harmless names (``shellcheck``, ``environment-cli``) match by equality only.
-NO_GRANT_EXACT = frozenset({"sh", "su", "cmd", "time", "env", "call", "start", "py", "."})
+NO_GRANT_EXACT = frozenset({"sh", "su", "cmd", "time", "env", "call", "start", "py", "pyw", ".",
+                             "nice", "doas", "setsid", "stdbuf", "watch", "busybox", "dash", "ksh", "tclsh",
+                             "julia", "osascript", "rundll32", "forfiles"})
 NO_GRANT = frozenset(NO_GRANT_PREFIXES) | NO_GRANT_EXACT
 # Two-word prefixes that run a package the model names.
 _NO_GRANT_RUNNERS = frozenset({"npm exec", "npm x", "pnpm dlx", "pnpm exec", "yarn dlx", "yarn exec"})
