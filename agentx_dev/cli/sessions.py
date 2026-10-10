@@ -26,8 +26,13 @@ def _resolve(path: Path) -> Path:
         return Path(os.path.abspath(path))
 
 
+_TIMESTAMPED = re.compile(r"^\d{8}T\d{6}Z-")
+
+
 def _printable(text: object) -> str:
-    return "".join(c for c in str(text) if c.isprintable() or c.isspace())
+    """One line of printable text: every kind of whitespace (including \r, \x85, tabs) becomes a single space and
+    other control characters are dropped, so a file cannot rewrite the line it is shown on."""
+    return " ".join("".join(c for c in str(text) if c.isprintable() or c.isspace()).split())
 
 
 def project_slug(cwd: Path) -> str:
@@ -93,7 +98,9 @@ def list_sessions(home: Path, cwd: Path) -> List[SessionInfo]:
     """This folder's saved sessions, newest first. Files that cannot be read are skipped."""
     folder = sessions_dir(home, cwd)
     try:
-        paths = sorted((p for p in folder.glob("*.json")), key=lambda p: p.name, reverse=True)[:MAX_SESSIONS_LISTED]
+        # newest first by name; names that are not "<timestamp>-<id>.json" go last, so they never push real sessions out
+        paths = sorted(folder.glob("*.json"), key=lambda p: (bool(_TIMESTAMPED.match(p.name)), p.name),
+                       reverse=True)[:MAX_SESSIONS_LISTED]
     except (OSError, ValueError):
         return []
     found: List[SessionInfo] = []
@@ -102,7 +109,7 @@ def list_sessions(home: Path, cwd: Path) -> List[SessionInfo]:
         if data is None:
             continue
         raw_id = data.get("session_id")
-        session_id = _printable(raw_id).strip() if isinstance(raw_id, (str, int)) and str(raw_id).strip() else path.stem
+        session_id = (_printable(raw_id) if isinstance(raw_id, (str, int)) else "") or path.stem
         updated = data.get("updated_at")
         found.append(SessionInfo(path=path, session_id=session_id, title=_title(data.get("history")),
                                  updated_at=_printable(updated) if isinstance(updated, str) else ""))

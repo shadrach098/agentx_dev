@@ -127,3 +127,31 @@ def test_a_name_with_path_characters_matches_nothing(tmp_path):
     make(home, cwd, "iiii1010-x", "2026-10-10T10:00:00+00:00")
     assert find_session(home, cwd, "../../etc/passwd") is None
     assert find_session(home, cwd, "") is None
+
+
+# --- fix round 1: one line per field, and which files the cap keeps ---
+
+def test_every_kind_of_line_break_is_collapsed_in_the_listing(tmp_path):
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    folder = sessions_dir(home, cwd)
+    folder.mkdir(parents=True)
+    (folder / "crafted.json").write_text(json.dumps({
+        "session_id": "ab\rFAKE\x85line\tx", "updated_at": "2026\r\n-10\u2028-10",
+        "history": [{"role": "user", "content": "t\rFAKE\x85row\u2029end"}],
+    }), encoding="utf-8")
+    info = list_sessions(home, cwd)[0]
+    assert info.session_id == "ab FAKE line x"
+    assert info.updated_at == "2026 -10 -10"
+    assert info.title == "t FAKE row end"
+    for value in (info.session_id, info.updated_at, info.title):
+        assert len(value.splitlines()) == 1
+
+
+def test_only_timestamped_names_count_toward_the_newest(tmp_path, monkeypatch):
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    a = make(home, cwd, "jjjj1111-x", "2026-10-10T10:00:00+00:00")
+    b = make(home, cwd, "kkkk2222-x", "2026-10-10T11:00:00+00:00")
+    other = sessions_dir(home, cwd) / "zzz-notes.json"            # sorts above every timestamp, but is not one
+    other.write_text(json.dumps({"session_id": "zzzz0000", "history": []}), encoding="utf-8")
+    monkeypatch.setattr(sessions_module, "MAX_SESSIONS_LISTED", 2)
+    assert {i.path for i in list_sessions(home, cwd)} == {a, b}
