@@ -1688,9 +1688,10 @@ class TestApprovalPrompt:
         answer = make_asker(c, lines(), tmp_path)(edit_request())
         assert answer.choice == "n" and answer.reason
 
-    def test_destructive_actions_do_not_offer_always(self, tmp_path):
+    def test_actions_the_gate_cannot_remember_do_not_offer_always(self, tmp_path):
         c, out = console()
-        request = Request(tool="delete_path", kind="destructive", subject="x", args={"path": "x"})
+        request = Request(tool="delete_path", kind="destructive", subject="x", args={"path": "x"},
+                          remember=False)
         answer = make_asker(c, lines("a", "y"), tmp_path)(request)
         assert answer.choice == "y"
         text = out.getvalue()
@@ -1833,7 +1834,7 @@ def make_asker(console: Console, read_line: Callable[[str], str], cwd: Path) -> 
     def ask(request: Request) -> Answer:
         preview = preview_for(request.tool, request.args, cwd)
         console.print(Panel(_preview_text(preview), title=Text(preview.title), title_align="left"))
-        always = request.kind != "destructive"
+        always = request.remember          # the gate sets this False when "don't ask again" cannot apply
         console.print(Text("[y] yes   [a] yes, don't ask again   [n] no" if always else "[y] yes   [n] no",
                            style="bold"))
         choices = {"y": "y", "yes": "y", "n": "n", "no": "n"}
@@ -2480,7 +2481,7 @@ class ChatApp:
         self.model_factory = model_factory
         self.env = dict(os.environ if env is None else env)
         self.requested_model = model_name
-        self.gate = Gate(mode=mode, allow=allow, deny=deny,
+        self.gate = Gate(mode=mode, allow=allow, deny=deny, cwd=self.cwd,
                          ask=make_asker(console, self.read_short, self.cwd))
         self.tools = build_tools(self.cwd, [Path(d) for d in add_dirs], self.gate)
         self.addendum = build_addendum(self.cwd, self.home)
