@@ -654,3 +654,32 @@ class TestSelectMenuKeys:
         from agentx_dev.cli.ui import CANCELLED
         assert self.run_keys("\x1b", monkeypatch=monkeypatch) == CANCELLED
         assert self.run_keys("\x03", monkeypatch=monkeypatch) == CANCELLED
+
+
+class TestInputLineLooksAlive:
+    @pytest.fixture
+    def sessions(self, tmp_path):
+        from prompt_toolkit.application import create_app_session
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        from agentx_dev.cli.ui import PromptInput
+        with create_pipe_input() as pipe:
+            with create_app_session(input=pipe, output=DummyOutput()):
+                chat, short = PromptInput._sessions(tmp_path / "history", ["/help"], lambda: "bar", lambda: None, None)
+                yield pipe, chat, short
+
+    def test_the_cursor_blinks_so_a_waiting_prompt_is_not_mistaken_for_a_frozen_one(self, sessions):
+        from prompt_toolkit.cursor_shapes import CursorShape
+        _, chat, short = sessions
+        assert chat.app.cursor.get_cursor_shape(chat.app) == CursorShape.BLINKING_BEAM
+        assert short.app.cursor.get_cursor_shape(short.app) == CursorShape.BLINKING_BEAM
+
+    def test_the_prompt_is_coloured_and_the_text_still_comes_back(self, sessions):
+        from agentx_dev.cli.ui import PromptInput
+        pipe, chat, short = sessions
+        holder = PromptInput.__new__(PromptInput)
+        holder._chat, holder._short = chat, short
+        pipe.send_text("hello" + chr(13))                   # Enter sends
+        assert holder.read("> ").strip() == "hello"
+        pipe.send_text("yes" + chr(13))
+        assert holder.read_short("Reason: ").strip() == "yes"

@@ -270,6 +270,8 @@ A line that starts with `/` followed by a plain name is a command and is never s
 
 ## Keys
 
+While `agentx` waits for you the prompt is coloured and the cursor blinks; while it is working, a spinner with the seconds elapsed shows instead (see the checklist below). A still cursor with no spinner means the terminal is the problem, not the program.
+
 | Key | Does |
 |---|---|
 | Enter | Send (or confirm in a menu). |
@@ -320,3 +322,4 @@ A checklist for the maintainer to run once on a real terminal before release. Te
 21. Ask the agent to run a script that takes 15 seconds (for example `import time; time.sleep(15)`): a spinner reads "Running run_python... Ns" while it works, disappears when the output is printed, and is not drawn over an approval prompt.
 22. Start `agentx` in a folder you have never used it in: the "Accessing workspace" question appears with `1. Yes, I trust this folder` highlighted; Down then Enter exits with code 1 and reads nothing from the folder; Yes starts, and the next start in that folder does not ask. Try it in your home folder: the extra warning shows.
 23. At an approval prompt press Down, Down, Enter (No), then type a reason; then repeat and press 1 (Yes). Press Esc at a prompt: it counts as no. `/resume` with no id shows an arrow-key list of conversations.
+24. Watch the cursor at the `>` prompt: it blinks and the prompt is cyan. While the agent works there is a spinner instead. (A terminal that ignores cursor-shape requests keeps its own cursor, but the prompt colour still differs from the working spinner.)

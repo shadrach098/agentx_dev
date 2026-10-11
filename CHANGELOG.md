@@ -40,6 +40,7 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
     kept in `~/.agentx/trusted.json`. Choices are numbered menus you move through with the arrow keys and
     confirm with Enter (or a number, or `y` / `a` / `n`): the approval prompt, the folder question and the
     `/resume` list. Without a terminal they fall back to typed answers.
+  - **A prompt that looks alive.** The input prompt is coloured and its cursor blinks while it waits for you.
   - **Progress.** While the agent works, a spinner with the seconds elapsed shows what it is doing
     ("Thinking...", "Running run_python... 12s"). It is paused while a prompt waits and drawn only on a
     terminal. Python code may run for 2 minutes and shell commands for 5 (the framework's defaults, 10 s and

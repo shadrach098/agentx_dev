@@ -540,21 +540,36 @@ class PromptInput:
             cycle_mode()
             event.app.invalidate()
 
-        chat = PromptSession(history=FileHistory(str(history_file)), multiline=True,
-                             key_bindings=bindings, completer=make_completer(commands, descriptions),
-                             bottom_toolbar=toolbar, complete_while_typing=True)
-        short = PromptSession(multiline=False, bottom_toolbar=toolbar)
+        # A blinking cursor says "waiting for you"; a still one looks like a frozen program. Older
+        # prompt_toolkit versions have no such option, and then the cursor stays as the terminal draws it.
+        blink: Dict[str, Any] = {}
+        try:
+            from prompt_toolkit.cursor_shapes import CursorShape
+            blink["cursor"] = CursorShape.BLINKING_BEAM
+        except Exception:
+            pass
+
+        def build(**options):
+            try:
+                return PromptSession(**options, **blink)
+            except TypeError:
+                return PromptSession(**options)
+
+        chat = build(history=FileHistory(str(history_file)), multiline=True,
+                     key_bindings=bindings, completer=make_completer(commands, descriptions),
+                     bottom_toolbar=toolbar, complete_while_typing=True)
+        short = build(multiline=False, bottom_toolbar=toolbar)
         return chat, short
 
     def read(self, prompt: str = "> ") -> str:
         if self._chat is None:
             return input(prompt)
-        return self._chat.prompt(prompt)
+        return self._chat.prompt([("ansicyan bold", prompt)])        # a coloured prompt: your turn
 
     def read_short(self, prompt: str = "") -> str:
         if self._short is None:
             return input(prompt)
-        return self._short.prompt(prompt)
+        return self._short.prompt([("ansiyellow bold", prompt)])
 
     def select(self, options: Sequence[str], default: int = 0, hotkeys: Optional[Mapping[str, int]] = None):
         """An arrow-key menu (see ``select_menu``); None when this input line has no console to draw on."""
