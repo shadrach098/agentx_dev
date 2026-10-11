@@ -1120,3 +1120,27 @@ def test_main_sets_the_logging_up_before_the_app_is_built(tmp_path, monkeypatch)
     monkeypatch.chdir(proj)
     assert main([]) == 0
     assert order == [("log", home), "app"]
+
+
+def test_a_protected_folder_cannot_be_moved_into_place_by_naming_its_parent_as_the_destination(tmp_path):
+    model = MockModel(script=[write_call("stuff/.agentx/settings.json", "{}"),
+                              make_react_response("move_file", {"source": "stuff/.agentx", "destination": "."}),
+                              make_final("could not")])
+    lines = Lines("sneak settings in", "y", "/exit")
+    app, out, cwd, _ = make_app(tmp_path, lines, model)
+    app.start()
+    assert (cwd / "stuff" / ".agentx" / "settings.json").exists()
+    assert not (cwd / ".agentx").exists()
+    assert lines.prompts.count("Allow? [y/n] ") + lines.prompts.count("Allow? [y/a/n] ") == 1     # only the write asked
+    assert "deny rule" in all_seen_by(model)
+
+
+def test_an_ordinary_move_into_an_existing_folder_asks_and_says_where_it_lands(tmp_path):
+    model = MockModel(script=[make_react_response("move_file", {"source": "a.txt", "destination": "dest"}),
+                              make_final("moved")])
+    app, out, cwd, _ = make_app(tmp_path, Lines("move it", "y", "/exit"), model)
+    (cwd / "dest").mkdir()
+    (cwd / "a.txt").write_text("x", encoding="utf-8")
+    app.start()
+    assert (cwd / "dest" / "a.txt").exists() and not (cwd / "a.txt").exists()
+    assert "Move a.txt to dest/a.txt" in out.getvalue()

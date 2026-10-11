@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from agentx_dev.DefaultTools import _maybe_unescape_json_escapes, _plan_edit
+from agentx_dev.cli.approval import move_final_paths
 
 MAX_PREVIEW_LINES = 200
 MAX_READ_BYTES = 1_000_000        # larger existing files are not read for a preview
@@ -206,6 +207,23 @@ def _edit_file(args: Mapping[str, Any], cwd: Path) -> Preview:
     return _diff_preview(title, disk.text, new_text, shown)
 
 
+def _move_file(args: Mapping[str, Any], cwd: Path) -> Preview:
+    source, destination = str(args.get("source", "")), str(args.get("destination", ""))
+    # Into an existing folder the file lands at <folder>/<name>: say that, as the gate judges it.
+    final = move_final_paths(source, destination, cwd)
+    target = final[0] if final else destination
+    title = f"Move {source} to {target}"
+    place = _resolve(target, cwd)
+    try:
+        if final and place is not None and os.path.lexists(place):
+            title += " (refused: that name already exists in the folder)"
+        elif not final and place is not None and place.is_file():
+            title += f" (replaces the existing {destination})"
+    except (OSError, ValueError, RuntimeError):
+        pass
+    return Preview(title, "", "text")
+
+
 def _generic(tool: Any, args: Any) -> Preview:
     try:
         title = str(tool)
@@ -241,7 +259,7 @@ def _build(tool: str, args: Mapping[str, Any], cwd: Path) -> Preview:
         extra = " and everything inside it" if args.get("recursive") else ""
         return Preview(f"Delete {args.get('path', '')}{extra}", "", "text")
     if tool == "move_file":
-        return Preview(f"Move {args.get('source', '')} to {args.get('destination', '')}", "", "text")
+        return _move_file(args, cwd)
     return _generic(tool, args)
 
 

@@ -277,3 +277,26 @@ def test_ordinary_previews_are_not_marked(tmp_path):
                        ("edit_file", {"path": "f.txt", "find": "a", "replace": "b"}),
                        ("run_shell", {"command": "ls"}), ("delete_path", {"path": "f.txt"})):
         assert not preview_for(tool, args, tmp_path).truncated
+
+
+def test_a_move_into_an_existing_folder_says_the_final_path(tmp_path):
+    (tmp_path / "dest").mkdir()
+    assert preview_for("move_file", {"source": "a.txt", "destination": "dest"}, tmp_path).title == \
+        "Move a.txt to dest/a.txt"
+    assert preview_for("move_file", {"source": "x/.agentx", "destination": "."}, tmp_path).title == \
+        "Move x/.agentx to ./.agentx"
+
+
+def test_a_move_onto_an_existing_file_says_it_replaces_it(tmp_path):
+    (tmp_path / "b.txt").write_text("old", encoding="utf-8")
+    title = preview_for("move_file", {"source": "a.txt", "destination": "b.txt"}, tmp_path).title
+    assert title == "Move a.txt to b.txt (replaces the existing b.txt)"
+    assert preview_for("move_file", {"source": "a.txt", "destination": "c.txt"}, tmp_path).title == \
+        "Move a.txt to c.txt"
+
+
+def test_a_move_into_a_folder_that_already_holds_that_name_says_it_will_fail(tmp_path):
+    (tmp_path / "dest").mkdir()
+    (tmp_path / "dest" / "a.txt").write_text("old", encoding="utf-8")
+    title = preview_for("move_file", {"source": "a.txt", "destination": "dest"}, tmp_path).title
+    assert title == "Move a.txt to dest/a.txt (refused: that name already exists in the folder)"

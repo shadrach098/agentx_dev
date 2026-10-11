@@ -944,3 +944,63 @@ class TestModes:
         with pytest.raises(ValueError, match="mode must be one of"):
             Gate(mode="yolo")
         assert MODES == ("default", "accept-edits", "plan")
+
+
+class TestMoveIntoAFolder:
+    """shutil.move puts the file at ``destination/<name>`` when the destination is an existing folder, so the
+    gate judges that final path as well (deny wins)."""
+
+    def test_the_final_path_is_one_of_the_subjects(self, tmp_path):
+        (tmp_path / "dest").mkdir()
+        subjects = subjects_of("move_file", {"source": "a/b.txt", "destination": "dest"}, tmp_path)
+        assert "a/b.txt -> dest" in subjects and "a/b.txt -> dest/b.txt" in subjects
+
+    def test_a_destination_that_is_not_a_folder_is_judged_as_before(self, tmp_path):
+        (tmp_path / "plain.txt").write_text("x", encoding="utf-8")
+        assert subjects_of("move_file", {"source": "a", "destination": "plain.txt"}, tmp_path) == ["a -> plain.txt"]
+        assert subjects_of("move_file", {"source": "a", "destination": "new"}, tmp_path) == ["a -> new"]
+
+    def test_the_prompt_subject_names_the_final_path(self, tmp_path):
+        (tmp_path / "dest").mkdir()
+        assert subject_of("move_file", {"source": "a.txt", "destination": "dest"}, tmp_path) == "a.txt -> dest/a.txt"
+        assert subject_of("move_file", {"source": "a.txt", "destination": "dest/"}, tmp_path) == "a.txt -> dest/a.txt"
+        assert subject_of("move_file", {"source": "a.txt", "destination": "new"}, tmp_path) == "a.txt -> new"
+
+    def test_a_folder_moved_to_the_project_root_lands_on_a_protected_name(self, tmp_path):
+        (tmp_path / "stuff" / ".agentx").mkdir(parents=True)
+        g = Gate(deny=["move_file:* -> .agentx", "move_file:* -> .agentx/*"], cwd=tmp_path, ask=Asker())
+        assert "deny rule" in g.check("move_file", {"source": "stuff/.agentx", "destination": "."})
+        assert "deny rule" in g.check("move_file", {"source": "stuff/.agentx", "destination": "./"})
+
+    def test_a_move_into_a_folder_that_is_fine_still_asks(self, tmp_path):
+        (tmp_path / "dest").mkdir()
+        asker = Asker(Answer("y"))
+        g = Gate(deny=["move_file:* -> .agentx"], cwd=tmp_path, ask=asker)
+        assert g.check("move_file", {"source": "a.txt", "destination": "dest"}) is None
+        assert len(asker.requests) == 1 and asker.requests[0].subject == "a.txt -> dest/a.txt"
+
+    def test_a_denied_name_is_refused_when_moved_into_any_folder(self, tmp_path):
+        (tmp_path / "x" / "y").mkdir(parents=True)
+        g = Gate(deny=["move_file:* -> *.git", "move_file:* -> *.git/*"], cwd=tmp_path, ask=Asker())
+        assert "deny rule" in g.check("move_file", {"source": "t/.git", "destination": "x/y"})
+
+    def test_an_absolute_destination_folder_is_judged_too(self, tmp_path):
+        home = tmp_path / "home"
+        (home / ".config").mkdir(parents=True)
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        from agentx_dev.cli.app import default_deny
+        g = Gate(deny=default_deny(home), cwd=proj, ask=Asker())
+        assert "deny rule" in g.check("move_file", {"source": "git", "destination": str(home / ".config")})
+        assert "deny rule" in g.check("move_file", {"source": ".bashrc", "destination": str(home)})
+        assert "deny rule" in g.check("move_file", {"source": ".gitconfig", "destination": str(home)})
+        assert g.check("move_file", {"source": "notes.txt", "destination": str(home)}) is None   # asked, said y
+
+    def test_the_source_name_after_links_is_judged_as_well(self, tmp_path):
+        if os.name == "nt":
+            pytest.skip("needs symlinks")
+        (tmp_path / "real").mkdir()
+        (tmp_path / "real" / ".agentx").mkdir()
+        (tmp_path / "alias").symlink_to(tmp_path / "real" / ".agentx", target_is_directory=True)
+        g = Gate(deny=["move_file:* -> .agentx"], cwd=tmp_path, ask=Asker())
+        assert "deny rule" in g.check("move_file", {"source": "alias", "destination": "."})

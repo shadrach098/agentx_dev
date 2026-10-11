@@ -183,11 +183,35 @@ def _first_line(code: Any) -> str:
     return _squash(text.splitlines()[0]) if text else ""
 
 
+def move_final_paths(source: Any, destination: Any, cwd: Optional[Union[str, Path]] = None) -> list:
+    """Where ``move_file`` really puts the file, as paths spelled like ``destination``, when ``destination`` is
+    an existing folder: ``shutil.move`` then moves the source *into* it, to ``destination/<name>``. Empty when
+    the destination is not an existing folder (the file lands at ``destination`` itself). The name is the
+    source's name after links are followed (what the tool moves) first, then the name as written."""
+    dest = _text(destination)
+    source_text = _text(source)
+    try:
+        base = Path(cwd).resolve() if cwd is not None else Path.cwd()
+        if not Path(base, dest).resolve().is_dir():
+            return []
+        names = [Path(base, source_text).resolve().name]
+    except (OSError, ValueError, RuntimeError):
+        return []
+    written = posixpath.basename(source_text.replace("\\", "/").rstrip("/"))
+    if written and written not in (".", ".."):
+        names.append(written)
+    folder = dest.rstrip("/\\")
+    rooted = not folder and dest[:1] in ("/", "\\")           # the destination is "/" itself
+    return [f"{folder}/{name}" if folder or rooted else name for name in dict.fromkeys(names) if name]
+
+
 def subject_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Path]] = None) -> str:
     """The short text a prompt names (the resolved path, the command, the first line of code)."""
     if tool == "move_file":
+        destination = args.get("destination", "")
+        final = move_final_paths(args.get("source", ""), destination, cwd)    # into a folder: where it lands
         return (f"{normalize_path(args.get('source', ''), cwd)} -> "
-                f"{normalize_path(args.get('destination', ''), cwd)}")
+                f"{normalize_path(final[0] if final else destination, cwd)}")
     if tool in _PATH_TOOLS and "path" in args:
         return normalize_path(args["path"], cwd)
     return subjects_of(tool, args, cwd)[0]
@@ -198,7 +222,8 @@ def subjects_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Pat
     rule applies only if all do. Never empty.
 
     * ``run_shell``: the command; ``run_python``: the first line of the code;
-    * a path tool: the lexical and the resolved form of the path (``move_file``: of the pair);
+    * a path tool: the lexical and the resolved form of the path (``move_file``: of the pair, and when the
+      destination is an existing folder also of the final path ``destination/<name>``);
     * a tool with a string ``command``: that command alone;
     * anything else: every string in the arguments (at most ``_MAX_SUBJECTS``)."""
     if tool == "run_shell":
@@ -208,6 +233,8 @@ def subjects_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Pat
     if tool == "move_file":
         sources = path_forms(args.get("source", ""), cwd)
         destinations = path_forms(args.get("destination", ""), cwd)
+        for final in move_final_paths(args.get("source", ""), args.get("destination", ""), cwd):
+            destinations += [form for form in path_forms(final, cwd) if form not in destinations]
         return list(dict.fromkeys(f"{source} -> {destination}" for source in sources for destination in destinations))
     if tool in _PATH_TOOLS and "path" in args:
         return path_forms(args["path"], cwd)
