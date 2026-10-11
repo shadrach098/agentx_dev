@@ -535,6 +535,7 @@ def test_resume_command_with_a_bad_file_reports_and_starts_fresh(tmp_path):
     (folder / "20261010T000000Z-cafebabe.json").write_text(
         '{"session_id": "cafebabe-x", "updated_at": "9", "version": 1, "history": "no"}', encoding="utf-8")
     assert app.start() == 0 and "Could not read" in out.getvalue() and "fine" in out.getvalue()
+    assert "Resumed" not in out.getvalue()                 # it did not resume anything
 
 
 def test_no_api_key_exits_one_with_the_instruction(tmp_path):
@@ -609,7 +610,7 @@ class TestMain:
         assert info.value.code == 2
 
     def test_no_terminal_exits_one_with_a_message(self, monkeypatch, capsys):
-        monkeypatch.setattr(app_module, "_is_terminal", lambda: False)
+        monkeypatch.setattr(app_module, "is_terminal", lambda: False)
         assert main([]) == 1
         captured = capsys.readouterr()
         assert "interactive terminal" in captured.err and "Traceback" not in captured.err
@@ -655,7 +656,7 @@ class TestMain:
             def __init__(self, **kw):
                 self.read = self.read_short = lambda prompt="": ""
 
-        monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+        monkeypatch.setattr(app_module, "is_terminal", lambda: True)
         monkeypatch.setattr(app_module, "ChatApp", FakeApp)
         monkeypatch.setattr(app_module, "PromptInput", FakePrompt)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
@@ -688,7 +689,7 @@ class TestMain:
             def __init__(self, **kw):
                 self.read = self.read_short = lambda prompt="": ""
 
-        monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+        monkeypatch.setattr(app_module, "is_terminal", lambda: True)
         monkeypatch.setattr(app_module, "ChatApp", FakeApp)
         monkeypatch.setattr(app_module, "PromptInput", FakePrompt)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
@@ -697,7 +698,7 @@ class TestMain:
         assert captured["model_name"] == "claude-sonnet-4-6" and captured["mode"] == "accept-edits"
 
     def test_a_crash_while_starting_up_is_one_line_not_a_traceback(self, monkeypatch, capsys):
-        monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+        monkeypatch.setattr(app_module, "is_terminal", lambda: True)
         monkeypatch.setattr(app_module, "load_settings", lambda cwd, home: (_ for _ in ()).throw(OSError("boom")))
         assert main([]) == 1
         err = capsys.readouterr().err
@@ -850,7 +851,7 @@ class TestMainRoundOne:
         def interrupted(cwd, home):
             raise KeyboardInterrupt
 
-        monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+        monkeypatch.setattr(app_module, "is_terminal", lambda: True)
         monkeypatch.setattr(app_module, "load_settings", interrupted)
         assert main([]) == 130
         err = capsys.readouterr().err
@@ -863,7 +864,7 @@ class TestMainRoundOne:
         def broken(cwd, home):
             raise OSError(f"bad {key} \x1b[31m")
 
-        monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+        monkeypatch.setattr(app_module, "is_terminal", lambda: True)
         monkeypatch.setattr(app_module, "load_settings", broken)
         assert main([]) == 1
         err = capsys.readouterr().err
@@ -886,7 +887,7 @@ class TestMainRoundOne:
         proj = tmp_path / "proj"
         (tmp_path / "shared").mkdir()
         proj.mkdir()
-        monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+        monkeypatch.setattr(app_module, "is_terminal", lambda: True)
         monkeypatch.setattr(app_module, "ChatApp", FakeApp)
         monkeypatch.setattr(app_module, "PromptInput", FakePrompt)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
@@ -1112,7 +1113,7 @@ def test_main_sets_the_logging_up_before_the_app_is_built(tmp_path, monkeypatch)
         def __init__(self, **kw):
             self.read = self.read_short = lambda prompt="": ""
 
-    monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+    monkeypatch.setattr(app_module, "is_terminal", lambda: True)
     monkeypatch.setattr(app_module, "ChatApp", FakeApp)
     monkeypatch.setattr(app_module, "PromptInput", FakePrompt)
     monkeypatch.setattr(app_module, "setup_logging", lambda h: order.append(("log", h)))
@@ -1250,3 +1251,60 @@ def test_a_project_that_allows_all_edits_cannot_skip_the_edit_prompts_unless_the
     (cwd / "hello.txt").unlink()
     app.start()
     assert "Allow? [y/a/n] " not in lines.prompts and (cwd / "hello.txt").exists()
+
+
+# -- errors outside a turn ------------------------------------------------------------------------------------
+
+def test_a_failing_input_line_degrades_to_the_plain_prompt_with_one_clean_line(tmp_path, monkeypatch):
+    typed = iter(["hello", "/exit"])
+    shown = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": shown.append(prompt) or next(typed))
+    model = MockModel(script=[make_final("hi there")])
+    app, out, _, _ = make_app(tmp_path, Lines(PermissionError("cannot write history \x1b[2J")), model)
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "PermissionError" in text and "Traceback" not in text and "\x1b" not in text
+    assert text.count("Could not read your input") == 1 and "hi there" in text
+    assert shown == ["> ", "> "]
+
+
+def test_a_plain_prompt_that_fails_too_ends_the_session_cleanly(tmp_path, monkeypatch):
+    def broken(prompt=""):
+        raise OSError("stdin is gone")
+    monkeypatch.setattr("builtins.input", broken)
+    app, out, _, _ = make_app(tmp_path, Lines(RuntimeError("first")), MockModel(script=[]))
+    assert app.start() == 1
+    text = out.getvalue()
+    assert text.count("Could not read your input") == 2 and "Traceback" not in text
+
+
+def test_ctrl_c_and_end_of_input_at_the_prompt_are_not_input_failures(tmp_path):
+    app, out, _, _ = make_app(tmp_path, Lines(KeyboardInterrupt(), EOFError()), MockModel(script=[]))
+    assert app.start() == 0 and "Could not read your input" not in out.getvalue()
+
+
+def test_main_turns_an_unexpected_error_in_the_session_into_one_line(tmp_path, monkeypatch, capsys):
+    proj, home = tmp_path / "proj", tmp_path / "home"
+    proj.mkdir()
+    home.mkdir()
+
+    class FakeApp:
+        def __init__(self, **kw):
+            pass
+
+        def start(self, resume=None):
+            raise RuntimeError("boom \x1b[2J")
+
+    class FakePrompt:
+        def __init__(self, **kw):
+            self.read = self.read_short = lambda prompt="": ""
+
+    monkeypatch.setattr(app_module, "is_terminal", lambda: True)
+    monkeypatch.setattr(app_module, "ChatApp", FakeApp)
+    monkeypatch.setattr(app_module, "PromptInput", FakePrompt)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.chdir(proj)
+    assert main([]) == 1
+    err = capsys.readouterr().err
+    assert "RuntimeError" in err and "boom" in err and "Traceback" not in err and "\x1b" not in err
+    assert len(err.strip().splitlines()) == 1

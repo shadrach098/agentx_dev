@@ -15,14 +15,14 @@ from rich.console import Console
 
 from agentx_dev import AgentRunner, AgentType, Session
 from agentx_dev.cli.approval import MODES, Gate
-from agentx_dev.cli.commands import _shown, command_names, run_command
+from agentx_dev.cli.commands import command_names, run_command, shown
 from agentx_dev.cli.context import build_addendum
 from agentx_dev.cli.models import ModelError, choose_model
 from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
 from agentx_dev.cli.settings import load_settings
 from agentx_dev.cli.tools import build_tools
-from agentx_dev.cli.ui import PromptInput, Screen, make_asker, plain
+from agentx_dev.cli.ui import PromptInput, Screen, is_terminal, make_asker
 
 INIT_PROMPT = (
     "Look at this project: list the top-level files, read the README and the main config files. Then write a "
@@ -98,7 +98,7 @@ def _redacted(value: Any, env: Mapping[str, str], limit: int = MAX_ERROR_CHARS) 
         if isinstance(secret, str) and len(secret) >= 8 and any(
                 word in str(name).upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
             text = text.replace(secret, "[hidden]")
-    return _shown(text, limit)
+    return shown(text, limit)
 
 
 def _resolved(path: Path) -> Path:
@@ -154,6 +154,7 @@ class ChatApp:
         self.session_path: Optional[Path] = None
         self._exit = False
         self._exit_code = 0
+        self._plain_input = False          # True once the input line failed and the plain prompt took over
 
     def _remembering(self, ask: Callable[..., Any]) -> Callable[..., Any]:
         """``ask`` that notes when the user answers "a" at an edit prompt: the gate then switches itself to
@@ -289,7 +290,9 @@ class ChatApp:
         self.session = Session.start(runner)
         self.session_path = new_session_path(self.home, self.cwd, self.session.session_id)
 
-    def _load(self, info: SessionInfo, runner: AgentRunner) -> None:
+    def _load(self, info: SessionInfo, runner: AgentRunner) -> bool:
+        """Load ``info`` into the session. False when the file could not be read: a new conversation was
+        started instead, and the caller must not say it resumed anything."""
         try:
             session = Session.load(info.path).attach(runner)
         except Exception as e:
@@ -297,9 +300,10 @@ class ChatApp:
             self.error(f"Could not read {self._safe(info.path.name, 120)} ({type(e).__name__}). "
                        "Starting a new conversation.")
             self._fresh(runner)
-            return
+            return False
         self._new_conversation_state()
         self.session, self.session_path = session, info.path
+        return True
 
     def start(self, resume: Optional[str] = None) -> int:
         """Build the model and the session, then run the chat loop. Returns the exit code."""
@@ -348,6 +352,17 @@ class ChatApp:
                 break
             except KeyboardInterrupt:
                 self.notice("(Ctrl+C) Type /exit or press Ctrl+D to leave.")
+                continue
+            except Exception as e:
+                # The input line itself failed (the history file cannot be written, say): one clean line,
+                # then the plain prompt without history; if that fails too, leave.
+                self.error(f"Could not read your input ({type(e).__name__}): {self._safe(e)}")
+                if self._plain_input:
+                    self._exit_code = 1
+                    break
+                self._plain_input = True
+                self.notice("Using a plain prompt without history or completion.")
+                self.read_line = lambda prompt="": input(prompt)
                 continue
             line = str(line).strip()
             if not line:
@@ -450,7 +465,8 @@ class ChatApp:
             return
         self.save()
         self._refresh_instructions()
-        self._load(info, self._make_runner(self.model))
+        if not self._load(info, self._make_runner(self.model)):
+            return
         self.notice(f"Resumed {self._safe(info.session_id[:8], 20)}: {self._safe(info.title, 80)} "
                     f"(mode: {self.gate.mode})")
 
@@ -525,13 +541,6 @@ def setup_logging(home: Path) -> None:
     framework.addHandler(handler)
 
 
-def _is_terminal() -> bool:
-    try:
-        return bool(sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty())
-    except Exception:
-        return False
-
-
 def _startup_failure(error: BaseException) -> int:
     print(f"agentx could not start ({type(error).__name__}): {_redacted(error, os.environ)}", file=sys.stderr)
     return 1
@@ -539,7 +548,7 @@ def _startup_failure(error: BaseException) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-    if not _is_terminal():
+    if not is_terminal():
         print(NOT_A_TERMINAL, file=sys.stderr)
         return 1
     try:
@@ -570,3 +579,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except KeyboardInterrupt:
         print(file=sys.stderr)
         return 130
+    except Exception as e:
+        print(f"agentx stopped ({type(e).__name__}): {_redacted(e, os.environ)}", file=sys.stderr)
+        return 1

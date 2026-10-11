@@ -36,7 +36,7 @@ _SECRET = re.compile(
 )
 
 
-def _shown(value: Any, limit: int = _MAX_SHOWN) -> str:
+def shown(value: Any, limit: int = _MAX_SHOWN) -> str:
     """``value`` as one printable line: no control characters, no secrets, not too long."""
     text = _SECRET.sub("[hidden]", plain(value))
     return text if len(text) <= limit else text[: limit - 3] + "..."
@@ -65,14 +65,14 @@ def _clear(ctx: Any, arg: str) -> None:
 
 def _model(ctx: Any, arg: str) -> None:
     if not arg:
-        ctx.notice(f"Model: {_shown(ctx.model_label)}. Switch with /model <name>, for example /model claude-sonnet-4-6.")
+        ctx.notice(f"Model: {shown(ctx.model_label)}. Switch with /model <name>, for example /model claude-sonnet-4-6.")
         return
     try:
         ctx.switch_model(arg)
     except ModelError as e:
-        ctx.error(_shown(e))
+        ctx.error(shown(e))
         return
-    ctx.notice(f"Model: {_shown(ctx.model_label)}")
+    ctx.notice(f"Model: {shown(ctx.model_label)}")
 
 
 def _mode(ctx: Any, arg: str) -> None:
@@ -82,7 +82,7 @@ def _mode(ctx: Any, arg: str) -> None:
     try:
         ctx.gate.set_mode(arg.lower())
     except ValueError as e:
-        ctx.error(_shown(e))
+        ctx.error(shown(e))
         return
     ctx.notice(f"Mode: {ctx.gate.mode}")
 
@@ -145,10 +145,10 @@ def run_command(ctx: Any, line: str) -> bool:
     name, arg = parsed
     command = _BY_NAME.get(name)
     if command is None:
-        _report(ctx, f"Unknown command /{_shown(name, 40)}. Commands: {', '.join(command_names())}")
+        _report(ctx, f"Unknown command /{shown(name, 40)}. Commands: {', '.join(command_names())}")
         return True
     try:
         command.run(ctx, arg)
     except Exception as e:
-        _report(ctx, f"/{command.name} failed ({type(e).__name__}): {_shown(e)}")
+        _report(ctx, f"/{command.name} failed ({type(e).__name__}): {shown(e)}")
     return True

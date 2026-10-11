@@ -288,7 +288,7 @@ def make_completer(commands: Sequence[str]):
     return _Completer()
 
 
-def _has_console() -> bool:
+def is_terminal() -> bool:
     try:
         return bool(sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty())
     except Exception:
@@ -328,7 +328,7 @@ class PromptInput:
             history_file.chmod(0o600)
         except OSError:
             pass
-        if not _has_console():
+        if not is_terminal():
             return
         try:
             self._chat, self._short = self._sessions(history_file, commands, safe_toolbar(toolbar), cycle_mode)

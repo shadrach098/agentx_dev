@@ -10,9 +10,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from agentx_dev.DefaultTools import DefaultTools, Permissions, _is_inside_any, _resolve_for_ops
 from agentx_dev.Tools import StructuredTool
-from agentx_dev.cli.approval import Gate
+from agentx_dev.cli.approval import UNSUPPORTED_PATH, Gate
 
-UNSUPPORTED_PATH = "Refused: that path form is not supported. Use a normal relative or absolute path."
 GATE_FAILED = "Refused: the approval check failed, so nothing was run."
 # The arguments that name a place on disk; ``cwd`` is run_shell's working folder.
 PATH_ARGUMENTS = ("path", "source", "destination", "cwd")

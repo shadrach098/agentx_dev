@@ -440,7 +440,7 @@ class TestInputFailures:
 
 class TestPromptInputWithoutAConsole:
     def test_falls_back_to_input_and_keeps_a_private_history_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("agentx_dev.cli.ui._has_console", lambda: False)
+        monkeypatch.setattr("agentx_dev.cli.ui.is_terminal", lambda: False)
         monkeypatch.setattr("builtins.input", lambda prompt="": "hello")
         history = tmp_path / "sub" / "history"
         prompt = PromptInput(history_file=history, commands=["/help"], toolbar=lambda: "x",
@@ -455,7 +455,7 @@ class TestPromptInputWithoutAConsole:
 
         def broken(*args, **kwargs):
             raise OSError("NoConsoleScreenBufferError")
-        monkeypatch.setattr("agentx_dev.cli.ui._has_console", lambda: True)
+        monkeypatch.setattr("agentx_dev.cli.ui.is_terminal", lambda: True)
         monkeypatch.setattr(prompt_toolkit, "PromptSession", broken)
         monkeypatch.setattr("builtins.input", lambda prompt="": "typed")
         prompt = PromptInput(history_file=tmp_path / "h", commands=[], toolbar=lambda: "x",

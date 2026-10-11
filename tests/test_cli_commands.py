@@ -3,7 +3,7 @@
 import pytest
 
 from agentx_dev.cli.approval import Gate
-from agentx_dev.cli.commands import _shown, command_names, parse_slash, run_command
+from agentx_dev.cli.commands import shown, command_names, parse_slash, run_command
 from agentx_dev.cli.models import ModelError
 
 
@@ -219,7 +219,7 @@ def test_extra_text_after_argument_free_commands_is_ignored():
     "Bearer abcdefghijklmnop1234", "Bearer abc.def-ghi_jkl~mno+pqr/stu=",
 ])
 def test_secret_shaped_text_is_hidden(secret):
-    out = _shown(f"failed with {secret} at start")
+    out = shown(f"failed with {secret} at start")
     assert secret not in out and "[hidden]" in out and "failed with" in out
 
 
@@ -228,7 +228,7 @@ def test_secret_shaped_text_is_hidden(secret):
     "OPENAI_API_KEY=whatever", "access_token=xyz",
 ])
 def test_name_value_secrets_are_hidden(line):
-    out = _shown(f"bad {line} here")
+    out = shown(f"bad {line} here")
     assert "[hidden]" in out and line.split("=")[-1].strip() not in out.replace("[hidden]", "")
 
 
@@ -237,7 +237,7 @@ def test_name_value_secrets_are_hidden(line):
     "the token is expired", "password policy", "a" * 39, "disk-quota-exceeded",
 ])
 def test_ordinary_text_is_left_alone(text):
-    assert _shown(text) == text
+    assert shown(text) == text
 
 
 def test_clear_help_line_is_neutral():
