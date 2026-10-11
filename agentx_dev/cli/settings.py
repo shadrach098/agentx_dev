@@ -30,6 +30,27 @@ def project_settings_path(cwd: Path) -> Path:
     return Path(cwd) / ".agentx" / "settings.json"
 
 
+def ensure_user_settings(home: Path, model: Optional[str] = None) -> Optional[Path]:
+    """Create ``~/.agentx/settings.json`` with the current choices written out, so there is a file to edit.
+
+    Does nothing when the file already exists (it is never overwritten) and never raises: the path of the file
+    it created is returned, or None. ``model`` is the model in use now; ``permissions`` starts empty."""
+    path = user_settings_path(home)
+    try:
+        if path.exists():
+            return None
+        data: dict = {}
+        if model:
+            data["model"] = str(model)
+        data.update({"mode": "default", "addDirs": [], "permissions": {"allow": [], "deny": []}})
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "x", encoding="utf-8") as handle:        # "x": never replace a file made in between
+            handle.write(json.dumps(data, indent=2) + "\n")
+        return path
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def _clean(text: object, limit: int = 200) -> str:
     """Error text made safe to print: control characters become '?', and it is cut at ``limit``."""
     text = "".join(c if c.isprintable() else "?" for c in str(text))

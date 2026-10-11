@@ -151,7 +151,10 @@ On Windows the gate also refuses outright, before any rule, path forms it cannot
 
 Two optional files, both JSON:
 
-- `~/.agentx/settings.json` (yours)
+- `~/.agentx/settings.json` (yours). The first time you run `agentx` it writes this file for you, with the model
+  it chose (set by your API key) written out, so there is a file to edit. It is never overwritten afterwards.
+  Change `"model"` here to change the default (for example `"gpt-4o-mini"`); `/model <name>` changes it for
+  one session only, and `/settings` shows what is in force and where the files are.
 - `.agentx/settings.json` in the project (it can be committed with the repository)
 
 ```json
@@ -239,6 +242,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/clear` | Start a new conversation. Clears the "don't ask again" grants and undoes an edit grant. |
 | `/model [name]` | Show or switch the model. The conversation is kept. A model that cannot be built (no key) leaves the old one in place. |
 | `/mode [name]` | Show or set the mode: `default`, `accept-edits` or `plan`. |
+| `/settings` | Show the model, mode and rules in force, and the paths of your settings file and the project's. |
 | `/resume [id]` | Load a saved conversation (a list to pick from, or an id). |
 | `/sessions` | List this folder's saved conversations. |
 | `/init` | Ask the model to draft an `AGENTX.md` for this project. |

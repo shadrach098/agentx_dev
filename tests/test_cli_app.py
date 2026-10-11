@@ -340,7 +340,7 @@ def test_project_allow_rules_are_listed_as_coming_from_the_project(tmp_path):
     text = out.getvalue()
     assert "project" in text.lower() and "run_shell:curl*" in text and "write_file:*\\x07evil" in text
     assert "\x07" not in text
-    assert text.index("run_shell:curl*") < text.index("Type /help")        # before the prompt
+    assert text.index("run_shell:curl*") < text.index("Type / to see")     # before the prompt
 
 
 def test_no_warnings_block_when_there_is_nothing_to_warn_about(tmp_path):
@@ -1344,3 +1344,19 @@ def test_main_turns_an_unexpected_error_in_the_session_into_one_line(tmp_path, m
     err = capsys.readouterr().err
     assert "RuntimeError" in err and "boom" in err and "Traceback" not in err and "\x1b" not in err
     assert len(err.strip().splitlines()) == 1
+
+
+def test_settings_command_names_the_files_and_what_is_in_force(tmp_path):
+    app, out, _, _ = make_app(tmp_path, Lines("/settings", "/exit"), MockModel(script=[]))
+    app.start()
+    text = out.getvalue()
+    assert "Your settings file" in text and "settings.json" in text and "Mode: default" in text
+    assert "Rules:" in text and "Model:" in text
+
+
+def test_the_startup_banner_says_when_a_settings_file_was_created(tmp_path):
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]))
+    app.settings_created = tmp_path / "home" / ".agentx" / "settings.json"
+    app.start()
+    text = out.getvalue()
+    assert "Created your settings file" in text and "/settings" in text

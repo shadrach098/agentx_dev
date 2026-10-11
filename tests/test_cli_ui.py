@@ -468,10 +468,25 @@ class TestPromptInputWithoutAConsole:
 
 
 class TestCompleter:
-    def complete(self, completer, text):
+    def complete(self, completer, text, tab=False):
         from prompt_toolkit.completion import CompleteEvent
         from prompt_toolkit.document import Document
-        return [c.text for c in completer.get_completions(Document(text), CompleteEvent())]
+        event = CompleteEvent(completion_requested=tab)
+        return [c.text for c in completer.get_completions(Document(text), event)]
+
+    def test_commands_pop_up_while_typing_with_their_descriptions(self):
+        from prompt_toolkit.completion import CompleteEvent
+        from prompt_toolkit.document import Document
+        completer = make_completer(["/help", "/model"], {"/help": "List the commands", "/model": "Show the model"})
+        found = list(completer.get_completions(Document("/"), CompleteEvent()))     # no Tab pressed
+        assert [c.text for c in found] == ["/help", "/model"]
+        assert [c.display_meta_text for c in found] == ["List the commands", "Show the model"]
+
+    def test_paths_only_complete_when_tab_is_pressed(self, tmp_path):
+        (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
+        completer = make_completer(["/help"])
+        assert self.complete(completer, f"open {tmp_path.as_posix()}/no") == []
+        assert "tes.txt" in self.complete(completer, f"open {tmp_path.as_posix()}/no", tab=True)
 
     def test_slash_commands_complete(self):
         completer = make_completer(["/help", "/model", "/mode"])
@@ -482,5 +497,5 @@ class TestCompleter:
     def test_paths_complete_after_a_word(self, tmp_path):
         (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
         completer = make_completer(["/help"])
-        found = self.complete(completer, f"open {tmp_path.as_posix()}/no")
+        found = self.complete(completer, f"open {tmp_path.as_posix()}/no", tab=True)
         assert "tes.txt" in found      # the rest of "notes.txt" after the typed "no"

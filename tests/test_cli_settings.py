@@ -212,3 +212,30 @@ def test_the_users_own_accept_edits_is_honoured(tmp_path):
     put(user_settings_path(home), {"mode": "accept-edits"})
     s = load_settings(cwd, home)
     assert s.mode == "accept-edits" and s.problems == []
+
+
+def test_a_first_settings_file_is_written_with_the_model_in_use(tmp_path):
+    from agentx_dev.cli.settings import ensure_user_settings
+    home = tmp_path / "home"
+    created = ensure_user_settings(home, "gpt-4o")
+    assert created == user_settings_path(home)
+    data = json.loads(created.read_text(encoding="utf-8"))
+    assert data == {"model": "gpt-4o", "mode": "default", "addDirs": [],
+                    "permissions": {"allow": [], "deny": []}}
+    s = load_settings(tmp_path / "proj", home)                 # and the file it writes loads without problems
+    assert (s.model, s.mode, s.problems) == ("gpt-4o", "default", [])
+
+
+def test_an_existing_settings_file_is_never_overwritten(tmp_path):
+    from agentx_dev.cli.settings import ensure_user_settings
+    home = tmp_path / "home"
+    put(user_settings_path(home), {"model": "mine"})
+    assert ensure_user_settings(home, "gpt-4o") is None
+    assert json.loads(user_settings_path(home).read_text(encoding="utf-8")) == {"model": "mine"}
+
+
+def test_writing_the_settings_file_never_raises(tmp_path):
+    from agentx_dev.cli.settings import ensure_user_settings
+    blocker = tmp_path / "home"
+    blocker.write_text("a file, not a folder", encoding="utf-8")
+    assert ensure_user_settings(blocker, "gpt-4o") is None

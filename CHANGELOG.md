@@ -31,7 +31,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
     parents are passed to the model as instructions (nearest last, 20,000 characters); `/init` drafts one.
   - **Sessions.** Conversations autosave to `~/.agentx/sessions/` and resume with `--continue`,
     `--resume` and `/resume`. The files hold tool results (file contents) and are not encrypted.
-  - **Slash commands.** `/help`, `/clear`, `/model`, `/mode`, `/resume`, `/sessions`, `/init`, `/exit`.
+  - **Slash commands.** `/help`, `/clear`, `/model`, `/mode`, `/settings`, `/resume`, `/sessions`, `/init`,
+    `/exit`. Typing `/` pops up the list with a one-line description of each. The first run writes
+    `~/.agentx/settings.json` with the model in use, so there is a file to edit; `/settings` shows what is in
+    force and where the files are.
 - **`Session.stream(user_input, **kw)`**: like `Session.invoke`, but yields the runner's events and absorbs the
   result on the final `completion` event. A turn abandoned before then is not recorded.
 - **New base dependency: `prompt_toolkit>=3.0`** (the input line: history, multi-line, completion, status
@@ -39,6 +42,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **A conversation can continue after a run that ended on a final answer given as a function call.** With
+  function calling the model delivers its answer as a call (`React_` or `respond`) and the run ended
+  without a result for it, so the next turn was rejected by OpenAI ("An assistant message with
+  'tool_calls' must be followed by tool messages" / "No tool output found for function call"). The history
+  a run returns now closes that call, and a history saved by an older version is repaired when resumed.
+  This affects `Session` and `chat_history` users as well as the CLI.
 - **`edit_file` no longer rewrites a file's line endings.** It read and wrote through the platform's newline
   translation, so on Windows an LF file came back CRLF and on Linux and macOS a CRLF file came back LF, with
   every line changed. It now keeps every byte outside the edit. A model's bare newlines in `find` and

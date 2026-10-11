@@ -64,15 +64,22 @@ def _clear(ctx: Any, arg: str) -> None:
 
 
 def _model(ctx: Any, arg: str) -> None:
+    where = getattr(ctx, "user_settings_file", None)
+    default_hint = f' To change the default, set "model" in {shown(where)}.' if where else ""
     if not arg:
-        ctx.notice(f"Model: {shown(ctx.model_label)}. Switch with /model <name>, for example /model claude-sonnet-4-6.")
+        ctx.notice(f"Model: {shown(ctx.model_label)}. Switch for this session with /model <name>, for example "
+                   f"/model gpt-4o-mini or /model claude-sonnet-4-6.{default_hint}")
         return
     try:
         ctx.switch_model(arg)
     except ModelError as e:
         ctx.error(shown(e))
         return
-    ctx.notice(f"Model: {shown(ctx.model_label)}")
+    ctx.notice(f"Model: {shown(ctx.model_label)} (this session only).{default_hint}")
+
+
+def _settings(ctx: Any, arg: str) -> None:
+    ctx.show_settings()
 
 
 def _mode(ctx: Any, arg: str) -> None:
@@ -115,6 +122,7 @@ COMMANDS = (
     Command("clear", "Start a new conversation.", _clear),
     Command("model", "Show or switch the model: /model [name]", _model),
     Command("mode", "Show or set the mode: /mode [default|accept-edits|plan]", _mode),
+    Command("settings", "Show the model, mode and rules in force, and the files that change them", _settings),
     Command("resume", "Load a saved conversation: /resume [id]", _resume),
     Command("sessions", "List this folder's saved conversations", _sessions),
     Command("init", "Draft an AGENTX.md for this project", _init),
@@ -125,6 +133,11 @@ _BY_NAME = {command.name: command for command in COMMANDS}
 
 def command_names() -> List[str]:
     return [f"/{command.name}" for command in COMMANDS]
+
+
+def command_descriptions() -> dict:
+    """``{"/name": one-line summary}`` for the pop-up list shown when the user types ``/``."""
+    return {f"/{command.name}": command.summary for command in COMMANDS}
 
 
 def _report(ctx: Any, text: str) -> None:

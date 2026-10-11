@@ -14,7 +14,7 @@ from __future__ import annotations
 import sys
 import unicodedata
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -265,10 +265,13 @@ def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
     return ask
 
 
-def make_completer(commands: Sequence[str]):
-    """Tab completion: ``/commands`` at the start of a line, file paths for any other word."""
+def make_completer(commands: Sequence[str], descriptions: Optional[Mapping[str, str]] = None):
+    """Completion: ``/commands`` at the start of a line (offered as you type, each with its one-line
+    description), file paths for any other word (only when Tab is pressed, so typing a message stays quiet)."""
     from prompt_toolkit.completion import Completer, Completion, PathCompleter
     from prompt_toolkit.document import Document
+
+    notes = dict(descriptions or {})
 
     class _Completer(Completer):
         def __init__(self) -> None:
@@ -279,7 +282,10 @@ def make_completer(commands: Sequence[str]):
             if text.startswith("/") and " " not in text:
                 for name in commands:
                     if name.startswith(text):
-                        yield Completion(name, start_position=-len(text))
+                        yield Completion(name, start_position=-len(text),
+                                         display_meta=plain(notes.get(name, "")) or None)
+                return
+            if not complete_event.completion_requested:
                 return
             word = document.get_word_before_cursor(WORD=True)
             if word:
@@ -318,7 +324,7 @@ class PromptInput:
     allows it."""
 
     def __init__(self, *, history_file: Path, commands: Sequence[str], toolbar: Callable[[], str],
-                 cycle_mode: Callable[[], object]) -> None:
+                 cycle_mode: Callable[[], object], descriptions: Optional[Mapping[str, str]] = None) -> None:
         self._chat = None
         self._short = None
         history_file = Path(history_file)
@@ -331,13 +337,14 @@ class PromptInput:
         if not is_terminal():
             return
         try:
-            self._chat, self._short = self._sessions(history_file, commands, safe_toolbar(toolbar), cycle_mode)
+            self._chat, self._short = self._sessions(history_file, commands, safe_toolbar(toolbar), cycle_mode,
+                                                     descriptions)
         except Exception:
             self._chat = self._short = None
 
     @staticmethod
     def _sessions(history_file: Path, commands: Sequence[str], toolbar: Callable[[], Any],
-                  cycle_mode: Callable[[], object]):
+                  cycle_mode: Callable[[], object], descriptions: Optional[Mapping[str, str]] = None):
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.key_binding import KeyBindings
@@ -346,7 +353,12 @@ class PromptInput:
 
         @bindings.add("enter")
         def _send(event):
-            event.current_buffer.validate_and_handle()
+            buffer = event.current_buffer
+            state = buffer.complete_state
+            if state is not None and state.current_completion is not None:     # a menu item is highlighted:
+                buffer.apply_completion(state.current_completion)             # Enter picks it, a second sends
+                return
+            buffer.validate_and_handle()
 
         @bindings.add("escape", "enter")
         def _newline(event):
@@ -358,8 +370,8 @@ class PromptInput:
             event.app.invalidate()
 
         chat = PromptSession(history=FileHistory(str(history_file)), multiline=True,
-                             key_bindings=bindings, completer=make_completer(commands),
-                             bottom_toolbar=toolbar, complete_while_typing=False)
+                             key_bindings=bindings, completer=make_completer(commands, descriptions),
+                             bottom_toolbar=toolbar, complete_while_typing=True)
         short = PromptSession(multiline=False, bottom_toolbar=toolbar)
         return chat, short
 

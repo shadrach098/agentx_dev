@@ -45,7 +45,7 @@ def test_help_lists_every_command():
     assert run_command(ctx, "/help") is True
     text = "\n".join(ctx.said)
     assert all(name in text for name in command_names())
-    assert command_names() == ["/help", "/clear", "/model", "/mode", "/resume", "/sessions", "/init", "/exit"]
+    assert command_names() == ["/help", "/clear", "/model", "/mode", "/settings", "/resume", "/sessions", "/init", "/exit"]
 
 
 def test_clear_exit_init_sessions():
@@ -244,3 +244,20 @@ def test_clear_help_line_is_neutral():
     ctx = Ctx()
     run_command(ctx, "/help")
     assert "/clear     Start a new conversation." in ctx.said[0]
+
+
+def test_settings_asks_the_app_to_show_what_is_in_force():
+    ctx = Ctx()
+    ctx.show_settings = lambda: ctx.calls.append(("settings",))
+    assert run_command(ctx, "/settings") is True
+    assert ctx.calls == [("settings",)]
+    assert "/settings" in command_names()
+
+
+def test_model_tells_where_to_change_the_default():
+    ctx = Ctx()
+    ctx.user_settings_file = "C:/Users/me/.agentx/settings.json"
+    run_command(ctx, "/model")
+    assert "settings.json" in ctx.said[-1] and "gpt-4o-mini" in ctx.said[-1]
+    run_command(ctx, "/model gpt-4o-mini")
+    assert "this session only" in ctx.said[-1] and "settings.json" in ctx.said[-1]

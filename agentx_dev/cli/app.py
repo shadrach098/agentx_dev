@@ -15,12 +15,12 @@ from rich.console import Console
 
 from agentx_dev import AgentRunner, AgentType, Session
 from agentx_dev.cli.approval import MODES, Gate
-from agentx_dev.cli.commands import command_names, run_command, shown
+from agentx_dev.cli.commands import command_descriptions, command_names, run_command, shown
 from agentx_dev.cli.context import build_addendum
 from agentx_dev.cli.models import ModelError, choose_model
 from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
-from agentx_dev.cli.settings import load_settings
+from agentx_dev.cli.settings import ensure_user_settings, load_settings, project_settings_path, user_settings_path
 from agentx_dev.cli.tools import build_tools
 from agentx_dev.cli.ui import PromptInput, Screen, is_terminal, make_asker
 
@@ -141,6 +141,7 @@ class ChatApp:
         self.requested_model = model_name
         self.problems = list(problems)
         self.project_allow = list(project_allow)
+        self.settings_created: Optional[Path] = None      # set by main when it wrote a first settings file
         self.add_dirs = [_resolved(Path(d).expanduser()) for d in add_dirs]
         self.gate = Gate(mode=mode, allow=allow, deny=[*default_deny(self.home), *deny], cwd=self.cwd)
         # The mode in force when "a" was answered at an edit prompt (None: accept-edits, if on, was chosen)
@@ -263,6 +264,26 @@ class ChatApp:
         self.gate.cycle_mode()
         self._mode_before_grant = None            # the user chose this mode
 
+    @property
+    def user_settings_file(self) -> Path:
+        return user_settings_path(self.home)
+
+    def show_settings(self) -> None:
+        """What is in force now and which files to edit to change it (the /settings command)."""
+        user, project = self.user_settings_file, project_settings_path(self.cwd)
+        state = lambda path: "found" if path.is_file() else "not created"           # noqa: E731
+        allow = f"{len(self.gate.allow)} allow, {len(self.gate.deny)} deny rules (deny includes built-in protections)"
+        self.notice(
+            f"Model: {self.model_label}\n"
+            f"Mode: {self.gate.mode}\n"
+            f"Rules: {allow}\n"
+            f"Extra folders: {', '.join(str(d) for d in self.add_dirs) or 'none'}\n"
+            f"Your settings file ({state(user)}): {user}\n"
+            f"This project's settings file ({state(project)}): {project}\n"
+            "Edit your file to change the default model, mode, extra folders and permission rules, then restart. "
+            "Use /model <name> or /mode <name> to change them for this session only. "
+            "The project file cannot turn on accept-edits or add folders outside the project.")
+
     def toolbar(self) -> str:
         session_id = self.session.session_id[:8] if self.session else "-"
         return f" {self.model_label} | mode: {self.gate.mode} | {self.cwd} | {session_id} | Shift+Tab: mode "
@@ -332,7 +353,13 @@ class ChatApp:
                 self._load(info, runner)
         extra = f"\nextra folders: {', '.join(str(d) for d in self.add_dirs)}" if self.add_dirs else ""
         self.notice(f"agentx {_version()} - {self.model_label} - {self.cwd}{extra}\n"
-                    f"mode: {self.gate.mode}. Type /help for commands, /exit or Ctrl+D to leave.")
+                    f"mode: {self.gate.mode}.\n"
+                    "Ask about this project, or tell me what to change. I ask before I edit files or run commands.\n"
+                    "Type / to see the commands. Enter sends, Alt+Enter adds a line, Tab completes, "
+                    "Shift+Tab changes the mode, Ctrl+D leaves.")
+        if self.settings_created is not None:
+            self.notice(f"Created your settings file: {self.settings_created}\n"
+                        "Edit it to change the default model, mode and permission rules. /settings shows what is in force.")
         return self.loop()
 
     def _find_for_start(self, resume: str) -> Optional[SessionInfo]:
@@ -574,6 +601,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         console = Console()
         holder: List[Any] = []
         prompt = PromptInput(history_file=home / ".agentx" / "history", commands=command_names(),
+                             descriptions=command_descriptions(),
                              toolbar=lambda: holder[0].toolbar() if holder else "",
                              cycle_mode=lambda: holder[0].cycle_mode() if holder else None)
         app = ChatApp(cwd=cwd, home=home, console=console, read_line=prompt.read, read_short=prompt.read_short,
@@ -581,6 +609,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                       allow=settings.allow, deny=settings.deny, add_dirs=add_dirs, problems=settings.problems,
                       project_allow=settings.project_allow)
         holder.append(app)
+        app.settings_created = ensure_user_settings(home, getattr(app, "model_label", None))
     except KeyboardInterrupt:
         print("agentx: interrupted while starting.", file=sys.stderr)
         return 130
