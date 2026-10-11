@@ -13,7 +13,7 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. Flags: `--model`, `--mode`, `--add-dir`, `--continue`,
   `--resume [ID]`, `--version`. See the new [guide](docs/guides/cli.md).
   - **Approvals and modes.** Reads run; edits, commands and delete / move ask first, with a diff or the full
-    command shown. Modes `default`, `accept-edits` and `plan`. Answering `a` ("don't ask again") remembers
+    command shown. Modes `default`, `accept-edits`, `plan` and `auto` (edits, shell and Python run without asking; delete, move and unknown tools still ask; entered only on purpose, never from Shift+Tab, an `a` answer or a project settings file). Answering `a` ("don't ask again") remembers
     all edits or a plain command prefix for the conversation, never for interpreters, shells, compound
     commands, `run_python`, delete or move. A preview that cannot be shown, or a command over 20,000
     characters, is declined with the reason.

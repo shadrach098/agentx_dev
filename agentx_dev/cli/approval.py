@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Union
 
-MODES = ("default", "accept-edits", "plan")
+MODES = ("default", "accept-edits", "plan", "auto")
+# Shift+Tab cycles through these. ``auto`` (nothing is asked except delete / move / unknown tools) is only ever
+# entered on purpose: --mode auto, "mode": "auto" in the user's own settings, or /mode auto.
+CYCLE_MODES = ("default", "accept-edits", "plan")
 
 TOOL_KINDS = {
     "read_path": "read", "list_directory": "read", "find_files": "read", "grep": "read",
@@ -415,7 +418,10 @@ class Gate:
         self._mode = mode
 
     def cycle_mode(self) -> str:
-        self._mode = MODES[(MODES.index(self._mode) + 1) % len(MODES)]
+        if self._mode in CYCLE_MODES:
+            self._mode = CYCLE_MODES[(CYCLE_MODES.index(self._mode) + 1) % len(CYCLE_MODES)]
+        else:                                   # leaving auto with Shift+Tab always lands on the careful mode
+            self._mode = CYCLE_MODES[0]
         return self._mode
 
     def check(self, tool: str, args: Mapping[str, Any]) -> Optional[str]:
@@ -437,6 +443,8 @@ class Gate:
             return PLAN_REFUSAL
         if kind == "read":
             return None
+        if self._mode == "auto" and tool in TOOL_KINDS and kind in ("edit", "command"):
+            return None             # auto: only delete / move and tools the gate does not know still ask
         compound = _is_compound(tool, args)
         if kind != "destructive" and not compound:
             # an allow rule applies only if EVERY form matches it

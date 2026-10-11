@@ -53,6 +53,11 @@ def parse_slash(line: str) -> Optional[Tuple[str, str]]:
     return match.group(1).lower(), (match.group(2) or "").strip()
 
 
+AUTO_NOTICE = ("Auto mode: file edits, shell commands and Python run without asking. Delete and move still ask, "
+               "and .git, .agentx and your git and shell config files stay protected. Shell and Python can do "
+               "anything your account can, so use it in folders you trust. Shift+Tab leaves auto mode.")
+
+
 def _help(ctx: Any, arg: str) -> None:
     ctx.notice("\n".join(f"/{c.name:<9} {c.summary}" for c in COMMANDS))
 
@@ -92,6 +97,8 @@ def _mode(ctx: Any, arg: str) -> None:
         ctx.error(shown(e))
         return
     ctx.notice(f"Mode: {ctx.gate.mode}")
+    if ctx.gate.mode == "auto":
+        ctx.notice(AUTO_NOTICE)
 
 
 def _resume(ctx: Any, arg: str) -> None:
@@ -121,7 +128,7 @@ COMMANDS = (
     Command("help", "List the commands", _help),
     Command("clear", "Start a new conversation.", _clear),
     Command("model", "Show or switch the model: /model [name]", _model),
-    Command("mode", "Show or set the mode: /mode [default|accept-edits|plan]", _mode),
+    Command("mode", "Show or set the mode: /mode [default|accept-edits|plan|auto]", _mode),
     Command("settings", "Show the model, mode and rules in force, and the files that change them", _settings),
     Command("resume", "Load a saved conversation: /resume [id]", _resume),
     Command("sessions", "List this folder's saved conversations", _sessions),

@@ -15,7 +15,7 @@ from rich.console import Console
 
 from agentx_dev import AgentRunner, AgentType, Session
 from agentx_dev.cli.approval import MODES, Gate
-from agentx_dev.cli.commands import command_descriptions, command_names, run_command, shown
+from agentx_dev.cli.commands import AUTO_NOTICE, command_descriptions, command_names, run_command, shown
 from agentx_dev.cli.context import build_addendum
 from agentx_dev.cli.models import ModelError, choose_model
 from agentx_dev.cli.models import model_label as label_of
@@ -357,6 +357,8 @@ class ChatApp:
                     "Ask about this project, or tell me what to change. I ask before I edit files or run commands.\n"
                     "Type / to see the commands. Enter sends, Alt+Enter adds a line, Tab completes, "
                     "Shift+Tab changes the mode, Ctrl+D leaves.")
+        if self.gate.mode == "auto":
+            self.notice(AUTO_NOTICE)
         if self.settings_created is not None:
             self.notice(f"Created your settings file: {self.settings_created}\n"
                         "Edit it to change the default model, mode and permission rules. /settings shows what is in force.")
@@ -507,8 +509,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agentx", description="A terminal coding assistant built on agentx-dev.")
     parser.add_argument("--version", action="version", version=f"agentx {_version()}")
     parser.add_argument("--model", metavar="NAME", help="model to use, for example claude-sonnet-4-6 or gpt-4o")
-    parser.add_argument("--mode", choices=MODES, help="default, accept-edits (edits run without asking) or plan "
-                                                       "(read-only)")
+    parser.add_argument("--mode", choices=MODES, help="default, accept-edits (edits run without asking), plan "
+                                                       "(read-only) or auto (edits, commands and Python run "
+                                                       "without asking; delete and move still ask)")
     parser.add_argument("--add-dir", action="append", default=[], metavar="PATH",
                         help="let the agent work in this extra folder (repeatable)")
     group = parser.add_mutually_exclusive_group()

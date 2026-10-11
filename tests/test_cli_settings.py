@@ -239,3 +239,13 @@ def test_writing_the_settings_file_never_raises(tmp_path):
     blocker = tmp_path / "home"
     blocker.write_text("a file, not a folder", encoding="utf-8")
     assert ensure_user_settings(blocker, "gpt-4o") is None
+
+
+def test_a_project_cannot_turn_on_auto_mode_but_the_user_can(tmp_path):
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    put(project_settings_path(cwd), {"mode": "auto"})
+    s = load_settings(cwd, home)
+    assert s.mode is None and any("auto mode" in p and "ignored" in p for p in s.problems)
+    put(user_settings_path(home), {"mode": "auto"})
+    s = load_settings(cwd, home)
+    assert s.mode == "auto"

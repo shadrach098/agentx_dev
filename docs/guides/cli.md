@@ -4,7 +4,7 @@
 
 It is a front end over `AgentRunner`, `DefaultTools` and `Session`: the chat loop, the approval prompts, the settings file and the slash commands are new; the engine and the tools are the ones you already have.
 
-Version 3.7.0 (unreleased). Not in this version: token-by-token output, a headless mode (`agentx -p "task"`), MCP configuration, custom commands, hooks and a "never ask" mode (see [Limits in this version](#limits-in-this-version)).
+Version 3.7.0 (unreleased). Not in this version: token-by-token output, a headless mode (`agentx -p "task"`), MCP configuration, custom commands, hooks and a mode that never asks about anything (see [Limits in this version](#limits-in-this-version)).
 
 ## Quick start
 
@@ -26,7 +26,7 @@ Keys are read from the environment only. With no `--model`, the first key found 
 | Flag | Does |
 |---|---|
 | `--model NAME` | Model to use, for example `claude-sonnet-4-6` or `gpt-4o`. Overrides `model` in the settings files. |
-| `--mode MODE` | `default`, `accept-edits` or `plan`. Overrides `mode` in the settings files. |
+| `--mode MODE` | `default`, `accept-edits`, `plan` or `auto`. Overrides `mode` in the settings files. |
 | `--add-dir PATH` | Let the tools work in this extra folder as well. Repeatable. A relative path starts at the current folder. |
 | `--continue` | Resume the latest conversation for this folder. With none saved, it says so and starts a new one. |
 | `--resume [ID]` | Resume a saved conversation: with no id, pick from a numbered list; with an id, a file name or a unique id prefix of at least four characters. An id that matches nothing is an error (exit code 1). |
@@ -62,8 +62,11 @@ Every tool call goes through a gate before it runs. The gate runs it, asks you, 
 | `default` | Edits, commands and destructive actions ask. |
 | `accept-edits` | Edits run without asking. Commands and destructive actions still ask. |
 | `plan` | Reads only. Anything else is refused and the model is told to propose a plan in its answer instead. |
+| `auto` | File edits, shell commands and Python run without asking. Delete, move and tools the gate does not know (such as MCP tools) still ask. The built-in protections and your deny rules still apply. |
 
-Set the mode with `--mode`, with `mode` in a settings file, with `/mode`, or with Shift+Tab (it cycles `default`, `accept-edits`, `plan`). The status bar shows the current mode.
+**`auto` is on purpose only.** Choose it with `--mode auto`, `"mode": "auto"` in your own settings file, or `/mode auto`. Shift+Tab never enters it and always leaves it (to `default`), answering `a` never sets it, and a project's settings file cannot turn it on (ignored with a warning). Shell and Python can do anything your account can, so a command that deletes files is not stopped by the `delete_path` prompt; use `auto` in folders you trust, and keep a deny rule for anything you must protect (deny rules also apply to shell commands by their text, for example `run_shell:*rm -rf*`).
+
+Set the mode with `--mode`, with `mode` in a settings file, with `/mode`, or with Shift+Tab (it cycles `default`, `accept-edits`, `plan`; `auto` is not in the cycle). The status bar shows the current mode.
 
 ### The prompt
 
@@ -193,7 +196,7 @@ Two safety refinements:
 
 A repository you just cloned can contain `.agentx/settings.json`. So:
 
-- A project `mode` of `accept-edits` is **ignored, with a warning**. Set it in your own settings or with `--mode`. `plan` and `default` from the project are honoured.
+- A project `mode` of `accept-edits` or `auto` is **ignored, with a warning**. Set it in your own settings or with `--mode`. `plan` and `default` from the project are honoured.
 - A project `addDirs` entry that resolves outside the project folder is **ignored, with a warning**. Your own file and `--add-dir` are not restricted.
 - Allow rules that come from the project are **listed at startup and you are asked once**: `Honour these project rules? [y/N]`. Only `y` or `yes` keeps them. Bare Enter, Ctrl+D, Ctrl+C or an answer that stays unrecognised after one more try drops them for this session. A repository's `"allow": ["write_file", "edit_file"]` is `accept-edits` under another name, and `"allow": ["run_shell"]` runs every command that is not compound, so they are not taken on trust. Your own allow rules are never affected. The project's **deny** rules are always kept: they only restrict.
 
@@ -241,7 +244,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/help` | List the commands. |
 | `/clear` | Start a new conversation. Clears the "don't ask again" grants and undoes an edit grant. |
 | `/model [name]` | Show or switch the model. The conversation is kept. A model that cannot be built (no key) leaves the old one in place. |
-| `/mode [name]` | Show or set the mode: `default`, `accept-edits` or `plan`. |
+| `/mode [name]` | Show or set the mode: `default`, `accept-edits`, `plan` or `auto`. |
 | `/settings` | Show the model, mode and rules in force, and the paths of your settings file and the project's. |
 | `/resume [id]` | Load a saved conversation (a list to pick from, or an id). |
 | `/sessions` | List this folder's saved conversations. |
@@ -266,7 +269,7 @@ The status bar shows the model, the mode, the folder, the short session id and t
 - **No token streaming.** Each step shows as it happens, but the answer appears when the turn ends. The framework streams tokens only in text-tool mode, not with native function calling, which newer models need.
 - **No headless mode.** There is no `agentx -p "task"`; a non-terminal exits with code 1.
 - **No MCP configuration, custom commands or hooks.**
-- **No "never ask" mode.** The most permissive setting is `accept-edits`, plus allow rules and grants for commands you choose.
+- **No mode that never asks.** `auto` still asks before delete and move and for tools the gate does not know. The protected files (`.git`, `.agentx`, git and shell config) are refused in every mode.
 - **No teams mode.** It runs one agent, not a `Supervisor` with helpers.
 - You cannot type while the agent is working.
 - **No size cap on `read_path`, and the conversation is never compacted.** A very large file the model reads goes into the history whole, and every later turn sends it again, so a huge read can make later turns fail (the model's context window is exceeded) until you start over with `/clear`. Ask for the part of a file you need, or use `grep`.
@@ -295,3 +298,4 @@ A checklist for the maintainer to run once on a real terminal before release. Te
 17. Start with `PYTHONIOENCODING=cp1252 agentx` (on Windows: `$env:PYTHONIOENCODING = "cp1252"` first): a tool call's bullet shows as `*`. Without it, in cmd.exe, PowerShell or Windows Terminal, the bullet is the dot, since Python reports UTF-8 for the console.
 18. Put `{"permissions": {"allow": ["write_file"]}}` in `.agentx/settings.json` in a test project and start `agentx` there: the rule is listed and `Honour these project rules? [y/N]` is asked. Press Enter: the rule is dropped for the session and a write still asks. Start again and answer `y`: writes run without asking.
 19. Ask the model to move a file into an existing folder: the prompt says `Move a to b/a`. Ask it to move a folder named `.agentx` into the project root: it is refused with the deny-rule message.
+20. Start `agentx --mode auto` in a scratch folder: a notice explains what auto does, a file write and a Python run go through without a prompt, and a delete still asks. Press Shift+Tab: the bar returns to `default`, and Shift+Tab again never lands on `auto`.

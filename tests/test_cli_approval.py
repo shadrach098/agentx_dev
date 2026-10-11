@@ -943,7 +943,7 @@ class TestModes:
     def test_an_unknown_mode_is_rejected(self):
         with pytest.raises(ValueError, match="mode must be one of"):
             Gate(mode="yolo")
-        assert MODES == ("default", "accept-edits", "plan")
+        assert MODES == ("default", "accept-edits", "plan", "auto")
 
 
 class TestMoveIntoAFolder:
@@ -1018,3 +1018,53 @@ def test_drawing_a_move_with_unc_paths_never_touches_the_disk(monkeypatch):
     monkeypatch.setattr(_Path, "is_dir", boom)
     assert move_final_paths(unc["source"], unc["destination"]) == []
     assert isinstance(subject_of("move_file", unc), str)
+
+
+# -- auto mode ---------------------------------------------------------------------------------------------
+
+def _auto_gate(tmp_path, **kw):
+    asked = []
+
+    def ask(request):
+        asked.append(request.tool)
+        return Answer("n")
+
+    return Gate(mode="auto", cwd=tmp_path, ask=ask, **kw), asked
+
+
+def test_auto_mode_runs_edits_commands_and_python_without_asking(tmp_path):
+    gate, asked = _auto_gate(tmp_path)
+    assert gate.check("write_file", {"path": "a.txt", "content": "x", "if_exists": "overwrite"}) is None
+    assert gate.check("edit_file", {"path": "a.txt", "find": "x", "replace": "y"}) is None
+    assert gate.check("run_shell", {"command": "pytest -q"}) is None
+    assert gate.check("run_shell", {"command": "cd sub && python run.py | tee out.txt"}) is None
+    assert gate.check("run_python", {"code": "print(1)"}) is None
+    assert asked == []
+
+
+def test_auto_mode_still_asks_for_delete_move_and_unknown_tools(tmp_path):
+    gate, asked = _auto_gate(tmp_path)
+    assert gate.check("delete_path", {"path": "a.txt"}) is not None
+    assert gate.check("move_file", {"source": "a", "destination": "b"}) is not None
+    assert gate.check("mcp_send_email", {"to": "x"}) is not None
+    assert asked == ["delete_path", "move_file", "mcp_send_email"]
+
+
+def test_auto_mode_keeps_deny_rules_and_unsupported_paths(tmp_path):
+    gate, asked = _auto_gate(tmp_path, deny=["write_file:.git/*", "run_shell:*sudo*"])
+    assert "deny rule" in gate.check("write_file", {"path": ".git/config", "content": "x", "if_exists": "overwrite"})
+    assert "deny rule" in gate.check("run_shell", {"command": "sudo rm x"})
+    assert asked == []
+
+
+def test_shift_tab_never_enters_auto_and_always_leaves_it(tmp_path):
+    gate = Gate(cwd=tmp_path)
+    seen = [gate.cycle_mode() for _ in range(6)]
+    assert "auto" not in seen and set(seen) == {"default", "accept-edits", "plan"}
+    gate.set_mode("auto")
+    assert gate.cycle_mode() == "default"
+
+
+def test_plan_mode_still_refuses_what_auto_would_run(tmp_path):
+    gate = Gate(mode="plan", cwd=tmp_path)
+    assert gate.check("run_python", {"code": "print(1)"}) == PLAN_REFUSAL

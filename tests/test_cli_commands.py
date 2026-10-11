@@ -96,7 +96,7 @@ def test_mode_is_case_insensitive_and_shows_the_result():
     assert ctx.gate.mode == "accept-edits" and "accept-edits" in ctx.said[-1]
 
 
-@pytest.mark.parametrize("word", ["bypass", "bypassPermissions", "yolo", "auto", "plan now", "default;plan", ""])
+@pytest.mark.parametrize("word", ["bypass", "bypassPermissions", "yolo", "plan now", "default;plan", ""])
 def test_mode_cannot_reach_anything_but_the_known_modes(word):
     ctx = Ctx()
     run_command(ctx, f"/mode {word}")
@@ -261,3 +261,10 @@ def test_model_tells_where_to_change_the_default():
     assert "settings.json" in ctx.said[-1] and "gpt-4o-mini" in ctx.said[-1]
     run_command(ctx, "/model gpt-4o-mini")
     assert "this session only" in ctx.said[-1] and "settings.json" in ctx.said[-1]
+
+
+def test_mode_auto_can_be_set_and_explains_itself():
+    ctx = Ctx()
+    run_command(ctx, "/mode auto")
+    assert ctx.gate.mode == "auto"
+    assert ctx.said[0] == "Mode: auto" and "Delete and move still ask" in ctx.said[1]
