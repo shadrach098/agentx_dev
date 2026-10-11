@@ -270,8 +270,84 @@ def _request_body(request: Request, preview: Preview) -> Text:
     return body
 
 
+CANCELLED = -1          # what a selection menu returns when the user pressed Esc, Ctrl+C or Ctrl+D
+
+
+def select_menu(options: Sequence[str], default: int = 0,
+                hotkeys: Optional[Mapping[str, int]] = None) -> Optional[int]:
+    """A numbered list the user moves through with the arrow keys (or j / k), confirms with Enter, or picks by
+    typing its number (or a hotkey such as ``y``). Returns the index chosen, ``CANCELLED`` for Esc / Ctrl+C /
+    Ctrl+D, or None when no menu can be shown (not a terminal, or prompt_toolkit cannot start): the caller
+    then asks in plain text. Option texts are printed through ``plain``."""
+    if not options or not is_terminal():
+        return None
+    try:
+        from prompt_toolkit import Application
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+
+        labels = [plain(option) for option in options]
+        position = [default if 0 <= default < len(labels) else 0]
+        bindings = KeyBindings()
+
+        def render():
+            parts = []
+            for number, label in enumerate(labels):
+                if number == position[0]:
+                    parts.append(("ansicyan bold", f"> {number + 1}. {label}\n"))
+                else:
+                    parts.append(("", f"  {number + 1}. {label}\n"))
+            parts.append(("ansibrightblack", "Up / Down to move, Enter to confirm, Esc to cancel"))
+            return FormattedText(parts)
+
+        @bindings.add("up")
+        @bindings.add("k")
+        def _up(event):
+            position[0] = (position[0] - 1) % len(labels)
+
+        @bindings.add("down")
+        @bindings.add("j")
+        def _down(event):
+            position[0] = (position[0] + 1) % len(labels)
+
+        @bindings.add("enter")
+        def _enter(event):
+            event.app.exit(result=position[0])
+
+        for number in range(min(len(labels), 9)):
+            @bindings.add(str(number + 1))
+            def _digit(event, number=number):
+                event.app.exit(result=number)
+
+        for key, index in (hotkeys or {}).items():
+            if 0 <= index < len(labels) and len(key) == 1:
+                @bindings.add(key)
+                def _hot(event, index=index):
+                    event.app.exit(result=index)
+
+        @bindings.add("escape", eager=True)
+        @bindings.add("c-c")
+        @bindings.add("c-d")
+        def _cancel(event):
+            event.app.exit(result=CANCELLED)
+
+        application = Application(
+            layout=Layout(Window(FormattedTextControl(render), height=len(labels) + 1)),
+            key_bindings=bindings, full_screen=False, erase_when_done=False)
+        result = application.run()
+        return result if isinstance(result, int) else CANCELLED
+    except (KeyboardInterrupt, EOFError):
+        return CANCELLED
+    except Exception:
+        return None
+
+
 def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
-               cwd: Path) -> Callable[[Request], Answer]:
+               cwd: Path,
+               select: Optional[Callable[..., Optional[int]]] = None) -> Callable[[Request], Answer]:
     """The gate's ``ask`` function: show what is about to happen, read y / a / n.
 
     ``cwd`` must be the SAME folder the gate was built with (the application passes the gate's ``cwd``), or the
@@ -296,12 +372,39 @@ def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
         _print(console, Panel(_request_body(request, preview), title=Text(plain(request.tool)),
                               title_align="left"))
         always = bool(request.remember and request.grant)
+        what = ""
         if always:
-            _print(console, Text("[y] yes   [a] yes, don't ask again   [n] no", style="bold"))
             if request.kind == "command":
                 what = f"{plain(request.tool)} commands starting with '{plain(request.grant)}'"
             else:
                 what = plain(request.grant)
+        if select is not None:
+            labels = ["Yes"]
+            if always:
+                labels.append(f"Yes, and don't ask again: {what}")
+            labels.append("No, and tell the model what to do instead")
+            hotkeys = {"y": 0, "n": len(labels) - 1}
+            if always:
+                hotkeys["a"] = 1
+            _print(console, Text("Do you want to proceed?", style="bold"))
+            try:
+                picked = select(labels, 0, hotkeys)
+            except Exception:
+                picked = None
+            if picked == CANCELLED:
+                return Answer("n", "the user interrupted the question")
+            if picked is not None:
+                if picked == 0:
+                    return Answer("y")
+                if always and picked == 1:
+                    return Answer("a")
+                try:
+                    reason = str(read_line("What should it do instead? (Enter to skip) ")).strip()
+                except (Exception, KeyboardInterrupt):
+                    reason = ""
+                return Answer("n", reason)
+        if always:
+            _print(console, Text("[y] yes   [a] yes, don't ask again   [n] no", style="bold"))
             _print(console, Text("'a' will remember: " + what, style="yellow"))
         else:
             _print(console, Text("[y] yes   [n] no", style="bold"))
@@ -452,3 +555,9 @@ class PromptInput:
         if self._short is None:
             return input(prompt)
         return self._short.prompt(prompt)
+
+    def select(self, options: Sequence[str], default: int = 0, hotkeys: Optional[Mapping[str, int]] = None):
+        """An arrow-key menu (see ``select_menu``); None when this input line has no console to draw on."""
+        if self._chat is None:
+            return None
+        return select_menu(options, default, hotkeys)

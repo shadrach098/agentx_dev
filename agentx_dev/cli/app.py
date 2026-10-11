@@ -22,6 +22,7 @@ from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
 from agentx_dev.cli.settings import ensure_user_settings, load_settings, project_settings_path, user_settings_path
 from agentx_dev.cli.tools import build_tools
+from agentx_dev.cli.trust import ensure_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker
 
 INIT_PROMPT = (
@@ -129,8 +130,10 @@ class ChatApp:
                  mode: str = "default", allow: Iterable[str] = (), deny: Iterable[str] = (),
                  add_dirs: Iterable[Path] = (), model_factory: Callable[..., Any] = choose_model,
                  env: Optional[Mapping[str, str]] = None, problems: Iterable[str] = (),
-                 project_allow: Iterable[str] = ()) -> None:
+                 project_allow: Iterable[str] = (),
+                 select: Optional[Callable[..., Optional[int]]] = None) -> None:
         self.cwd = Path(cwd).resolve()
+        self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
         self.console = console
         self.screen = Screen(console)
@@ -148,7 +151,7 @@ class ChatApp:
         self._mode_before_grant: Optional[str] = None
         self._watch_mode_changes()
         self.progress = Progress(console)
-        asker = make_asker(console, self.read_short, self.gate.cwd)
+        asker = make_asker(console, self.read_short, self.gate.cwd, select=select)
 
         def ask_with_spinner_paused(request: Any) -> Any:           # a prompt must not fight the spinner
             with self.progress.paused():
@@ -492,6 +495,12 @@ class ChatApp:
         if not infos:
             self.notice("No saved sessions for this folder.")
             return None
+        if self.select is not None:                           # arrow keys; None when there is no console
+            labels = [f"{info.updated_at[:19]}  {info.title}  ({info.session_id[:8]})" for info in infos[:9]]
+            self.notice("Which conversation?")
+            picked = self.select([self._safe(label, 120) for label in labels] + ["Cancel"], 0)
+            if picked is not None:
+                return infos[picked] if 0 <= picked < len(labels) else None
         self.notice("\n".join(self._lines_for(infos)))
         try:
             answer = self.read_short("Resume which? (number, blank to cancel) ").strip()
@@ -611,18 +620,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         cwd, home = Path.cwd().resolve(), Path.home()
         setup_logging(home)
-        settings = load_settings(cwd, home)
-        add_dirs = []
-        for entry in [*settings.add_dirs, *args.add_dir]:
-            path = Path(entry).expanduser()
-            add_dirs.append(_resolved(path if path.is_absolute() else cwd / path))
         console = Console()
         holder: List[Any] = []
         prompt = PromptInput(history_file=home / ".agentx" / "history", commands=command_names(),
                              descriptions=command_descriptions(),
                              toolbar=lambda: holder[0].toolbar() if holder else "",
                              cycle_mode=lambda: holder[0].cycle_mode() if holder else None)
+        # Nothing in this folder (its settings, its AGENTX.md) is read until the user has said they trust it.
+        if not ensure_trusted(cwd, home, console, select=prompt.select, read_line=prompt.read_short):
+            print("agentx: this folder is not trusted, so nothing was started. Run agentx in a folder you trust.",
+                  file=sys.stderr)
+            return 1
+        settings = load_settings(cwd, home)
+        add_dirs = []
+        for entry in [*settings.add_dirs, *args.add_dir]:
+            path = Path(entry).expanduser()
+            add_dirs.append(_resolved(path if path.is_absolute() else cwd / path))
         app = ChatApp(cwd=cwd, home=home, console=console, read_line=prompt.read, read_short=prompt.read_short,
+                      select=prompt.select,
                       model_name=args.model or settings.model, mode=args.mode or settings.mode or "default",
                       allow=settings.allow, deny=settings.deny, add_dirs=add_dirs, problems=settings.problems,
                       project_allow=settings.project_allow)

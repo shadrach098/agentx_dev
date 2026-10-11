@@ -17,6 +17,12 @@ from tests.conftest import MockModel, make_final, make_react_response
 
 
 @pytest.fixture(autouse=True)
+def folder_is_trusted(monkeypatch):
+    """``main`` asks whether to trust the folder; these tests are about what comes after (see test_cli_trust)."""
+    monkeypatch.setattr(app_module, "ensure_trusted", lambda *args, **kwargs: True)
+
+
+@pytest.fixture(autouse=True)
 def keep_logging_as_it_was():
     """``main`` installs logging handlers (``setup_logging``); no test may leave them behind."""
     import logging
@@ -118,9 +124,9 @@ def test_every_part_is_built_for_the_same_folder(tmp_path, monkeypatch):
     seen = {}
     real_asker, real_tools, real_addendum = app_module.make_asker, app_module.build_tools, app_module.build_addendum
 
-    def spy_asker(console, read_line, cwd):
+    def spy_asker(console, read_line, cwd, select=None):
         seen["asker"] = cwd
-        return real_asker(console, read_line, cwd)
+        return real_asker(console, read_line, cwd, select=select)
 
     def spy_tools(cwd, add_dirs, gate):
         seen["tools"], seen["tools_gate"] = cwd, gate
@@ -670,6 +676,7 @@ class TestMain:
         class FakePrompt:
             def __init__(self, **kw):
                 self.read = self.read_short = lambda prompt="": ""
+                self.select = lambda *args, **kwargs: None
 
         monkeypatch.setattr(app_module, "is_terminal", lambda: True)
         monkeypatch.setattr(app_module, "ChatApp", FakeApp)
@@ -703,6 +710,7 @@ class TestMain:
         class FakePrompt:
             def __init__(self, **kw):
                 self.read = self.read_short = lambda prompt="": ""
+                self.select = lambda *args, **kwargs: None
 
         monkeypatch.setattr(app_module, "is_terminal", lambda: True)
         monkeypatch.setattr(app_module, "ChatApp", FakeApp)
@@ -898,6 +906,7 @@ class TestMainRoundOne:
         class FakePrompt:
             def __init__(self, **kw):
                 self.read = self.read_short = lambda prompt="": ""
+                self.select = lambda *args, **kwargs: None
 
         proj = tmp_path / "proj"
         (tmp_path / "shared").mkdir()
@@ -1148,6 +1157,7 @@ def test_main_sets_the_logging_up_before_the_app_is_built(tmp_path, monkeypatch)
     class FakePrompt:
         def __init__(self, **kw):
             self.read = self.read_short = lambda prompt="": ""
+            self.select = lambda *args, **kwargs: None
 
     monkeypatch.setattr(app_module, "is_terminal", lambda: True)
     monkeypatch.setattr(app_module, "ChatApp", FakeApp)
@@ -1334,6 +1344,7 @@ def test_main_turns_an_unexpected_error_in_the_session_into_one_line(tmp_path, m
     class FakePrompt:
         def __init__(self, **kw):
             self.read = self.read_short = lambda prompt="": ""
+            self.select = lambda *args, **kwargs: None
 
     monkeypatch.setattr(app_module, "is_terminal", lambda: True)
     monkeypatch.setattr(app_module, "ChatApp", FakeApp)
@@ -1403,3 +1414,46 @@ def test_the_spinner_is_stopped_after_a_failed_turn(tmp_path):
     app.progress = spy
     app.start()
     assert spy.log[-1] == ("stop",) and "Something went wrong" in out.getvalue()
+
+
+def test_an_untrusted_folder_stops_before_anything_from_it_is_read(tmp_path, monkeypatch, capsys):
+    proj, home = tmp_path / "proj", tmp_path / "home"
+    proj.mkdir()
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(app_module, "is_terminal", lambda: True)
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr(app_module, "ensure_trusted", lambda *args, **kwargs: False)
+    read = []
+    monkeypatch.setattr(app_module, "load_settings", lambda *a, **k: read.append("settings"))
+    monkeypatch.setattr(app_module, "ChatApp", lambda **k: read.append("app"))
+    assert main([]) == 1
+    assert read == []                                   # neither the project's settings nor AGENTX.md were read
+    assert "not trusted" in capsys.readouterr().err
+
+
+def test_resume_with_no_id_offers_an_arrow_key_list_and_loads_the_pick(tmp_path):
+    model = MockModel(script=[make_final("first answer"), make_final("second answer"), make_final("ok")])
+    app1, _, _, home = make_app(tmp_path, Lines("first topic", "/exit"), model)
+    app1.start()
+    app2, out, _, _ = make_app(tmp_path, Lines("second topic", "/exit"), model)
+    app2.start()
+    menus = []
+
+    def select(options, default=0, hotkeys=None):
+        menus.append(list(options))
+        return 1                                         # the second entry
+
+    app3, out, _, _ = make_app(tmp_path, Lines("/resume", "/exit"), model, select=select)
+    app3.start()
+    assert len(menus) == 1 and menus[0][-1] == "Cancel" and len(menus[0]) == 3
+    assert "Resumed" in out.getvalue()
+
+
+def test_cancelling_the_resume_list_resumes_nothing(tmp_path):
+    model = MockModel(script=[make_final("answer")])
+    app1, _, _, _ = make_app(tmp_path, Lines("topic", "/exit"), model)
+    app1.start()
+    app2, out, _, _ = make_app(tmp_path, Lines("/resume", "/exit"), model, select=lambda options, default=0, hotkeys=None: len(options) - 1)
+    app2.start()
+    assert "Resumed" not in out.getvalue()

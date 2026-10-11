@@ -1,5 +1,6 @@
 """Rendering, the approval prompt, and the completer. No real terminal needed."""
 
+from pathlib import Path
 import io
 import os
 import re
@@ -545,3 +546,111 @@ class TestProgress:
         progress = Progress(Console(file=io.StringIO()))
         progress.stop()
         progress.stop()
+
+
+class TestArrowKeySelection:
+    def request(self, remember=True):
+        from agentx_dev.cli.approval import Request
+        return Request(tool="run_shell", kind="command", subject="pytest -q", args={"command": "pytest -q"},
+                       remember=remember, grant="pytest" if remember else "")
+
+    def asker(self, picked, reads=("",)):
+        import io
+        from agentx_dev.cli.ui import make_asker
+        out = io.StringIO()
+        seen = []
+        replies = list(reads)
+
+        def select(options, default=0, hotkeys=None):
+            seen.append((list(options), default, dict(hotkeys or {})))
+            return picked
+
+        ask = make_asker(Console(file=out, width=100, color_system=None), lambda prompt="": replies.pop(0),
+                         Path("."), select=select)
+        return ask, seen, out
+
+    def test_the_menu_lists_yes_always_and_no_with_the_rule_that_would_be_remembered(self):
+        ask, seen, _ = self.asker(0)
+        assert ask(self.request()).choice == "y"
+        options, default, hotkeys = seen[0]
+        assert options[0] == "Yes" and options[1].startswith("Yes, and don't ask again")
+        assert "pytest" in options[1] and options[2].startswith("No")
+        assert default == 0 and hotkeys == {"y": 0, "a": 1, "n": 2}
+
+    def test_picking_the_second_entry_remembers_and_the_third_declines_with_a_reason(self):
+        ask, _, _ = self.asker(1)
+        assert ask(self.request()).choice == "a"
+        ask, _, _ = self.asker(2, reads=("use ls instead",))
+        answer = ask(self.request())
+        assert (answer.choice, answer.reason) == ("n", "use ls instead")
+
+    def test_without_a_remember_rule_the_menu_has_two_entries(self):
+        ask, seen, _ = self.asker(1)
+        assert ask(self.request(remember=False)).choice == "n"
+        assert len(seen[0][0]) == 2 and "a" not in seen[0][2]
+
+    def test_escape_declines_and_a_menu_that_cannot_be_shown_falls_back_to_typing(self):
+        from agentx_dev.cli.ui import CANCELLED
+        ask, _, _ = self.asker(CANCELLED)
+        assert ask(self.request()).choice == "n"
+        ask, _, _ = self.asker(None, reads=("y",))
+        assert ask(self.request()).choice == "y"          # typed 'y' through the old prompt
+
+    def test_a_menu_that_raises_is_not_an_approval(self):
+        import io
+        from agentx_dev.cli.ui import make_asker
+
+        def broken(options, default=0, hotkeys=None):
+            raise RuntimeError("no console")
+
+        ask = make_asker(Console(file=io.StringIO()), lambda prompt="": "n", Path("."), select=broken)
+        assert ask(self.request()).choice == "n"
+
+    def test_menu_entries_cannot_carry_escape_codes_from_the_rule(self):
+        from agentx_dev.cli.approval import Request
+        request = Request(tool="run_shell", kind="command", subject="x", args={"command": "x"},
+                          remember=True, grant="x\x1b[2J")
+        ask, seen, _ = self.asker(0)
+        ask(request)
+        assert "\x1b" not in seen[0][0][1]
+
+    def test_select_menu_reports_unavailable_without_a_terminal(self):
+        from agentx_dev.cli.ui import select_menu
+        assert select_menu(["a", "b"]) is None            # pytest has no terminal
+
+
+class TestSelectMenuKeys:
+    """The real prompt_toolkit menu, driven by keys written to a pipe (no terminal needed)."""
+
+    def run_keys(self, keys, options=("Yes", "Always", "No"), default=0, hotkeys=None, monkeypatch=None):
+        from prompt_toolkit.application import create_app_session
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        from agentx_dev.cli import ui
+        monkeypatch.setattr(ui, "is_terminal", lambda: True)
+        with create_pipe_input() as pipe:
+            with create_app_session(input=pipe, output=DummyOutput()):
+                pipe.send_text(keys)
+                return ui.select_menu(list(options), default, hotkeys)
+
+    def test_enter_takes_the_highlighted_entry(self, monkeypatch):
+        assert self.run_keys("\r", monkeypatch=monkeypatch) == 0
+
+    def test_down_arrow_moves_and_enter_confirms(self, monkeypatch):
+        assert self.run_keys("\x1b[B\r", monkeypatch=monkeypatch) == 1
+        assert self.run_keys("\x1b[B\x1b[B\r", monkeypatch=monkeypatch) == 2
+
+    def test_up_arrow_wraps_to_the_last_entry(self, monkeypatch):
+        assert self.run_keys("\x1b[A\r", monkeypatch=monkeypatch) == 2
+
+    def test_a_number_picks_that_entry_at_once(self, monkeypatch):
+        assert self.run_keys("3", monkeypatch=monkeypatch) == 2
+        assert self.run_keys("2", monkeypatch=monkeypatch) == 1
+
+    def test_a_hotkey_picks_its_entry(self, monkeypatch):
+        assert self.run_keys("n", hotkeys={"y": 0, "a": 1, "n": 2}, monkeypatch=monkeypatch) == 2
+
+    def test_escape_and_ctrl_c_cancel(self, monkeypatch):
+        from agentx_dev.cli.ui import CANCELLED
+        assert self.run_keys("\x1b", monkeypatch=monkeypatch) == CANCELLED
+        assert self.run_keys("\x03", monkeypatch=monkeypatch) == CANCELLED

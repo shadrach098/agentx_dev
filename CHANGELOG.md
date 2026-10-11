@@ -35,6 +35,11 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
     `/exit`. Typing `/` pops up the list with a one-line description of each. The first run writes
     `~/.agentx/settings.json` with the model in use, so there is a file to edit; `/settings` shows what is in
     force and where the files are.
+  - **Trust and menus.** The first start in a folder asks whether you trust it ("Accessing workspace", Yes /
+    No); nothing from the folder (`AGENTX.md`, project settings) is read before you answer, and the answer is
+    kept in `~/.agentx/trusted.json`. Choices are numbered menus you move through with the arrow keys and
+    confirm with Enter (or a number, or `y` / `a` / `n`): the approval prompt, the folder question and the
+    `/resume` list. Without a terminal they fall back to typed answers.
   - **Progress.** While the agent works, a spinner with the seconds elapsed shows what it is doing
     ("Thinking...", "Running run_python... 12s"). It is paused while a prompt waits and drawn only on a
     terminal. Python code may run for 2 minutes and shell commands for 5 (the framework's defaults, 10 s and

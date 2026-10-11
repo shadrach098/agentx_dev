@@ -19,6 +19,20 @@ Windows PowerShell: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`.
 
 Claude also needs its SDK: `pip install "agentx-dev[anthropic]"`. The OpenAI provider is in the base install. `python -m agentx_dev` starts the same program.
 
+The first time you start `agentx` in a folder it asks whether you trust it, like Claude Code:
+
+```
+Accessing workspace:
+
+ C:/Users/you/projects/site
+
+Quick safety check: is this a project you created or one you trust? ...
+> 1. Yes, I trust this folder
+  2. No, exit
+```
+
+Nothing in the folder (its `AGENTX.md`, its `.agentx/settings.json`) is read until you say yes. The answer is kept in `~/.agentx/trusted.json`, and subfolders of a trusted project are trusted too. Your home folder and a drive root cover only themselves, and the question warns you when you start there.
+
 Keys are read from the environment only. With no `--model`, the first key found decides: `ANTHROPIC_API_KEY` (Claude), then `OPENAI_API_KEY` (GPT), each with its class's own default model. A name that starts with `claude` builds `Claude`; one that starts with `gpt`, or with `o` and a digit (`o3`), builds `GPT`. With no key, `agentx` prints a short message naming the two variables and exits with code 1.
 
 ### Flags
@@ -83,10 +97,13 @@ Before an edit, a command or a destructive action, `agentx` draws a box:
 | -    return 1                                          |
 | +    return 2                                          |
 +--------------------------------------------------------+
-[y] yes   [a] yes, don't ask again   [n] no
-'a' will remember: all edits this session
-Allow? [y/a/n]
+Do you want to proceed?
+> 1. Yes
+  2. Yes, and don't ask again: all edits this session
+  3. No, and tell the model what to do instead
 ```
+
+Move with the Up and Down arrow keys and press Enter, or press the number (or `y`, `a`, `n`). Esc, Ctrl+C and Ctrl+D count as no. On a terminal that cannot draw the menu (or when input is piped) the same question is asked as a typed `[y/a/n]` line.
 
 (The real box is drawn by `rich`, and the diff is coloured: green for added lines, red for removed.)
 
@@ -95,7 +112,7 @@ Allow? [y/a/n]
 - The body is a unified diff for `write_file` and `edit_file` (computed against the file on disk; a new file shows as all additions), the exact command for `run_shell`, the code for `run_python`, and nothing more for delete and move (the paths are in Action and Subject).
 - A **move into an existing folder** lands at `folder/<name>`, and the prompt says so ("Move a to b/a"); a move onto an existing file says "(replaces the existing b)". The gate judges the final path, so a protected name cannot be reached by moving it into a folder.
 
-Answers:
+Answers (typed, or the menu entries above):
 
 | Key | Meaning |
 |---|---|
@@ -103,7 +120,7 @@ Answers:
 | `a` | Allow, and do not ask again (see below). Offered only when the gate can remember something; otherwise the prompt shows `[y] yes   [n] no`. |
 | `n` | Refuse. You are then asked for an optional reason, which the model is told. |
 
-`yes`, `no` and `always` also work. Bare Enter, end of input (Ctrl+D) and Ctrl+C count as no. Any other word is not guessed at: the question is asked again until you answer.
+`yes`, `no` and `always` also work when typed. In the typed prompt, bare Enter, end of input (Ctrl+D) and Ctrl+C count as no, and any other word is not guessed at: the question is asked again. In the menu, "Yes" is highlighted at first, so Enter alone approves; move down to refuse.
 
 A refusal is an ordinary tool result, never an error: the model receives "The user declined: <your reason>" (or "The user declined this action.") and is expected to adjust or ask you what you want.
 
@@ -255,10 +272,11 @@ A line that starts with `/` followed by a plain name is a command and is never s
 
 | Key | Does |
 |---|---|
-| Enter | Send. |
+| Enter | Send (or confirm in a menu). |
+| Up / Down in a menu | Move through the numbered choices (an approval, the folder question, `/resume`); a number picks one directly, Esc cancels. |
 | Alt+Enter | New line in the message. |
 | Tab | Complete a `/command`, or a file path for the word you are typing. |
-| Up / Down | Earlier messages, kept between runs. |
+| Up / Down | Earlier messages, kept between runs (when no menu is open). |
 | Shift+Tab | Cycle the mode; the status bar updates. |
 | Ctrl+D | Leave. |
 
@@ -300,3 +318,5 @@ A checklist for the maintainer to run once on a real terminal before release. Te
 19. Ask the model to move a file into an existing folder: the prompt says `Move a to b/a`. Ask it to move a folder named `.agentx` into the project root: it is refused with the deny-rule message.
 20. Start `agentx --mode auto` in a scratch folder: a notice explains what auto does, a file write and a Python run go through without a prompt, and a delete still asks. Press Shift+Tab: the bar returns to `default`, and Shift+Tab again never lands on `auto`.
 21. Ask the agent to run a script that takes 15 seconds (for example `import time; time.sleep(15)`): a spinner reads "Running run_python... Ns" while it works, disappears when the output is printed, and is not drawn over an approval prompt.
+22. Start `agentx` in a folder you have never used it in: the "Accessing workspace" question appears with `1. Yes, I trust this folder` highlighted; Down then Enter exits with code 1 and reads nothing from the folder; Yes starts, and the next start in that folder does not ask. Try it in your home folder: the extra warning shows.
+23. At an approval prompt press Down, Down, Enter (No), then type a reason; then repeat and press 1 (Yes). Press Esc at a prompt: it counts as no. `/resume` with no id shows an arrow-key list of conversations.
