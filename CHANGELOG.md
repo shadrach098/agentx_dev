@@ -25,7 +25,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   - **Settings and rules.** `~/.agentx/settings.json` and `.agentx/settings.json` (`model`, `mode`,
     `addDirs`, `permissions.allow` / `deny` as `tool:glob`). Project settings are untrusted: an
     `accept-edits` mode and `addDirs` outside the project are ignored with a warning, and the project's
-    allow rules are listed at startup.
+    allow rules are listed at startup and honoured only if you answer yes to "Honour these project rules?"
+    (deny rules from the project are always kept).
   - **`AGENTX.md` context.** `~/.agentx/AGENTX.md` and the files from the working folder up through its
     parents are passed to the model as instructions (nearest last, 20,000 characters); `/init` drafts one.
   - **Sessions.** Conversations autosave to `~/.agentx/sessions/` and resume with `--continue`,

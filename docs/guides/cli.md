@@ -47,7 +47,9 @@ The model gets the ten tools from [`DefaultTools`](../concepts/tools.md), limite
 | command | `run_shell`, `run_python` | Asks. |
 | destructive | `delete_path`, `move_file` | Always asks, in every mode. |
 
-Limits that come from the tools, not from `agentx`: a shell command is stopped after 30 seconds and Python code after 10 seconds, and long output is cut (40,000 bytes for a shell command, 100,000 for Python). A dev server or a watcher will hit the 30-second limit and be killed. `agentx` does not change these and has no setting for them. A turn runs at most 50 model steps, and tool calls run one at a time so only one prompt is ever open.
+Limits that come from the tools, not from `agentx`: a shell command is stopped after 30 seconds and Python code after 10 seconds, and long output is cut (40,000 bytes for a shell command, 100,000 for Python). A dev server or a watcher will hit the 30-second limit and be killed. `agentx` does not change these and has no setting for them.
+
+`run_shell` and `run_python` run with a **scrubbed environment**: only `PATH`, `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`, `TMPDIR`, `TMP`, `TEMP`, the UTF-8 variables `PYTHONIOENCODING` and `PYTHONUTF8`, and on Windows `SystemRoot`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA` and `windir` are passed on. Everything else is dropped, so a command or script cannot print your API keys, and it also does not see `VIRTUAL_ENV`, `SSH_AUTH_SOCK` (git over ssh will not find your agent), proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`), `JAVA_HOME`, `NODE_PATH`, `CONDA_PREFIX`, `GOPATH` or any other variable your tools expect. A command that needs one has to set it itself (`JAVA_HOME=/opt/jdk mvn test`). There is no setting for this in `agentx` yet. `run_python` runs in the interpreter that runs `agentx`, not in your project's virtual environment, so it does not see the project's installed packages unless `agentx` is installed there too; use `run_shell` with the project's own interpreter (`.venv/bin/python script.py`) for that. A turn runs at most 50 model steps, and tool calls run one at a time so only one prompt is ever open.
 
 ## Approvals
 
@@ -88,6 +90,7 @@ Allow? [y/a/n]
 - **Action** is the full description of what will happen ("Edit src/app.py", "Delete build and everything inside it", "Run shell command in tools").
 - **Subject** is a second line, shown when it adds something: it is the text the gate actually judged, in its resolved form (for a path, resolved against the project folder with links followed). Both lines wrap; neither is ever cut, so a long command or a hostile-looking tail past the screen width is still fully visible.
 - The body is a unified diff for `write_file` and `edit_file` (computed against the file on disk; a new file shows as all additions), the exact command for `run_shell`, the code for `run_python`, and nothing more for delete and move (the paths are in Action and Subject).
+- A **move into an existing folder** lands at `folder/<name>`, and the prompt says so ("Move a to b/a"); a move onto an existing file says "(replaces the existing b)". The gate judges the final path, so a protected name cannot be reached by moving it into a folder.
 
 Answers:
 
@@ -97,7 +100,7 @@ Answers:
 | `a` | Allow, and do not ask again (see below). Offered only when the gate can remember something; otherwise the prompt shows `[y] yes   [n] no`. |
 | `n` | Refuse. You are then asked for an optional reason, which the model is told. |
 
-`yes`, `no` and `always` also work. Bare Enter, end of input (Ctrl+D) and anything unrecognised count as no (an unrecognised word is asked again; Enter and Ctrl+D decline).
+`yes`, `no` and `always` also work. Bare Enter, end of input (Ctrl+D) and Ctrl+C count as no. Any other word is not guessed at: the question is asked again until you answer.
 
 A refusal is an ordinary tool result, never an error: the model receives "The user declined: <your reason>" (or "The user declined this action.") and is expected to adjust or ask you what you want.
 
@@ -125,7 +128,7 @@ The prompt prints exactly what `a` will remember.
 
 ## Default protections
 
-These deny rules are always on, in every mode, `accept-edits` included. They refuse writing, editing, deleting and moving (a move is refused when either side matches) and they are not asked about:
+These deny rules are always on, in every mode, `accept-edits` included. They refuse writing, editing, deleting and moving (a move is refused when either side matches, and when the destination is an existing folder, when the final path `folder/<name>` matches) and they are not asked about:
 
 - **The whole `.git` folder or file**, at the top of the project and in any sub-folder. Git follows a `.git` file, `.git/config` (hooks path, aliases) and `.git/hooks/*`, and what runs from there runs later, outside the approval prompts. The honest reason it is refused rather than asked: a change under `.git/` is invisible to `git status` and `git diff`, unlike an edit to `conftest.py`, a `Makefile` or `package.json`, which you can see in review before you run anything.
 - **`.agentx` and everything under it** at the top of the project (`.agentx/*`, where the project settings live), and `~/.agentx`. A model must not rewrite its own permissions.
@@ -163,7 +166,7 @@ Two optional files, both JSON:
 }
 ```
 
-**Merging.** User settings are read first, then the project's. Single values (`model`, `mode`) from the project win; `addDirs` and the allow and deny lists are joined. A deny rule from either file wins. Flags override the settings files. A file with invalid JSON, or a value of the wrong type, is reported by path as a warning before the first prompt and ignored.
+**Merging.** User settings are read first, then the project's. Single values (`model`, `mode`) from the project win; `addDirs` and the allow and deny lists are joined (the project's allow rules only if you say yes at startup, see [Project settings are untrusted](#project-settings-are-untrusted)). A deny rule from either file wins. Flags override the settings files. A file with invalid JSON, or a value of the wrong type, is reported by path as a warning before the first prompt and ignored.
 
 **Rule syntax.** A rule is `tool:glob`, matched with `fnmatch` against a subject that depends on the tool. A rule with no colon (`run_shell`) matches every call of that tool, so write it only if you mean that.
 
@@ -189,7 +192,7 @@ A repository you just cloned can contain `.agentx/settings.json`. So:
 
 - A project `mode` of `accept-edits` is **ignored, with a warning**. Set it in your own settings or with `--mode`. `plan` and `default` from the project are honoured.
 - A project `addDirs` entry that resolves outside the project folder is **ignored, with a warning**. Your own file and `--add-dir` are not restricted.
-- Allow rules that come from the project are **listed at startup, before the first prompt**, so you see what the repository is letting through before anything runs.
+- Allow rules that come from the project are **listed at startup and you are asked once**: `Honour these project rules? [y/N]`. Only `y` or `yes` keeps them. Bare Enter, Ctrl+D, Ctrl+C or an answer that stays unrecognised after one more try drops them for this session. A repository's `"allow": ["write_file", "edit_file"]` is `accept-edits` under another name, and `"allow": ["run_shell"]` runs every command that is not compound, so they are not taken on trust. Your own allow rules are never affected. The project's **deny** rules are always kept: they only restrict.
 
 ### Extra folders
 
@@ -200,7 +203,7 @@ A repository you just cloned can contain `.agentx/settings.json`. So:
 `AGENTX.md` files tell the model how to work in your project: what it is, how to run the tests, the layout, the conventions. `agentx` reads:
 
 1. `~/.agentx/AGENTX.md` (yours, applies everywhere), then
-2. `AGENTX.md` in the current folder and each of its parents, from the top down, so the nearest file comes last and wins.
+2. `AGENTX.md` in the current folder and each of its parents, from the top down, so the nearest file comes last and wins. The climb stops at the first of: the folder that holds a `.git` entry (that folder's own file is read), your home folder, or the filesystem root. A file in a folder the project merely sits inside is not taken for the project's.
 
 Together with the working folder and the operating system they are passed to the model as its instructions, cut at 20,000 characters in total (the nearest files are kept; a farther file that does not fit is dropped). Project files are marked as coming from the project and cannot override the base rules or the approval prompts. Binary files are skipped, and a link that leads out of its folder is left out.
 
@@ -210,7 +213,7 @@ They are read when `agentx` starts and again on `/clear` and `/resume`.
 
 ## Conversations
 
-Each conversation is saved as it goes, to `~/.agentx/sessions/<project>/<UTC timestamp>-<id>.json`, where `<project>` is the absolute folder with separators and colons replaced by `-`. It is saved after every turn and when you leave. An empty conversation leaves no file.
+Each conversation is saved as it goes, to `~/.agentx/sessions/<project>/<UTC timestamp>-<id>.json`, where `<project>` is the absolute folder with separators and colons replaced by `-`, followed by `-` and a short hash of the full path (so `C:\a-b` and `C:\a\b` keep separate conversations). It is saved after every turn and when you leave. An empty conversation leaves no file.
 
 - `agentx --continue` picks up the latest conversation for this folder.
 - `agentx --resume` lists them (newest first, with the first message as a title) and loads the one you choose; `agentx --resume ID` loads it directly.
@@ -252,7 +255,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | Shift+Tab | Cycle the mode; the status bar updates. |
 | Ctrl+D | Leave. |
 
-The status bar shows the model, the mode, the folder, the short session id and the Shift+Tab hint. A tool call prints as one line (`● edit_file src/app.py`), its result is collapsed to the first three lines plus "... N more lines", the model's thoughts are dim, and the final answer is rendered as Markdown. On a console that cannot print the dot (a legacy Windows code page) the line starts with `*` instead.
+The status bar shows the model, the mode, the folder, the short session id and the Shift+Tab hint. A tool call prints as one line (`● edit_file src/app.py`), its result is collapsed to the first three lines plus "... N more lines", the model's thoughts are dim, and the final answer is rendered as Markdown. When the output stream is not UTF-8 (a redirected cp1252 or ASCII stream, say) the line starts with `*` instead of the dot; a Windows console reports UTF-8 and prints the dot.
 
 ## Limits in this version
 
@@ -262,6 +265,8 @@ The status bar shows the model, the mode, the folder, the short session id and t
 - **No "never ask" mode.** The most permissive setting is `accept-edits`, plus allow rules and grants for commands you choose.
 - **No teams mode.** It runs one agent, not a `Supervisor` with helpers.
 - You cannot type while the agent is working.
+- **No size cap on `read_path`, and the conversation is never compacted.** A very large file the model reads goes into the history whole, and every later turn sends it again, so a huge read can make later turns fail (the model's context window is exceeded) until you start over with `/clear`. Ask for the part of a file you need, or use `grep`.
+- `run_shell` and `run_python` run with a scrubbed environment, and `run_python` uses `agentx`'s own interpreter (see [What it can do](#what-it-can-do)).
 
 ## Try it by hand
 
@@ -283,4 +288,6 @@ A checklist for the maintainer to run once on a real terminal before release. Te
 14. Ask the model to edit a file under `.git/` or `.agentx/`: it is refused with the deny-rule message, with no prompt.
 15. `agentx --continue` after a restart remembers the conversation.
 16. Run `echo hi | agentx` (or with stdin redirected): it prints the "interactive terminal" message and the exit code is 1.
-17. On a legacy Windows console (cmd.exe with a non-UTF-8 code page), a tool call's bullet shows as `*`.
+17. Start with `PYTHONIOENCODING=cp1252 agentx` (on Windows: `$env:PYTHONIOENCODING = "cp1252"` first): a tool call's bullet shows as `*`. Without it, in cmd.exe, PowerShell or Windows Terminal, the bullet is the dot, since Python reports UTF-8 for the console.
+18. Put `{"permissions": {"allow": ["write_file"]}}` in `.agentx/settings.json` in a test project and start `agentx` there: the rule is listed and `Honour these project rules? [y/N]` is asked. Press Enter: the rule is dropped for the session and a write still asks. Start again and answer `y`: writes run without asking.
+19. Ask the model to move a file into an existing folder: the prompt says `Move a to b/a`. Ask it to move a folder named `.agentx` into the project root: it is refused with the deny-rule message.

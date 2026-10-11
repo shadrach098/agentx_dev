@@ -163,6 +163,11 @@ Two safety refinements to the matching:
   On Windows the gate refuses outright, before any rule: UNC and device paths (`\\host\x`, `\\?\C:\x`,
   `\??\C:\x`), alternate data streams (`file::$DATA`), drive-relative paths (`C:file`) and any path with a
   component ending in a dot or a space (`README.md.`, `. /.env`, `.../x`).
+- **A move into a folder is judged at its final path.** `shutil.move` puts the source at
+  `destination/<name>` when the destination is an existing folder, so for `move_file` the gate also judges
+  `source -> destination/<name>` (the name is the source's, after links are followed and as written), in
+  every form, and a deny rule that matches it refuses the move. The prompt subject and the preview title say
+  the final path ("Move a to b/a"); a move onto an existing file says "(replaces the existing b)".
 - **Unknown tools.** For a tool the gate does not know and that has no string `command`, every string value in
   its arguments (found by an iterative walk, at most 200) is a subject: a deny rule matches if any does, an
   allow rule applies only if all do. Arguments with more than 200 strings or more than 10,000 nodes are
@@ -174,6 +179,13 @@ Two safety refinements to the matching:
   secrets out of the project folder.
 
 `run_python` has no command to take a prefix from, so `a` approves that one call and remembers nothing.
+
+**Environment.** `run_shell` and `run_python` run with the framework's scrubbed environment (the CLI sets no
+`subprocess_env_passthrough`): only `PATH`, `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`, `TMPDIR`, `TMP`, `TEMP`,
+`PYTHONIOENCODING`, `PYTHONUTF8` and, on Windows, `SystemRoot`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA`,
+`LOCALAPPDATA`, `windir` are kept. API keys are dropped (the point), and so are `VIRTUAL_ENV`, `SSH_AUTH_SOCK`,
+proxy variables, `JAVA_HOME` and every other variable. `run_python` uses `sys.executable`, `agentx`'s own
+interpreter, not the project's virtual environment.
 
 The prompt shows the proposed action: a coloured unified diff for `write_file` and `edit_file` (computed
 against the file on disk; for a new file, the whole content as additions), the exact command for
@@ -195,7 +207,8 @@ against the file on disk; for a new file, the whole content as additions), the e
   option, nor for `npm exec`, `npm x`, `pnpm dlx`, `pnpm exec`, `yarn dlx`, `yarn exec`, nor for compound
   commands, `run_python` or destructive tools: it approves that one call. The prompt offers `a` only when
   the gate can remember (`Request.remember`) and prints what it will remember (`Request.grant`).
-- `n`: refuse; an optional reason can follow. Any answer other than `y`, `a` or `n` is treated as a decline.
+- `n`: refuse; an optional reason can follow. Bare Enter, end of input and Ctrl+C count as `n`. An answer that
+  is none of `y`, `a`, `n` (or `yes`, `always`, `no`) is not guessed at: the question is asked again.
 
 A refusal is an ordinary tool result, never an error: `"The user declined: <reason>"` (or
 `"The user declined this action."`). With no terminal to ask on, everything that would prompt is refused
@@ -267,7 +280,8 @@ Slash commands:
 An unknown command prints the list of known ones.
 
 Context: `AGENTX.md` files are read from the working folder up through its parents, then
-`~/.agentx/AGENTX.md`; nearer files come last so they win. The concatenation, plus the working folder and
+`~/.agentx/AGENTX.md`; nearer files come last so they win. The climb stops at the first of: the folder that
+holds a `.git` entry (its own file is read), the user's home folder, the filesystem root. The concatenation, plus the working folder and
 the operating system, is passed as the runner's `system_addendum`, cut at 20,000 characters (nearest
 files kept).
 
@@ -284,7 +298,8 @@ chat_history=self.history or None, **kw)`, yields every event, and on the final 
 its own unit test.
 
 Files live under `~/.agentx/sessions/<project>/<UTC timestamp>-<id8>.json`, where `<project>` is the
-absolute working folder with path separators and colons replaced by `-`. The session is saved after every
+absolute working folder with path separators and colons replaced by `-`, then `-` and a short hash of the full
+resolved path (two folders that differ only in `-` versus a separator keep separate sessions). The session is saved after every
 finished turn and on `/exit`. `--continue` loads the newest file for this folder; `--resume` with no id
 lists them (newest first, with the first message as a title) and loads the chosen one; `/resume` does the
 same inside a session. A missing or unreadable session file is reported and a new session starts.
@@ -310,9 +325,14 @@ warning, so a cloned repository cannot widen the tool sandbox; the user's own fi
 restricted. A file with invalid JSON is reported by path and ignored. Flags override
 settings.
 
-Before the first prompt the app prints every line of `Settings.problems` as a warning and, when the project's
-file contributes any `allow` rules, one block listing them as coming from the project's settings, so the user
-sees what a cloned repository is allowing before anything runs.
+Before the first prompt the app prints every line of `Settings.problems` as a warning. When the project's file
+contributes any `allow` rules it lists them as coming from the project's settings and asks once, through the
+same short-answer reader the approval prompt uses: `Honour these project rules? [y/N]`. Only `y` / `yes` keeps
+them. Bare Enter, end of input, Ctrl+C, a failing reader, or an answer that stays unrecognised after one retry
+drops them for the session. A repository's `"allow": ["write_file", "edit_file"]` is accept-edits under another
+name, and `"allow": ["run_shell"]` runs every command that is not compound, so they are not taken on trust.
+The user's own allow rules are never dropped, and the project's deny rules are always kept (they only
+restrict). There is no flag to trust a project; stdin is a terminal here, since the CLI exits otherwise.
 
 A project file cannot loosen the mode: `"mode": "accept-edits"` in the project's settings is ignored with a
 warning (set it in your own settings or with `--mode`); `plan` and `default` from the project are honoured.
@@ -326,7 +346,16 @@ folder gets a bold warning.
 - No API key: a short message naming the variables, exit code 1, no traceback.
 - Provider errors (rate limit, outage): one red line; the session is kept and the next message retries.
 - Not a terminal (`sys.stdin.isatty()` false): "agentx needs an interactive terminal", exit code 1.
-- A console that cannot print the symbols (a legacy Windows code page) gets plain markers instead.
+- An output stream whose encoding cannot print the symbols (a redirected cp1252 or ASCII stream; a Windows
+  console reports UTF-8 and prints them) gets plain markers instead.
+- The framework logs a traceback, and text the model chose, when a tool raises. `agentx` keeps the logger off
+  the terminal: a handler on the root logger swallows it, and warnings and errors from `agentx_dev` go to
+  `~/.agentx/agentx.log` (rotating, control characters escaped, best effort). The log can contain tool errors.
+- The input line failing outside a turn (the history file cannot be written, say) prints one clean line and
+  falls back to the plain `input()` prompt without history; if that fails too the session ends with code 1.
+  An unexpected error escaping the session is one line and exit code 1, never a traceback.
+- **Known limits.** `read_path` has no size cap and the conversation is never compacted, so a huge file read
+  can make later turns fail until `/clear`.
 - An exception inside a turn is printed in one line with the type and message; the session continues.
 
 ## 12. Testing
@@ -341,7 +370,7 @@ call, approval, answer, autosave) and a resume. The end-to-end tests inject `rea
 approvals) in place of `prompt_toolkit` and use a string-backed `Console`, so no real terminal is involved.
 
 By hand, on a real terminal (a checklist in the plan): history across runs, Alt+Enter, Tab completion, the
-status bar, Ctrl+C mid-turn, a Windows legacy console.
+status bar, Ctrl+C mid-turn, the `*` fallback with `PYTHONIOENCODING=cp1252`, and the project-rules question.
 
 ## 13. Packaging and docs
 
