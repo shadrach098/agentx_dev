@@ -13,6 +13,10 @@ from agentx_dev.Tools import StructuredTool
 from agentx_dev.cli.approval import UNSUPPORTED_PATH, Gate
 
 GATE_FAILED = "Refused: the approval check failed, so nothing was run."
+# How long a run_python / run_shell call may take (the framework's defaults, 10 s and 30 s, stop a web fetch or a
+# test run). Approval time does not count: the limit only covers the running of the code.
+PYTHON_TIMEOUT_SEC = 120.0
+SHELL_TIMEOUT_SEC = 300.0
 # The arguments that name a place on disk; ``cwd`` is run_shell's working folder.
 PATH_ARGUMENTS = ("path", "source", "destination", "cwd")
 
@@ -120,6 +124,7 @@ def build_tools(cwd: Path, add_dirs: Sequence[Path], gate: Gate) -> List[Structu
         delete_files=True, move_files=True, execute_python=True, execute_shell=True,
         workspace=str(cwd), allowed_paths=[str(cwd), *[str(d) for d in add_dirs]],
         auto_create_paths=False,         # a mistyped --add-dir must not create a folder
+        python_timeout_sec=PYTHON_TIMEOUT_SEC, shell_timeout_sec=SHELL_TIMEOUT_SEC,
     )
     return [gate_tool(tool, gate, permissions=permissions)
             for tool in DefaultTools.build(permissions)]

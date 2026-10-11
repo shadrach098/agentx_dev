@@ -22,7 +22,7 @@ from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
 from agentx_dev.cli.settings import ensure_user_settings, load_settings, project_settings_path, user_settings_path
 from agentx_dev.cli.tools import build_tools
-from agentx_dev.cli.ui import PromptInput, Screen, is_terminal, make_asker
+from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker
 
 INIT_PROMPT = (
     "Look at this project: list the top-level files, read the README and the main config files. Then write a "
@@ -147,7 +147,14 @@ class ChatApp:
         # The mode in force when "a" was answered at an edit prompt (None: accept-edits, if on, was chosen)
         self._mode_before_grant: Optional[str] = None
         self._watch_mode_changes()
-        self.gate.ask = self._remembering(make_asker(console, self.read_short, self.gate.cwd))
+        self.progress = Progress(console)
+        asker = make_asker(console, self.read_short, self.gate.cwd)
+
+        def ask_with_spinner_paused(request: Any) -> Any:           # a prompt must not fight the spinner
+            with self.progress.paused():
+                return asker(request)
+
+        self.gate.ask = self._remembering(ask_with_spinner_paused)
         self.tools = build_tools(self.cwd, self.add_dirs, self.gate)
         self.addendum = build_addendum(self.cwd, self.home)
         self.model: Any = None
@@ -425,14 +432,22 @@ class ChatApp:
         """One turn: stream the events to the screen, then autosave. Ctrl+C cancels the turn."""
         assert self.session is not None
         try:
+            self.progress.start("Thinking")
             for event in self.session.stream(text):
+                self.progress.stop()                       # erase the spinner, then print
                 self.screen.show_event(event)
+                kind = event.get("type") if isinstance(event, dict) else None
+                if kind == "tool_call":
+                    self.progress.start(f"Running {self._safe(event.get('name', ''), 40)}")
+                elif kind not in ("final", "completion"):
+                    self.progress.start("Thinking")
         except KeyboardInterrupt:
             self.notice("Turn interrupted (Ctrl+C). Your earlier turns are kept; this one was not recorded. "
                         "Changes already made in that turn remain on disk.")
         except Exception as e:
             self.error(self._failure(e))
         finally:
+            self.progress.stop()
             self.save()
 
     def save(self) -> None:

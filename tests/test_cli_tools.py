@@ -529,3 +529,8 @@ def test_two_tool_sets_sharing_one_gate_share_one_approval_lock(tmp_path):
     for t in threads:
         t.join()
     assert worst[0] == 1 and (tmp_path / "g0.txt").exists() and (tmp_path / "g1.txt").exists()
+
+
+def test_python_and_shell_get_longer_limits_than_the_framework_defaults():
+    from agentx_dev.cli.tools import PYTHON_TIMEOUT_SEC, SHELL_TIMEOUT_SEC
+    assert PYTHON_TIMEOUT_SEC >= 60 and SHELL_TIMEOUT_SEC >= 120      # the framework's own: 10 s and 30 s

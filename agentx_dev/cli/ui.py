@@ -113,6 +113,74 @@ def _print(console: Console, *renderables: Any) -> None:
     console.file.flush()
 
 
+class Progress:
+    """A line with a moving spinner and the seconds elapsed ("Running run_python... 12s") shown while the agent
+    works, so a long model call or script does not look like a hang. It only draws on a real terminal (nothing
+    on a pipe or a captured console) and is erased when it stops. Stop it before printing anything and while a
+    prompt is waiting for an answer (``paused`` does both)."""
+
+    def __init__(self, console: Console) -> None:
+        self.console = console
+        self._live = None
+        self._label = "Thinking"
+        self._since = 0.0
+        self._spinner = None
+
+    @property
+    def enabled(self) -> bool:
+        try:
+            return bool(self.console.is_terminal)
+        except Exception:
+            return False
+
+    def __rich__(self):
+        import time
+        if self._spinner is not None:
+            self._spinner.update(text=Text(f"{self._label}... {int(time.monotonic() - self._since)}s", style="dim"))
+        return self._spinner
+
+    def start(self, label: str = "Thinking") -> None:
+        self.stop()
+        if not self.enabled:
+            return
+        import time
+        from rich.live import Live
+        from rich.spinner import Spinner
+        self._label = plain(label)
+        self._since = time.monotonic()
+        utf = (getattr(self.console, "encoding", "") or "").lower().startswith("utf")
+        self._spinner = Spinner("dots" if utf else "line", text=Text(f"{self._label}...", style="dim"))
+        try:
+            self._live = Live(self, console=self.console, transient=True, refresh_per_second=10)
+            self._live.start()
+        except Exception:
+            self._live = None
+
+    def stop(self) -> None:
+        live, self._live = self._live, None
+        if live is not None:
+            try:
+                live.stop()
+            except Exception:
+                pass
+
+    def paused(self):
+        """``with progress.paused():`` stops the spinner for the block and restarts it (same label) after."""
+        from contextlib import contextmanager
+
+        @contextmanager
+        def block():
+            running = self._live is not None
+            label = self._label
+            self.stop()
+            try:
+                yield
+            finally:
+                if running:
+                    self.start(label)
+        return block()
+
+
 class Screen:
     """Draws what the agent does. Everything is printed as ``Text``, so square brackets in tool output are
     never read as rich markup."""

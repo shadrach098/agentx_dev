@@ -35,6 +35,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
     `/exit`. Typing `/` pops up the list with a one-line description of each. The first run writes
     `~/.agentx/settings.json` with the model in use, so there is a file to edit; `/settings` shows what is in
     force and where the files are.
+  - **Progress.** While the agent works, a spinner with the seconds elapsed shows what it is doing
+    ("Thinking...", "Running run_python... 12s"). It is paused while a prompt waits and drawn only on a
+    terminal. Python code may run for 2 minutes and shell commands for 5 (the framework's defaults, 10 s and
+    30 s, stopped web fetches and test runs); time spent waiting for approval does not count.
 - **`Session.stream(user_input, **kw)`**: like `Session.invoke`, but yields the runner's events and absorbs the
   result on the final `completion` event. A turn abandoned before then is not recorded.
 - **New base dependency: `prompt_toolkit>=3.0`** (the input line: history, multi-line, completion, status

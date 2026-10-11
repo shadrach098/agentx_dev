@@ -499,3 +499,49 @@ class TestCompleter:
         completer = make_completer(["/help"])
         found = self.complete(completer, f"open {tmp_path.as_posix()}/no", tab=True)
         assert "tes.txt" in found      # the rest of "notes.txt" after the typed "no"
+
+
+class TestProgress:
+    def test_nothing_is_drawn_when_the_console_is_not_a_terminal(self):
+        import io
+        from agentx_dev.cli.ui import Progress
+        out = io.StringIO()
+        progress = Progress(Console(file=out, force_terminal=False))
+        assert progress.enabled is False
+        progress.start("Thinking")
+        progress.stop()
+        assert out.getvalue() == ""
+
+    def test_on_a_terminal_it_shows_the_label_and_the_seconds_and_goes_away_when_paused(self):
+        import io
+        import time
+        from agentx_dev.cli.ui import Progress
+        out = io.StringIO()
+        console = Console(file=out, force_terminal=True, width=60, color_system=None)
+        progress = Progress(console)
+        progress.start("Running run_python")
+        time.sleep(1.2)
+        with progress.paused():
+            assert progress._live is None                      # stopped while a prompt would be waiting
+            console.print("PROMPT")
+        assert progress._live is not None                      # and running again after it
+        progress.stop()
+        assert progress._live is None
+        text = out.getvalue()
+        assert "Running run_python..." in text and "1s" in text and "PROMPT" in text
+
+    def test_a_label_from_the_model_cannot_carry_escape_codes(self):
+        import io
+        from agentx_dev.cli.ui import Progress
+        out = io.StringIO()
+        progress = Progress(Console(file=out, force_terminal=True, width=60, color_system=None))
+        progress.start("x\x1b[2Jy")
+        progress.stop()
+        assert "\x1b[2J" not in out.getvalue()
+
+    def test_stopping_twice_or_before_starting_is_fine(self):
+        import io
+        from agentx_dev.cli.ui import Progress
+        progress = Progress(Console(file=io.StringIO()))
+        progress.stop()
+        progress.stop()

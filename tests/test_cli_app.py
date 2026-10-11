@@ -1360,3 +1360,46 @@ def test_the_startup_banner_says_when_a_settings_file_was_created(tmp_path):
     app.start()
     text = out.getvalue()
     assert "Created your settings file" in text and "/settings" in text
+
+
+class SpyProgress:
+    def __init__(self):
+        self.log = []
+
+    def start(self, label="Thinking"): self.log.append(("start", label))
+    def stop(self): self.log.append(("stop",))
+
+    def paused(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def block():
+            self.log.append(("pause",))
+            yield
+            self.log.append(("resume",))
+        return block()
+
+
+def test_the_spinner_runs_between_events_and_is_paused_for_a_prompt(tmp_path):
+    model = MockModel(script=[write_call(), make_final("done")])
+    app, out, cwd, _ = make_app(tmp_path, Lines("make it", "/exit"), model, read_short=Lines("y"))
+    spy = SpyProgress()
+    app.progress = spy
+    app.start()
+    kinds = [entry[0] for entry in spy.log]
+    assert kinds[0] == "start" and spy.log[0] == ("start", "Thinking")
+    assert ("start", "Running write_file") in spy.log
+    assert "pause" in kinds and kinds.index("pause") < kinds.index("resume")
+    assert spy.log[-1] == ("stop",)                          # never left running after the turn
+    assert (cwd / "hello.txt").exists()
+
+
+def test_the_spinner_is_stopped_after_a_failed_turn(tmp_path):
+    def boom(messages):
+        raise RuntimeError("model down")
+
+    app, out, _, _ = make_app(tmp_path, Lines("hi", "/exit"), MockModel(script=boom))
+    spy = SpyProgress()
+    app.progress = spy
+    app.start()
+    assert spy.log[-1] == ("stop",) and "Something went wrong" in out.getvalue()
