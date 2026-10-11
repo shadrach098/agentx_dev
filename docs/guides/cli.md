@@ -222,6 +222,10 @@ A missing or unreadable session file is reported in one line and a new conversat
 
 Two things to know about the files on disk. The session files hold the full history, **including tool results, so the contents of files the model read and the output of commands**. They are plain JSON and are not encrypted. The input history (`~/.agentx/history`, what Up arrow recalls) stores everything you type; `agentx` makes that file readable by you only where the platform allows. Do not paste secrets into the chat, and treat `~/.agentx` as sensitive.
 
+### The log
+
+When a tool raises an error, the framework logs it with a full traceback. `agentx` keeps those messages off the screen (they can quote text the model chose, escape sequences included) and writes warnings and errors to `~/.agentx/agentx.log` instead: a rotating file, 512 KB with two older copies kept, control characters written out as `\x1b`. It is best effort: if the folder cannot be written there is simply no log. The log can contain tool errors, which quote paths, commands and file names from your project, so treat it like the session files.
+
 ## Slash commands
 
 A line that starts with `/` followed by a plain name is a command and is never sent to the model. `/tmp/build.log fails` or `/README.md` is a message, not a command. An unknown command prints the list.

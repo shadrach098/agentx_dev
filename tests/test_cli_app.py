@@ -983,3 +983,140 @@ def test_an_a_answer_is_noticed_even_though_the_gate_switches_the_mode_right_aft
     assert seen == ["default"] and app.gate.mode == "accept-edits"
     app.new_conversation()
     assert app.gate.mode == "default"
+
+
+# -- the framework logger must not write to the terminal ------------------------------------------------------
+
+@pytest.fixture
+def bare_logging(monkeypatch):
+    """Logging as it is in a fresh process: no handler anywhere, so only ``logging.lastResort`` could print.
+    pytest adds its own capture handler to the root logger around each test, so the test calls ``strip()`` in its
+    body (the monkeypatch puts the handlers back afterwards)."""
+    import logging
+    root, framework = logging.getLogger(), logging.getLogger("agentx_dev")
+    created = []
+
+    def strip():
+        monkeypatch.setattr(root, "handlers", created_root := [])
+        monkeypatch.setattr(framework, "handlers", created_framework := [])
+        created.extend([created_root, created_framework])
+
+    yield strip
+    for handlers in created:
+        for handler in handlers:
+            if getattr(handler, "_agentx_cli", False):
+                handler.close()
+
+
+EVIL_PATH = "../../\x1b]0;PWNED\x07\x1b[2J"
+
+
+def run_failing_tool_turn(tmp_path):
+    model = MockModel(script=[make_react_response("read_path", {"path": EVIL_PATH}), make_final("done")])
+    app, out, cwd, home = make_app(tmp_path, Lines("look", "/exit"), model)
+    assert app.start() == 0
+    return out.getvalue(), home
+
+
+def test_a_failing_tool_does_not_leak_escapes_or_a_traceback_to_the_terminal(tmp_path, bare_logging, capfd):
+    bare_logging()
+    app_module.setup_logging(tmp_path / "home")
+    (tmp_path / "home").mkdir(exist_ok=True)
+    shown, home = run_failing_tool_turn(tmp_path)
+    captured = capfd.readouterr()
+    for text in (captured.out, captured.err):
+        assert "\x1b" not in text and "Traceback" not in text and "PWNED" not in text
+    assert "\x1b" not in shown
+
+
+def test_without_the_setup_the_logger_would_write_to_stderr(tmp_path, bare_logging, capfd):
+    bare_logging()
+    # the control: proves the test above is able to see the leak
+    (tmp_path / "home").mkdir(exist_ok=True)
+    run_failing_tool_turn(tmp_path)
+    assert "Traceback" in capfd.readouterr().err
+
+
+def test_the_errors_go_to_a_log_file_in_the_agentx_folder_with_controls_defused(tmp_path, bare_logging):
+    bare_logging()
+    import logging
+    home = tmp_path / "home"
+    app_module.setup_logging(home)
+    run_failing_tool_turn(tmp_path)
+    for handler in logging.getLogger("agentx_dev").handlers:
+        handler.flush()
+    log = (home / ".agentx" / "agentx.log").read_text(encoding="utf-8")
+    assert "read_path" in log and "Traceback" in log
+    assert "\x1b" not in log and "\x07" not in log and "\\x1b" in log
+
+
+def test_ordinary_progress_messages_are_not_logged(tmp_path, bare_logging):
+    bare_logging()
+    import logging
+    home = tmp_path / "home"
+    app_module.setup_logging(home)
+    logging.getLogger("agentx_dev.Tools").info("ACTION: secret input")
+    logging.getLogger("agentx_dev.Tools").warning("a warning")
+    for handler in logging.getLogger("agentx_dev").handlers:
+        handler.flush()
+    log = (home / ".agentx" / "agentx.log").read_text(encoding="utf-8")
+    assert "a warning" in log and "secret input" not in log
+
+
+def test_an_unwritable_home_still_keeps_the_terminal_quiet(tmp_path, bare_logging, capfd):
+    bare_logging()
+    import logging
+    blocker = tmp_path / "home"
+    blocker.write_text("a file, not a folder", encoding="utf-8")
+    app_module.setup_logging(blocker)                              # mkdir fails: ignored
+    logging.getLogger("agentx_dev.Tools").error("boom", exc_info=True)
+    captured = capfd.readouterr()
+    assert captured.err == "" and captured.out == ""
+
+
+def test_a_log_that_cannot_be_written_later_stays_quiet(tmp_path, bare_logging, capfd):
+    bare_logging()
+    import logging
+    app_module.setup_logging(tmp_path / "home")
+    handler = [h for h in logging.getLogger("agentx_dev").handlers if getattr(h, "_agentx_cli", False)][0]
+    handler.stream = None
+    handler.baseFilename = str(tmp_path / "no" / "such" / "dir" / "x.log")
+    logging.getLogger("agentx_dev.Tools").warning("will not be written")
+    assert capfd.readouterr().err == ""
+
+
+def test_setting_up_twice_does_not_stack_handlers(tmp_path, bare_logging):
+    bare_logging()
+    import logging
+    app_module.setup_logging(tmp_path / "home")
+    app_module.setup_logging(tmp_path / "home")
+    ours = [h for lg in (logging.getLogger(), logging.getLogger("agentx_dev")) for h in lg.handlers
+            if getattr(h, "_agentx_cli", False)]
+    assert len(ours) == 2
+
+
+def test_main_sets_the_logging_up_before_the_app_is_built(tmp_path, monkeypatch):
+    proj, home = tmp_path / "proj", tmp_path / "home"
+    proj.mkdir()
+    home.mkdir()
+    order = []
+
+    class FakeApp:
+        def __init__(self, **kw):
+            order.append("app")
+
+        def start(self, resume=None):
+            return 0
+
+    class FakePrompt:
+        def __init__(self, **kw):
+            self.read = self.read_short = lambda prompt="": ""
+
+    monkeypatch.setattr(app_module, "_is_terminal", lambda: True)
+    monkeypatch.setattr(app_module, "ChatApp", FakeApp)
+    monkeypatch.setattr(app_module, "PromptInput", FakePrompt)
+    monkeypatch.setattr(app_module, "setup_logging", lambda h: order.append(("log", h)))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.chdir(proj)
+    assert main([]) == 0
+    assert order == [("log", home), "app"]

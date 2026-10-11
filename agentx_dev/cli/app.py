@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import logging.handlers
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence
@@ -443,6 +446,55 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+LOG_FILE = "agentx.log"
+LOG_MAX_BYTES = 512 * 1024
+LOG_BACKUPS = 2
+_CONTROL = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+class _LogFormatter(logging.Formatter):
+    """The standard format, with control characters (the framework logs model-chosen text, such as a tool path
+    with escape sequences in it) written out as ``\\x1b`` so that ``cat agentx.log`` cannot drive a terminal."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return _CONTROL.sub(lambda m: f"\\x{ord(m.group()):02x}", super().format(record))
+
+
+class _QuietFileHandler(logging.handlers.RotatingFileHandler):
+    """A rotating log file whose failures are silent: the default ``handleError`` prints a traceback."""
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        pass
+
+
+def setup_logging(home: Path) -> None:
+    """Keep the framework's logger away from the terminal. It logs a full traceback (and the model's own text)
+    when a tool raises, and with no handler configured Python prints those lines to stderr, in the middle of the
+    chat screen. A handler on the root logger swallows everything from every library; warnings and errors from
+    ``agentx_dev`` go to ``~/.agentx/agentx.log`` instead (best effort: no folder, no log, no message).
+    Calling it again replaces the handlers it added before."""
+    root, framework = logging.getLogger(), logging.getLogger("agentx_dev")
+    for logger in (root, framework):
+        for handler in list(logger.handlers):
+            if getattr(handler, "_agentx_cli", False):
+                logger.removeHandler(handler)
+                handler.close()
+    quiet = logging.NullHandler()
+    quiet._agentx_cli = True                                   # type: ignore[attr-defined]
+    root.addHandler(quiet)
+    try:
+        folder = Path(home) / ".agentx"
+        folder.mkdir(parents=True, exist_ok=True)
+        handler = _QuietFileHandler(folder / LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS,
+                                    encoding="utf-8", delay=True)
+    except (OSError, ValueError):
+        return
+    handler._agentx_cli = True                                 # type: ignore[attr-defined]
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(_LogFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    framework.addHandler(handler)
+
+
 def _is_terminal() -> bool:
     try:
         return bool(sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty())
@@ -462,6 +514,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
     try:
         cwd, home = Path.cwd().resolve(), Path.home()
+        setup_logging(home)
         settings = load_settings(cwd, home)
         add_dirs = []
         for entry in [*settings.add_dirs, *args.add_dir]:
