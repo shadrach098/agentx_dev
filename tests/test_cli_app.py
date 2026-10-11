@@ -16,6 +16,21 @@ from agentx_dev.cli.sessions import list_sessions, sessions_dir
 from tests.conftest import MockModel, make_final, make_react_response
 
 
+@pytest.fixture(autouse=True)
+def keep_logging_as_it_was():
+    """``main`` installs logging handlers (``setup_logging``); no test may leave them behind."""
+    import logging
+    loggers = (logging.getLogger(), logging.getLogger("agentx_dev"))
+    before = [list(logger.handlers) for logger in loggers]
+    yield
+    for logger, handlers in zip(loggers, before):
+        for handler in list(logger.handlers):
+            if handler not in handlers:
+                logger.removeHandler(handler)
+                if getattr(handler, "_agentx_cli", False):
+                    handler.close()
+
+
 class Lines:
     """read_line answering from a list; an exception in the list is raised; EOFError when it runs out."""
 
@@ -1000,6 +1015,9 @@ def bare_logging(monkeypatch):
     def strip():
         monkeypatch.setattr(root, "handlers", created_root := [])
         monkeypatch.setattr(framework, "handlers", created_framework := [])
+        # an earlier test may have left a console hook on the global observability manager
+        from agentx_dev.Observability import observability
+        monkeypatch.setattr(observability, "hooks", [])
         created.extend([created_root, created_framework])
 
     yield strip
