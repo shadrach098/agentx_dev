@@ -1325,23 +1325,30 @@ def _plan_edit(text: str, find: str, replace: str) -> "tuple[int, str]":
 
     A model writes bare newlines in ``find`` and ``replace`` whatever the file uses. Both are first put in the
     file's dominant line ending (CRLF if the file has more CRLF than bare LF, else LF), so editing a CRLF file
-    works and the new lines match the file. If that does not match, the other ending is tried (a mixed
-    file), then the text exactly as given. Every byte outside the edit is kept."""
+    works and the new lines match the file. The other ending and the text exactly as given are tried as well
+    (a mixed file); the edit is made only when exactly one of these spellings occurs, and only once, so a
+    spelling that happens to match somewhere else cannot hide an ambiguity. Every byte outside the edit is
+    kept."""
     crlf = text.count("\r\n")
     lf = text.count("\n") - crlf
     forms = (_to_crlf, _to_lf) if crlf > lf else (_to_lf, _to_crlf)
-    tried = []
+    seen = []
+    matches = []
     for convert in (*forms, lambda s: s):
         wanted, new = convert(find), convert(replace)
-        if wanted in tried:
+        if wanted in seen:
             continue
-        tried.append(wanted)
+        seen.append(wanted)
         count = text.count(wanted)
-        if count == 1:
-            return 1, text.replace(wanted, new, 1)
-        if count > 1:
-            return count, text
-    return 0, text
+        if count:
+            matches.append((count, wanted, new))
+    if not matches:
+        return 0, text
+    total = sum(count for count, _, _ in matches)
+    if total > 1:
+        return total, text
+    _, wanted, new = matches[0]
+    return 1, text.replace(wanted, new, 1)
 
 
 def _build_edit_file(perms: Permissions, tracker: _ReadTracker) -> StructuredTool:

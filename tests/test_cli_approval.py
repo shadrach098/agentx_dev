@@ -9,7 +9,7 @@ import pytest
 
 from agentx_dev.cli.approval import (
     MODES, NO_WAY_TO_ASK, PLAN_REFUSAL, Answer, Gate, _grantable_prefix, command_prefix, kind_of, normalize_path,
-    path_forms, rule_matches, subject_of, subjects_of, unusual_path,
+    move_final_paths, path_forms, rule_matches, subject_of, subjects_of, unusual_path,
 )
 
 FOLDS_CASE = sys.platform in ("win32", "darwin")
@@ -1004,3 +1004,17 @@ class TestMoveIntoAFolder:
         (tmp_path / "alias").symlink_to(tmp_path / "real" / ".agentx", target_is_directory=True)
         g = Gate(deny=["move_file:* -> .agentx"], cwd=tmp_path, ask=Asker())
         assert "deny rule" in g.check("move_file", {"source": "alias", "destination": "."})
+
+
+@pytest.mark.skipif(os.name != "nt", reason="UNC paths are a Windows form")
+def test_drawing_a_move_with_unc_paths_never_touches_the_disk(monkeypatch):
+    from pathlib import Path as _Path
+
+    def boom(*args, **kwargs):
+        raise AssertionError("the file system was touched for a UNC path")
+
+    unc = {"source": r"\\attacker.example@80\s\a", "destination": r"\\attacker.example@80\s\b"}
+    monkeypatch.setattr(_Path, "resolve", boom)
+    monkeypatch.setattr(_Path, "is_dir", boom)
+    assert move_final_paths(unc["source"], unc["destination"]) == []
+    assert isinstance(subject_of("move_file", unc), str)

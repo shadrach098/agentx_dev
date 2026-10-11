@@ -30,6 +30,17 @@ def test_an_lf_file_keeps_the_new_lines_lf(tools, tmp_path):
     assert data == b"a\nb\nc\nthree\n"
 
 
+def test_a_spelling_that_matches_elsewhere_cannot_hide_an_ambiguity(tools, tmp_path):
+    # "x\ny" matches the CRLF pair when converted and the bare-LF pair as written: two places, so refuse
+    data, answer = edit(tools, tmp_path, b"x\r\ny\r\nz\r\nx\ny\n", "x\ny", "Q")
+    assert data == b"x\r\ny\r\nz\r\nx\ny\n" and "appears 2 times" in answer
+
+
+def test_the_find_text_as_written_does_not_pick_a_different_place_than_its_converted_form(tools, tmp_path):
+    data, answer = edit(tools, tmp_path, b"x\ny\nx\r\ny\nw\n", "x\r\ny", "Q")
+    assert data == b"x\ny\nx\r\ny\nw\n" and "appears 2 times" in answer
+
+
 def test_a_crlf_file_stays_crlf_for_a_single_line_edit(tools, tmp_path):
     data, _ = edit(tools, tmp_path, b"one\r\ntwo\r\nthree\r\n", "two", "2")
     assert data == b"one\r\n2\r\nthree\r\n"

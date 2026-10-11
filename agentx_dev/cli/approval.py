@@ -190,6 +190,8 @@ def move_final_paths(source: Any, destination: Any, cwd: Optional[Union[str, Pat
     source's name after links are followed (what the tool moves) first, then the name as written."""
     dest = _text(destination)
     source_text = _text(source)
+    if unusual_path(source_text) or unusual_path(dest):
+        return []        # the gate refuses these before touching the disk; drawing a tool line must not either
     try:
         base = Path(cwd).resolve() if cwd is not None else Path.cwd()
         if not Path(base, dest).resolve().is_dir():

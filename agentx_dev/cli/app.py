@@ -503,7 +503,11 @@ class _LogFormatter(logging.Formatter):
     with escape sequences in it) written out as ``\\x1b`` so that ``cat agentx.log`` cannot drive a terminal."""
 
     def format(self, record: logging.LogRecord) -> str:
-        return _CONTROL.sub(lambda m: f"\\x{ord(m.group()):02x}", super().format(record))
+        text = _CONTROL.sub(lambda m: f"\\x{ord(m.group()):02x}", super().format(record))
+        for name, value in os.environ.items():              # provider errors can echo the key that was sent
+            if len(value) >= 8 and any(word in name.upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
+                text = text.replace(value, "[hidden]")
+        return text
 
 
 class _QuietFileHandler(logging.handlers.RotatingFileHandler):
@@ -511,6 +515,14 @@ class _QuietFileHandler(logging.handlers.RotatingFileHandler):
 
     def handleError(self, record: logging.LogRecord) -> None:
         pass
+
+    def _open(self):                      # also used when the file is rotated: the log is private to the user
+        stream = super()._open()
+        try:
+            os.chmod(self.baseFilename, 0o600)
+        except OSError:
+            pass
+        return stream
 
 
 def setup_logging(home: Path) -> None:

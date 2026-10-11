@@ -1069,6 +1069,24 @@ def test_the_errors_go_to_a_log_file_in_the_agentx_folder_with_controls_defused(
     assert "\x1b" not in log and "\x07" not in log and "\\x1b" in log
 
 
+def test_key_values_never_reach_the_log_file_and_the_file_is_private(tmp_path, bare_logging, monkeypatch):
+    bare_logging()
+    import logging
+    import os
+    import stat
+    monkeypatch.setenv("SOME_PROVIDER_API_KEY", "sk-test-0123456789abcdef")
+    home = tmp_path / "home"
+    app_module.setup_logging(home)
+    logging.getLogger("agentx_dev.ChatModel").error("auth failed for key sk-test-0123456789abcdef")
+    for handler in logging.getLogger("agentx_dev").handlers:
+        handler.flush()
+    path = home / ".agentx" / "agentx.log"
+    log = path.read_text(encoding="utf-8")
+    assert "auth failed" in log and "sk-test-0123456789abcdef" not in log and "[hidden]" in log
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
 def test_ordinary_progress_messages_are_not_logged(tmp_path, bare_logging):
     bare_logging()
     import logging
