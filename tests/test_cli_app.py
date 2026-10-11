@@ -1144,3 +1144,109 @@ def test_an_ordinary_move_into_an_existing_folder_asks_and_says_where_it_lands(t
     app.start()
     assert (cwd / "dest" / "a.txt").exists() and not (cwd / "a.txt").exists()
     assert "Move a.txt to dest/a.txt" in out.getvalue()
+
+
+# -- project allow rules need the user's yes ------------------------------------------------------------------
+
+RULE = "run_shell:make*"
+
+
+def project_rules_app(tmp_path, lines, *, allow=(RULE,), project=(RULE,), deny=(), model=None, **kw):
+    return make_app(tmp_path, lines, model or MockModel(script=[]), allow=list(allow), project_allow=list(project),
+                    deny=list(deny), **kw)
+
+
+def test_the_user_is_asked_once_whether_to_honour_the_project_rules(tmp_path):
+    lines = Lines("y", "/exit")
+    app, out, _, _ = project_rules_app(tmp_path, lines)
+    app.start()
+    assert lines.prompts[0] == "Honour these project rules? [y/N] " and lines.prompts.count(lines.prompts[0]) == 1
+    assert RULE in out.getvalue()
+
+
+def test_yes_keeps_the_project_rules(tmp_path):
+    app, out, _, _ = project_rules_app(tmp_path, Lines("y", "/exit"))
+    app.start()
+    assert app.gate.allow == [RULE] and app.gate.check("run_shell", {"command": "make test"}) is None
+
+
+def test_yes_is_accepted_in_any_case_and_spelling(tmp_path):
+    for answer in ("Y", " yes ", "YES"):
+        app, _, _, _ = project_rules_app(tmp_path, Lines(answer, "/exit"))
+        app.start()
+        assert app.gate.allow == [RULE], answer
+
+
+@pytest.mark.parametrize("answer", ["", "n", "no", "N"])
+def test_enter_or_no_drops_the_project_rules(tmp_path, answer):
+    asked = []
+    app, out, _, _ = project_rules_app(tmp_path, Lines(answer, "/exit"), allow=[RULE])
+    app.gate.ask = lambda request: asked.append(request) or Answer("n")
+    app.start()
+    assert app.gate.allow == []
+    app.gate.check("run_shell", {"command": "make test"})
+    assert asked                                                       # it asks, as it would without the rule
+    assert "ignor" in out.getvalue().lower()
+
+
+@pytest.mark.parametrize("fault", [EOFError(), KeyboardInterrupt(), RuntimeError("terminal gone")])
+def test_end_of_input_ctrl_c_or_a_failing_reader_drop_them(tmp_path, fault):
+    app, _, _, _ = project_rules_app(tmp_path, Lines(fault, "/exit"))
+    app.start()
+    assert app.gate.allow == []
+
+
+def test_an_unrecognised_answer_is_asked_once_more_and_then_means_no(tmp_path):
+    lines = Lines("maybe", "perhaps", "/exit")
+    app, _, _, _ = project_rules_app(tmp_path, lines)
+    app.start()
+    assert app.gate.allow == [] and lines.prompts.count("Honour these project rules? [y/N] ") == 2
+    app, _, _, _ = project_rules_app(tmp_path, Lines("maybe", "y", "/exit"))
+    app.start()
+    assert app.gate.allow == [RULE]
+
+
+def test_a_no_keeps_the_project_deny_rules_and_the_users_own_allow_rules(tmp_path):
+    app, _, _, _ = project_rules_app(tmp_path, Lines("n", "/exit"), allow=["run_shell:pytest*", RULE],
+                                     project=[RULE], deny=["run_shell:*sudo*"])
+    app.start()
+    assert app.gate.allow == ["run_shell:pytest*"]
+    assert "run_shell:*sudo*" in app.gate.deny and set(DEFAULT_DENY) <= set(app.gate.deny)
+    assert app.gate.check("run_shell", {"command": "pytest -q"}) is None
+    assert "deny rule" in app.gate.check("run_shell", {"command": "sudo ls"})
+
+
+def test_a_rule_the_user_also_wrote_survives_a_no_once(tmp_path):
+    app, _, _, _ = project_rules_app(tmp_path, Lines("n", "/exit"), allow=[RULE, RULE], project=[RULE])
+    app.start()
+    assert app.gate.allow == [RULE]
+
+
+def test_nothing_is_asked_without_project_rules(tmp_path):
+    lines = Lines("/exit")
+    app, _, _, _ = project_rules_app(tmp_path, lines, allow=["run_shell:pytest*"], project=[])
+    app.start()
+    assert "Honour these project rules? [y/N] " not in lines.prompts and app.gate.allow == ["run_shell:pytest*"]
+
+
+def test_the_question_comes_before_the_model_is_built_and_through_the_short_reader(tmp_path):
+    short = Lines("y")
+    line = Lines("/exit")
+    app, out, _, _ = make_app(tmp_path, line, None, model_factory=lambda n, e: (_ for _ in ()).throw(
+        ModelError("No API key found.")), allow=[RULE], project_allow=[RULE], read_short=short)
+    assert app.start() == 1
+    assert short.prompts == ["Honour these project rules? [y/N] "] and line.prompts == [] and app.gate.allow == [RULE]
+
+
+def test_a_project_that_allows_all_edits_cannot_skip_the_edit_prompts_unless_the_user_says_yes(tmp_path):
+    model = MockModel(script=[write_call(), make_final("done")])
+    lines = Lines("n", "create hello.txt", "y", "/exit")
+    app, out, cwd, _ = project_rules_app(tmp_path, lines, allow=["write_file"], project=["write_file"], model=model)
+    app.start()
+    assert "Allow? [y/a/n] " in lines.prompts and (cwd / "hello.txt").exists()
+    model = MockModel(script=[write_call(), make_final("done")])
+    lines = Lines("y", "create hello.txt", "/exit")
+    app, out, cwd, _ = project_rules_app(tmp_path, lines, allow=["write_file"], project=["write_file"], model=model)
+    (cwd / "hello.txt").unlink()
+    app.start()
+    assert "Allow? [y/a/n] " not in lines.prompts and (cwd / "hello.txt").exists()

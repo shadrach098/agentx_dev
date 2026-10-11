@@ -195,16 +195,46 @@ class ChatApp:
     def _show_startup_warnings(self) -> None:
         for problem in self.problems:
             self.notice("Warning: " + self._safe(problem, 400))
-        if self.project_allow:
-            shown = [self._safe(rule, MAX_RULE_CHARS) for rule in self.project_allow[:MAX_RULES_SHOWN]]
-            lines = ["Warning: this project's settings (.agentx/settings.json) allow these actions without "
-                     "asking you:"]
-            lines += [f"  {rule}" for rule in shown]
-            if len(self.project_allow) > MAX_RULES_SHOWN:
-                lines.append(f"  ... and {len(self.project_allow) - MAX_RULES_SHOWN} more")
-            lines.append("If you did not expect this, check that file before you go on (or leave with /exit).")
-            self.notice("\n".join(lines))
+        self._confirm_project_rules()
         self._check_extra_folders()
+
+    def _confirm_project_rules(self) -> None:
+        """A repository's own allow rules can switch off the prompts (``"write_file"`` is accept-edits under
+        another name, ``"run_shell"`` runs every plain command), so they are listed and the user is asked once.
+        Anything but a clear yes drops them for this session; the user's own allow rules and every deny rule,
+        the project's included, are kept (a deny rule only restricts)."""
+        if not self.project_allow:
+            return
+        shown = [self._safe(rule, MAX_RULE_CHARS) for rule in self.project_allow[:MAX_RULES_SHOWN]]
+        lines = ["This project's settings (.agentx/settings.json) allow these actions without asking you:"]
+        lines += [f"  {rule}" for rule in shown]
+        if len(self.project_allow) > MAX_RULES_SHOWN:
+            lines.append(f"  ... and {len(self.project_allow) - MAX_RULES_SHOWN} more")
+        self.notice("\n".join(lines))
+        if self._yes("Honour these project rules? [y/N] "):
+            return
+        for rule in self.project_allow:                     # one occurrence each: the user may have written it too
+            for index in range(len(self.gate.allow) - 1, -1, -1):
+                if self.gate.allow[index] == rule:
+                    del self.gate.allow[index]
+                    break
+        self.notice("The project's allow rules are ignored for this session; its deny rules still apply.")
+
+    def _yes(self, prompt: str) -> bool:
+        """A yes/no question through the short-answer reader. Enter, end of input, Ctrl+C and a reader that
+        fails are all no; an answer that is neither is asked once more, and then means no."""
+        for attempt in range(2):
+            try:
+                answer = str(self.read_short(prompt)).strip().lower()
+            except (EOFError, KeyboardInterrupt, Exception):
+                return False
+            if answer in ("y", "yes"):
+                return True
+            if answer in ("", "n", "no"):
+                return False
+            if attempt == 0:
+                self.notice("Please answer y or n.")
+        return False
 
     def _check_extra_folders(self) -> None:
         for folder in self.add_dirs:
