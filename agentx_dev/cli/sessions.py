@@ -37,13 +37,15 @@ def _printable(text: object) -> str:
 
 def project_slug(cwd: Path) -> str:
     """The working folder as one folder name: separators, colons and other characters a file name cannot hold become
-    ``-``. A very long path is cut to its end plus a short hash of the whole path."""
+    ``-``, then ``-`` and a short hash of the whole resolved path, so that ``C:\\a-b`` and ``C:\\a\\b`` (the same
+    readable part) keep separate sessions. A very long path keeps only the end of its readable part."""
     full = str(_resolve(cwd))
     slug = re.sub(r'[\\/:<>"|?*\x00-\x1f]+', "-", full).strip("-") or "root"
-    if len(slug) > MAX_SLUG_CHARS:
-        digest = hashlib.sha1(full.encode("utf-8", errors="replace")).hexdigest()[:8]
-        slug = f"{digest}-{slug[-(MAX_SLUG_CHARS - 9):].lstrip('-')}"
-    return slug
+    digest = hashlib.sha1(full.encode("utf-8", errors="replace")).hexdigest()[:8]
+    room = MAX_SLUG_CHARS - len(digest) - 1
+    if len(slug) > room:
+        slug = slug[-room:].lstrip("-")
+    return f"{slug}-{digest}"
 
 
 def sessions_dir(home: Path, cwd: Path) -> Path:

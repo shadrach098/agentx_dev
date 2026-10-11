@@ -226,3 +226,71 @@ def test_a_symlinked_user_file_is_accepted(tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("symlinks are not available here")
     assert "MY-DOTFILE-RULE" in build_addendum(tmp_path / "proj", home, system="X")
+
+
+# -- how far up the search climbs -------------------------------------------------------------------------------
+
+def names(found, tmp_path):
+    return [p.resolve().relative_to(tmp_path.resolve()).as_posix() for p in found
+            if tmp_path.resolve() in p.resolve().parents]
+
+
+def test_the_search_stops_at_the_folder_that_holds_dot_git(tmp_path):
+    write(tmp_path / "work" / "AGENTX.md", "OUTER")
+    write(tmp_path / "work" / "repo" / "AGENTX.md", "REPO")
+    write(tmp_path / "work" / "repo" / "sub" / "AGENTX.md", "SUB")
+    (tmp_path / "work" / "repo" / ".git").mkdir()
+    cwd = tmp_path / "work" / "repo" / "sub" / "deep"
+    cwd.mkdir(parents=True)
+    assert names(find_context_files(cwd, tmp_path / "home"), tmp_path) == [
+        "work/repo/AGENTX.md", "work/repo/sub/AGENTX.md"]
+    text = build_addendum(cwd, tmp_path / "home", system="X")
+    assert "REPO" in text and "SUB" in text and "OUTER" not in text
+
+
+def test_a_dot_git_file_counts_too(tmp_path):
+    write(tmp_path / "AGENTX.md", "OUTER")
+    write(tmp_path / "wt" / "AGENTX.md", "WT")
+    write(tmp_path / "wt" / ".git", "gitdir: ../elsewhere")
+    cwd = tmp_path / "wt" / "src"
+    cwd.mkdir()
+    assert names(find_context_files(cwd, tmp_path / "home"), tmp_path) == ["wt/AGENTX.md"]
+
+
+def test_the_search_stops_at_the_home_folder(tmp_path):
+    home = tmp_path / "h"
+    write(tmp_path / "AGENTX.md", "ABOVE-HOME")
+    write(home / "AGENTX.md", "HOME-LEVEL")
+    write(home / "proj" / "AGENTX.md", "PROJ")
+    write(home / ".agentx" / "AGENTX.md", "USER-OWN")
+    cwd = home / "proj" / "src"
+    cwd.mkdir(parents=True)
+    assert names(find_context_files(cwd, home), tmp_path) == ["h/.agentx/AGENTX.md", "h/AGENTX.md", "h/proj/AGENTX.md"]
+    text = build_addendum(cwd, home, system="X")
+    assert "ABOVE-HOME" not in text and "USER-OWN" in text and "PROJ" in text
+
+
+def test_the_git_folder_below_home_wins_over_home(tmp_path):
+    home = tmp_path / "h"
+    write(home / "AGENTX.md", "HOME-LEVEL")
+    write(home / "proj" / "AGENTX.md", "PROJ")
+    (home / "proj" / ".git").mkdir()
+    cwd = home / "proj" / "src"
+    cwd.mkdir()
+    assert names(find_context_files(cwd, home), tmp_path) == ["h/proj/AGENTX.md"]
+
+
+def test_the_working_folder_may_be_the_home_folder(tmp_path):
+    home = tmp_path / "h"
+    write(home / "AGENTX.md", "HOME-LEVEL")
+    write(tmp_path / "AGENTX.md", "ABOVE-HOME")
+    assert names(find_context_files(home, home), tmp_path) == ["h/AGENTX.md"]
+
+
+def test_without_a_git_folder_or_home_the_search_goes_on_up(tmp_path):
+    write(tmp_path / "AGENTX.md", "TOP")
+    write(tmp_path / "a" / "AGENTX.md", "A")
+    cwd = tmp_path / "a" / "b"
+    cwd.mkdir()
+    resolved = [p.resolve() for p in find_context_files(cwd, tmp_path / "elsewhere")]
+    assert resolved[-2:] == [(tmp_path / "AGENTX.md").resolve(), (tmp_path / "a" / "AGENTX.md").resolve()]

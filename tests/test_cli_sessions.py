@@ -1,6 +1,7 @@
 """Where sessions live, how they are listed and found."""
 
 import json
+import re
 from datetime import datetime, timezone
 
 from agentx_dev.cli import sessions as sessions_module
@@ -21,7 +22,21 @@ def make(home, cwd, session_id, updated, first_message="hello there"):
 
 def test_the_slug_has_no_separators(tmp_path):
     slug = project_slug(tmp_path / "my proj")
-    assert "/" not in slug and "\\" not in slug and ":" not in slug and slug.endswith("my proj")
+    assert "/" not in slug and "\\" not in slug and ":" not in slug and "my proj-" in slug
+    assert re.fullmatch(r".*my proj-[0-9a-f]{8}", slug)                # a short hash of the whole path ends it
+
+
+def test_folders_whose_slugs_would_collide_get_their_own_session_folder(tmp_path):
+    first, second = tmp_path / "a-b", tmp_path / "a" / "b"
+    first.mkdir()
+    second.mkdir(parents=True)
+    assert project_slug(first) != project_slug(second)
+    assert project_slug(first) == project_slug(first)
+    home = tmp_path / "home"
+    path = make(home, first, "aaaa1111-x", "2026-10-10T10:00:00+00:00")
+    assert [i.path for i in list_sessions(home, first)] == [path]
+    assert list_sessions(home, second) == [] and latest_session(home, second) is None
+    assert find_session(home, second, "aaaa1111") is None
 
 
 def test_the_path_pattern(tmp_path):
@@ -117,7 +132,7 @@ def test_a_session_id_cannot_climb_out_of_the_folder(tmp_path):
 
 def test_a_very_long_path_still_gives_a_short_slug(tmp_path):
     slug = project_slug(tmp_path / ("d" * 400) / "my proj")
-    assert len(slug) <= 150 and slug.endswith("my proj")
+    assert len(slug) <= 150 and re.fullmatch(r".*my proj-[0-9a-f]{8}", slug)
     assert project_slug(tmp_path / ("d" * 400) / "my proj") == slug
     assert project_slug(tmp_path / ("e" * 400) / "my proj") != slug
 

@@ -71,9 +71,19 @@ def _user_file(home: Path) -> Path:
     return Path(home) / ".agentx" / FILE_NAME
 
 
+def _has_git(directory: Path) -> bool:
+    """Whether ``directory`` holds a ``.git`` folder or file (a repository or worktree root)."""
+    try:
+        return os.path.lexists(directory / ".git")
+    except (OSError, ValueError):
+        return False
+
+
 def find_context_files(cwd: Path, home: Path) -> List[Path]:
-    """The AGENTX.md files that apply: ``~/.agentx/AGENTX.md`` first, then the working folder's ancestors from the
-    top down to the working folder (nearest last). A symlinked file that points outside its own folder is left out,
+    """The AGENTX.md files that apply: ``~/.agentx/AGENTX.md`` first, then the working folder and its ancestors
+    from the top down (nearest last). The climb stops at the first of: the folder that holds a ``.git`` entry,
+    the user's home folder, the filesystem root; that folder's own file is included, nothing above it is, so a
+    file in some parent folder the project merely sits inside is not taken for the project's. A symlinked file that points outside its own folder is left out,
     and a file reached twice (the working folder is ``~/.agentx``) is listed once."""
     found: List[Path] = []
     seen = set()
@@ -82,7 +92,13 @@ def find_context_files(cwd: Path, home: Path) -> List[Path]:
         found.append(user_file)
         seen.add(_resolve(user_file))
     folder = _resolve(cwd)
-    for directory in reversed([folder, *folder.parents]):
+    stop = _resolve(home)
+    chain = []
+    for directory in [folder, *folder.parents]:                  # nearest first, up to where the project ends
+        chain.append(directory)
+        if directory == stop or _has_git(directory):
+            break
+    for directory in reversed(chain):
         candidate = directory / FILE_NAME
         if _is_file(candidate) and _stays_inside(candidate, directory) and _resolve(candidate) not in seen:
             found.append(candidate)
