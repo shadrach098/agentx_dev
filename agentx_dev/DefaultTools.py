@@ -1310,6 +1310,40 @@ def _maybe_unescape_json_escapes(s: str) -> str:
     return out
 
 
+def _to_lf(s: str) -> str:
+    return s.replace("\r\n", "\n")
+
+
+def _to_crlf(s: str) -> str:
+    return _to_lf(s).replace("\n", "\r\n")
+
+
+def _plan_edit(text: str, find: str, replace: str) -> "tuple[int, str]":
+    """``(count, new_text)`` for replacing ``find`` with ``replace`` once in ``text``, the file's text exactly
+    as stored (line endings included). ``count`` is how many times ``find`` occurs: 0 (``new_text`` is
+    ``text``), 1 (``new_text`` is the edited text), or more (ambiguous; ``new_text`` is ``text``).
+
+    A model writes bare newlines in ``find`` and ``replace`` whatever the file uses. Both are first put in the
+    file's dominant line ending (CRLF if the file has more CRLF than bare LF, else LF), so editing a CRLF file
+    works and the new lines match the file. If that does not match, the other ending is tried (a mixed
+    file), then the text exactly as given. Every byte outside the edit is kept."""
+    crlf = text.count("\r\n")
+    lf = text.count("\n") - crlf
+    forms = (_to_crlf, _to_lf) if crlf > lf else (_to_lf, _to_crlf)
+    tried = []
+    for convert in (*forms, lambda s: s):
+        wanted, new = convert(find), convert(replace)
+        if wanted in tried:
+            continue
+        tried.append(wanted)
+        count = text.count(wanted)
+        if count == 1:
+            return 1, text.replace(wanted, new, 1)
+        if count > 1:
+            return count, text
+    return 0, text
+
+
 def _build_edit_file(perms: Permissions, tracker: _ReadTracker) -> StructuredTool:
     def edit_file(path: str, find: str, replace: str) -> str:
         if not perms.edit_files:
@@ -1334,8 +1368,11 @@ def _build_edit_file(perms: Permissions, tracker: _ReadTracker) -> StructuredToo
                 "'find' substring you've actually seen."
             )
 
-        text = resolved.read_text(encoding="utf-8")
-        count = text.count(find)
+        # Read the text as stored (newline=""), so a CRLF file is not turned into an LF one (or the other
+        # way round) by the platform's newline translation: only the edited text changes.
+        with open(resolved, "r", encoding="utf-8", newline="") as handle:
+            text = handle.read()
+        count, new_text = _plan_edit(text, find, replace)
         if count == 0:
             return f"ERROR: substring not found in {path}"
         if count > 1:
@@ -1343,14 +1380,13 @@ def _build_edit_file(perms: Permissions, tracker: _ReadTracker) -> StructuredToo
                 f"ERROR: substring appears {count} times in {path}; refusing "
                 "to edit ambiguously. Include more surrounding context in 'find'."
             )
-        new_text = text.replace(find, replace, 1)
         encoded = new_text.encode("utf-8")
         if len(encoded) > perms.max_file_size_bytes:
             raise PermissionError(
                 f"access denied: resulting file size {len(encoded)} bytes "
                 f"exceeds max_file_size_bytes={perms.max_file_size_bytes}"
             )
-        resolved.write_text(new_text, encoding="utf-8")
+        resolved.write_bytes(encoded)
         # File contents just changed; the agent still knows what's in it
         # (it saw the before, made the edit, so the after is known too).
         tracker.mark_read(resolved)

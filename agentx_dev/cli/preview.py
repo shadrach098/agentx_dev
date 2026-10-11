@@ -16,6 +16,8 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from agentx_dev.DefaultTools import _maybe_unescape_json_escapes, _plan_edit
+
 MAX_PREVIEW_LINES = 200
 MAX_READ_BYTES = 1_000_000        # larger existing files are not read for a preview
 MAX_CONTENT_CHARS = 1_000_000     # larger new content is not diffed
@@ -147,15 +149,6 @@ def _fresh_name(target: Path) -> str:
     return "a numbered copy"
 
 
-def _unescape_json_escapes(s: str) -> str:
-    """Mirror of DefaultTools._maybe_unescape_json_escapes (applied to edit_file's find/replace)."""
-    out = s
-    for literal, real in (("\\n", "\n"), ("\\t", "\t"), ("\\r", "\r")):
-        if literal in out and real not in out:
-            out = out.replace(literal, real)
-    return out
-
-
 def _write_file(args: Mapping[str, Any], cwd: Path) -> Preview:
     shown = str(args.get("path", ""))
     content = str(args.get("content", ""))
@@ -201,16 +194,16 @@ def _edit_file(args: Mapping[str, Any], cwd: Path) -> Preview:
     if disk.state == "binary" or not disk.valid_utf8:
         return _unavailable(title, "(the file is not valid UTF-8 text; the edit will fail)",
                             "file is binary or not UTF-8")
-    find = _unescape_json_escapes(str(args.get("find", "")))
-    replace = _unescape_json_escapes(str(args.get("replace", "")))
-    # The tool reads with Path.read_text, which turns \r\n and \r into \n.
-    text = disk.text.replace("\r\n", "\n").replace("\r", "\n")
-    count = text.count(find)
+    # The same code the tool runs (DefaultTools._plan_edit), on the text as stored, so what is shown is what
+    # is written, line endings included.
+    find = _maybe_unescape_json_escapes(str(args.get("find", "")))
+    replace = _maybe_unescape_json_escapes(str(args.get("replace", "")))
+    count, new_text = _plan_edit(disk.text, find, replace)
     if count == 0:
         return Preview(title, "(the text to replace was not found)", "text")
     if count > 1:
         return Preview(title, f"(text appears {count} times; the edit will be refused)", "text")
-    return _diff_preview(title, text, text.replace(find, replace, 1), shown)
+    return _diff_preview(title, disk.text, new_text, shown)
 
 
 def _generic(tool: Any, args: Any) -> Preview:

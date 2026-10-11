@@ -36,6 +36,14 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **New base dependency: `prompt_toolkit>=3.0`** (the input line: history, multi-line, completion, status
   bar). `rich` was already a dependency.
 
+### Fixed
+
+- **`edit_file` no longer rewrites a file's line endings.** It read and wrote through the platform's newline
+  translation, so on Windows an LF file came back CRLF and on Linux and macOS a CRLF file came back LF, with
+  every line changed. It now keeps every byte outside the edit. A model's bare newlines in `find` and
+  `replace` are put in the file's own ending (CRLF if the file mostly uses it), so CRLF files can be edited
+  across lines.
+
 ## [3.6.2] - 2026-10-09
 
 ### Added
