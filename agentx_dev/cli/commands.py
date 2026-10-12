@@ -113,6 +113,14 @@ def _init(ctx: Any, arg: str) -> None:
     ctx.run_init()
 
 
+def _team(ctx: Any, arg: str) -> None:
+    if not arg:
+        ctx.notice("Usage: /team <task>. Hands a big job to a team of helpers (explorer, coder, runner). "
+                   "You are asked before it starts. Small jobs are better done in the normal chat.")
+        return
+    ctx.run_team_command(arg)
+
+
 def _exit(ctx: Any, arg: str) -> None:
     ctx.request_exit()
 
@@ -133,6 +141,7 @@ COMMANDS = (
     Command("resume", "Load a saved conversation: /resume [id]", _resume),
     Command("sessions", "List this folder's saved conversations", _sessions),
     Command("init", "Draft an AGENTX.md for this project", _init),
+    Command("team", "Hand a big job to a team of helpers: /team <task>", _team),
     Command("exit", "Leave", _exit),
 )
 _BY_NAME = {command.name: command for command in COMMANDS}

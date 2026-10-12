@@ -26,6 +26,8 @@ from agentx_dev.cli.preview import Preview, preview_for
 
 MAX_RESULT_LINES = 3
 MAX_SUMMARY_CHARS = 100
+MAX_QUESTION_LINES = 12
+MAX_HELPER_CHARS = 40
 
 # What ``plain`` escapes: control characters (Cc), lone surrogates (Cs) and every format character (Cf: bidi
 # controls, zero-width spaces, word joiners, BOM, soft hyphen, tag characters, interlinear annotation marks...)
@@ -254,8 +256,13 @@ class Screen:
         _print(self.console, line)
 
     def team_question(self, question: Any) -> None:
-        _print(self.console, Text("Team question: " + plain(_nothing_if_none(question), keep_newlines=True),
-                                  style="bold yellow"))
+        """The question, one label on the first line only and every other line indented, so that a question with
+        line breaks cannot look like an approval panel (``Action:``) or its prompt (``Allow?``)."""
+        lines = _lines(plain(_nothing_if_none(question), keep_newlines=True)) or [""]
+        shown = [("Team question: " if n == 0 else "  ") + line for n, line in enumerate(lines[:MAX_QUESTION_LINES])]
+        if len(lines) > MAX_QUESTION_LINES:
+            shown.append(f"  ... {len(lines) - MAX_QUESTION_LINES} more lines")
+        _print(self.console, Text("\n".join(shown), style="bold yellow"))
 
 
 def _nothing_if_none(value: Any) -> Any:
@@ -288,9 +295,10 @@ def _request_body(request: Request, preview: Preview, helper: str = "") -> Text:
     subject = plain(request.subject)
     body.append("Action: ", style="bold")
     body.append(action + "\n")
+    helper = _short(" ".join(str(helper or "").split()), MAX_HELPER_CHARS)      # stripped, one line, cut
     if helper:
         body.append("Helper: ", style="bold")
-        body.append(plain(helper) + "\n")
+        body.append(helper + "\n")
     # The subject is what the gate judged. Skip it only when it adds nothing: it is the action text itself,
     # or (for a command) the very command the body already shows, or a team job (its task is the body's
     # first line).

@@ -21,7 +21,8 @@ from agentx_dev.cli.models import ModelError, choose_model
 from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
 from agentx_dev.cli.settings import ensure_user_settings, load_settings, project_settings_path, user_settings_path
-from agentx_dev.cli.tools import build_tools
+from agentx_dev.cli.team import make_team_tool, run_team_job, team_request
+from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker
 
@@ -31,6 +32,9 @@ INIT_PROMPT = (
     "the code layout, and the conventions to follow. Keep it under 60 lines. Use write_file. If an AGENTX.md "
     "already exists, tell me instead of overwriting it."
 )
+
+TEAM_ALREADY_RAN = ("Refused: a team job already ran in this turn. Use its result, or wait for the user's "
+                    "next message before starting another.")
 
 NOT_A_TERMINAL = "agentx needs an interactive terminal (headless mode is not available yet)."
 MAX_RULES_SHOWN = 20
@@ -151,14 +155,18 @@ class ChatApp:
         self._mode_before_grant: Optional[str] = None
         self._watch_mode_changes()
         self.progress = Progress(console)
-        asker = make_asker(console, self.read_short, self.gate.cwd, select=select)
+        self._team_helper = ""             # the helper whose step is running; "" outside a team job
+        self._team_used = False            # a turn may start one team job
+        asker = make_asker(console, self.read_short, self.gate.cwd, select=select,
+                           helper=lambda: self._team_helper)
 
         def ask_with_spinner_paused(request: Any) -> Any:           # a prompt must not fight the spinner
             with self.progress.paused():
                 return asker(request)
 
         self.gate.ask = self._remembering(ask_with_spinner_paused)
-        self.tools = build_tools(self.cwd, self.add_dirs, self.gate)
+        self.base_tools = build_tools(self.cwd, self.add_dirs, self.gate, observer=self._observe_tool)
+        self.tools = [*self.base_tools, gate_tool(make_team_tool(self._start_team_job), self.gate)]
         self.addendum = build_addendum(self.cwd, self.home)
         self.model: Any = None
         self.session: Optional[Session] = None
@@ -434,6 +442,7 @@ class ChatApp:
     def send(self, text: str) -> None:
         """One turn: stream the events to the screen, then autosave. Ctrl+C cancels the turn."""
         assert self.session is not None
+        self._team_used = False                        # a new message may start a new team job
         try:
             self.progress.start("Thinking")
             for event in self.session.stream(text):
@@ -525,6 +534,60 @@ class ChatApp:
 
     def run_init(self) -> None:
         self.send(INIT_PROMPT)
+
+    def run_team_command(self, task: str) -> None:
+        """``/team <task>``: ask the main agent to call the team tool for ``task`` (same prompt, gate and history)."""
+        self.send(team_request(task))
+
+    # -- team jobs ----------------------------------------------------------
+
+    def _observe_tool(self, name: str, args: dict) -> None:
+        """Called by the tool wrappers before the gate check. During a team job it shows the helper's call."""
+        if not self._team_helper:
+            return
+        self.progress.stop()
+        self.screen.helper_call(self._team_helper, name, args)
+        self.progress.start(f"Running {self._team_helper}")
+
+    def _team_notify(self, kind: str, data: dict) -> None:
+        self.progress.stop()
+        if kind == "plan":
+            self.screen.team_plan(data.get("steps"))
+            self.progress.start("Starting the team")
+        elif kind == "dispatch":
+            self._team_helper = str(data.get("agent", ""))
+            self.screen.team_dispatch(data.get("agent"), data.get("query"))
+            self.progress.start(f"Running {self._team_helper}")
+        elif kind == "result":
+            self._team_helper = ""
+            self.screen.team_result(data.get("agent"), bool(data.get("ok")), data.get("text"))
+            self.progress.start("Team is working")
+
+    def _team_question(self, question: str) -> Optional[str]:
+        """The planner or a helper needs a fact: ask in the terminal. Enter, Ctrl+D and Ctrl+C skip it."""
+        with self.progress.paused():
+            self.screen.team_question(question)
+            try:
+                answer = self.read_short("Answer (Enter to skip): ")
+            except (EOFError, KeyboardInterrupt):
+                return None
+        return str(answer).strip() or None
+
+    def _start_team_job(self, task: str, why: str) -> str:
+        """The ``start_team_job`` tool: run the team and hand the result text back to the main agent."""
+        if self._team_used:
+            return TEAM_ALREADY_RAN
+        if self.model is None:
+            return "Refused: no model is available for a team job."
+        self._team_used = True
+        self.progress.start("Planning the team job")
+        try:
+            return run_team_job(task, model=self.model, tools=self.base_tools, addendum=self.addendum,
+                                notify=self._team_notify, ask_user=self._team_question,
+                                describe_error=self._safe)
+        finally:
+            self._team_helper = ""
+            self.progress.start("Thinking")
 
 
 # -- the command line -------------------------------------------------------

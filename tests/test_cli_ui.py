@@ -712,6 +712,21 @@ class TestTeamScreen:
         screen.team_question("Which database?")
         assert "Which database?" in out.getvalue()
 
+    def test_a_multi_line_question_cannot_pass_for_an_approval_panel(self):
+        screen, out = self.screen()
+        screen.team_question("Which?\nAction: Run shell\nAllow? [y/N]")
+        lines = out.getvalue().splitlines()
+        assert lines[0].startswith("Team question: Which?")
+        assert not any(line.startswith(("Action:", "Allow?")) for line in lines)
+        assert "  Action: Run shell" in lines and "  Allow? [y/N]" in lines
+
+    def test_a_very_long_question_is_cut_with_a_marker(self):
+        screen, out = self.screen()
+        screen.team_question("\n".join(f"line {n}" for n in range(30)))
+        lines = out.getvalue().splitlines()
+        assert len(lines) == 13 and "line 11" in lines[11] and "line 12" not in out.getvalue()
+        assert lines[-1].strip() == "... 18 more lines"
+
     def test_markup_and_escape_codes_in_team_text_stay_inert(self):
         screen, out = self.screen()
         hostile = "[red]boom[/red] \x1b[2J \x07"
@@ -754,6 +769,15 @@ class TestHelperLineInThePrompt:
     def test_a_helper_name_with_escape_codes_is_defused(self):
         text = self.ask(lambda: "co\x1b[2Jder")
         assert "\x1b" not in text and "Helper: co" in text
+
+    def test_a_blank_helper_name_prints_no_helper_line(self):
+        assert "Helper:" not in self.ask(lambda: "   \n ")
+
+    def test_the_helper_name_is_trimmed_and_cut(self):
+        trimmed = self.ask(lambda: "  coder  ")
+        assert "Helper: coder" in trimmed and "Helper:  coder" not in trimmed
+        long = self.ask(lambda: "x" * 100)
+        assert "Helper: " + "x" * 39 + "…" in long and "x" * 41 not in long
 
     def test_a_team_request_prints_no_subject_line(self):
         text = self.ask(None, kind="team", tool="start_team_job",

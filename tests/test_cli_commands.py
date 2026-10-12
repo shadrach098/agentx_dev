@@ -19,6 +19,7 @@ class Ctx:
     def show_sessions(self): self.calls.append(("sessions",))
     def resume(self, ident): self.calls.append(("resume", ident))
     def run_init(self): self.calls.append(("init",))
+    def run_team_command(self, task): self.calls.append(("team", task))
     def request_exit(self): self.calls.append(("exit",))
 
     def switch_model(self, name):
@@ -45,7 +46,7 @@ def test_help_lists_every_command():
     assert run_command(ctx, "/help") is True
     text = "\n".join(ctx.said)
     assert all(name in text for name in command_names())
-    assert command_names() == ["/help", "/clear", "/model", "/mode", "/settings", "/resume", "/sessions", "/init", "/exit"]
+    assert command_names() == ["/help", "/clear", "/model", "/mode", "/settings", "/resume", "/sessions", "/init", "/team", "/exit"]
 
 
 def test_clear_exit_init_sessions():
@@ -268,3 +269,15 @@ def test_mode_auto_can_be_set_and_explains_itself():
     run_command(ctx, "/mode auto")
     assert ctx.gate.mode == "auto"
     assert ctx.said[0] == "Mode: auto" and "Delete and move still ask" in ctx.said[1]
+
+
+def test_team_sends_the_task_to_the_app():
+    ctx = Ctx()
+    assert run_command(ctx, "/team survey the project and fix the tests") is True
+    assert ctx.calls == [("team", "survey the project and fix the tests")]
+
+
+def test_team_without_a_task_explains_how_to_use_it():
+    ctx = Ctx()
+    assert run_command(ctx, "/team") is True
+    assert ctx.calls == [] and "/team <task>" in ctx.said[-1]

@@ -32,7 +32,8 @@ How to work:
 - Make the smallest change that does what was asked, and keep the existing style.
 - Edits and commands are shown to the user for approval; if a request is declined, do not retry the same thing, adjust or ask what they want.
 - After changing code, run the project's tests or a quick check when you can, and say what you ran and what it showed.
-- Be brief in your answers: say what you did and what to look at."""
+- Be brief in your answers: say what you did and what to look at.
+- For a large, multi-part job (several files or areas: research, changes and tests together), call start_team_job to hand it to a team of helpers instead of doing it all yourself. Do small and medium jobs yourself."""
 
 
 def _resolve(path: Path) -> Path:
