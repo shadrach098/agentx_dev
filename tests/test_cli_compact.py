@@ -236,6 +236,24 @@ def test_compact_never_re_summarises_when_only_a_summary_lies_before_the_cut(mon
     assert result.status == "none" and result.history is h
 
 
+def test_the_summary_message_says_where_it_came_from():
+    from agentx_dev.cli.compact import SUMMARY_CAVEAT
+    new = apply_summary(history(8), split_point(history(8)), "summary text of some length here")
+    content = new[1]["content"]
+    assert content == SUMMARY_TAG + "\n" + SUMMARY_CAVEAT + "\n" + "summary text of some length here"
+    assert "written by a model" in SUMMARY_CAVEAT and "not the user's instructions" in SUMMARY_CAVEAT
+
+
+def test_the_caveat_is_not_carried_into_the_next_summary_input():
+    from agentx_dev.cli.compact import SUMMARY_CAVEAT
+    first = compact(history(10, size=20_000), lambda p: "FIRST-SUMMARY " + "kept; " * 20)
+    text = transcript(first.history[1:3])
+    assert text.startswith("Summary of the conversation before this part:\nFIRST-SUMMARY")
+    assert SUMMARY_CAVEAT not in text
+    old_shape = [{"role": "user", "content": SUMMARY_TAG + "\nOLD-SUMMARY"}]          # saved before the caveat
+    assert transcript(old_shape).startswith("Summary of the conversation before this part:\nOLD-SUMMARY")
+
+
 def test_a_summary_message_is_not_a_turn_start():
     h = [{"role": "user", "content": SUMMARY_TAG + "\ns"}, {"role": "assistant", "content": "Understood. I will continue from that summary."}] + history(7, system=False)
     cut = split_point(h)
