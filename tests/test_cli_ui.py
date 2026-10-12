@@ -683,3 +683,79 @@ class TestInputLineLooksAlive:
         assert holder.read("> ").strip() == "hello"
         pipe.send_text("yes" + chr(13))
         assert holder.read_short("Reason: ").strip() == "yes"
+
+
+class TestTeamScreen:
+    def screen(self):
+        out = io.StringIO()
+        return Screen(Console(file=out, width=100, force_terminal=False, color_system=None)), out
+
+    def test_the_plan_the_dispatch_and_the_result_are_drawn(self):
+        screen, out = self.screen()
+        screen.team_plan([{"agent": "explorer", "query": "look around"}, {"agent": "coder", "query": "fix it"}])
+        screen.team_dispatch("explorer", "look around")
+        screen.team_result("explorer", True, "found 3 files")
+        screen.team_result("coder", False, "boom")
+        text = out.getvalue()
+        assert "Team plan" in text and "1. explorer: look around" in text and "2. coder: fix it" in text
+        assert "-> explorer: look around" in text
+        assert "done (explorer): found 3 files" in text and "failed (coder): boom" in text
+
+    def test_a_helper_tool_call_shows_the_helper_the_tool_and_what_it_acts_on(self):
+        screen, out = self.screen()
+        screen.helper_call("coder", "write_file", {"path": "src/app.py", "content": "x"})
+        line = out.getvalue()
+        assert "[coder]" in line and "write_file" in line and "src/app.py" in line
+
+    def test_a_question_is_drawn_with_its_text(self):
+        screen, out = self.screen()
+        screen.team_question("Which database?")
+        assert "Which database?" in out.getvalue()
+
+    def test_markup_and_escape_codes_in_team_text_stay_inert(self):
+        screen, out = self.screen()
+        hostile = "[red]boom[/red] \x1b[2J \x07"
+        screen.team_plan([{"agent": hostile, "query": hostile}])
+        screen.team_dispatch(hostile, hostile)
+        screen.team_result(hostile, False, hostile)
+        screen.helper_call(hostile, hostile, {"path": hostile})
+        screen.team_question(hostile)
+        text = out.getvalue()
+        assert "[red]boom[/red]" in text            # printed as text, not read as markup
+        assert "\x1b" not in text and "\x07" not in text
+
+    def test_odd_arguments_never_raise(self):
+        screen, _ = self.screen()
+        screen.team_plan(None)
+        screen.team_plan([None, 5, {"agent": None}])
+        screen.helper_call(None, None, None)
+        screen.team_result(None, True, None)
+
+
+class TestHelperLineInThePrompt:
+    def ask(self, helper, kind="edit", tool="write_file", args=None):
+        out = io.StringIO()
+        ask = make_asker(Console(file=out, width=100, force_terminal=False, color_system=None),
+                         lambda prompt="": "y", Path("."), helper=helper)
+        request = Request(tool=tool, kind=kind, subject="notes.txt",
+                          args=args or {"path": "notes.txt", "content": "hi", "if_exists": "refuse"},
+                          remember=False, grant="")
+        ask(request)
+        return out.getvalue()
+
+    def test_the_panel_names_the_helper_that_is_asking(self):
+        text = self.ask(lambda: "coder")
+        assert "Helper: coder" in text and text.index("Action:") < text.index("Helper:")
+
+    def test_no_helper_line_outside_a_team_job(self):
+        assert "Helper:" not in self.ask(lambda: "")
+        assert "Helper:" not in self.ask(None)
+
+    def test_a_helper_name_with_escape_codes_is_defused(self):
+        text = self.ask(lambda: "co\x1b[2Jder")
+        assert "\x1b" not in text and "Helper: co" in text
+
+    def test_a_team_request_prints_no_subject_line(self):
+        text = self.ask(None, kind="team", tool="start_team_job",
+                        args={"task": "Survey the project", "why": "big"})
+        assert "Survey the project" in text and "Subject:" not in text

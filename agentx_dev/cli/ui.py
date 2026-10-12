@@ -227,6 +227,36 @@ class Screen:
     def error(self, text: str) -> None:
         _print(self.console, Text(plain(text, keep_newlines=True), style="bold red"))
 
+    def team_plan(self, steps: Any) -> None:
+        _print(self.console, Text("Team plan:", style="bold magenta"))
+        for number, step in enumerate(steps if isinstance(steps, (list, tuple)) else [], 1):
+            if not isinstance(step, dict):
+                continue
+            _print(self.console, Text(f"  {number}. {_short(step.get('agent'), 30)}: "
+                                      f"{_short(step.get('query'), 200)}", style="dim"))
+
+    def team_dispatch(self, agent: Any, query: Any) -> None:
+        _print(self.console, Text(f"-> {_short(agent, 30)}: {_short(query, 200)}", style="bold magenta"))
+
+    def team_result(self, agent: Any, ok: bool, text: Any) -> None:
+        _print(self.console, Text(f"   {'done' if ok else 'failed'} ({_short(agent, 30)}): {_short(text, 160)}",
+                                  style="dim" if ok else "red"))
+
+    def helper_call(self, helper: Any, name: Any, args: Any) -> None:
+        """A helper's tool call, drawn like the main chat's with the helper's name in front."""
+        try:
+            summary = _short(subject_of(str(name), args if isinstance(args, dict) else {}))
+        except Exception:
+            summary = ""
+        line = Text(f"{bullet(self.console)} [{_short(helper, 30)}] {_short(name, 40)}", style="bold")
+        if summary:
+            line.append(f"  {summary}", style="dim")
+        _print(self.console, line)
+
+    def team_question(self, question: Any) -> None:
+        _print(self.console, Text("Team question: " + plain(_nothing_if_none(question), keep_newlines=True),
+                                  style="bold yellow"))
+
 
 def _nothing_if_none(value: Any) -> Any:
     return "" if value is None else value
@@ -249,7 +279,7 @@ def _preview_text(preview: Preview) -> Text:
     return text
 
 
-def _request_body(request: Request, preview: Preview) -> Text:
+def _request_body(request: Request, preview: Preview, helper: str = "") -> Text:
     """The panel's content. The full action text (the preview title, which carries qualifiers such as "and
     everything inside it" or "saved under a new name") and the subject the gate judged are ordinary wrapped
     lines here, never a panel title, which would cut them."""
@@ -258,10 +288,14 @@ def _request_body(request: Request, preview: Preview) -> Text:
     subject = plain(request.subject)
     body.append("Action: ", style="bold")
     body.append(action + "\n")
+    if helper:
+        body.append("Helper: ", style="bold")
+        body.append(plain(helper) + "\n")
     # The subject is what the gate judged. Skip it only when it adds nothing: it is the action text itself,
-    # or (for a command) the very command the body already shows.
+    # or (for a command) the very command the body already shows, or a team job (its task is the body's
+    # first line).
     shown_command = preview.kind == "command" and subject == " ".join(plain(preview.body).split())
-    if subject != action and not shown_command:
+    if subject != action and not shown_command and request.kind != "team":
         body.append("Subject: ", style="bold")
         body.append(subject + "\n")
     if preview.body:
@@ -347,11 +381,14 @@ def select_menu(options: Sequence[str], default: int = 0,
 
 def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
                cwd: Path,
-               select: Optional[Callable[..., Optional[int]]] = None) -> Callable[[Request], Answer]:
+               select: Optional[Callable[..., Optional[int]]] = None,
+               helper: Optional[Callable[[], str]] = None) -> Callable[[Request], Answer]:
     """The gate's ``ask`` function: show what is about to happen, read y / a / n.
 
     ``cwd`` must be the SAME folder the gate was built with (the application passes the gate's ``cwd``), or the
     preview and the gate would look at different files. ``read_line`` defaults to plain ``input``.
+    ``helper`` (optional) returns the name of the team helper whose step is running, shown as a ``Helper:``
+    line.
 
     The prompt shows the full action text and ``Request.subject`` (what the gate judged, in its resolved
     form), never cut. A command, code or tool-argument text longer than ``MAX_COMMAND_CHARS`` cannot be shown
@@ -369,7 +406,11 @@ def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
             _print(console, Text(f"Declined without asking ({plain(request.tool)}): {plain(reason)}.",
                                  style="bold red"))
             return Answer("n", reason)
-        _print(console, Panel(_request_body(request, preview), title=Text(plain(request.tool)),
+        try:
+            who = str(helper() or "") if helper is not None else ""
+        except Exception:
+            who = ""
+        _print(console, Panel(_request_body(request, preview, who), title=Text(plain(request.tool)),
                               title_align="left"))
         always = bool(request.remember and request.grant)
         what = ""
