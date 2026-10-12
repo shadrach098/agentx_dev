@@ -79,8 +79,9 @@ def _note_call(record: TurnRecord, name: Any, args: Any, result: Any, is_error: 
         if lines:
             record.ran.append("python: " + lines[0])
     elif name == "start_team_job":
+        # Raw text on purpose: it is cut by ``entry_text`` only after redaction, so a key cannot straddle the cut.
         match = re.search(r"outcome: (\w+)", str(result or ""))
-        record.team.append(f"{_flat(args.get('task', ''), MAX_COMMAND_CHARS)} ({match.group(1) if match else 'ended'})")
+        record.team.append(f"{args.get('task', '')} ({match.group(1) if match else 'ended'})")
 
 
 def record_from_events(request: str, events: Iterable[Dict[str, Any]]) -> TurnRecord:
@@ -140,19 +141,50 @@ def _split_entries(text: str) -> List[str]:
     return [piece for piece in re.split(r"(?m)^(?=## )", text) if piece]
 
 
+TEMP_NAME = "log.tmp"
+
+
+def _owner_only(path: Path) -> None:
+    """Best effort: the log is for its owner only, where the platform has file modes."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _safe_location(cwd: Path) -> bool:
+    """False when ``.agentx`` or a file in it is a symlink, or leads outside the folder, so a cloned project cannot
+    point the log at some other file. Never raises."""
+    try:
+        root = Path(cwd).resolve()
+        folder = root / LOG_DIR
+        for item in (folder, folder / LOG_NAME, folder / OLDER_NAME, folder / TEMP_NAME):
+            if item.is_symlink():
+                return False
+            item.resolve().relative_to(root)
+        return True
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
 def _rotate(path: Path, limit: int) -> None:
     try:
+        if not _safe_location(path.parent.parent):
+            return
         if path.stat().st_size <= limit:
             return
         entries = _split_entries(path.read_text(encoding="utf-8", errors="replace"))
         if len(entries) < 2:
             return
         half = len(entries) // 2
-        with open(path.with_name(OLDER_NAME), "a", encoding="utf-8", newline="\n") as handle:
+        older = path.with_name(OLDER_NAME)
+        with open(older, "a", encoding="utf-8", newline="\n") as handle:
             handle.write("".join(entries[:half]))
-        temporary = path.with_suffix(".tmp")
+        _owner_only(older)
+        temporary = path.with_name(TEMP_NAME)
         with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
             handle.write("".join(entries[half:]))
+        _owner_only(temporary)
         os.replace(temporary, path)
     except (OSError, ValueError):
         pass
@@ -163,15 +195,14 @@ def append_entry(cwd: Path, text: str, limit: int = MAX_LOG_BYTES) -> bool:
     allows) and rotating it above ``limit`` bytes. False on any failure; never raises."""
     path = log_path(cwd)
     try:
+        if not _safe_location(cwd):
+            return False
         path.parent.mkdir(parents=True, exist_ok=True)
         is_new = not path.exists()
         with open(path, "a", encoding="utf-8", newline="\n") as handle:
             handle.write(str(text).rstrip("\n") + "\n\n")
         if is_new:
-            try:
-                os.chmod(path, 0o600)
-            except OSError:
-                pass
+            _owner_only(path)
         _rotate(path, limit)
         return True
     except (OSError, ValueError):
@@ -182,6 +213,8 @@ def read_recent(cwd: Path, max_chars: int = MAX_LOADED_CHARS) -> str:
     """The newest entries of the log, oldest first, at most ``max_chars`` long, starting on an entry heading.
     Only the last ``READ_BYTES`` of the file are read. "" when the log is missing, unreadable or binary."""
     path = log_path(cwd)
+    if not _safe_location(cwd):
+        return ""
     try:
         with open(path, "rb") as handle:
             handle.seek(0, os.SEEK_END)
@@ -196,6 +229,8 @@ def read_recent(cwd: Path, max_chars: int = MAX_LOADED_CHARS) -> str:
     pieces = _split_entries(raw.decode("utf-8", errors="replace"))
     if start > 0 and pieces:
         pieces = pieces[1:]                       # the read began in the middle of an entry
+    while pieces and not pieces[0].startswith("## "):
+        pieces = pieces[1:]                       # text before the first heading is never returned
     kept: List[str] = []
     total = 0
     for piece in reversed(pieces):
