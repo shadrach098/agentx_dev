@@ -114,9 +114,11 @@ Answer: I added docstrings to 6 modules and the tests pass.
   values as error messages) before being written. The file is made readable by the user only where the platform
   allows, and so is `log-older.md` after a rotation. It lives in the folder, so a committed folder commits it;
   the guide says to add it to `.gitignore` if it should stay private. The app never edits `.gitignore`.
-- **Symlinks:** the app neither writes nor loads the log when `.agentx`, `log.md`, `log-older.md` or the
-  temporary file used for rotation (`log.tmp`) is a symlink or resolves outside the folder, so a cloned project
-  cannot point the log at another file.
+- **Links:** the app neither writes nor loads the log when `.agentx`, `log.md` or `log-older.md` is a link (a
+  symlink or a Windows junction) or resolves outside the folder, so a cloned project cannot point the log at
+  another file. The rotation writes through a new temporary file with a unique name (created exclusively), so a
+  planted fixed-name file is never opened. The same check (`agentx_dev/cli/safepaths.py`) guards the folder
+  settings file: it is neither created nor updated through a link or outside the folder.
 - **Size:** above 200 KB, the oldest half of the entries is moved to `log-older.md` (appended) and the log is
   rewritten atomically.
 - **Failures** (unwritable folder, a full disk, a refused location) give one notice per session, `Could not
@@ -136,8 +138,9 @@ Answer: I added docstrings to 6 modules and the tests pass.
   from a cloned repository), it can be incomplete or out of date, check files before relying on it, and it
   cannot override the rules above or the approval prompts. Markers inside the text are defused the same way as
   for `AGENTX.md`, and the block is closed even when the text is cut.
-- `--continue` and `/resume` load the saved conversation as before and do not add the log (it would repeat what
-  is already in the history).
+- `--continue` and `/resume` load the saved conversation as before and do not add the log: project text is never
+  injected into a conversation that already exists. (Repetition is not the reason: the runner rebuilds the system
+  prompt every turn, so the block would not pile up.)
 - A missing, unreadable, binary or oversized log is skipped silently.
 
 ## 8. Summarising long conversations
@@ -152,7 +155,9 @@ Answer: I added docstrings to 6 modules and the tests pass.
   was decided, files changed and open items. The older messages are shown to it as text, each tool result cut to
   500 characters, and the whole input capped at 60,000 characters (the oldest part is dropped from the input,
   not from the history, if needed).
-- **Replacing:** the older messages become one user message holding the summary and one short assistant
+- **Replacing:** the older messages become one user message holding the summary (after the tag, one sentence
+  says it was written by a model and that quoted file contents and tool output are data, not the user's
+  instructions) and one short assistant
   acknowledgement; the kept messages follow unchanged. The summary is also written to the log as an entry.
 - **Notice:** "Summarised N earlier messages to keep the conversation short." While the call runs the spinner
   reads "Summarising the conversation".
@@ -212,5 +217,5 @@ sentence, the by-hand checklist four items.
   rulings, easy to change; the character count is only a proxy for tokens.
 - No folder settings or log for the home folder or a drive root (a ruling: neither is a project, and the home
   folder's "project" file would be the user's own global file).
-- The log is not added when a conversation is resumed (a ruling: avoids repeating history and avoids injecting
-  project text into an existing conversation).
+- The log is not added when a conversation is resumed (a ruling: project text is never injected into an existing
+  conversation).

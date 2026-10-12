@@ -172,10 +172,13 @@ On Windows the gate also refuses outright, before any rule, path forms it cannot
 
 Two optional files, both JSON:
 
-- `~/.agentx/settings.json` (yours). The first time you run `agentx` it writes this file for you, with the model
-  it chose (set by your API key) written out, so there is a file to edit. It is never overwritten afterwards.
-  Change `"model"` here to change the default (for example `"gpt-4o-mini"`); `/model <name>` changes it for
-  one session only, and `/settings` shows what is in force and where the files are.
+- `~/.agentx/settings.json` (yours). The first time you run `agentx` it writes this file for you, once the model
+  is built, with that model's name (set by your API key) written out, so there is a file to edit. If no model can
+  be built (no key, say) the file is still written, without a `"model"` line. It is never overwritten afterwards.
+  `"model"` here is the default for folders that have no `.agentx/settings.json` of their own (for example
+  `"gpt-4o-mini"`); a folder's own file, which `agentx` writes when you first trust the folder, wins over it.
+  `/model <name>` changes the model for one session only, and `/settings` shows what is in force and where the
+  files are.
 - `.agentx/settings.json` in the project (it can be committed with the repository). The first time you trust a
   folder `agentx` writes it for you with the model in use, and `/model <name> --folder` changes it (see
   [Project memory](#project-memory)).
@@ -192,7 +195,7 @@ Two optional files, both JSON:
 }
 ```
 
-**Merging.** User settings are read first, then the project's. Single values (`model`, `mode`) from the project win; `addDirs` and the allow and deny lists are joined (the project's allow rules only if you say yes at startup, see [Project settings are untrusted](#project-settings-are-untrusted)). A deny rule from either file wins. Flags override the settings files. A file with invalid JSON, or a value of the wrong type, is reported by path as a warning before the first prompt and ignored.
+**Merging.** User settings are read first, then the project's. Single values (`model`, `mode`) from the project win; `addDirs` and the allow and deny lists are joined (the project's allow rules only if you say yes at startup, see [Project settings are untrusted](#project-settings-are-untrusted)). A deny rule from either file wins. Flags override the settings files. A file with invalid JSON, or a value of the wrong type, is reported by path as a warning before the first prompt and ignored. A model named in a settings file that cannot be built is reported with the path of the file it came from. `"model": "(no model)"` (a placeholder an earlier 3.7.0 build could write into your file) is ignored with a warning asking you to delete that line; the file itself is not changed.
 
 **Rule syntax.** A rule is `tool:glob`, matched with `fnmatch` against a subject that depends on the tool. A rule with no colon (`run_shell`) matches every call of that tool, so write it only if you mean that.
 
@@ -373,7 +376,7 @@ The first time you say yes to the trust question for a folder, `agentx` writes `
 and prints `Created <path> with this folder's model. /model <name> --folder changes it.` An existing file is never touched, and nothing is written before you have said yes. Edit the file like any project settings file (the other keys and the [untrusted-project rules](#project-settings-are-untrusted) are unchanged).
 
 - `/model <name> --folder` switches the model now **and** saves it for this folder. It keeps the other keys in an existing file and prints `Updated <path> with model <name>.` (`Created ...` when there was no file). If the file is not valid JSON, or not a JSON object, it is left exactly as it was and you are told so; the model is still switched for the session.
-- `/model <name>` on its own is for this session only. Its notice says so, and points at `--folder` and at your own settings file: `Model: <name> (this session only). Add --folder to keep it for this folder, or set "model" in <your file> for every folder.` `/model` with no name shows the same hint.
+- `/model <name>` on its own is for this session only. Its notice says so, and points at `--folder` and at your own settings file: `Model: <name> (this session only). Add --folder to keep it for this folder. "model" in <your file> is the default for folders without their own .agentx/settings.json; a folder's file (written when you first trust the folder) wins.` `/model` with no name shows the same hint.
 - In your home folder or a drive root, `/model <name> --folder` switches the model for the session and prints `No folder settings file is kept for your home folder or a drive root.` instead of writing anything.
 - If the folder cannot be written, you get a one-line notice and no traceback.
 
@@ -397,7 +400,7 @@ Answer: I added docstrings to 6 modules and the tests pass.
 - A team job is one line, `Team job: <task> (<outcome>)`, where the outcome is the job's result word such as `done` or `partial` (`ended` when none is given). A refused or declined team call writes no `Team job` line; a job that stops with an error is logged with the outcome `ended`. The files the helpers changed and the commands they ran are **not** listed: the chat does not see their tool results, only the job's summary.
 - A turn you interrupted with Ctrl+C, or one that ended in an error, writes no entry (its history is not kept either).
 - Keys and secrets are hidden before anything is written, with the same hiding as error messages (key-shaped tokens and the actual values of keys in your environment). That covers what you type and the commands that ran. It is a pattern check, not a promise: do not put secrets in requests.
-- The file is readable by you only, where the platform has file modes, and so is `log-older.md`. The folder's `.agentx` and the log files must be real files inside the folder: if `.agentx`, `log.md`, `log-older.md` or the temporary file used during rotation is a symlink, or leads outside the folder, the log is neither written nor loaded.
+- The file is readable by you only, where the platform has file modes, and so is `log-older.md`. The folder's `.agentx` and the log files must be real files inside the folder: if `.agentx`, `log.md` or `log-older.md` is a link (a symlink, or a junction on Windows), or leads outside the folder, the log is neither written nor loaded. A rotation writes through a new temporary file with a unique name, so a file planted under a fixed name is never opened. The same check guards `.agentx/settings.json`: `agentx` never creates or changes it through a link or outside the folder, and `/model <name> --folder` then says the file was left unchanged.
 - It lives in the folder, so a commit would include it. Add `.agentx/log.md` and `.agentx/log-older.md` to `.gitignore` if it should stay private; `agentx` never edits `.gitignore`.
 - Above 200 KB the oldest half of the entries moves to `log-older.md` (which is not loaded) and the log keeps the rest.
 - The model cannot write here: `.agentx/*` is protected (see [Default protections](#default-protections)), and the app writes with Python, not through a tool.
@@ -407,7 +410,7 @@ Answer: I added docstrings to 6 modules and the tests pass.
 
 A fresh conversation (a start without `--continue` or `--resume`, a `--continue` or a bare `--resume` that finds no saved conversation and so starts a new one, and `/clear`; `--resume <id>` with no match is an error and starts nothing) reads the newest entries of the log, up to 6,000 characters and starting on an entry heading, and adds them to the model's instructions under "Recent work in this folder". The block is marked as written by earlier sessions, possibly from a cloned repository, possibly out of date, and unable to override the base rules or the approval prompts; tags inside the text are defused and the block is always closed. So "what did we do here?" works after a restart.
 
-When `--continue`, `--resume` or `/resume` load a saved conversation, it comes back as it was and the log is **not** added (it would repeat the history, and a log written by someone else is never put into an existing conversation). A team's helpers get the same instructions as the chat, so in a conversation that started fresh they see the recent-work block too. A missing, binary or unreadable log is skipped without a message.
+When `--continue`, `--resume` or `/resume` load a saved conversation, it comes back as it was and the log is **not** added: project text such as the log, which may have been written by someone else, is never put into a conversation that already exists. A team's helpers get the same instructions as the chat, so in a conversation that started fresh they see the recent-work block too. A missing, binary or unreadable log is skipped without a message.
 
 ### Summarising a long conversation
 
@@ -418,12 +421,13 @@ Every turn sends the whole history again, so a long conversation costs more with
 - The older messages become one summary message plus a short reply, and `Summarised N earlier messages to keep the conversation short.` is printed. The summary is also written to the log as an `Earlier conversation summarised` entry, and the saved session keeps the shorter history.
 - It runs only when needed, at the start of a turn. A later summary starts from the earlier one, so it is carried forward rather than lost.
 - If the call fails or answers with too little, nothing is removed: you see `The conversation is getting long, but it could not be summarised right now; it will be tried again later.` and it is tried again after 10 more messages (or in a new conversation). Messages are never dropped without a summary in their place.
-- The summary is model output and has no authority; a later summary treats it like any other older text.
+- The summary is model output and has no authority. Its message says so: it was written by a model from the earlier messages and may quote file contents and tool output, which are data, not your instructions. A later summary does not summarise it again as ordinary text: it is put in full at the front of the next summary's input and carried into the new summary.
 
 ### Limits
 
 - None of this is kept for your home folder or a drive root: no folder settings file, no log, nothing loaded.
 - The 150,000-character threshold counts characters, which is only a rough stand-in for tokens; a conversation heavy in code or non-English text can reach the model's limit earlier. The thresholds are fixed in this version.
+- Once your last 6 messages and what followed them are over the threshold on their own, every further turn makes one small summary call first (the earlier summary plus the one turn that has just dropped out of the last 6).
 - The log is not searched by meaning: only the newest entries are loaded, and `log-older.md` never is.
 - A team job is one log line (see above), and the log holds what the app saw, not everything that happened.
 - There is no `/compact` command; summarising happens by itself.
