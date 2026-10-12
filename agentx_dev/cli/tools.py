@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 import weakref
 from threading import Lock
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from agentx_dev.DefaultTools import DefaultTools, Permissions, _is_inside_any, _resolve_for_ops
 from agentx_dev.Tools import StructuredTool
@@ -74,7 +74,8 @@ def approval_lock(gate: Gate) -> Lock:
 
 
 def gate_tool(tool: StructuredTool, gate: Gate, *, permissions: Optional[Permissions] = None,
-              lock: Optional[Lock] = None) -> StructuredTool:
+              lock: Optional[Lock] = None,
+              observer: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> StructuredTool:
     """``tool`` with the gate in front: same name, schema and description; the function asks the gate first
     and hands the model the refusal text instead of running when the gate says no.
 
@@ -84,7 +85,11 @@ def gate_tool(tool: StructuredTool, gate: Gate, *, permissions: Optional[Permiss
     values coerced, unknown arguments dropped, and (with ``permissions``) a rooted path the tool re-roots into
     the workspace written as the project-relative text it means. If the gate itself fails, the call is refused (fail closed). ``lock`` (default: the
     gate's own, see ``approval_lock``) is held around the gate check only, so with parallel tool workers one
-    approval prompt is open at a time."""
+    approval prompt is open at a time.
+
+    ``observer(name, args)``, when given, is called with a copy of the validated arguments just before the gate
+    check (also for a call the gate then refuses), so the screen can show a call as it happens; an error in it
+    is ignored and it cannot change the call."""
     name = tool.name
     inner = tool.func
     schema = tool.args_schema
@@ -99,6 +104,11 @@ def gate_tool(tool: StructuredTool, gate: Gate, *, permissions: Optional[Permiss
             args = _as_the_tool_will_see_paths(args, permissions)
         except ValueError:                          # a rooted path whose two readings disagree: do not guess
             return UNSUPPORTED_PATH
+        if observer is not None:
+            try:
+                observer(name, dict(args))
+            except Exception:                       # showing a call must never change whether it runs
+                pass
         try:
             with approvals:
                 refusal = gate.check(name, dict(args))
@@ -117,7 +127,8 @@ def gate_tool(tool: StructuredTool, gate: Gate, *, permissions: Optional[Permiss
     return wrapped
 
 
-def build_tools(cwd: Path, add_dirs: Sequence[Path], gate: Gate) -> List[StructuredTool]:
+def build_tools(cwd: Path, add_dirs: Sequence[Path], gate: Gate,
+                observer: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> List[StructuredTool]:
     """Every default tool, sandboxed to ``cwd`` (plus ``add_dirs``), each behind ``gate``."""
     permissions = Permissions(
         read_files=True, list_directories=True, write_files=True, edit_files=True,
@@ -126,5 +137,5 @@ def build_tools(cwd: Path, add_dirs: Sequence[Path], gate: Gate) -> List[Structu
         auto_create_paths=False,         # a mistyped --add-dir must not create a folder
         python_timeout_sec=PYTHON_TIMEOUT_SEC, shell_timeout_sec=SHELL_TIMEOUT_SEC,
     )
-    return [gate_tool(tool, gate, permissions=permissions)
+    return [gate_tool(tool, gate, permissions=permissions, observer=observer)
             for tool in DefaultTools.build(permissions)]

@@ -534,3 +534,54 @@ def test_two_tool_sets_sharing_one_gate_share_one_approval_lock(tmp_path):
 def test_python_and_shell_get_longer_limits_than_the_framework_defaults():
     from agentx_dev.cli.tools import PYTHON_TIMEOUT_SEC, SHELL_TIMEOUT_SEC
     assert PYTHON_TIMEOUT_SEC >= 60 and SHELL_TIMEOUT_SEC >= 120      # the framework's own: 10 s and 30 s
+
+
+class TestObserver:
+    def tools(self, tmp_path, observer, **gate_kw):
+        gate = Gate(cwd=tmp_path, **gate_kw)
+        return gate, {t.name: t.func for t in build_tools(tmp_path, [], gate, observer=observer)}
+
+    def test_the_observer_sees_each_call_before_the_gate_decides(self, tmp_path):
+        order = []
+        gate, tools = self.tools(tmp_path, lambda name, args: order.append(("seen", name, dict(args))))
+        real = gate.check
+
+        def spy(tool, args):
+            order.append(("gate", tool))
+            return real(tool, args)
+
+        gate.check = spy
+        (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+        assert "x" in tools["read_path"](path="a.txt")
+        assert order[0][:2] == ("seen", "read_path") and order[0][2]["path"] == "a.txt"
+        assert order[1] == ("gate", "read_path")
+
+    def test_it_also_sees_calls_the_gate_refuses(self, tmp_path):
+        seen = []
+        gate, tools = self.tools(tmp_path, lambda name, args: seen.append(name), mode="plan")
+        answer = tools["write_file"](path="b.txt", content="x", if_exists="refuse")
+        assert seen == ["write_file"] and "plan mode" in answer
+        assert not (tmp_path / "b.txt").exists()
+
+    def test_an_observer_that_raises_changes_nothing(self, tmp_path):
+        def boom(name, args):
+            raise RuntimeError("display failed")
+
+        _, tools = self.tools(tmp_path, boom)
+        (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
+        assert "hello" in tools["read_path"](path="a.txt")
+
+    def test_the_observer_gets_a_copy_it_cannot_use_to_change_the_call(self, tmp_path):
+        def tamper(name, args):
+            args["path"] = "other.txt"
+
+        _, tools = self.tools(tmp_path, tamper)
+        (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
+        (tmp_path / "other.txt").write_text("WRONG", encoding="utf-8")
+        assert "hello" in tools["read_path"](path="a.txt")
+
+    def test_invalid_arguments_are_not_shown_to_the_observer(self, tmp_path):
+        seen = []
+        _, tools = self.tools(tmp_path, lambda name, args: seen.append(name))
+        assert tools["read_path"]().startswith("ERROR: invalid arguments")
+        assert seen == []
