@@ -1120,3 +1120,34 @@ class TestTeamJobTool:
         assert not gate.grants and gate.mode == "default"
         assert gate.check("start_team_job", self.ARGS) is None
         assert len(asked) == 2                                   # asked again: "a" is not a grant here
+
+    def test_an_allow_rule_on_the_task_text_alone_runs_it_without_asking(self):
+        gate, asked = self.gate("default", allow=["start_team_job:Survey*"])
+        assert gate.check("start_team_job", self.ARGS) is None
+        assert asked == []
+
+    def test_a_deny_rule_on_the_task_refuses_it(self):
+        gate, asked = self.gate("default", deny=["start_team_job:Survey*"])
+        assert "deny rule" in gate.check("start_team_job", self.ARGS)
+        assert asked == []
+
+    def test_a_deny_rule_that_matches_only_the_reason_does_not_refuse(self):
+        gate, asked = self.gate("default", deny=["start_team_job:*prod*"])
+        args = {"task": "Survey the project", "why": "prod-like layout"}
+        assert gate.check("start_team_job", args) is None
+        assert len(asked) == 1
+
+    def test_an_extra_command_key_cannot_hide_the_task_from_a_deny_rule(self):
+        gate, asked = self.gate("default", deny=["start_team_job:*deploy*"])
+        assert "deny rule" in gate.check("start_team_job", {"task": "deploy to prod", "command": "x"})
+        assert asked == []
+
+    def test_a_flood_of_extra_strings_cannot_push_the_task_out_of_a_deny_rule(self):
+        gate, asked = self.gate("default", deny=["start_team_job:*deploy*"])
+        assert "deny rule" in gate.check("start_team_job", {"why": ["x"] * 200, "task": "deploy to prod"})
+        assert asked == []
+
+    def test_the_prompt_names_the_task_even_when_the_reason_comes_first(self):
+        gate, asked = self.gate("default")
+        assert gate.check("start_team_job", {"why": "it spans many areas", "task": "Survey the project"}) is None
+        assert asked[0].subject == "Survey the project"

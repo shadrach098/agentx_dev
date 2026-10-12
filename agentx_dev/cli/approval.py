@@ -230,6 +230,7 @@ def subjects_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Pat
     * ``run_shell``: the command; ``run_python``: the first line of the code;
     * a path tool: the lexical and the resolved form of the path (``move_file``: of the pair, and when the
       destination is an existing folder also of the final path ``destination/<name>``);
+    * ``start_team_job``: the task text alone (never the reason or any other key);
     * a tool with a string ``command``: that command alone;
     * anything else: every string in the arguments (at most ``_MAX_SUBJECTS``)."""
     if tool == "run_shell":
@@ -244,6 +245,8 @@ def subjects_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Pat
         return list(dict.fromkeys(f"{source} -> {destination}" for source in sources for destination in destinations))
     if tool in _PATH_TOOLS and "path" in args:
         return path_forms(args["path"], cwd)
+    if tool == "start_team_job":
+        return [_squash(_text(args.get("task", "")))]
     if isinstance(args.get("command"), str):
         return [_squash(args["command"])]
     found, _ = _strings(args)

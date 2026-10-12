@@ -316,4 +316,4 @@ def test_a_team_job_preview_without_a_reason_has_no_reason_line(tmp_path):
 
 def test_a_team_job_preview_never_raises_on_odd_arguments(tmp_path):
     assert preview_for("start_team_job", {"task": None, "why": 5}, tmp_path).title == "Start a team job"
-    assert preview_for("start_team_job", "not a mapping", tmp_path).title
+    assert preview_for("start_team_job", "not a mapping", tmp_path).title == "start_team_job"
