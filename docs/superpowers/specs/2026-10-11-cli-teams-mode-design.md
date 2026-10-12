@@ -110,8 +110,10 @@ tool call:
 - The gated tool wrappers call the observer before the gate check, so each helper tool call prints with the
   same bullet as the main chat, prefixed with the helper's name, *before* its approval panel. The panel gets
   one extra line, `Helper: coder`.
-- `subtask_result` prints one line, `done (coder): <first line of the result>` or
-  `failed (coder): <first line of the error>` (a skipped step counts as failed), and the spinner reads "Team is
+- `subtask_result` prints one line, `done (coder): <the start of the result>` or
+  `failed (coder): <the start of the error>` (the start is up to 160 characters, newlines flattened; empty shows
+  "(no report)"). A skipped step counts as failed on this live line (`failed (coder): skipped: ...`) and is
+  listed as "skipped" in the tool result. The spinner reads "Team is
   working" until the next dispatch.
 - `question` (the planner or a helper needs a fact): asked in the terminal through the short-answer reader and
   labelled "Team question:" (the Operator does not pass its source to the asker, so the label is the same for the
@@ -123,7 +125,8 @@ tool call:
 - `completion` ends the job and carries the result.
 
 The tool returns one string to the main agent: "Team job finished (outcome: ...)", the numbered steps each marked
-done, failed or skipped, and the final answer, cut at 6,000 characters with a marker when longer. The main agent then carries on as with any
+done, failed or skipped, and the final answer. The whole text (outcome line, steps and answer) is cut at
+6,000 characters with a marker when longer. The main agent then carries on as with any
 tool result, so the conversation, its autosave and `--continue` / `/resume` already include the job.
 
 `/team <task>` sends the main agent the message "Call the start_team_job tool now to hand this job to the team,

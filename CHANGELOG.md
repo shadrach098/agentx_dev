@@ -31,8 +31,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
     parents are passed to the model as instructions (nearest last, 20,000 characters); `/init` drafts one.
   - **Sessions.** Conversations autosave to `~/.agentx/sessions/` and resume with `--continue`,
     `--resume` and `/resume`. The files hold tool results (file contents) and are not encrypted.
-  - **Team jobs.** For a big job the chat agent can call `start_team_job` (the user approves each hand-off;
-    `/team <task>` does it by hand): a `Supervisor` plans up to six steps and three helpers (explorer reads,
+  - **Team jobs.** For a big job the chat agent can call `start_team_job` (the user approves each hand-off,
+    unless you run in auto mode or have allowed it with your own rule; `/team <task>` does it by hand): a
+    `Supervisor` plans up to six steps and three helpers (explorer reads,
     coder edits, runner runs commands) carry them out one at a time. Every helper call goes through the same
     gate, modes, deny rules and prompts as the chat; the result joins the conversation. A deny rule
     `start_team_job:*` turns it off.

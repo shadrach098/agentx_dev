@@ -52,7 +52,7 @@ Keys are read from the environment only. With no `--model`, the first key found 
 
 ## What it can do
 
-The model gets the ten tools from [`DefaultTools`](../concepts/tools.md), limited to the folder you started in (plus any extra folders, see [Extra folders](#extra-folders)). A path outside those folders fails inside the tool.
+The main agent gets the ten tools from [`DefaultTools`](../concepts/tools.md) plus `start_team_job`, eleven in all. The ten are limited to the folder you started in (plus any extra folders, see [Extra folders](#extra-folders)). A path outside those folders fails inside the tool.
 
 | Kind | Tools | What happens |
 |---|---|---|
@@ -60,6 +60,7 @@ The model gets the ten tools from [`DefaultTools`](../concepts/tools.md), limite
 | edit | `write_file`, `edit_file` | Asks, except in `accept-edits` mode. |
 | command | `run_shell`, `run_python` | Asks. |
 | destructive | `delete_path`, `move_file` | Always asks, in every mode. |
+| team | `start_team_job` | Asks, and "don't ask again" is never offered. Refused in `plan` mode. Runs without asking in `auto` mode (or with your own allow rule). See [Team jobs](#team-jobs). |
 
 Limits that come from the tools, not from `agentx`: a shell command is stopped after 5 minutes and Python code after 2 minutes (the time spent waiting for your approval does not count), and long output is cut (40,000 bytes for a shell command, 100,000 for Python). A dev server or a watcher will hit the 30-second limit and be killed. `agentx` does not change these and has no setting for them.
 
@@ -75,8 +76,8 @@ Every tool call goes through a gate before it runs. The gate runs it, asks you, 
 |---|---|
 | `default` | Edits, commands and destructive actions ask. |
 | `accept-edits` | Edits run without asking. Commands and destructive actions still ask. |
-| `plan` | Reads only. Anything else is refused and the model is told to propose a plan in its answer instead. |
-| `auto` | File edits, shell commands and Python run without asking. Delete, move and tools the gate does not know (such as MCP tools) still ask. The built-in protections and your deny rules still apply. |
+| `plan` | Reads only. Anything else, team jobs included, is refused and the model is told to propose a plan in its answer instead. |
+| `auto` | File edits, shell commands and Python run without asking, and so do team jobs. Delete, move and tools the gate does not know (such as MCP tools) still ask. The built-in protections and your deny rules still apply. |
 
 **`auto` is on purpose only.** Choose it with `--mode auto`, `"mode": "auto"` in your own settings file, or `/mode auto`. Shift+Tab never enters it and always leaves it (to `default`), answering `a` never sets it, and a project's settings file cannot turn it on (ignored with a warning). Shell and Python can do anything your account can, so a command that deletes files is not stopped by the `delete_path` prompt; use `auto` in folders you trust, and keep a deny rule for anything you must protect (deny rules also apply to shell commands by their text, for example `run_shell:*rm -rf*`).
 
@@ -310,20 +311,20 @@ Every tool call a helper makes goes through the same gate as the chat: the modes
 | ...                                                    |
 ```
 
-Answering `a` ("don't ask again: all edits this session") at a helper's edit prompt does what it does in the chat: it switches the whole session to `accept-edits` until `/clear`, so the rest of the job's edits (and later edits in the chat) run without asking. Answer `y` if you want to approve each one.
+Answering `a` ("don't ask again: all edits this session") at a helper's edit prompt does what it does in the chat: it switches the whole session to `accept-edits` until `/clear` or `/resume`, so the rest of the job's edits (and later edits in the chat) run without asking. Answer `y` if you want to approve each one.
 
 ### What you see
 
 - The plan: `Team plan:` and a numbered list of the steps, each with the helper it is for.
 - `-> coder: <what it was asked>` when a step starts, and a spinner that reads "Running coder" (it says "Planning the team job" before the plan, and "Team is working" between steps).
 - Each helper tool call as a line like the chat's, with the helper in front, before its prompt: `● [coder] write_file src/app.py`.
-- `done (coder): <first line of its report>` or `failed (coder): <why>` when a step ends.
+- `done (coder): <the start of its report>` or `failed (coder): <why>` when a step ends. The text is the start of the report or error (up to 160 characters, newlines flattened); an empty report shows `(no report)`. A skipped step (for example one whose dependency failed) shows as `failed (coder): skipped: ...` here and as "skipped" in the result.
 
 The planner or a helper may need a fact only you have. It is asked as `Team question: ...` (a long question is cut at 12 lines and 1,500 characters) with `Answer (Enter to skip):`. Enter, Ctrl+D or Ctrl+C at that question skips it, and the team goes on without the answer; at most 3 questions are asked per job.
 
 ### The result
 
-When the job ends, the agent gets one text back as the result of its tool call: the outcome, the numbered steps each marked done, failed or skipped, and the final answer, cut at 6,000 characters. That text is part of the conversation, so you can say "now fix the second item" and the agent knows what the team did, and it is in the saved session, so `--continue` and `/resume` include it. If the job itself fails (a model error, say), the agent gets a one-line failure ending "Some steps may already have changed files." and decides what to do.
+When the job ends, the agent gets one text back as the result of its tool call: the outcome, the numbered steps each marked done, failed or skipped, and the final answer. The whole text (outcome line, steps and answer together) is cut at 6,000 characters. That text is part of the conversation, so you can say "now fix the second item" and the agent knows what the team did, and it is in the saved session, so `--continue` and `/resume` include it. If the job itself fails (a model error, say), the agent gets a one-line failure ending "Some steps may already have changed files." and decides what to do.
 
 ### Ctrl+C
 
@@ -350,6 +351,7 @@ The agent is then refused every time it tries, in every mode, `auto` included. T
 - There is no memory between jobs. Each step is a fresh helper (the supervisor passes earlier results along), built for the job from the model in use at that moment, so `/model` applies from the next job.
 - A failed step is not retried, because a retry would repeat what the helper already did. A step that depends on the failed one is skipped, and the result lists each step as done, failed or skipped.
 - A step is at most 25 model steps for the helper, and a job at most 6 plan steps.
+- The task the agent passes is at most 4,000 characters and its reason at 500; longer text is refused with a message, not cut.
 - A team job makes many model calls: expect it to cost much more than a normal turn.
 
 ## Keys
