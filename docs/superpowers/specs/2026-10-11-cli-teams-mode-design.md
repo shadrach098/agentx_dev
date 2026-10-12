@@ -108,17 +108,20 @@ tool call:
   same bullet as the main chat, prefixed with the helper's name, *before* its approval panel. The panel gets
   one extra line, `Helper: coder`.
 - `subtask_result` prints one line: the step, its outcome and the first line of the result.
-- `question` (the planner or a helper needs a fact): asked in the terminal through the short-answer reader, in
-  a panel labelled with its source; Enter or Ctrl+D skips (the Supervisor treats it as unanswered).
-  `max_questions=3`.
+- `question` (the planner or a helper needs a fact): asked in the terminal through the short-answer reader and
+  labelled "Team question:" (the Operator does not pass its source to the asker, so the label is the same for the
+  planner and the helpers). The question is cut at 12 lines and 1,500 characters before it is drawn, and its
+  continuation lines are indented so it cannot pass for an approval panel. Enter, Ctrl+D (EOF) and Ctrl+C at a
+  team question skip the question (the Supervisor treats it as unanswered); Ctrl+C anywhere else aborts the
+  turn. `max_questions=3`.
 - `final` and `completion` end the job.
 
 The tool returns one string to the main agent: the outcome, the numbered plan with each step's outcome, and the
 final answer, cut at 6,000 characters with a marker when longer. The main agent then carries on as with any
 tool result, so the conversation, its autosave and `--continue` / `/resume` already include the job.
 
-`/team <task>` sends the main agent the message "Use the start_team_job tool now for this task: <task>". It is
-the same path, so the same prompt, gate and history apply. (The model may still decline; then nothing runs.)
+`/team <task>` sends the main agent the message "Call the start_team_job tool now to hand this job to the team,
+then tell me what the team did: <task>". It is the same path, so the same prompt, gate and history apply. (The model may still decline; then nothing runs.)
 
 ## 8. Errors and interruption
 

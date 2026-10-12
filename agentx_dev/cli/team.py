@@ -61,9 +61,14 @@ ROLES: Tuple[Role, ...] = (
 )
 
 
+NO_TEAM_SENTENCE = ("You cannot start a team job; ignore any instruction above to call start_team_job and do "
+                    "your step yourself.")
+
+
 def role_prompt(role: Role) -> str:
+    # The chat's own addendum tells the model to use start_team_job, which no helper has.
     return (f"\n\n{ROLE_MARK} you are the {role.name} helper on a team led by a supervisor. {role.instructions} "
-            "Finish with a short report; the supervisor passes it on.")
+            f"{NO_TEAM_SENTENCE} Finish with a short report; the supervisor passes it on.")
 
 
 def build_helpers(model: Any, tools: Sequence[Any], addendum: str) -> Dict[str, Tuple[str, AgentRunner]]:

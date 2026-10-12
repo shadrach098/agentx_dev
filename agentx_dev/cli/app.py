@@ -166,7 +166,8 @@ class ChatApp:
 
         self.gate.ask = self._remembering(ask_with_spinner_paused)
         self.base_tools = build_tools(self.cwd, self.add_dirs, self.gate, observer=self._observe_tool)
-        self.tools = [*self.base_tools, gate_tool(make_team_tool(self._start_team_job), self.gate)]
+        self.tools = [*self.base_tools,
+                      self._once_per_turn(gate_tool(make_team_tool(self._start_team_job), self.gate))]
         self.addendum = build_addendum(self.cwd, self.home)
         self.model: Any = None
         self.session: Optional[Session] = None
@@ -540,6 +541,23 @@ class ChatApp:
         self.send(team_request(task))
 
     # -- team jobs ----------------------------------------------------------
+
+    def _once_per_turn(self, gated: Any) -> Any:
+        """``gated`` (the team tool behind the gate) with the one-job-per-turn rule checked first, so a second
+        call is refused without asking the user again. The first call goes through the gate as before; a job
+        the user declined does not count (``_team_used`` is set only when a job starts)."""
+        inner = gated.func
+
+        def once(**kwargs):
+            if self._team_used:
+                return TEAM_ALREADY_RAN
+            return inner(**kwargs)
+
+        once.__name__, once.__qualname__, once.__module__ = gated.name, f"once_per_turn.{gated.name}", __name__
+        wrapped = type(gated)(func=once, args_schema=gated.args_schema, name=gated.name,
+                              description=gated.description)
+        wrapped.cacheable = False
+        return wrapped
 
     def _observe_tool(self, name: str, args: dict) -> None:
         """Called by the tool wrappers before the gate check. During a team job it shows the helper's call."""

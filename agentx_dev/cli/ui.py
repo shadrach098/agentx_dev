@@ -27,6 +27,7 @@ from agentx_dev.cli.preview import Preview, preview_for
 MAX_RESULT_LINES = 3
 MAX_SUMMARY_CHARS = 100
 MAX_QUESTION_LINES = 12
+MAX_QUESTION_CHARS = 1500
 MAX_HELPER_CHARS = 40
 
 # What ``plain`` escapes: control characters (Cc), lone surrogates (Cs) and every format character (Cf: bidi
@@ -258,7 +259,10 @@ class Screen:
     def team_question(self, question: Any) -> None:
         """The question, one label on the first line only and every other line indented, so that a question with
         line breaks cannot look like an approval panel (``Action:``) or its prompt (``Allow?``)."""
-        lines = _lines(plain(_nothing_if_none(question), keep_newlines=True)) or [""]
+        text = plain(_nothing_if_none(question), keep_newlines=True)
+        if len(text) > MAX_QUESTION_CHARS:
+            text = text[:MAX_QUESTION_CHARS] + " ... (cut)"
+        lines = _lines(text) or [""]
         shown = [("Team question: " if n == 0 else "  ") + line for n, line in enumerate(lines[:MAX_QUESTION_LINES])]
         if len(lines) > MAX_QUESTION_LINES:
             shown.append(f"  ... {len(lines) - MAX_QUESTION_LINES} more lines")

@@ -5,10 +5,13 @@ import json
 
 from agentx_dev.cli import app as app_module
 from agentx_dev.cli.sessions import list_sessions
+from agentx_dev.cli.team import build_helpers
 from tests.conftest import MockModel, make_final, make_react_response
 from tests.subagent_helpers import PLANNER_MARK, SYNTH_MARK, plan_json, step
 from tests.test_cli_app import Lines, make_app
 
+NO_TEAM_SENTENCE = ("You cannot start a team job; ignore any instruction above to call start_team_job and do "
+                    "your step yourself.")
 CALL = {"task": "Survey the project and report", "why": "it spans many areas"}
 
 
@@ -151,6 +154,7 @@ def test_the_explorer_has_no_way_to_write(tmp_path):
     app, _, cwd, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto")
     assert app.start() == 0
     assert not (cwd / "x.txt").exists()
+    assert model.state["helper_calls"] >= 1                     # the explorer did run and did try
 
 
 def test_the_planner_can_ask_the_user_and_an_empty_answer_skips_it(tmp_path):
@@ -170,6 +174,27 @@ def test_the_planner_can_ask_the_user_and_an_empty_answer_skips_it(tmp_path):
                               read_short=Lines(""))
     assert app.start() == 0
     assert "Which folder?" in out.getvalue()
+    assert "Team plan" in out.getvalue()                        # the job went on after the skipped question
+    assert "OPERATOR ANSWERS" not in " ".join(str(call) for call in model.calls)     # nothing was passed on
+
+
+def test_a_typed_answer_reaches_the_planner(tmp_path):
+    asked = []
+    model = team_model([step("s1", "explorer", "look around")])
+    original = model._script_fn
+
+    def script(messages):
+        first = str(messages[0]["content"])
+        if PLANNER_MARK in first and not asked:
+            asked.append(True)
+            return json.dumps({"plan": [], "ask": [{"question": "Which folder?", "why": "to scope the survey"}]})
+        return original(messages)
+
+    model._script_fn = script
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto",
+                              read_short=Lines("the docs folder"))
+    assert app.start() == 0
+    assert "A: the docs folder" in " ".join(str(call) for call in model.calls)
 
 
 def test_ctrl_c_in_the_middle_of_a_job_aborts_the_turn_and_the_next_message_works(tmp_path):
@@ -199,6 +224,42 @@ def test_the_team_tool_is_in_the_main_tool_list_but_not_in_any_helper(tmp_path):
     names = [tool.name for tool in app.tools]
     assert names.count("start_team_job") == 1 and len(names) == len(app.base_tools) + 1
     assert "start_team_job" not in [tool.name for tool in app.base_tools]
+    for name, (_, runner) in build_helpers(model, app.base_tools, app.addendum).items():
+        assert "start_team_job" not in [tool.name for tool in runner.tools], name
+
+
+def test_helpers_are_told_they_cannot_start_a_team_although_the_chat_prompt_says_to(tmp_path):
+    model = team_model([step("s1", "explorer", "look around")])
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), model)
+    assert "start_team_job" in app.addendum                     # the chat's own prompt tells the model to use it
+    helpers = build_helpers(model, app.tools, app.addendum)     # even if handed the whole tool list
+    assert set(helpers) == {"explorer", "coder", "runner"}
+    for name, (_, runner) in helpers.items():
+        assert NO_TEAM_SENTENCE in runner.system_addendum, name
+        assert "start_team_job" not in [tool.name for tool in runner.tools], name
+
+
+def test_a_second_job_in_a_turn_is_refused_before_the_user_is_asked_again(tmp_path):
+    asked = []
+
+    def read_short(prompt=""):
+        asked.append(prompt)
+        return "y"
+
+    model = team_model([step("s1", "explorer", "look around")], main=("call", "call", "final"))
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, read_short=read_short)
+    assert app.start() == 0
+    assert len(asked) == 1                                      # the hand-off was approved once, not twice
+    assert out.getvalue().count("Team plan:") == 1
+    assert "already ran in this turn" in history_text(app)
+
+
+def test_a_declined_hand_off_may_be_asked_again_in_the_same_turn(tmp_path):
+    answers = Lines("n", "", "y")
+    model = team_model([step("s1", "explorer", "look around")], main=("call", "call", "final"))
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, read_short=answers)
+    assert app.start() == 0
+    assert out.getvalue().count("Team plan:") == 1 and "already ran in this turn" not in history_text(app)
 
 
 def test_an_error_text_with_the_api_key_never_reaches_the_result_string(tmp_path, monkeypatch):

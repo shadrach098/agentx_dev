@@ -727,6 +727,12 @@ class TestTeamScreen:
         assert len(lines) == 13 and "line 11" in lines[11] and "line 12" not in out.getvalue()
         assert lines[-1].strip() == "... 18 more lines"
 
+    def test_one_huge_question_is_cut_so_it_cannot_wrap_into_something_else(self):
+        screen, out = self.screen()
+        screen.team_question("Which? " + "word " * 1000)
+        text = out.getvalue()
+        assert "... (cut)" in text and len(text) < 2500
+
     def test_markup_and_escape_codes_in_team_text_stay_inert(self):
         screen, out = self.screen()
         hostile = "[red]boom[/red] \x1b[2J \x07"
