@@ -8,6 +8,7 @@ import logging.handlers
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence
 
@@ -15,15 +16,19 @@ from rich.console import Console
 
 from agentx_dev import AgentRunner, AgentType, Session
 from agentx_dev.cli.approval import MODES, Gate
-from agentx_dev.cli.commands import AUTO_NOTICE, command_descriptions, command_names, run_command, shown
+from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
+                                     shown)
+from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, compact, needs_compaction
 from agentx_dev.cli.context import build_addendum
+from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events, summary_entry_text
 from agentx_dev.cli.models import ModelError, choose_model
 from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
-from agentx_dev.cli.settings import ensure_user_settings, load_settings, project_settings_path, user_settings_path
+from agentx_dev.cli.settings import (ensure_project_settings, ensure_user_settings, is_project_folder, load_settings,
+                                     project_settings_path, user_settings_path, write_project_model)
 from agentx_dev.cli.team import make_team_tool, run_team_job, team_request
 from agentx_dev.cli.tools import build_tools, gate_tool
-from agentx_dev.cli.trust import ensure_trusted
+from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker
 
 INIT_PROMPT = (
@@ -92,6 +97,15 @@ def default_deny(home: Optional[Path] = None) -> List[str]:
 DEFAULT_DENY = tuple(default_deny())
 
 
+def _without_env_keys(text: str, env: Mapping[str, str]) -> str:
+    """``text`` with the actual values of the key-like variables in ``env`` replaced by ``[hidden]``."""
+    for name, secret in env.items():
+        if isinstance(secret, str) and len(secret) >= 8 and any(
+                word in str(name).upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
+            text = text.replace(secret, "[hidden]")
+    return text
+
+
 def _redacted(value: Any, env: Mapping[str, str], limit: int = MAX_ERROR_CHARS) -> str:
     """``value`` as one printable line without control characters, secrets (patterns that look like one, and
     the actual key values in ``env``) or excess length."""
@@ -99,11 +113,7 @@ def _redacted(value: Any, env: Mapping[str, str], limit: int = MAX_ERROR_CHARS) 
         text = value if isinstance(value, str) else str(value)
     except Exception:
         return "(cannot be shown)"
-    for name, secret in env.items():
-        if isinstance(secret, str) and len(secret) >= 8 and any(
-                word in str(name).upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
-            text = text.replace(secret, "[hidden]")
-    return shown(text, limit)
+    return shown(_without_env_keys(text, env), limit)
 
 
 def _resolved(path: Path) -> Path:
@@ -135,7 +145,7 @@ class ChatApp:
                  add_dirs: Iterable[Path] = (), model_factory: Callable[..., Any] = choose_model,
                  env: Optional[Mapping[str, str]] = None, problems: Iterable[str] = (),
                  project_allow: Iterable[str] = (),
-                 select: Optional[Callable[..., Optional[int]]] = None) -> None:
+                 select: Optional[Callable[..., Optional[int]]] = None, newly_trusted: bool = False) -> None:
         self.cwd = Path(cwd).resolve()
         self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
@@ -168,6 +178,11 @@ class ChatApp:
         self.base_tools = build_tools(self.cwd, self.add_dirs, self.gate, observer=self._observe_tool)
         self.tools = [*self.base_tools,
                       self._once_per_turn(gate_tool(make_team_tool(self._start_team_job), self.gate))]
+        self._memory_on = is_project_folder(self.cwd, self.home)    # no log or folder settings for home / a drive root
+        self._newly_trusted = bool(newly_trusted)    # main: the user said yes to the trust question in this run
+        self.project_settings_created: Optional[Path] = None
+        self._log_warned = False
+        self._compact_wait = 0             # no summarising until the history has this many messages
         self.addendum = build_addendum(self.cwd, self.home)
         self.model: Any = None
         self.session: Optional[Session] = None
@@ -320,6 +335,7 @@ class ChatApp:
         """A new conversation is a clean slate for "don't ask again": the session-wide command grants are
         emptied, and accept-edits that came from answering "a" at an edit prompt goes back to the mode that was
         in force when the user answered. A mode the user chose since (``/mode``, Shift+Tab) is kept."""
+        self._compact_wait = 0
         self.gate.grants.clear()
         if self._mode_before_grant is not None and self.gate.mode == "accept-edits":
             self.gate.set_mode(self._mode_before_grant)
@@ -356,9 +372,10 @@ class ChatApp:
         except Exception as e:
             self.error(f"Could not set up the model ({type(e).__name__}).")
             return 1
-        runner = self._make_runner(self.model)
+        if self._newly_trusted and self._memory_on:         # never overwrites a file that is already there
+            self.project_settings_created = ensure_project_settings(self.cwd, self.home, self.model_label)
         if resume is None:
-            self._fresh(runner)
+            self._start_fresh()
         else:
             info = self._find_for_start(resume)
             if info is None:
@@ -367,9 +384,9 @@ class ChatApp:
                     return 1
                 if resume == "latest":
                     self.notice("No saved session found; starting a new conversation.")
-                self._fresh(runner)
+                self._start_fresh()
             else:
-                self._load(info, runner)
+                self._load(info, self._make_runner(self.model))
         extra = f"\nextra folders: {', '.join(str(d) for d in self.add_dirs)}" if self.add_dirs else ""
         self.notice(f"agentx {_version()} - {self.model_label} - {self.cwd}{extra}\n"
                     f"mode: {self.gate.mode}.\n"
@@ -381,6 +398,9 @@ class ChatApp:
         if self.settings_created is not None:
             self.notice(f"Created your settings file: {self.settings_created}\n"
                         "Edit it to change the default model, mode and permission rules. /settings shows what is in force.")
+        if self.project_settings_created is not None:
+            self.notice(f"Created {self._safe(self.project_settings_created, 400)} with this folder's model. "
+                        "/model <name> --folder changes it.")
         return self.loop()
 
     def _find_for_start(self, resume: str) -> Optional[SessionInfo]:
@@ -440,20 +460,28 @@ class ChatApp:
     def _failure(self, error: BaseException) -> str:
         return f"Something went wrong ({type(error).__name__}): {self._safe(error)}"
 
-    def send(self, text: str) -> None:
-        """One turn: stream the events to the screen, then autosave. Ctrl+C cancels the turn."""
+    def send(self, text: str, log_title: Optional[str] = None) -> None:
+        """One turn: summarise a very long conversation first, stream the events to the screen, then autosave
+        and, for a finished turn only, add an entry to the work log (titled ``log_title`` when given, else the
+        message). Ctrl+C cancels the turn."""
         assert self.session is not None
         self._team_used = False                        # a new message may start a new team job
+        events: List[dict] = []
+        finished = False
         try:
+            self._maybe_compact()
             self.progress.start("Thinking")
             for event in self.session.stream(text):
                 self.progress.stop()                       # erase the spinner, then print
                 self.screen.show_event(event)
                 kind = event.get("type") if isinstance(event, dict) else None
+                if kind in ("tool_call", "tool_result", "final"):
+                    events.append(event)
                 if kind == "tool_call":
                     self.progress.start(f"Running {self._safe(event.get('name', ''), 40)}")
                 elif kind not in ("final", "completion"):
                     self.progress.start("Thinking")
+            finished = True
         except KeyboardInterrupt:
             self.notice("Turn interrupted (Ctrl+C). Your earlier turns are kept; this one was not recorded. "
                         "Changes already made in that turn remain on disk.")
@@ -462,6 +490,56 @@ class ChatApp:
         finally:
             self.progress.stop()
             self.save()
+        if finished:
+            self._log_turn(text if log_title is None else log_title, events)
+
+    # -- project memory: the work log and summarising ------------------------
+
+    def _hide(self, text: str) -> str:
+        """``text`` without key-shaped tokens or the environment's actual key values (the same hiding as error
+        messages, see ``_redacted``), but not flattened or cut: newlines are kept."""
+        return hide_secrets(_without_env_keys(str(text), self.env))
+
+    def _log_turn(self, title: str, events: List[dict]) -> None:
+        if not self._memory_on:
+            return
+        self._append_log(entry_text(record_from_events(title, events), datetime.now(), self._hide))
+
+    def _append_log(self, text: str) -> None:
+        """Add ``text`` to ``.agentx/log.md``. A failure is noticed once per session and never stops the chat."""
+        if not self._memory_on or append_entry(self.cwd, text):
+            return
+        if not self._log_warned:
+            self._log_warned = True
+            self.notice("Could not write the work log in .agentx/log.md; carrying on without it.")
+
+    def _summary_call(self, prompt: str) -> str:
+        """One plain call to the current model (no tools, no agent loop): every model's ``Initialize`` takes the
+        message list and returns the reply text."""
+        reply = self.model.Initialize(messages=[{"role": "user", "content": prompt}])
+        return reply if isinstance(reply, str) else ""
+
+    def _maybe_compact(self) -> None:
+        """Summarise a very long conversation before the turn. Nothing is removed unless a summary replaces it;
+        after a failure it is not tried again until ``RETRY_AFTER_MESSAGES`` more messages have been added.
+        The runner rebuilds its messages from ``session.history`` on every turn, so replacing it is enough."""
+        assert self.session is not None
+        history = self.session.history
+        if len(history) < self._compact_wait or not needs_compaction(history):
+            return
+        self.progress.start("Summarising the conversation")
+        try:
+            result = compact(history, self._summary_call)
+        finally:
+            self.progress.stop()
+        if result.status == "done":
+            self.session.history = result.history
+            self.notice(f"Summarised {result.replaced} earlier messages to keep the conversation short.")
+            self._append_log(summary_entry_text(result.summary, datetime.now(), self._hide))
+        elif result.status == "failed":
+            self._compact_wait = len(history) + RETRY_AFTER_MESSAGES
+            self.notice("The conversation is getting long, but it could not be summarised right now; "
+                        "it will be tried again later.")
 
     def save(self) -> None:
         if self.session is None or self.session_path is None or not self.session.history:
@@ -482,14 +560,28 @@ class ChatApp:
         assert self.session is not None
         self.session.attach(self._make_runner(model))
 
-    def _refresh_instructions(self) -> None:
-        """Read AGENTX.md again (``/init`` or the user may have written or changed it)."""
-        self.addendum = build_addendum(self.cwd, self.home)
+    def save_folder_model(self, name: str) -> None:
+        """``/model <name> --folder``: keep the model for this folder in its settings file."""
+        if not self._memory_on:
+            self.notice("No folder settings file is kept for your home folder or a drive root.")
+            return
+        path, message = write_project_model(self.cwd, name)
+        (self.notice if path is not None else self.error)(self._safe(message, 600))
+
+    def _refresh_instructions(self, with_log: bool = False) -> None:
+        """Read AGENTX.md again (``/init`` or the user may have written or changed it). ``with_log`` adds the
+        newest work-log entries: only for a fresh conversation, never for a resumed one."""
+        log_text = read_recent(self.cwd) if (with_log and self._memory_on) else ""
+        self.addendum = build_addendum(self.cwd, self.home, log_text=log_text)
+
+    def _start_fresh(self) -> None:
+        """A new conversation (startup without --continue/--resume, or /clear): it starts from the work log."""
+        self._refresh_instructions(with_log=True)
+        self._fresh(self._make_runner(self.model))
 
     def new_conversation(self) -> None:
         self.save()
-        self._refresh_instructions()
-        self._fresh(self._make_runner(self.model))
+        self._start_fresh()
         self.notice(f"Started a new conversation (mode: {self.gate.mode}).")
 
     def _lines_for(self, infos: Sequence[SessionInfo]) -> List[str]:
@@ -534,11 +626,11 @@ class ChatApp:
                     f"(mode: {self.gate.mode})")
 
     def run_init(self) -> None:
-        self.send(INIT_PROMPT)
+        self.send(INIT_PROMPT, log_title="/init")
 
     def run_team_command(self, task: str) -> None:
         """``/team <task>``: ask the main agent to call the team tool for ``task`` (same prompt, gate and history)."""
-        self.send(team_request(task))
+        self.send(team_request(task), log_title=f"/team {task}")
 
     # -- team jobs ----------------------------------------------------------
 
@@ -708,6 +800,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                              toolbar=lambda: holder[0].toolbar() if holder else "",
                              cycle_mode=lambda: holder[0].cycle_mode() if holder else None)
         # Nothing in this folder (its settings, its AGENTX.md) is read until the user has said they trust it.
+        # A folder trusted for the first time in this run gets its own settings file (``ChatApp.start``).
+        was_trusted = is_trusted(cwd, home)
         if not ensure_trusted(cwd, home, console, select=prompt.select, read_line=prompt.read_short):
             print("agentx: this folder is not trusted, so nothing was started. Run agentx in a folder you trust.",
                   file=sys.stderr)
@@ -721,7 +815,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                       select=prompt.select,
                       model_name=args.model or settings.model, mode=args.mode or settings.mode or "default",
                       allow=settings.allow, deny=settings.deny, add_dirs=add_dirs, problems=settings.problems,
-                      project_allow=settings.project_allow)
+                      project_allow=settings.project_allow, newly_trusted=not was_trusted)
         holder.append(app)
         app.settings_created = ensure_user_settings(home, getattr(app, "model_label", None))
     except KeyboardInterrupt:

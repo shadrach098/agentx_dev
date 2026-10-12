@@ -324,7 +324,8 @@ def test_a_model_cannot_rewrite_its_own_settings_through_the_whole_loop(tmp_path
     model = MockModel(script=[write_call(".agentx/settings.json", "{}"), make_final("could not")])
     app, _, cwd, _ = make_app(tmp_path, Lines("loosen permissions", "/exit"), model, mode="accept-edits")
     app.start()
-    assert not (cwd / ".agentx").exists() and "deny rule" in all_seen_by(model)
+    # Only the app's own work log is there (written by the app with Python, not through a tool).
+    assert [p.name for p in (cwd / ".agentx").iterdir()] == ["log.md"] and "deny rule" in all_seen_by(model)
 
 
 # -- startup warnings -----------------------------------------------------------------------------------------
@@ -1177,7 +1178,7 @@ def test_a_protected_folder_cannot_be_moved_into_place_by_naming_its_parent_as_t
     app, out, cwd, _ = make_app(tmp_path, lines, model)
     app.start()
     assert (cwd / "stuff" / ".agentx" / "settings.json").exists()
-    assert not (cwd / ".agentx").exists()
+    assert [p.name for p in (cwd / ".agentx").iterdir()] == ["log.md"]       # only the app's own work log
     assert lines.prompts.count("Allow? [y/n] ") + lines.prompts.count("Allow? [y/a/n] ") == 1     # only the write asked
     assert "deny rule" in all_seen_by(model)
 

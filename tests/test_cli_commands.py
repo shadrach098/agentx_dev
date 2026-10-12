@@ -281,3 +281,40 @@ def test_team_without_a_task_explains_how_to_use_it():
     ctx = Ctx()
     assert run_command(ctx, "/team") is True
     assert ctx.calls == [] and "/team <task>" in ctx.said[-1]
+
+
+def test_model_folder_switches_and_saves_for_the_folder():
+    ctx = Ctx()
+    ctx.save_folder_model = lambda name: ctx.calls.append(("folder", name))
+    run_command(ctx, "/model gpt-4o-mini --folder")
+    assert ctx.calls == [("model", "gpt-4o-mini"), ("folder", "gpt-4o-mini")]
+
+
+def test_model_folder_flag_can_come_first_and_needs_a_name():
+    ctx = Ctx()
+    ctx.save_folder_model = lambda name: ctx.calls.append(("folder", name))
+    run_command(ctx, "/model --folder gpt-4o")
+    assert ctx.calls == [("model", "gpt-4o"), ("folder", "gpt-4o")]
+    ctx = Ctx()
+    run_command(ctx, "/model --folder")
+    assert ctx.calls == [] and "/model <name> --folder" in ctx.errors[-1]
+
+
+def test_a_model_that_cannot_be_built_is_not_saved_for_the_folder():
+    ctx = Ctx()
+    ctx.save_folder_model = lambda name: ctx.calls.append(("folder", name))
+    run_command(ctx, "/model bad --folder")
+    assert ctx.calls == [] and ctx.errors
+
+
+def test_plain_model_stays_session_only_and_mentions_the_folder_flag():
+    ctx = Ctx()
+    ctx.user_settings_file = "C:/Users/me/.agentx/settings.json"
+    run_command(ctx, "/model gpt-4o-mini")
+    assert "this session only" in ctx.said[-1] and "--folder" in ctx.said[-1]
+
+
+def test_hide_secrets_hides_key_shaped_tokens_and_keeps_newlines():
+    from agentx_dev.cli.commands import hide_secrets
+    text = hide_secrets("key sk-abcdefghijklmnop1234\nsecond line")
+    assert "sk-abcdefghijklmnop1234" not in text and "[hidden]" in text and "\nsecond line" in text

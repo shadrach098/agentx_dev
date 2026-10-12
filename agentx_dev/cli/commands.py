@@ -36,9 +36,14 @@ _SECRET = re.compile(
 )
 
 
+def hide_secrets(text: str) -> str:
+    """``text`` with key-shaped tokens replaced by ``[hidden]``; newlines are kept."""
+    return _SECRET.sub("[hidden]", text)
+
+
 def shown(value: Any, limit: int = _MAX_SHOWN) -> str:
     """``value`` as one printable line: no control characters, no secrets, not too long."""
-    text = _SECRET.sub("[hidden]", plain(value))
+    text = hide_secrets(plain(value))
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
@@ -69,16 +74,27 @@ def _clear(ctx: Any, arg: str) -> None:
 
 
 def _model(ctx: Any, arg: str) -> None:
+    words = arg.split()
+    folder = "--folder" in words
+    name = " ".join(word for word in words if word != "--folder")
     where = getattr(ctx, "user_settings_file", None)
-    default_hint = f' To change the default, set "model" in {shown(where)}.' if where else ""
-    if not arg:
+    default_hint = (f' Add --folder to keep it for this folder, or set "model" in {shown(where)} for every folder.'
+                    if where else " Add --folder to keep it for this folder.")
+    if not name:
+        if folder:
+            ctx.error("Usage: /model <name> --folder")
+            return
         ctx.notice(f"Model: {shown(ctx.model_label)}. Switch for this session with /model <name>, for example "
                    f"/model gpt-4o-mini or /model claude-sonnet-4-6.{default_hint}")
         return
     try:
-        ctx.switch_model(arg)
+        ctx.switch_model(name)
     except ModelError as e:
         ctx.error(shown(e))
+        return
+    if folder:
+        ctx.notice(f"Model: {shown(ctx.model_label)}")
+        ctx.save_folder_model(name)
         return
     ctx.notice(f"Model: {shown(ctx.model_label)} (this session only).{default_hint}")
 
@@ -135,7 +151,7 @@ class Command:
 COMMANDS = (
     Command("help", "List the commands", _help),
     Command("clear", "Start a new conversation.", _clear),
-    Command("model", "Show or switch the model: /model [name]", _model),
+    Command("model", "Show or switch the model: /model [name] [--folder]", _model),
     Command("mode", "Show or set the mode: /mode [default|accept-edits|plan|auto]", _mode),
     Command("settings", "Show the model, mode and rules in force, and the files that change them", _settings),
     Command("resume", "Load a saved conversation: /resume [id]", _resume),
