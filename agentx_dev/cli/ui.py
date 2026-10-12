@@ -104,8 +104,11 @@ def _print(console: Console, *renderables: Any) -> None:
         return
     except UnicodeEncodeError:
         pass
+    # The failed write left what it rendered in the console's buffer. Capturing nothing returns exactly that
+    # (and empties the buffer), so the line is written once: printing it again here would add it to the stale
+    # copy and write it twice.
     with console.capture() as capture:
-        console.print(*renderables)
+        pass
     data = capture.get()
     encoding = console.encoding or "ascii"
     try:
@@ -242,7 +245,8 @@ class Screen:
         _print(self.console, Text(f"-> {_short(agent, 30)}: {_short(query, 200)}", style="bold magenta"))
 
     def team_result(self, agent: Any, ok: bool, text: Any) -> None:
-        _print(self.console, Text(f"   {'done' if ok else 'failed'} ({_short(agent, 30)}): {_short(text, 160)}",
+        report = _short(_nothing_if_none(text), 160) or "(no report)"
+        _print(self.console, Text(f"   {'done' if ok else 'failed'} ({_short(agent, 30)}): {report}",
                                   style="dim" if ok else "red"))
 
     def helper_call(self, helper: Any, name: Any, args: Any) -> None:

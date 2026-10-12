@@ -274,6 +274,24 @@ class TestLegacyConsoles:
         text = raw.getvalue().decode("cp1252")
         assert "\\u65e5" in text and "done" in text and "\\u2713" in text
 
+    def test_a_line_the_console_cannot_encode_is_written_exactly_once(self):
+        c, file, raw = legacy_console()
+        Screen(c).notice("hi ☃ there")
+        file.flush()
+        text = raw.getvalue().decode("cp1252")
+        assert text.count("hi") == 1 and text.count("\\u2603") == 1 and "there" in text
+
+    def test_team_lines_on_such_a_console_are_not_duplicated(self):
+        c, file, raw = legacy_console()
+        screen = Screen(c)
+        screen.team_plan([{"agent": "explorer", "query": "look ☃ around"}])
+        screen.team_dispatch("explorer", "look ☃ around")
+        screen.notice("after")
+        file.flush()
+        text = raw.getvalue().decode("cp1252")
+        assert text.count("Team plan") == 1 and text.count("-> explorer") == 1 and text.count("after") == 1
+        assert text.count("1. explorer") == 1
+
     def test_the_asker_does_not_die_on_it_either(self, tmp_path):
         c, file, raw = legacy_console("ascii")
         request = Request(tool="run_shell", kind="command", subject="echo 日本",
@@ -732,6 +750,12 @@ class TestTeamScreen:
         screen.team_question("Which? " + "word " * 1000)
         text = out.getvalue()
         assert "... (cut)" in text and len(text) < 2500
+
+    def test_an_empty_report_is_marked(self):
+        screen, out = self.screen()
+        screen.team_result("explorer", True, "")
+        screen.team_result("coder", True, None)
+        assert out.getvalue().count("(no report)") == 2
 
     def test_markup_and_escape_codes_in_team_text_stay_inert(self):
         screen, out = self.screen()
