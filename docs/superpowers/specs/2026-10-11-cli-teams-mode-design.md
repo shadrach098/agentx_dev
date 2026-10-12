@@ -44,7 +44,7 @@ for team jobs, a team mode for a whole session (`--team`), `ask_when_done` / `fo
 
 | Piece | Change |
 |---|---|
-| `agentx_dev/cli/team.py` (new) | `TEAM_TOOL_NAME`, `ROLES`, `build_team(...)`, `team_tool(...)`. Builds the helper runners and the `Supervisor` for one job, and the `start_team_job` tool. |
+| `agentx_dev/cli/team.py` (new) | `TEAM_TOOL_NAME`, `ROLES`, `build_helpers(...)`, `run_team_job(...)`, `format_result(...)`, `make_team_tool(...)`, `team_request(...)`. Builds the helper runners and the `Supervisor` for one job, runs it, and makes the `start_team_job` tool. |
 | `approval.py` | One new tool kind, `"team"`, for `start_team_job` (section 5). |
 | `preview.py` | A preview for `start_team_job` (the task, the reason, the helpers, the cost warning). |
 | `tools.py` | The wrapper gets an optional `observer(name, args)`, called before the gate check. The gate still runs exactly as before. |
@@ -74,8 +74,10 @@ Deny rules apply (`start_team_job:*` turns the feature off); the rule subject is
 allow rules apply as for any non-destructive tool; project allow rules still go through the startup question.
 The prompt shows the task, the reason, the three helpers and a warning that a team job makes many model calls.
 
-A turn may start at most one team job: a second call in the same turn is answered with a refusal result. The
-app resets the flag when a new user message is sent.
+A turn may start at most one team job: once a job has started, a second call in the same turn is answered with a
+refusal result ("Refused: a team job already ran in this turn. ...") before the gate, so the user is not asked
+again. A hand-off the user declined does not count, so it may be asked again in the same turn. The app resets the
+flag when a new user message is sent.
 
 ## 6. The helpers
 
@@ -101,23 +103,27 @@ step; the Supervisor passes earlier results along, as it always does.
 The tool function builds the team and consumes `Supervisor.stream(task)` to the end, inside the main agent's
 tool call:
 
-- `plan` events are printed as a numbered list (`plain()`, never markup).
+- `plan` events are printed as `Team plan:` and a numbered list (`plain()`, never markup). The spinner reads
+  "Planning the team job" before the plan and "Starting the team" after it.
 - `dispatch` marks the helper that is now current: `-> coder: <what it was asked>`. The spinner reads
   "Running coder".
 - The gated tool wrappers call the observer before the gate check, so each helper tool call prints with the
   same bullet as the main chat, prefixed with the helper's name, *before* its approval panel. The panel gets
   one extra line, `Helper: coder`.
-- `subtask_result` prints one line: the step, its outcome and the first line of the result.
+- `subtask_result` prints one line, `done (coder): <first line of the result>` or
+  `failed (coder): <first line of the error>` (a skipped step counts as failed), and the spinner reads "Team is
+  working" until the next dispatch.
 - `question` (the planner or a helper needs a fact): asked in the terminal through the short-answer reader and
   labelled "Team question:" (the Operator does not pass its source to the asker, so the label is the same for the
   planner and the helpers). The question is cut at 12 lines and 1,500 characters before it is drawn, and its
   continuation lines are indented so it cannot pass for an approval panel. Enter, Ctrl+D (EOF) and Ctrl+C at a
   team question skip the question (the Supervisor treats it as unanswered); Ctrl+C anywhere else aborts the
-  turn. `max_questions=3`.
-- `final` and `completion` end the job.
+  turn. The question is read with the prompt `Answer (Enter to skip):` (the same for the planner and the
+  helpers). `max_questions=3`.
+- `completion` ends the job and carries the result.
 
-The tool returns one string to the main agent: the outcome, the numbered plan with each step's outcome, and the
-final answer, cut at 6,000 characters with a marker when longer. The main agent then carries on as with any
+The tool returns one string to the main agent: "Team job finished (outcome: ...)", the numbered steps each marked
+done, failed or skipped, and the final answer, cut at 6,000 characters with a marker when longer. The main agent then carries on as with any
 tool result, so the conversation, its autosave and `--continue` / `/resume` already include the job.
 
 `/team <task>` sends the main agent the message "Call the start_team_job tool now to hand this job to the team,
@@ -129,10 +135,12 @@ then tell me what the team did: <task>". It is the same path, so the same prompt
   kept, this one is not recorded, changes already made stay on disk. The Supervisor's stream is closed in a
   `finally`.
 - A planner failure, a helper failure or a model error ends the job with a result string saying what happened
-  and what finished; the main agent decides what to do. Nothing in the job's code raises into the chat loop
+  ("Team job failed (<ErrorType>): <short description> Some steps may already have changed files."), or
+  "Team job ended without a result." plus the same warning; a failed step inside a finished job shows in the
+  numbered steps instead. The main agent decides what to do. Nothing in the job's code raises into the chat loop
   except `KeyboardInterrupt` / `SystemExit`.
 - A refused tool call inside a helper is an ordinary result to that helper, as in the main chat.
-- A job cannot start without a model (no key): the tool returns a short refusal.
+- A job cannot start without a model (no key): the tool returns a short refusal ("Refused: no model is available for a team job.").
 
 ## 9. Testing
 
@@ -154,8 +162,9 @@ Scripted models, no network, in `tests/test_cli_team.py` and the existing app te
 
 No new dependency, no version change. The guide gets a "Team jobs" section (what it is, the three helpers, the
 approval, the cost, `/team`, turning it off with a deny rule, the limits), the CHANGELOG 3.7.0 entry gets a
-line, the README one sentence, and the by-hand checklist three items (ask for a big job and approve it; watch
-the helper names; deny `start_team_job:*` and see it refused).
+line, the README one sentence, and the by-hand checklist five items (ask for a big job and approve it; watch
+the helper names; `/team` with and without a task; deny `start_team_job:*` and see it refused; Ctrl+C during a
+job).
 
 ## 11. Decisions recorded
 

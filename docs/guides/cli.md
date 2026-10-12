@@ -199,6 +199,7 @@ Two optional files, both JSON:
 | `run_python` | The first line of the code. |
 | `read_path`, `list_directory`, `find_files`, `grep`, `write_file`, `edit_file`, `delete_path` | The path. |
 | `move_file` | `source -> destination`. |
+| `start_team_job` | The task text (never the reason). `"deny": ["start_team_job:*"]` turns [team jobs](#team-jobs) off in every mode. |
 
 A deny rule applies to reads too. Allow rules never apply to `delete_path` and `move_file`, which always ask.
 
@@ -266,7 +267,90 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/resume [id]` | Load a saved conversation (a list to pick from, or an id). |
 | `/sessions` | List this folder's saved conversations. |
 | `/init` | Ask the model to draft an `AGENTX.md` for this project. |
+| `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage. |
 | `/exit` | Leave (Ctrl+D does the same). |
+
+## Team jobs
+
+For a big, multi-part job (several files or areas: research, then changes, then tests) one conversation can lose its place. For that the main agent has one more tool, `start_team_job`. When it calls it, a supervisor plans the job in up to 6 steps and hands each step to one of three helpers, one at a time. Small and medium jobs stay with the normal agent, which is told to do them itself.
+
+`/team <task>` asks for the same thing by hand: it sends the agent a message asking it to call `start_team_job` for your task. It is an ordinary message, so the model may still decline, and then nothing runs.
+
+### The helpers
+
+| Helper | Tools | For |
+|---|---|---|
+| `explorer` | `read_path`, `list_directory`, `find_files`, `grep` | Looking things up. |
+| `coder` | the explorer's, plus `write_file`, `edit_file` | Changing files. |
+| `runner` | the explorer's, plus `run_shell`, `run_python` | Running commands and tests. |
+
+No helper has `delete_path`, `move_file` or `start_team_job`, so a helper cannot delete, move or start another team. The roster is fixed; the supervisor cannot invent a helper. The roles steer the helpers, they are not a sandbox: `run_shell` can write files. What protects you is the gate, and the helpers use the same one as the chat.
+
+### The approval
+
+Before a job starts you get a prompt like any other, with the task, the reason the agent gave, the helpers and a warning that a team job makes many model calls and can take several minutes. The mode decides what happens:
+
+| Mode | Behaviour |
+|---|---|
+| `default`, `accept-edits` | Asks. `accept-edits` does not cover it. "Don't ask again" is never offered, so each hand-off is asked about. |
+| `plan` | Refused, like every other change. |
+| `auto` | Runs without asking. |
+
+A deny rule turns the feature off in every mode (see [Turning it off](#turning-it-off)). An allow rule of your own, `"allow": ["start_team_job"]`, lets it run without asking. If you decline, the agent may ask again in the same message. Once a job has started, a second one in the same message is refused at once, before any prompt ("a team job already ran in this turn"); your next message can start another.
+
+### What the helpers may do
+
+Every tool call a helper makes goes through the same gate as the chat: the modes, the deny rules, the protected files, the previews and the prompts, and still one prompt at a time. The approval box gets an extra line naming who is asking:
+
+```text
++- edit_file -------------------------------------------+
+| Action: Edit src/app.py                                |
+| Helper: coder                                          |
+| Subject: src/app.py                                    |
+| ...                                                    |
+```
+
+Answering `a` ("don't ask again: all edits this session") at a helper's edit prompt does what it does in the chat: it switches the whole session to `accept-edits` until `/clear`, so the rest of the job's edits (and later edits in the chat) run without asking. Answer `y` if you want to approve each one.
+
+### What you see
+
+- The plan: `Team plan:` and a numbered list of the steps, each with the helper it is for.
+- `-> coder: <what it was asked>` when a step starts, and a spinner that reads "Running coder" (it says "Planning the team job" before the plan, and "Team is working" between steps).
+- Each helper tool call as a line like the chat's, with the helper in front, before its prompt: `● [coder] write_file src/app.py`.
+- `done (coder): <first line of its report>` or `failed (coder): <why>` when a step ends.
+
+The planner or a helper may need a fact only you have. It is asked as `Team question: ...` (a long question is cut at 12 lines and 1,500 characters) with `Answer (Enter to skip):`. Enter, Ctrl+D or Ctrl+C at that question skips it, and the team goes on without the answer; at most 3 questions are asked per job.
+
+### The result
+
+When the job ends, the agent gets one text back as the result of its tool call: the outcome, the numbered steps each marked done, failed or skipped, and the final answer, cut at 6,000 characters. That text is part of the conversation, so you can say "now fix the second item" and the agent knows what the team did, and it is in the saved session, so `--continue` and `/resume` include it. If the job itself fails (a model error, say), the agent gets a one-line failure ending "Some steps may already have changed files." and decides what to do.
+
+### Ctrl+C
+
+Ctrl+C at an approval prompt declines that one call, as always. Ctrl+C anywhere else during a job (a helper working, the planner thinking) stops the job and aborts the turn: "Turn interrupted" is printed, changes the helpers already made stay on disk, and the turn is not recorded in the conversation. At a team question it only skips the question.
+
+### Turning it off
+
+Add a deny rule to `~/.agentx/settings.json` (or the project's file):
+
+```json
+{
+  "permissions": {
+    "deny": ["start_team_job:*"]
+  }
+}
+```
+
+The agent is then refused every time it tries, in every mode, `auto` included. The rule is matched against the task text, so `start_team_job:*` matches every job.
+
+### Limits
+
+- Helpers run one at a time; nothing runs in parallel.
+- The three helpers are fixed.
+- There is no memory between jobs. Each step is a fresh helper (the supervisor passes earlier results along), built for the job from the model in use at that moment, so `/model` applies from the next job.
+- A failed step is not retried, because a retry would repeat what the helper already did. A step that depends on the failed one is skipped, and the result lists each step as done, failed or skipped.
+- A step is at most 25 model steps for the helper, and a job at most 6 plan steps.
+- A team job makes many model calls: expect it to cost much more than a normal turn.
 
 ## Keys
 
@@ -290,7 +374,7 @@ The status bar shows the model, the mode, the folder, the short session id and t
 - **No headless mode.** There is no `agentx -p "task"`; a non-terminal exits with code 1.
 - **No MCP configuration, custom commands or hooks.**
 - **No mode that never asks.** `auto` still asks before delete and move and for tools the gate does not know. The protected files (`.git`, `.agentx`, git and shell config) are refused in every mode.
-- **No teams mode.** It runs one agent, not a `Supervisor` with helpers.
+- **Teams mode is limited:** helpers run one at a time and the roster is fixed (see [Team jobs](#team-jobs)).
 - You cannot type while the agent is working.
 - **No size cap on `read_path`, and the conversation is never compacted.** A very large file the model reads goes into the history whole, and every later turn sends it again, so a huge read can make later turns fail (the model's context window is exceeded) until you start over with `/clear`. Ask for the part of a file you need, or use `grep`.
 - `run_shell` and `run_python` run with a scrubbed environment, and `run_python` uses `agentx`'s own interpreter (see [What it can do](#what-it-can-do)).
@@ -323,3 +407,8 @@ A checklist for the maintainer to run once on a real terminal before release. Te
 22. Start `agentx` in a folder you have never used it in: the "Accessing workspace" question appears with `1. Yes, I trust this folder` highlighted; Down then Enter exits with code 1 and reads nothing from the folder; Yes starts, and the next start in that folder does not ask. Try it in your home folder: the extra warning shows.
 23. At an approval prompt press Down, Down, Enter (No), then type a reason; then repeat and press 1 (Yes). Press Esc at a prompt: it counts as no. `/resume` with no id shows an arrow-key list of conversations.
 24. Watch the cursor at the `>` prompt: it blinks and the prompt is cyan. While the agent works there is a spinner instead. (A terminal that ignores cursor-shape requests keeps its own cursor, but the prompt colour still differs from the working spinner.)
+25. Ask for something big ("survey this project, then add a docstring to each module and run the tests"): the hand-off prompt appears with the task, the helpers and the cost warning, and "don't ask again" is not offered. Approve it: the plan, the `-> explorer: ...` lines and the `[helper]` tool bullets show, and the spinner reads "Running <helper>".
+26. During that job, a write asks with a `Helper: coder` line in the box and `● [coder] edit_file ...` printed just above it. Each step ends with a `done (...)` line.
+27. Type `/team` with no task: the usage is printed. Type `/team <task>`: the same hand-off prompt appears (the model may decline; then nothing runs).
+28. Add `"deny": ["start_team_job:*"]` under `permissions` in your settings and start again, then ask for a big job: the hand-off is refused with the deny-rule message and no prompt.
+29. Press Ctrl+C during a job: "Turn interrupted" is printed, files already changed stay changed, and the next message works.

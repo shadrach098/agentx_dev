@@ -450,7 +450,8 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 `pip install agentx-dev` also gives you `agentx`, a terminal coding assistant: run it in a project folder and
 ask for changes. It reads files, edits them and runs commands there, and asks you before it edits a file, runs
 a command, or deletes or moves anything. Conversations are saved and can be resumed. It has no headless mode
-and does not stream the answer token by token yet.
+and does not stream the answer token by token yet. For big jobs it can hand the work to a team of helpers (with
+your approval); see the guide.
 
 ```bash
 pip install agentx-dev          # Claude also needs: pip install "agentx-dev[anthropic]"
