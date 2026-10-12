@@ -6,6 +6,7 @@ replaces it. If the call fails nothing is changed. No terminal output and no I/O
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -69,10 +70,21 @@ def _is_observation(message: Any) -> bool:
             and _text(message.get("content")).lstrip().startswith(OBSERVATION_MARK))
 
 
+def _is_summary(message: Any) -> bool:
+    """A summary written by an earlier compaction (the user message that carries it)."""
+    return (isinstance(message, dict) and message.get("role") == "user"
+            and _text(message.get("content")).lstrip().startswith(SUMMARY_TAG))
+
+
+def _is_summary_ack(message: Any) -> bool:
+    return (isinstance(message, dict) and message.get("role") == "assistant"
+            and _text(message.get("content")).strip() == SUMMARY_ACK and not message.get("tool_calls"))
+
+
 def _is_turn_start(message: Any) -> bool:
     return (isinstance(message, dict) and message.get("role") == "user"
             and not _text(message.get("content")).lstrip().startswith(FRAMEWORK_MARK)
-            and not _is_observation(message))
+            and not _is_observation(message) and not _is_summary(message))
 
 
 def _leading_system(history: List[Message]) -> int:
@@ -99,15 +111,62 @@ def needs_compaction(history: List[Message], threshold: int = THRESHOLD_CHARS) -
     return history_size(history) > threshold and split_point(history) is not None
 
 
+def _input_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        return _text(value)
+
+
+def _parser_step(arguments: Any) -> Optional[Dict[str, Any]]:
+    """The runner's ReAct step ({"Thought", "action", "action_input"}) when ``arguments`` holds one, else None.
+    With function calling on, every assistant move (a tool call or the final answer) is stored as a call to the
+    parser tool carrying this JSON, so the real action and answer are inside the arguments."""
+    try:
+        data = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except Exception:
+        return None
+    if isinstance(data, dict) and isinstance(data.get("action"), str) and data["action"].strip() and "action_input" in data:
+        return data
+    return None
+
+
+def _is_final_action(action: str) -> bool:
+    return action.strip().lower().replace(" ", "_").replace("-", "_") in ("final_answer", "finalanswer")
+
+
+def _call_line(call: Any) -> str:
+    function = call.get("function") if isinstance(call, dict) else None
+    function = function if isinstance(function, dict) else {}
+    arguments = function.get("arguments")
+    step = _parser_step(arguments)
+    if step is not None:
+        action, shown = step["action"].strip(), _input_text(step["action_input"]).strip()
+        if _is_final_action(action):
+            return "Assistant: " + _cut(shown, MESSAGE_CHARS)
+        return f"Assistant called {action}({_cut(shown, 200)})"
+    return f"Assistant called {_text(function.get('name'))}({_cut(_text(arguments), 200)})"
+
+
 def transcript(older: List[Message], limit: int = MAX_INPUT_CHARS) -> str:
     """The older messages as plain text for the summarising call: tool results cut to ``TOOL_RESULT_CHARS``,
-    other messages to ``MESSAGE_CHARS``, and the whole text to ``limit`` (the oldest part is left out)."""
+    other messages to ``MESSAGE_CHARS``, and the whole text to ``limit`` (the oldest part is left out). A summary
+    from an earlier compaction is pinned at the front, in full, and counts against ``limit``."""
     lines: List[str] = []
+    pinned = ""
     for message in older:
         if not isinstance(message, dict):
             continue
         role, content = message.get("role"), _text(message.get("content")).strip()
-        if _is_observation(message):
+        if _is_summary(message):
+            body = content[len(SUMMARY_TAG):].strip()[:MAX_SUMMARY_CHARS]
+            pinned = "Summary of the conversation before this part:\n" + body + "\n\n"
+            lines = []                     # anything before it is already inside that summary
+        elif _is_summary_ack(message):
+            continue
+        elif _is_observation(message):
             lines.append("Tool result: " + _cut(content[len(OBSERVATION_MARK):].strip(), TOOL_RESULT_CHARS))
         elif role == "user":
             lines.append("User: " + _cut(content, MESSAGE_CHARS))
@@ -115,12 +174,14 @@ def transcript(older: List[Message], limit: int = MAX_INPUT_CHARS) -> str:
             if content:
                 lines.append("Assistant: " + _cut(content, MESSAGE_CHARS))
             for call in message.get("tool_calls") or []:
-                function = call.get("function", {}) if isinstance(call, dict) else {}
-                lines.append(f"Assistant called {_text(function.get('name'))}({_cut(_text(function.get('arguments')), 200)})")
+                lines.append(_call_line(call))
         elif role == "tool":
             lines.append(f"Tool {_text(message.get('name'))} result: " + _cut(content, TOOL_RESULT_CHARS))
     text = "\n".join(lines)
-    return text if len(text) <= limit else "(earlier part omitted)\n" + text[-limit:]
+    room = max(limit - len(pinned), 0)
+    if len(text) > room:
+        text = "(earlier part omitted)\n" + (text[len(text) - room:] if room else "")
+    return pinned + text
 
 
 def summarise(older: List[Message], call: Callable[[str], str]) -> Optional[str]:
@@ -154,6 +215,8 @@ def compact(history: List[Message], call: Callable[[str], str], *, threshold: in
         return Compaction("none", history)
     lead = _leading_system(history)
     older = history[lead:cut]
+    if all(_is_summary(m) or _is_summary_ack(m) for m in older):
+        return Compaction("none", history)         # only an earlier summary lies before the cut: nothing new to fold in
     summary = summarise(older, call)
     if summary is None:
         return Compaction("failed", history)

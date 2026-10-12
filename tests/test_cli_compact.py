@@ -144,3 +144,99 @@ def test_text_mode_observations_are_neither_turns_nor_user_text():
     text = transcript(h[1:cut])
     assert "User: Observation" not in text and "Tool result:" in text
     assert len(max(text.splitlines(), key=len)) < 700
+
+
+def parser_call(call_id, **step):
+    """How the CLI's ReAct runner stores a move under function calling: a call to the parser tool whose arguments
+    are the whole Thought / action / action_input envelope."""
+    return {"role": "assistant", "content": "", "tool_calls": [
+        {"id": call_id, "type": "function", "function": {"name": "AgentStep", "arguments": json.dumps(step)}}]}
+
+
+def real_function_calling_turn(i, answer):
+    return [
+        {"role": "user", "content": f"question {i}"},
+        parser_call(f"a{i}", Thought="look", action="read_path", action_input={"path": f"file{i}.py"}),
+        {"role": "tool", "tool_call_id": f"a{i}", "name": "read_path", "content": "file body"},
+        parser_call(f"b{i}", Thought="done", action="Final_Answer", action_input=answer),
+        {"role": "tool", "tool_call_id": f"b{i}", "name": "AgentStep", "content": "(final answer delivered)"},
+    ]
+
+
+def test_the_transcript_shows_the_real_action_and_the_whole_final_answer_of_parser_tool_calls():
+    answer = "I decided to keep the cache in memory because the file is small. " * 5
+    text = transcript(real_function_calling_turn(0, answer))
+    assert "Assistant called read_path(" in text and "file0.py" in text
+    assert "Assistant: " + answer.strip() in text
+    assert "AgentStep(" not in text
+    other = transcript(real_function_calling_turn(1, "ok") + [parser_call("z", action="final answer", action_input="spaced")])
+    assert "Assistant: spaced" in other
+
+
+def test_a_tool_call_that_is_not_a_parser_step_keeps_the_plain_rendering():
+    older = [{"role": "assistant", "content": "", "tool_calls": [
+        {"id": "c", "function": {"name": "grep", "arguments": "not json at all"}}]}]
+    assert "Assistant called grep(not json at all)" in transcript(older)
+
+
+def test_a_malformed_tool_call_does_not_make_compaction_fail():
+    h = history(10, size=20_000)
+    h[2]["tool_calls"].append({"id": "odd", "function": None})
+    h[6]["tool_calls"].append("nonsense")
+    result = compact(h, ok_call)
+    assert result.status == "done"
+
+
+def test_compacting_twice_keeps_the_first_summary_whole_and_leaves_one_summary_message():
+    first_summary = "FIRST-SUMMARY " + "decided to use sqlite; " * 20
+    first = compact(history(10, size=20_000), lambda p: first_summary)
+    assert first.status == "done"
+    grown = first.history + sum((turn(i, 20_000) for i in range(10, 14)), [])
+    seen = []
+    second = compact(grown, lambda prompt: seen.append(prompt) or ok_call(prompt))
+    assert second.status == "done"
+    assert first_summary.strip() in seen[0]
+    assert seen[0].index("Summary of the conversation before this part:") < seen[0].index("question 4 ")
+    assert "User: " + SUMMARY_TAG not in seen[0]
+    assert sum(1 for m in second.history if m["role"] == "user" and m["content"].startswith(SUMMARY_TAG)) == 1
+    assert tool_calls_are_all_answered(second.history)
+
+
+def test_the_pinned_summary_is_not_trimmed_by_the_input_cap():
+    older = [{"role": "user", "content": SUMMARY_TAG + "\nPINNED-DECISION"}, {"role": "assistant", "content": "Understood. I will continue from that summary."}]
+    text = transcript(older + history(200, system=False), limit=3000)
+    assert text.startswith("Summary of the conversation before this part:\nPINNED-DECISION")
+    assert "(earlier part omitted)" in text and len(text) <= 3100
+
+
+def test_a_summary_alone_before_the_cut_is_not_summarised_again():
+    h = [{"role": "system", "content": "S"}, {"role": "user", "content": SUMMARY_TAG + "\nearlier summary text"},
+         {"role": "assistant", "content": "Understood. I will continue from that summary."}]
+    for i in range(KEEP_USER_MESSAGES):
+        h += turn(i, 30_000)
+
+    def never(prompt):
+        raise AssertionError("the model must not be called")
+
+    assert needs_compaction(h) is False and split_point(h) is None
+    result = compact(h, never)
+    assert result.status == "none" and result.history is h
+
+
+def test_compact_never_re_summarises_when_only_a_summary_lies_before_the_cut(monkeypatch):
+    from agentx_dev.cli import compact as module
+    h = [{"role": "system", "content": "S"}, {"role": "user", "content": SUMMARY_TAG + "\nearlier summary text"},
+         {"role": "assistant", "content": "Understood. I will continue from that summary."}] + history(3, 30_000, system=False)
+    monkeypatch.setattr(module, "split_point", lambda history, keep=KEEP_USER_MESSAGES: 3)
+
+    def never(prompt):
+        raise AssertionError("the model must not be called")
+
+    result = module.compact(h, never)
+    assert result.status == "none" and result.history is h
+
+
+def test_a_summary_message_is_not_a_turn_start():
+    h = [{"role": "user", "content": SUMMARY_TAG + "\ns"}, {"role": "assistant", "content": "Understood. I will continue from that summary."}] + history(7, system=False)
+    cut = split_point(h)
+    assert h[cut]["content"].startswith("question 1 ")
