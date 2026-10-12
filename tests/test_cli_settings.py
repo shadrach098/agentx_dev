@@ -249,3 +249,85 @@ def test_a_project_cannot_turn_on_auto_mode_but_the_user_can(tmp_path):
     put(user_settings_path(home), {"mode": "auto"})
     s = load_settings(cwd, home)
     assert s.mode == "auto"
+
+
+def test_a_project_folder_is_neither_home_nor_a_drive_root(tmp_path):
+    from agentx_dev.cli.settings import is_project_folder
+    home = tmp_path / "home"
+    home.mkdir()
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    assert is_project_folder(folder, home) is True
+    assert is_project_folder(home, home) is False
+    assert is_project_folder(Path(tmp_path.anchor), home) is False
+
+
+def test_write_project_model_creates_the_file(tmp_path):
+    from agentx_dev.cli.settings import write_project_model
+    path, message = write_project_model(tmp_path, "gpt-4o-mini")
+    assert path == project_settings_path(tmp_path)
+    assert json.loads(path.read_text(encoding="utf-8")) == {"model": "gpt-4o-mini"}
+    assert "Created" in message and "gpt-4o-mini" in message
+
+
+def test_write_project_model_keeps_the_other_keys(tmp_path):
+    from agentx_dev.cli.settings import write_project_model
+    put(project_settings_path(tmp_path), {"model": "old", "permissions": {"deny": ["run_shell:*sudo*"]}})
+    path, message = write_project_model(tmp_path, "new")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data == {"model": "new", "permissions": {"deny": ["run_shell:*sudo*"]}} and "Updated" in message
+
+
+def test_write_project_model_never_overwrites_a_file_it_cannot_read(tmp_path):
+    from agentx_dev.cli.settings import write_project_model
+    put(project_settings_path(tmp_path), "{not json")
+    path, message = write_project_model(tmp_path, "new")
+    assert path is None and "not valid JSON" in message
+    assert project_settings_path(tmp_path).read_text(encoding="utf-8") == "{not json"
+    put(project_settings_path(tmp_path), "[1, 2]")
+    path, message = write_project_model(tmp_path, "new")
+    assert path is None and "not a JSON object" in message
+
+
+def test_write_project_model_reports_an_unwritable_folder_without_raising(tmp_path):
+    from agentx_dev.cli.settings import write_project_model
+    (tmp_path / ".agentx").write_text("a file, not a folder", encoding="utf-8")
+    path, message = write_project_model(tmp_path, "new")
+    assert path is None and "Could not write" in message
+
+
+def test_ensure_project_settings_writes_once_and_never_overwrites(tmp_path):
+    from agentx_dev.cli.settings import ensure_project_settings
+    home = tmp_path / "home"
+    home.mkdir()
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    created = ensure_project_settings(folder, home, "gpt-4o")
+    assert created == project_settings_path(folder)
+    assert json.loads(created.read_text(encoding="utf-8")) == {"model": "gpt-4o"}
+    put(created, {"model": "mine"})
+    assert ensure_project_settings(folder, home, "gpt-4o") is None
+    assert json.loads(created.read_text(encoding="utf-8")) == {"model": "mine"}
+
+
+def test_ensure_project_settings_skips_home_a_drive_root_and_no_model(tmp_path):
+    from agentx_dev.cli.settings import ensure_project_settings
+    home = tmp_path / "home"
+    home.mkdir()
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    assert ensure_project_settings(home, home, "gpt-4o") is None
+    assert not (home / ".agentx" / "settings.json").exists()
+    assert ensure_project_settings(Path(tmp_path.anchor), home, "gpt-4o") is None
+    assert ensure_project_settings(folder, home, None) is None and ensure_project_settings(folder, home, "") is None
+    assert not (folder / ".agentx").exists()
+
+
+def test_the_folder_file_beats_the_user_file_and_loads_without_problems(tmp_path):
+    from agentx_dev.cli.settings import ensure_project_settings
+    home, folder = tmp_path / "home", tmp_path / "proj"
+    folder.mkdir()
+    put(user_settings_path(home), {"model": "user-model"})
+    ensure_project_settings(folder, home, "folder-model")
+    settings = load_settings(folder, home)
+    assert settings.model == "folder-model" and settings.problems == []

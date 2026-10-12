@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from agentx_dev.cli.approval import MODES
 
@@ -46,6 +46,62 @@ def ensure_user_settings(home: Path, model: Optional[str] = None) -> Optional[Pa
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "x", encoding="utf-8") as handle:        # "x": never replace a file made in between
             handle.write(json.dumps(data, indent=2) + "\n")
+        return path
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def is_project_folder(cwd: Path, home: Path) -> bool:
+    """False for the user's home folder and a filesystem root: neither is a project, so no folder settings
+    file and no work log are kept there. Never raises."""
+    try:
+        here = Path(cwd).resolve()
+        return here != Path(home).resolve() and here != Path(here.anchor)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def write_project_model(cwd: Path, model: str) -> Tuple[Optional[Path], str]:
+    """Save ``model`` as this folder's model in ``<cwd>/.agentx/settings.json``, creating the file or keeping
+    its other keys. Returns ``(path, message)``; ``path`` is None when nothing was written (the file is not
+    valid JSON or not an object, or it could not be written), and the message says why. Never raises."""
+    path = project_settings_path(cwd)
+    try:
+        data: dict = {}
+        verb = "Created"
+        if path.exists():
+            verb = "Updated"
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, RecursionError):
+                return None, f"{path} is not valid JSON, so it was left unchanged."
+            if not isinstance(loaded, dict):
+                return None, f"{path} is not a JSON object, so it was left unchanged."
+            data = loaded
+        data["model"] = str(model)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(data, indent=2) + "\n")
+        os.replace(temporary, path)
+        return path, f"{verb} {path} with model {model}."
+    except (OSError, ValueError, TypeError):
+        return None, f"Could not write {path}."
+
+
+def ensure_project_settings(cwd: Path, home: Path, model: Optional[str]) -> Optional[Path]:
+    """For a folder the user has just trusted: write ``{"model": model}`` to its settings file, unless one
+    exists. Nothing is written for the home folder, a drive root or an empty ``model``. Never overwrites,
+    never raises; returns the path it created, or None."""
+    if not model or not is_project_folder(cwd, home):
+        return None
+    path = project_settings_path(cwd)
+    try:
+        if path.exists():
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "x", encoding="utf-8") as handle:        # "x": never replace a file made in between
+            handle.write(json.dumps({"model": str(model)}, indent=2) + "\n")
         return path
     except (OSError, ValueError, TypeError):
         return None
