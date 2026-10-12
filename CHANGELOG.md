@@ -37,6 +37,14 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
     coder edits, runner runs commands) carry them out one at a time. Every helper call goes through the same
     gate, modes, deny rules and prompts as the chat; the result joins the conversation. A deny rule
     `start_team_job:*` turns it off.
+  - **Project memory.** Each folder can have its own model: the first time you trust a folder, `agentx`
+    writes `.agentx/settings.json` with the model in use, and `/model <name> --folder` changes it (plain
+    `/model <name>` stays for the session). The app keeps a work log in `.agentx/log.md`, written by the app
+    (not the model) after each finished turn with the request, the files changed, the commands run and the
+    start of the answer; keys are hidden and the file is readable by its owner only. A fresh conversation
+    (a start without `--continue` / `--resume`, and `/clear`) starts from the newest entries of that log, and a
+    very long conversation is summarised before it overflows (the older messages become one summary; the last
+    six of your messages stay as they were). Not kept for the home folder or a drive root. See the guide.
   - **Slash commands.** `/help`, `/clear`, `/model`, `/mode`, `/settings`, `/resume`, `/sessions`, `/init`,
     `/team`, `/exit`. Typing `/` pops up the list with a one-line description of each. The first run writes
     `~/.agentx/settings.json` with the model in use, so there is a file to edit; `/settings` shows what is in

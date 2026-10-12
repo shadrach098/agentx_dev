@@ -46,10 +46,10 @@ those anyway), changing how `--continue` and `/resume` load a saved conversation
 
 | Piece | Change |
 |---|---|
-| `agentx_dev/cli/memory.py` (new) | `TurnRecord`, `entry_text`, `append_entry`, `rotate`, `read_recent`, `log_path`. Pure functions plus file I/O; no terminal output; redaction is passed in. |
-| `agentx_dev/cli/compact.py` (new) | `history_size`, `needs_compaction`, `split_point`, `transcript`, `summarise`, `apply_summary`. The model call is passed in. |
-| `agentx_dev/cli/settings.py` | `project_settings_path` already exists; add `write_project_model(cwd, model)` and `ensure_project_settings(cwd, model)`. |
-| `agentx_dev/cli/context.py` | `build_addendum(cwd, home, system=None, log_text="")` gains an optional `<project-log>` block. |
+| `agentx_dev/cli/memory.py` (new) | `TurnRecord`, `record_from_events`, `entry_text`, `summary_entry_text`, `append_entry`, `read_recent`, `log_path` (rotation is internal). Pure functions plus file I/O; no terminal output; redaction is passed in. |
+| `agentx_dev/cli/compact.py` (new) | `history_size`, `needs_compaction`, `split_point`, `transcript`, `summarise`, `apply_summary`, `compact` (returns a `Compaction`). The model call is passed in. |
+| `agentx_dev/cli/settings.py` | `project_settings_path` already exists; add `is_project_folder(cwd, home)`, `write_project_model(cwd, model)` (returns `(path, message)`) and `ensure_project_settings(cwd, home, model)`. |
+| `agentx_dev/cli/context.py` | `build_addendum(cwd, home, *, system=None, log_text="")` gains an optional `<project-log>` block. |
 | `agentx_dev/cli/app.py` | Collects each turn's facts, writes the log after the turn, loads the log on a fresh conversation, checks compaction before a turn, creates the folder settings after a new trust. |
 | `agentx_dev/cli/commands.py` | `/model <name> --folder`. |
 | Docs | Guide section "Project memory", CHANGELOG 3.7.0, README line, checklist items, and a correction of the guide's limits list. |
@@ -64,8 +64,13 @@ project): no folder settings file and no log are created there.
   use>"}` and nothing else. An existing file is never touched.
 - **Saved to** with `/model <name> --folder`: the model is switched for the session and written to the folder
   file, creating it if needed. Other keys in an existing file are kept. A file that is not valid JSON is not
-  overwritten: the command says so and does nothing to the file. Plain `/model <name>` stays session-only, and
-  its notice mentions `--folder`.
+  overwritten: the command says so and does nothing to the file (the model is still switched for the session).
+  Notices: `Created <path> with model <name>.` / `Updated <path> with model <name>.`, and `<path> is not valid
+  JSON, so it was left unchanged.` (or `... is not a JSON object, ...`). In the home folder or a drive root it
+  prints `No folder settings file is kept for your home folder or a drive root.` Plain `/model <name>` stays
+  session-only, and its notice reads `Model: <name> (this session only).` followed by a hint that mentions
+  `--folder`. After the first trust the app prints `Created <path> with this folder's model. /model <name>
+  --folder changes it.`
 - **Precedence** is unchanged: `--model` beats the folder file, which beats the user's file, which beats the
   default chosen from the API key.
 - A folder file can only set what a project file may already set (`model`, `mode`, `addDirs`, `permissions`);
@@ -94,16 +99,28 @@ Answer: I added docstrings to 6 modules and the tests pass.
   `source -> destination`. More than 10 paths: the first 10 and "and N more". This is a text check, so a rare
   unusual result could be misjudged; the guide says so.
 - **Ran** lists `run_shell` commands (first 100 characters) and `run_python` calls (`python: <first line>`) that
-  were not refused. A team job adds `Team job: <task, first 100 characters>` and its outcome word.
-- A line is omitted when empty. The title is the user's message cut at 80 characters. The answer is cut at 300.
-  A whole entry is capped at 1,200 characters.
+  were not refused. A team job adds one line, `Team job: <task> (<outcome>)` (`ended` when the result carries no
+  outcome word).
+- **Team job limitation:** the files the helpers changed and the commands they ran are not itemised. The chat's
+  event stream carries only the `start_team_job` call and its summary result, not the helpers' tool results, so
+  the log has the `Team job:` line and nothing more about what the helpers did.
+- A line is omitted when empty. The title is the user's message cut at 80 characters (`/init` and `/team <task>`
+  are titled `/init` and `/team <task>`). The answer is cut at 300. A whole entry is capped at 1,200 characters.
+  The entry written when a conversation is summarised is titled `Earlier conversation summarised`, holds the
+  summary cut at 1,500 characters, and has any line starting with `#` backslash-escaped so it cannot forge a
+  heading.
+- **A turn that ended in an error writes no entry**, like an interrupted one.
 - **Secrets:** requests and commands go through the app's key-hiding (the same patterns and environment key
   values as error messages) before being written. The file is made readable by the user only where the platform
-  allows. It lives in the folder, so a committed folder commits it; the guide says to add it to `.gitignore` if
-  it should stay private. The app never edits `.gitignore`.
+  allows, and so is `log-older.md` after a rotation. It lives in the folder, so a committed folder commits it;
+  the guide says to add it to `.gitignore` if it should stay private. The app never edits `.gitignore`.
+- **Symlinks:** the app neither writes nor loads the log when `.agentx`, `log.md`, `log-older.md` or the
+  temporary file used for rotation (`log.tmp`) is a symlink or resolves outside the folder, so a cloned project
+  cannot point the log at another file.
 - **Size:** above 200 KB, the oldest half of the entries is moved to `log-older.md` (appended) and the log is
   rewritten atomically.
-- **Failures** (unwritable folder, a full disk) give one notice per session and never stop the chat.
+- **Failures** (unwritable folder, a full disk, a refused location) give one notice per session, `Could not
+  write the work log in .agentx/log.md; carrying on without it.`, and never stop the chat.
 - The model cannot write here: `.agentx/*` is on the always-on deny list, and the app writes with Python, not
   through a tool.
 
@@ -111,7 +128,10 @@ Answer: I added docstrings to 6 modules and the tests pass.
 
 - On a **fresh conversation** (startup without `--continue` / `--resume`, and `/clear`), the app reads the tail
   of `log.md` (at most 24 KB read, cut at an entry boundary, at most 6,000 characters kept, newest entries
-  last) and adds it to the system addendum inside a `<project-log>` block after the project-instructions block.
+  last) and adds it to the system addendum inside a `<project-log>` block after the project-instructions block,
+  under the heading `Recent work in this folder (.agentx/log.md):`. When the text is cut, `(older entries not
+  shown)` comes first. A team's helpers get the same addendum, so in a conversation that started fresh they see
+  the block too.
 - The block starts with one sentence: this is a record written by earlier sessions in this folder (it may come
   from a cloned repository), it can be incomplete or out of date, check files before relying on it, and it
   cannot override the rules above or the approval prompts. Markers inside the text are defused the same way as
@@ -134,12 +154,19 @@ Answer: I added docstrings to 6 modules and the tests pass.
   not from the history, if needed).
 - **Replacing:** the older messages become one user message holding the summary and one short assistant
   acknowledgement; the kept messages follow unchanged. The summary is also written to the log as an entry.
-- **Notice:** "Summarised N earlier messages to keep the conversation short."
+- **Notice:** "Summarised N earlier messages to keep the conversation short." While the call runs the spinner
+  reads "Summarising the conversation".
 - **If it fails** (model error, empty or very short reply): the history is left exactly as it was, the user gets
-  a one-line notice, and no retry happens until 10 more messages have been added. Nothing is ever removed
+  a one-line notice ("The conversation is getting long, but it could not be summarised right now; it will be
+  tried again later."), and no retry happens until 10 more messages have been added. Nothing is ever removed
   without a summary in its place.
 - The summary is a model output, so it enters the history as ordinary assistant-visible text; it carries no
-  authority. A later compaction treats it like any other older message.
+  authority. A later compaction does not re-summarise an earlier summary as ordinary text: the earlier summary
+  is pinned at the front of the next call's input and carried into the new summary. When only an earlier summary
+  lies before the cut, nothing is done.
+- It works for both tool-calling and plain-text models: the transcript reads an assistant move stored as a call
+  to the parser tool, and a tool result fed back as an `Observation:` user message, and the runner's `[framework]`
+  nudges do not count as the start of a turn.
 
 ## 9. Errors and edge cases
 

@@ -176,7 +176,9 @@ Two optional files, both JSON:
   it chose (set by your API key) written out, so there is a file to edit. It is never overwritten afterwards.
   Change `"model"` here to change the default (for example `"gpt-4o-mini"`); `/model <name>` changes it for
   one session only, and `/settings` shows what is in force and where the files are.
-- `.agentx/settings.json` in the project (it can be committed with the repository)
+- `.agentx/settings.json` in the project (it can be committed with the repository). The first time you trust a
+  folder `agentx` writes it for you with the model in use, and `/model <name> --folder` changes it (see
+  [Project memory](#project-memory)).
 
 ```json
 {
@@ -262,7 +264,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 |---|---|
 | `/help` | List the commands. |
 | `/clear` | Start a new conversation. Clears the "don't ask again" grants and undoes an edit grant. |
-| `/model [name]` | Show or switch the model. The conversation is kept. A model that cannot be built (no key) leaves the old one in place. |
+| `/model [name] [--folder]` | Show or switch the model. The conversation is kept. A model that cannot be built (no key) leaves the old one in place. `/model <name>` lasts for this session only; `/model <name> --folder` also saves it for this folder (see [Project memory](#project-memory)). |
 | `/mode [name]` | Show or set the mode: `default`, `accept-edits`, `plan` or `auto`. |
 | `/settings` | Show the model, mode and rules in force, and the paths of your settings file and the project's. |
 | `/resume [id]` | Load a saved conversation (a list to pick from, or an id). |
@@ -354,6 +356,78 @@ The agent is then refused every time it tries, in every mode, `auto` included. T
 - The task the agent passes is at most 4,000 characters and its reason at 500; longer text is refused with a message, not cut.
 - A team job makes many model calls: expect it to cost much more than a normal turn.
 
+## Project memory
+
+`agentx` keeps four things per folder so that a project does not start from nothing every time: a model of its own, a work log, a fresh conversation that starts from that log, and a summary in place of a very long history. None of it needs a setting, and none of it is kept for your home folder or a drive root (neither is a project).
+
+### A model for each folder
+
+The first time you say yes to the trust question for a folder, `agentx` writes `<folder>/.agentx/settings.json` with the model in use and nothing else:
+
+```json
+{
+  "model": "claude-sonnet-4-6"
+}
+```
+
+and prints `Created <path> with this folder's model. /model <name> --folder changes it.` An existing file is never touched, and nothing is written before you have said yes. Edit the file like any project settings file (the other keys and the [untrusted-project rules](#project-settings-are-untrusted) are unchanged).
+
+- `/model <name> --folder` switches the model now **and** saves it for this folder. It keeps the other keys in an existing file and prints `Updated <path> with model <name>.` (`Created ...` when there was no file). If the file is not valid JSON, or not a JSON object, it is left exactly as it was and you are told so; the model is still switched for the session.
+- `/model <name>` on its own is for this session only. Its notice says so, and points at `--folder` and at your own settings file: `Model: <name> (this session only). Add --folder to keep it for this folder, or set "model" in <your file> for every folder.` `/model` with no name shows the same hint.
+- In your home folder or a drive root, `/model <name> --folder` switches the model for the session and prints `No folder settings file is kept for your home folder or a drive root.` instead of writing anything.
+- If the folder cannot be written, you get a one-line notice and no traceback.
+
+The model is chosen in this order: `--model`, the folder's file, your file (`~/.agentx/settings.json`), then the default that your API key decides.
+
+### The work log
+
+After each **finished** turn the app (not the model, and with no extra model call) adds an entry to `<folder>/.agentx/log.md`. It is plain markdown, so you can read it, edit it or delete it:
+
+```text
+## 2026-10-12 14:03 - Add a docstring to each module
+Changed: src/a.py, src/b.py
+Ran: pytest -q
+Answer: I added docstrings to 6 modules and the tests pass.
+```
+
+- The title is your message (cut at 80 characters); `/init` and `/team <task>` are logged as `/init` and `/team <task>`. A line is left out when it has nothing in it.
+- **Changed** lists the paths of `write_file`, `edit_file`, `delete_path` and `move_file` calls (a move reads `source -> destination`), at most 10 and then "and N more". A call that was refused, declined or failed is not listed. This is a text check on the tool's result, so a rare unusual result could be misjudged.
+- **Ran** lists `run_shell` commands (the first 100 characters of each) and `run_python` calls (`python: <first line>`), under the same rule.
+- **Answer** is the start of the final answer (300 characters). A whole entry is at most 1,200.
+- A team job is one line, `Team job: <task> (<outcome>)`. The files the helpers changed and the commands they ran are **not** listed: the chat does not see their tool results, only the job's summary.
+- A turn you interrupted with Ctrl+C, or one that ended in an error, writes no entry (its history is not kept either).
+- Keys and secrets are hidden before anything is written, with the same hiding as error messages (key-shaped tokens and the actual values of keys in your environment). That covers what you type and the commands that ran. It is a pattern check, not a promise: do not put secrets in requests.
+- The file is readable by you only, where the platform has file modes, and so is `log-older.md`. The folder's `.agentx` and the log files must be real files inside the folder: if `.agentx`, `log.md`, `log-older.md` or the temporary file used during rotation is a symlink, or leads outside the folder, the log is neither written nor loaded.
+- It lives in the folder, so a commit would include it. Add `.agentx/log.md` and `.agentx/log-older.md` to `.gitignore` if it should stay private; `agentx` never edits `.gitignore`.
+- Above 200 KB the oldest half of the entries moves to `log-older.md` (which is not loaded) and the log keeps the rest.
+- The model cannot write here: `.agentx/*` is protected (see [Default protections](#default-protections)), and the app writes with Python, not through a tool.
+- If it cannot be written (a read-only folder, a full disk, a refused location) you get one notice per session, `Could not write the work log in .agentx/log.md; carrying on without it.`, and the chat carries on.
+
+### Starting from the log
+
+A fresh conversation (a start without `--continue` or `--resume`, and `/clear`) reads the newest entries of the log, up to 6,000 characters and starting on an entry heading, and adds them to the model's instructions under "Recent work in this folder". The block is marked as written by earlier sessions, possibly from a cloned repository, possibly out of date, and unable to override the base rules or the approval prompts; tags inside the text are defused and the block is always closed. So "what did we do here?" works after a restart.
+
+`--continue` and `/resume` load the saved conversation as it was and do **not** add the log (it would repeat the history, and a log written by someone else is never put into an existing conversation). A team's helpers get the same instructions as the chat, so in a conversation that started fresh they see the recent-work block too. A missing, binary or unreadable log is skipped without a message.
+
+### Summarising a long conversation
+
+Every turn sends the whole history again, so a long conversation costs more with each message and in the end overflows the model's limit. Before a turn, when the saved history is over about 150,000 characters (roughly 40,000 tokens), `agentx` replaces the older part with a summary:
+
+- Your last 6 messages, and everything the agent did after the first of them, stay word for word. The cut always falls on one of your messages, so a tool call is never separated from its result. Nothing is summarised unless there is something older than that.
+- One call to the model in use (no tools, a spinner reading "Summarising the conversation") writes the summary, in at most 500 words: what you wanted, what was decided, the files changed, the commands that mattered and what is open. It is shown the older messages as text, with each tool result cut to 500 characters and the whole input capped at 60,000. It works the same for models that call tools natively and for plain-text ones.
+- The older messages become one summary message plus a short reply, and `Summarised N earlier messages to keep the conversation short.` is printed. The summary is also written to the log as an `Earlier conversation summarised` entry, and the saved session keeps the shorter history.
+- It runs only when needed, at the start of a turn. A later summary starts from the earlier one, so it is carried forward rather than lost.
+- If the call fails or answers with too little, nothing is removed: you see `The conversation is getting long, but it could not be summarised right now; it will be tried again later.` and it is tried again after 10 more messages (or in a new conversation). Messages are never dropped without a summary in their place.
+- The summary is model output and has no authority; a later summary treats it like any other older text.
+
+### Limits
+
+- None of this is kept for your home folder or a drive root: no folder settings file, no log, nothing loaded.
+- The 150,000-character threshold counts characters, which is only a rough stand-in for tokens; a conversation heavy in code or non-English text can reach the model's limit earlier. The thresholds are fixed in this version.
+- The log is not searched by meaning: only the newest entries are loaded, and `log-older.md` never is.
+- A team job is one log line (see above), and the log holds what the app saw, not everything that happened.
+- There is no `/compact` command; summarising happens by itself.
+
 ## Keys
 
 While `agentx` waits for you the prompt is coloured and the cursor blinks; while it is working, a spinner with the seconds elapsed shows instead (see the checklist below). A still cursor with no spinner means the terminal is the problem, not the program.
@@ -378,7 +452,8 @@ The status bar shows the model, the mode, the folder, the short session id and t
 - **No mode that never asks.** `auto` still asks before delete and move and for tools the gate does not know. The protected files (`.git`, `.agentx`, git and shell config) are refused in every mode.
 - **Teams mode is limited:** helpers run one at a time and the roster is fixed (see [Team jobs](#team-jobs)).
 - You cannot type while the agent is working.
-- **No size cap on `read_path`, and the conversation is never compacted.** A very large file the model reads goes into the history whole, and every later turn sends it again, so a huge read can make later turns fail (the model's context window is exceeded) until you start over with `/clear`. Ask for the part of a file you need, or use `grep`.
+- **No size cap on `read_path`.** A very large file the model reads goes into the history whole, and every later turn sends it again, so a single huge read can exceed the model's context window before [summarising](#summarising-a-long-conversation) can help (it works on the history before a turn, not on one oversized result), and later turns then fail until you start over with `/clear`. Ask for the part of a file you need, or use `grep`.
+- **Project memory is approximate.** The work log is a short text record, not a search index, and summarising is triggered by a character count (see [Project memory](#project-memory)).
 - `run_shell` and `run_python` run with a scrubbed environment, and `run_python` uses `agentx`'s own interpreter (see [What it can do](#what-it-can-do)).
 
 ## Try it by hand
@@ -414,3 +489,8 @@ A checklist for the maintainer to run once on a real terminal before release. Te
 27. Type `/team` with no task: the usage is printed. Type `/team <task>`: the same hand-off prompt appears (the model may decline; then nothing runs).
 28. Add `"deny": ["start_team_job:*"]` under `permissions` in your settings and start again, then ask for a big job: the hand-off is refused with the deny-rule message and no prompt.
 29. Press Ctrl+C during a job: "Turn interrupted" is printed, files already changed stay changed, and the next message works.
+30. Start `agentx` in a folder you have never trusted and answer yes: `.agentx/settings.json` appears with the model in use and the "Created ... with this folder's model" notice is printed. In your home folder nothing is created. Run `/model gpt-4o-mini --folder`, quit and start again: the status bar shows `gpt-4o-mini`. `/model claude-sonnet-4-6` alone says "(this session only)" and mentions `--folder`.
+31. Ask for a small change, approve it, then read `.agentx/log.md`: an entry with the time, your request, `Changed:`, and the start of the answer. Press Ctrl+C in the middle of another turn: no entry is added for it.
+32. Type `/clear` and ask "what did we do here?": the answer comes from the log. Start with `agentx --continue` instead: the log is not loaded, the old conversation is.
+33. Type a request that contains a key-shaped text such as `sk-test-1234567890abcdef` (or your real key in the environment, in a scratch folder): the log shows it hidden.
+34. Make a very long conversation (or lower `THRESHOLD_CHARS` in `agentx_dev/cli/compact.py` temporarily in a scratch copy, for example to 3000) and send one more message: a spinner reads "Summarising the conversation", `Summarised N earlier messages to keep the conversation short.` is printed, the last answers still make sense, and the log has an `Earlier conversation summarised` entry.
