@@ -103,6 +103,8 @@ def gate_tool(tool: StructuredTool, gate: Gate, *, permissions: Optional[Permiss
         try:
             args = _as_the_tool_will_see_paths(args, permissions)
         except ValueError:                          # a rooted path whose two readings disagree: do not guess
+            # a path that cannot be resolved the way the tool reads it is refused before the observer runs:
+            # the observer must only see arguments the gate will judge
             return UNSUPPORTED_PATH
         if observer is not None:
             try:

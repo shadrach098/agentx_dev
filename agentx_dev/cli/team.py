@@ -25,6 +25,7 @@ HELPER_STEPS = 25
 MAX_SUBTASKS = 6
 MAX_QUESTIONS = 3
 ROLE_MARK = "Team role:"
+MAY_HAVE_CHANGED = "Some steps may already have changed files."
 READ_TOOLS = ("read_path", "list_directory", "find_files", "grep")
 
 Notify = Callable[[str, Dict[str, Any]], None]
@@ -114,13 +115,21 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
 
     Ctrl+C (``KeyboardInterrupt``) and ``SystemExit`` propagate, with the Supervisor's stream closed; any other
     error becomes a short failure result for the main agent to read."""
-    helpers = build_helpers(model, tools, addendum)
-    supervisor = Supervisor(model=model, agents=helpers, max_subtasks=MAX_SUBTASKS, verbose=False,
-                            max_subtask_retries=0, max_plan_retries=1, ask_user=ask_user,
-                            max_questions=MAX_QUESTIONS)
-    events = supervisor.stream(task)
+    events = None
     result = None
+
+    def tell(kind: str, data: Dict[str, Any]) -> None:
+        try:
+            notify(kind, data)
+        except Exception:                           # a display error must never abort the job
+            pass
+
     try:
+        helpers = build_helpers(model, tools, addendum)
+        supervisor = Supervisor(model=model, agents=helpers, max_subtasks=MAX_SUBTASKS, verbose=False,
+                                max_subtask_retries=0, max_plan_retries=1, ask_user=ask_user,
+                                max_questions=MAX_QUESTIONS)
+        events = supervisor.stream(task)
         for event in events:
             if not isinstance(event, dict):
                 continue
@@ -128,24 +137,35 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             if kind == "plan":
                 steps = [{"agent": str(step.get("agent", "")), "query": str(step.get("query", ""))}
                          for step in (event.get("plan") or []) if isinstance(step, dict)]
-                notify("plan", {"steps": steps})
+                tell("plan", {"steps": steps})
             elif kind == "dispatch":
-                notify("dispatch", {"agent": str(event.get("agent", "")), "query": str(event.get("query", ""))})
+                tell("dispatch", {"agent": str(event.get("agent", "")), "query": str(event.get("query", ""))})
             elif kind == "subtask_result":
                 sub = event.get("result")
                 if sub is not None and getattr(sub, "agent", "") != "__spawn__":
                     failed = bool(getattr(sub, "skipped", False)) or _result_failed(sub)
                     text = getattr(sub, "error", "") or getattr(sub, "content", "")
-                    notify("result", {"agent": str(sub.agent), "ok": not failed, "text": _first_line(text)})
+                    tell("result", {"agent": str(sub.agent), "ok": not failed, "text": _first_line(text)})
             elif kind == "completion":
                 result = event.get("result")
     except Exception as error:                     # KeyboardInterrupt and SystemExit are not Exceptions
-        return f"Team job failed ({type(error).__name__}): {describe_error(error)}"
+        return _failure(error, describe_error)
     finally:
-        events.close()
+        if events is not None:
+            events.close()
     if result is None:
-        return "Team job ended without a result."
+        return f"Team job ended without a result. {MAY_HAVE_CHANGED}"
     return format_result(result)
+
+
+def _failure(error: BaseException, describe_error: Callable[[BaseException], str]) -> str:
+    """One short line for the main agent: what failed, then the warning that steps may have run."""
+    try:
+        described = _first_line(describe_error(error), 300)
+    except Exception:                               # a broken describer must not hide the failure
+        described = ""
+    head = f"Team job failed ({type(error).__name__})"
+    return f"{head}: {described} {MAY_HAVE_CHANGED}" if described else f"{head}. {MAY_HAVE_CHANGED}"
 
 
 class TeamArgs(BaseModel):

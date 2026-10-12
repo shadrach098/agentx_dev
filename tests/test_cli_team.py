@@ -110,14 +110,14 @@ def test_a_supervisor_that_raises_gives_a_failure_result(tmp_path, tools, monkey
     FakeSupervisor.behaviour = staticmethod(behaviour)
     monkeypatch.setattr(team_module, "Supervisor", FakeSupervisor)
     result, _ = run(tmp_path, tools, router(), describe_error=lambda error: f"<{error}>")
-    assert result == "Team job failed (RuntimeError): <boom>" and FakeSupervisor.closed
+    assert result == ("Team job failed (RuntimeError): <boom> " + team_module.MAY_HAVE_CHANGED) and FakeSupervisor.closed
 
 
 def test_a_supervisor_that_ends_without_a_result_says_so(tmp_path, tools, monkeypatch):
     FakeSupervisor.behaviour = staticmethod(lambda: iter([{"type": "plan_start"}]))
     monkeypatch.setattr(team_module, "Supervisor", FakeSupervisor)
     result, _ = run(tmp_path, tools, router())
-    assert result == "Team job ended without a result."
+    assert result == "Team job ended without a result. " + team_module.MAY_HAVE_CHANGED
 
 
 def test_ctrl_c_propagates_and_the_stream_is_closed(tmp_path, tools, monkeypatch):
@@ -172,3 +172,75 @@ def test_the_tool_args_ignore_extra_keys_and_keep_the_why_limit():
     with pytest.raises(Exception):
         TeamArgs(task="do it", why="x" * (team_module.MAX_WHY_CHARS + 1))
     TeamArgs(task="x" * MAX_TASK_CHARS)
+
+
+CHANGED = "Some steps may already have changed files."
+
+
+def failing_supervisor(monkeypatch, error):
+    def behaviour():
+        raise error
+        yield  # pragma: no cover
+
+    FakeSupervisor.behaviour = staticmethod(behaviour)
+    monkeypatch.setattr(team_module, "Supervisor", FakeSupervisor)
+
+
+def test_a_failure_result_is_one_short_line_that_ends_with_the_warning(tmp_path, tools, monkeypatch):
+    failing_supervisor(monkeypatch, RuntimeError("line one\n" + ("word " * 1000) + "\nlast line"))
+    result, _ = run(tmp_path, tools, router())
+    assert "\n" not in result and len(result) < 400 + len(CHANGED)
+    assert result.startswith("Team job failed (RuntimeError): line one word") and result.endswith(CHANGED)
+
+
+def test_a_describe_error_that_raises_still_gives_a_result(tmp_path, tools, monkeypatch):
+    failing_supervisor(monkeypatch, RuntimeError("boom"))
+
+    def broken(error):
+        raise ValueError("describing failed")
+
+    result, _ = run(tmp_path, tools, router(), describe_error=broken)
+    assert result == "Team job failed (RuntimeError). " + CHANGED
+
+
+def test_a_success_result_has_no_changed_files_warning(tmp_path, tools):
+    model = router(plans=[plan_json(step("s1", "explorer", "look"))], synth="All done.",
+                   agent=lambda messages: make_final("ok"))
+    result, _ = run(tmp_path, tools, model)
+    assert CHANGED not in result
+
+
+def test_the_stream_is_closed_when_the_consumer_side_raises(tmp_path, tools, monkeypatch):
+    def behaviour():
+        yield {"type": "plan", "plan": [{"agent": "explorer", "query": "q"}]}
+        yield {"type": "dispatch", "agent": "explorer", "query": "q"}   # never reached
+
+    def interrupt(kind, data):
+        raise KeyboardInterrupt
+
+    FakeSupervisor.behaviour = staticmethod(behaviour)
+    monkeypatch.setattr(team_module, "Supervisor", FakeSupervisor)
+    # `info` keeps the traceback, and with it the generator, alive: only an explicit close() can set `closed`
+    with pytest.raises(KeyboardInterrupt) as info:
+        run(tmp_path, tools, router(), notify=interrupt)
+    assert info.value is not None and FakeSupervisor.closed
+
+
+def test_a_supervisor_that_cannot_be_built_gives_a_failure_result(tmp_path, tools, monkeypatch):
+    class Broken:
+        def __init__(self, **kw):
+            raise ValueError("bad agents")
+
+    monkeypatch.setattr(team_module, "Supervisor", Broken)
+    result, _ = run(tmp_path, tools, router())
+    assert result == "Team job failed (ValueError): bad agents " + CHANGED
+
+
+def test_a_notify_that_raises_does_not_abort_the_job(tmp_path, tools):
+    def broken(kind, data):
+        raise RuntimeError("display failed")
+
+    model = router(plans=[plan_json(step("s1", "explorer", "look around"))], synth="All done.",
+                   agent=lambda messages: make_final("found things"))
+    result, _ = run(tmp_path, tools, model, notify=broken)
+    assert result.startswith("Team job finished (outcome: done).") and "All done." in result
