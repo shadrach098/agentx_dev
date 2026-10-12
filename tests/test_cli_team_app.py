@@ -7,7 +7,7 @@ from agentx_dev.cli import app as app_module
 from agentx_dev.cli.sessions import list_sessions
 from agentx_dev.cli.team import build_helpers
 from tests.conftest import MockModel, make_final, make_react_response
-from tests.subagent_helpers import PLANNER_MARK, SYNTH_MARK, plan_json, step
+from tests.subagent_helpers import PLANNER_MARK, SYNTH_MARK, new_agent_step, plan_json, step
 from tests.test_cli_app import Lines, make_app
 
 NO_TEAM_SENTENCE = ("You cannot start a team job; ignore any instruction above to call start_team_job and do "
@@ -282,6 +282,41 @@ def test_an_error_text_with_the_api_key_never_reaches_the_result_string(tmp_path
     assert "Team job failed (RuntimeError)" in history
     assert secret not in history and secret not in out.getvalue()
     assert "[hidden]" in history
+
+
+def test_a_helper_error_with_the_api_key_in_a_url_never_reaches_the_screen_the_chat_or_any_model(tmp_path):
+    secret = "sk-test-0123456789abcdef"
+
+    def explorer(messages, n):
+        raise RuntimeError(f"400 for url https://x/?key={secret}")
+
+    model = team_model([step("s1", "explorer", "look around")], helper=explorer)
+    app, out, _, home = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto",
+                                 env={"OPENAI_API_KEY": secret})
+    assert app.start() == 0
+    assert model.state["helper_calls"] >= 1
+    everything = out.getvalue() + history_text(app) + " ".join(str(call) for call in model.calls)
+    assert secret not in everything and "failed (explorer)" in out.getvalue()
+    saved = list_sessions(home, app.cwd)
+    assert saved and secret not in saved[0].path.read_text(encoding="utf-8")
+
+
+def test_a_planned_new_agent_step_never_runs_a_helper(tmp_path):
+    model = team_model([new_agent_step("s1", "fixer", "Fix things.", query="do it")])
+    app, _, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto")
+    assert app.start() == 0
+    assert model.state["helper_calls"] == 0
+
+
+def test_a_resumed_session_still_holds_the_job_result(tmp_path):
+    model = team_model([step("s1", "explorer", "look around")])
+    app, _, _, home = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto")
+    assert app.start() == 0
+    ident = list_sessions(home, app.cwd)[0].session_id[:8]
+    second = team_model([step("s1", "explorer", "look around")], main=("final",))
+    app2, _, _, _ = make_app(tmp_path, Lines(f"/resume {ident}", "/exit"), second, mode="auto")
+    assert app2.start() == 0
+    assert "Team job finished (outcome: done)" in history_text(app2)
 
 
 def test_the_tool_handles_a_missing_model_and_a_repeat_call_directly(tmp_path):

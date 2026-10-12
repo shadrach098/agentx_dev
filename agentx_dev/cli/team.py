@@ -9,11 +9,11 @@ helper tool goes through, is the boundary."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
-from agentx_dev import AgentRunner, AgentType, Supervisor
+from agentx_dev import AgentRunner, AgentType, SpawnConfig, Supervisor
 from agentx_dev.Supervisor import _result_failed
 from agentx_dev.Tools import StructuredTool
 
@@ -71,18 +71,41 @@ def role_prompt(role: Role) -> str:
             f"{NO_TEAM_SENTENCE} Finish with a short report; the supervisor passes it on.")
 
 
-def build_helpers(model: Any, tools: Sequence[Any], addendum: str) -> Dict[str, Tuple[str, AgentRunner]]:
+class _HelperRunner(AgentRunner):
+    """An ``AgentRunner`` whose run, when it raises an ``Exception``, raises a ``RuntimeError`` that carries only
+    ``describe_error(error)``. The Supervisor catches such an error itself and shows its text on the screen,
+    in the result and in the synthesizer's prompt, so the text must be safe before it leaves the runner.
+    ``KeyboardInterrupt`` and ``SystemExit`` pass through untouched."""
+
+    def __init__(self, *args: Any, describe_error: Callable[[BaseException], str] = str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._describe_error = describe_error
+
+    def Initialize(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return super().Initialize(*args, **kwargs)
+        except Exception as error:
+            try:
+                text = str(self._describe_error(error))
+            except Exception:                       # a broken describer must not let the raw text through
+                text = type(error).__name__
+            raise RuntimeError(text) from None
+
+
+def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
+                  describe_error: Callable[[BaseException], str] = str) -> Dict[str, Tuple[str, AgentRunner]]:
     """One ``AgentRunner`` per role, each holding only its slice of ``tools`` (the already gated tools, picked by
     name), so a helper's calls go through the same gate as the main chat. ``addendum`` is the chat's own system
-    addendum (the project instructions); the role text follows it."""
+    addendum (the project instructions); the role text follows it. An error a helper's run raises reaches the
+    Supervisor as ``describe_error(error)`` only."""
     by_name = {tool.name: tool for tool in tools}
     helpers: Dict[str, Tuple[str, AgentRunner]] = {}
     for role in ROLES:
         chosen = [by_name[name] for name in role.tools if name in by_name]
-        runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=chosen,
-                             system_addendum=(addendum or "") + role_prompt(role),
-                             max_iterations=HELPER_STEPS, auto_cache=False, verbose=False,
-                             parallel_tool_workers=1)
+        runner = _HelperRunner(model=model, agent=AgentType.ReAct, tools=chosen,
+                               system_addendum=(addendum or "") + role_prompt(role),
+                               max_iterations=HELPER_STEPS, auto_cache=False, verbose=False,
+                               parallel_tool_workers=1, describe_error=describe_error)
         helpers[role.name] = (role.description, runner)
     return helpers
 
@@ -94,10 +117,13 @@ def _first_line(text: Any, limit: int = 160) -> str:
 
 def format_result(result: Any) -> str:
     """The one string the main agent gets back: the outcome, each step's fate, and the final answer."""
-    lines = [f"Team job finished (outcome: {getattr(result, 'outcome', 'done')})."]
+    head = f"Team job finished (outcome: {getattr(result, 'outcome', 'done')})"
     subtasks = list(getattr(result, "subtasks", None) or [])
-    if subtasks:
-        lines.append("Steps:")
+    content = str(getattr(result, "content", ""))
+    if not subtasks:                           # nothing ran (no valid plan, say): the reason belongs on line one
+        text = f"{head}: {content}"
+    else:
+        lines = [head + ".", "Steps:"]
         for number, sub in enumerate(subtasks, 1):
             if getattr(sub, "skipped", False):
                 state = "skipped"
@@ -106,8 +132,8 @@ def format_result(result: Any) -> str:
             else:
                 state = "done"
             lines.append(f"{number}. {sub.agent} - {state}: {_first_line(sub.query)}")
-    lines += ["", "Result:", str(getattr(result, "content", ""))]
-    text = "\n".join(lines)
+        lines += ["", "Result:", content]
+        text = "\n".join(lines)
     if len(text) > MAX_RESULT_CHARS:
         text = text[:MAX_RESULT_CHARS] + f"\n... (cut; {len(text) - MAX_RESULT_CHARS} more characters)"
     return text
@@ -130,10 +156,10 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             pass
 
     try:
-        helpers = build_helpers(model, tools, addendum)
+        helpers = build_helpers(model, tools, addendum, describe_error)
         supervisor = Supervisor(model=model, agents=helpers, max_subtasks=MAX_SUBTASKS, verbose=False,
                                 max_subtask_retries=0, max_plan_retries=1, ask_user=ask_user,
-                                max_questions=MAX_QUESTIONS)
+                                max_questions=MAX_QUESTIONS, spawn_config=SpawnConfig(enabled=False))
         events = supervisor.stream(task)
         for event in events:
             if not isinstance(event, dict):
@@ -185,8 +211,8 @@ TOOL_DESCRIPTION = (
     "Hand a LARGE job to a team of helpers (an explorer that reads, a coder that edits files, a runner that "
     "runs commands and tests), led by a supervisor who plans the steps. Use it only for large, multi-part "
     "work: several files or areas, research plus changes plus tests. Do small and medium jobs yourself. The "
-    "user is asked before it starts, it makes many model calls, and only one team job can run per user message. "
-    "You get the supervisor's result back; then summarise it for the user or continue.")
+    "user is asked before it starts unless auto mode is on. It makes many model calls, and only one team job "
+    "can run per user message. You get the supervisor's result back; then summarise it for the user or continue.")
 
 
 def make_team_tool(run: Callable[[str, str], str]) -> StructuredTool:

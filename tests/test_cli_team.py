@@ -80,6 +80,34 @@ def test_a_failed_step_is_reported_as_failed():
     assert "outcome: partial" in text and "1. coder - failed" in text and "Partly done." in text
 
 
+def test_a_job_without_steps_says_why_on_the_first_line():
+    from types import SimpleNamespace
+    result = SimpleNamespace(outcome="stuck", subtasks=[], content="Supervisor failed to produce a valid plan.")
+    assert format_result(result).splitlines()[0] == ("Team job finished (outcome: stuck): "
+                                                     "Supervisor failed to produce a valid plan.")
+
+
+def test_the_tool_description_says_auto_mode_skips_the_question():
+    assert "The user is asked before it starts unless auto mode is on." in team_module.TOOL_DESCRIPTION
+
+
+def test_a_helper_whose_run_raises_gives_the_supervisor_only_the_redacted_text(tools):
+    helpers = build_helpers(router(agent=lambda messages: (_ for _ in ()).throw(RuntimeError("key=SECRET123456"))),
+                            tools, "", describe_error=lambda e: str(e).replace("SECRET123456", "[hidden]"))
+    _, runner = helpers["explorer"]
+    with pytest.raises(RuntimeError) as caught:
+        runner.Initialize("look")
+    assert "SECRET123456" not in str(caught.value) and "[hidden]" in str(caught.value)
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+
+
+def test_a_helper_raising_ctrl_c_or_exit_is_not_rewritten(tools):
+    for error in (KeyboardInterrupt, SystemExit):
+        helpers = build_helpers(router(agent=lambda messages, e=error: (_ for _ in ()).throw(e())), tools, "")
+        with pytest.raises(error):
+            helpers["explorer"][1].Initialize("look")
+
+
 def test_a_long_result_is_cut_with_a_count():
     from types import SimpleNamespace
     result = SimpleNamespace(outcome="done", subtasks=[], content="x" * (MAX_RESULT_CHARS * 2))
@@ -145,7 +173,8 @@ def test_the_supervisor_is_built_with_the_agreed_limits(tmp_path, tools, monkeyp
     run(tmp_path, tools, router(), ask_user=lambda question: None)
     assert built["max_subtasks"] == 6 and built["max_subtask_retries"] == 0 and built["max_plan_retries"] == 1
     assert built["verbose"] is False and built["max_questions"] == 3 and callable(built["ask_user"])
-    assert "spawn_config" not in built and "memory" not in built and "persistence" not in built
+    assert built["spawn_config"].enabled is False
+    assert "memory" not in built and "persistence" not in built
     assert set(built["agents"]) == {"explorer", "coder", "runner"}
 
 
