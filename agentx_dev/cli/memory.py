@@ -14,7 +14,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List
 
-LOG_DIR = ".agentx"
+from agentx_dev.cli.safepaths import FOLDER, replace_file, safe_location
+
+LOG_DIR = FOLDER
 LOG_NAME = "log.md"
 OLDER_NAME = "log-older.md"
 MAX_LOG_BYTES = 200 * 1024            # above this the oldest half of the entries moves to log-older.md
@@ -141,9 +143,6 @@ def _split_entries(text: str) -> List[str]:
     return [piece for piece in re.split(r"(?m)^(?=## )", text) if piece]
 
 
-TEMP_NAME = "log.tmp"
-
-
 def _owner_only(path: Path) -> None:
     """Best effort: the log is for its owner only, where the platform has file modes."""
     try:
@@ -153,18 +152,9 @@ def _owner_only(path: Path) -> None:
 
 
 def _safe_location(cwd: Path) -> bool:
-    """False when ``.agentx`` or a file in it is a symlink, or leads outside the folder, so a cloned project cannot
+    """False when ``.agentx`` or a log file in it is a link, or leads outside the folder, so a cloned project cannot
     point the log at some other file. Never raises."""
-    try:
-        root = Path(cwd).resolve()
-        folder = root / LOG_DIR
-        for item in (folder, folder / LOG_NAME, folder / OLDER_NAME, folder / TEMP_NAME):
-            if item.is_symlink():
-                return False
-            item.resolve().relative_to(root)
-        return True
-    except (OSError, ValueError, RuntimeError):
-        return False
+    return safe_location(cwd, LOG_NAME, OLDER_NAME)
 
 
 def _rotate(path: Path, limit: int) -> None:
@@ -181,11 +171,7 @@ def _rotate(path: Path, limit: int) -> None:
         with open(older, "a", encoding="utf-8", newline="\n") as handle:
             handle.write("".join(entries[:half]))
         _owner_only(older)
-        temporary = path.with_name(TEMP_NAME)
-        with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write("".join(entries[half:]))
-        _owner_only(temporary)
-        os.replace(temporary, path)
+        replace_file(path, "".join(entries[half:]), prefix=".log-", mode=0o600)
     except (OSError, ValueError):
         pass
 

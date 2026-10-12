@@ -312,6 +312,9 @@ def test_plain_model_stays_session_only_and_mentions_the_folder_flag():
     ctx.user_settings_file = "C:/Users/me/.agentx/settings.json"
     run_command(ctx, "/model gpt-4o-mini")
     assert "this session only" in ctx.said[-1] and "--folder" in ctx.said[-1]
+    # The user file is only the default for folders with no file of their own: a folder's file wins.
+    assert "for every folder" not in ctx.said[-1]
+    assert "without their own .agentx/settings.json" in ctx.said[-1] and "wins" in ctx.said[-1]
 
 
 def test_hide_secrets_hides_key_shaped_tokens_and_keeps_newlines():

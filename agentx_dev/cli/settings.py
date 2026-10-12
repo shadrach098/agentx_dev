@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from agentx_dev.cli.approval import MODES
+from agentx_dev.cli.models import provider_for
+from agentx_dev.cli.safepaths import FOLDER, replace_file, safe_location
+
+SETTINGS_NAME = "settings.json"
+PLACEHOLDER_MODEL = "(no model)"           # what the status bar shows before a model is built; never a setting
 
 
 @dataclass
@@ -20,28 +25,40 @@ class Settings:
     deny: List[str] = field(default_factory=list)
     problems: List[str] = field(default_factory=list)     # one line per unreadable file or bad value
     project_allow: List[str] = field(default_factory=list)   # the allow rules that came from the project file
+    model_source: Optional[Path] = None                    # the file ``model`` was read from
 
 
 def user_settings_path(home: Path) -> Path:
-    return Path(home) / ".agentx" / "settings.json"
+    return Path(home) / FOLDER / SETTINGS_NAME
 
 
 def project_settings_path(cwd: Path) -> Path:
-    return Path(cwd) / ".agentx" / "settings.json"
+    return Path(cwd) / FOLDER / SETTINGS_NAME
+
+
+def _real_model(model: Any) -> Optional[str]:
+    """``model`` when it is a name a provider runs (``provider_for``), else None: neither the ``(no model)``
+    placeholder nor a class name used as a label is ever written to a settings file."""
+    if not isinstance(model, str) or not model.strip():
+        return None
+    name = model.strip()
+    return name if provider_for(name) is not None else None
 
 
 def ensure_user_settings(home: Path, model: Optional[str] = None) -> Optional[Path]:
     """Create ``~/.agentx/settings.json`` with the current choices written out, so there is a file to edit.
 
     Does nothing when the file already exists (it is never overwritten) and never raises: the path of the file
-    it created is returned, or None. ``model`` is the model in use now; ``permissions`` starts empty."""
+    it created is returned, or None. ``model`` is the model in use now, written only when it is a real model
+    name (see ``_real_model``); ``permissions`` starts empty."""
     path = user_settings_path(home)
     try:
         if path.exists():
             return None
         data: dict = {}
-        if model:
-            data["model"] = str(model)
+        name = _real_model(model)
+        if name:
+            data["model"] = name
         data.update({"mode": "default", "addDirs": [], "permissions": {"allow": [], "deny": []}})
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "x", encoding="utf-8") as handle:        # "x": never replace a file made in between
@@ -63,9 +80,12 @@ def is_project_folder(cwd: Path, home: Path) -> bool:
 
 def write_project_model(cwd: Path, model: str) -> Tuple[Optional[Path], str]:
     """Save ``model`` as this folder's model in ``<cwd>/.agentx/settings.json``, creating the file or keeping
-    its other keys. Returns ``(path, message)``; ``path`` is None when nothing was written (the file is not
-    valid JSON or not an object, or it could not be written), and the message says why. Never raises."""
+    its other keys. Returns ``(path, message)``; ``path`` is None when nothing was written (``.agentx`` or the
+    file is a link or leads outside the folder, the file is not valid JSON or not an object, or it could not be
+    written), and the message says why. Never raises."""
     path = project_settings_path(cwd)
+    if not safe_location(cwd, SETTINGS_NAME):
+        return None, f"{path} is a link or points outside the folder, so it was left unchanged."
     try:
         data: dict = {}
         verb = "Created"
@@ -80,10 +100,7 @@ def write_project_model(cwd: Path, model: str) -> Tuple[Optional[Path], str]:
             data = loaded
         data["model"] = str(model)
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(data, indent=2) + "\n")
-        os.replace(temporary, path)
+        replace_file(path, json.dumps(data, indent=2) + "\n", prefix=".settings-")
         return path, f"{verb} {path} with model {model}."
     except (OSError, ValueError, TypeError):
         return None, f"Could not write {path}."
@@ -91,9 +108,11 @@ def write_project_model(cwd: Path, model: str) -> Tuple[Optional[Path], str]:
 
 def ensure_project_settings(cwd: Path, home: Path, model: Optional[str]) -> Optional[Path]:
     """For a folder the user has just trusted: write ``{"model": model}`` to its settings file, unless one
-    exists. Nothing is written for the home folder, a drive root or an empty ``model``. Never overwrites,
+    exists. Nothing is written for the home folder, a drive root, a ``model`` that is not a real model name
+    (``_real_model``), or when ``.agentx`` or the file is a link or leads outside the folder. Never overwrites,
     never raises; returns the path it created, or None."""
-    if not model or not is_project_folder(cwd, home):
+    name = _real_model(model)
+    if not name or not is_project_folder(cwd, home) or not safe_location(cwd, SETTINGS_NAME):
         return None
     path = project_settings_path(cwd)
     try:
@@ -101,7 +120,7 @@ def ensure_project_settings(cwd: Path, home: Path, model: Optional[str]) -> Opti
             return None
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "x", encoding="utf-8") as handle:        # "x": never replace a file made in between
-            handle.write(json.dumps({"model": str(model)}, indent=2) + "\n")
+            handle.write(json.dumps({"model": name}, indent=2) + "\n")
         return path
     except (OSError, ValueError, TypeError):
         return None
@@ -173,8 +192,13 @@ def load_settings(cwd: Path, home: Path) -> Settings:
     for path, base, is_project in sources:
         data = _read(path, settings.problems)
         model = data.get("model")
-        if isinstance(model, str) and model.strip():
+        if isinstance(model, str) and model.strip() == PLACEHOLDER_MODEL:
+            # an earlier build wrote the status-bar placeholder here; the file is never rewritten for it
+            settings.problems.append(f'"model": "{PLACEHOLDER_MODEL}" in {path} is a placeholder written by an '
+                                     "earlier build; it was ignored - delete that line.")
+        elif isinstance(model, str) and model.strip():
             settings.model = model.strip()
+            settings.model_source = path
         elif model is not None:
             settings.problems.append(f"settings file {path}: 'model' must be text; ignored")
         mode = data.get("mode")

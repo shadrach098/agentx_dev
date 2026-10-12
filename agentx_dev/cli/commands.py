@@ -78,8 +78,9 @@ def _model(ctx: Any, arg: str) -> None:
     folder = "--folder" in words
     name = " ".join(word for word in words if word != "--folder")
     where = getattr(ctx, "user_settings_file", None)
-    default_hint = (f' Add --folder to keep it for this folder, or set "model" in {shown(where)} for every folder.'
-                    if where else " Add --folder to keep it for this folder.")
+    default_hint = (f' Add --folder to keep it for this folder. "model" in {shown(where)} is the default for folders '
+                    "without their own .agentx/settings.json; a folder's file (written when you first trust the "
+                    "folder) wins." if where else " Add --folder to keep it for this folder.")
     if not name:
         if folder:
             ctx.error("Usage: /model <name> --folder")

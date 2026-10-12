@@ -687,6 +687,7 @@ class TestMain:
         assert main(["--add-dir", "extra", "--continue"]) == 7
         assert captured["cwd"] == proj.resolve() and captured["home"] == home
         assert captured["model_name"] == "gpt-4o" and captured["mode"] == "plan"
+        assert captured["model_source"] == proj / ".agentx" / "settings.json"
         assert captured["resume"] == "latest"
         assert captured["allow"] == ["run_shell:make*"] and captured["project_allow"] == ["run_shell:make*"]
         assert captured["deny"] == ["run_shell:*sudo*"]
@@ -720,6 +721,9 @@ class TestMain:
         monkeypatch.chdir(proj)
         main(["--model", "claude-sonnet-4-6", "--mode", "accept-edits"])
         assert captured["model_name"] == "claude-sonnet-4-6" and captured["mode"] == "accept-edits"
+        assert captured["model_source"] is None                    # the flag named it, not a file
+        # main writes no settings file of its own: the app does, once the model is built (ChatApp.start)
+        assert not (home / ".agentx" / "settings.json").exists()
 
     def test_a_crash_while_starting_up_is_one_line_not_a_traceback(self, monkeypatch, capsys):
         monkeypatch.setattr(app_module, "is_terminal", lambda: True)
@@ -1363,7 +1367,7 @@ def test_settings_command_names_the_files_and_what_is_in_force(tmp_path):
     app.start()
     text = out.getvalue()
     assert "Your settings file" in text and "settings.json" in text and "Mode: default" in text
-    assert "Rules:" in text and "Model:" in text
+    assert "Rules:" in text and "Model:" in text and "--folder" in text
 
 
 def test_the_startup_banner_says_when_a_settings_file_was_created(tmp_path):

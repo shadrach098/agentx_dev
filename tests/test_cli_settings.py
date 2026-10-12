@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from agentx_dev.cli.settings import load_settings, project_settings_path, user_settings_path
 
 
@@ -177,7 +179,7 @@ def test_settings_field_order_ends_with_problems_then_project_allow():
     import dataclasses
     from agentx_dev.cli.settings import Settings
     names = [f.name for f in dataclasses.fields(Settings)]
-    assert names == ["model", "mode", "add_dirs", "allow", "deny", "problems", "project_allow"]
+    assert names == ["model", "mode", "add_dirs", "allow", "deny", "problems", "project_allow", "model_source"]
     assert Settings(None, None, [], [], [], ["p"]).project_allow == []
 
 
@@ -327,7 +329,142 @@ def test_the_folder_file_beats_the_user_file_and_loads_without_problems(tmp_path
     from agentx_dev.cli.settings import ensure_project_settings
     home, folder = tmp_path / "home", tmp_path / "proj"
     folder.mkdir()
-    put(user_settings_path(home), {"model": "user-model"})
-    ensure_project_settings(folder, home, "folder-model")
+    put(user_settings_path(home), {"model": "gpt-4o"})
+    ensure_project_settings(folder, home, "claude-sonnet-4-6")
     settings = load_settings(folder, home)
-    assert settings.model == "folder-model" and settings.problems == []
+    assert settings.model == "claude-sonnet-4-6" and settings.problems == []
+    assert settings.model_source == project_settings_path(folder)
+
+
+# -- the "(no model)" placeholder ---------------------------------------------------------------------------
+
+def test_the_first_settings_file_never_holds_a_placeholder_model(tmp_path):
+    from agentx_dev.cli.settings import ensure_user_settings
+    for n, placeholder in enumerate(("(no model)", "MockModel", "", None)):
+        home = tmp_path / f"home{n}"
+        created = ensure_user_settings(home, placeholder)
+        data = json.loads(created.read_text(encoding="utf-8"))
+        assert "model" not in data and data["mode"] == "default"
+
+
+def test_a_folder_settings_file_is_never_created_for_a_placeholder_model(tmp_path):
+    from agentx_dev.cli.settings import ensure_project_settings
+    home, folder = tmp_path / "home", tmp_path / "proj"
+    home.mkdir()
+    folder.mkdir()
+    for placeholder in ("(no model)", "MockModel"):
+        assert ensure_project_settings(folder, home, placeholder) is None
+    assert not (folder / ".agentx").exists()
+
+
+def test_an_old_placeholder_model_is_ignored_with_a_note_and_the_file_is_left_alone(tmp_path):
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    put(user_settings_path(home), {"model": "(no model)", "mode": "plan"})
+    before = user_settings_path(home).read_text(encoding="utf-8")
+    s = load_settings(cwd, home)
+    assert s.model is None and s.model_source is None and s.mode == "plan"
+    assert s.problems == [f'"model": "(no model)" in {user_settings_path(home)} is a placeholder written by an '
+                          "earlier build; it was ignored - delete that line."]
+    assert user_settings_path(home).read_text(encoding="utf-8") == before
+
+
+def test_the_model_source_names_the_file_the_model_came_from(tmp_path):
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    assert load_settings(cwd, home).model_source is None
+    put(user_settings_path(home), {"model": "gpt-4o"})
+    assert load_settings(cwd, home).model_source == user_settings_path(home)
+
+
+# -- the folder settings file is never written through a link ------------------------------------------------
+
+def _outside_settings(tmp_path):
+    """A project whose .agentx is a link (a symlink, or a junction on Windows) to another settings folder."""
+    elsewhere, project = tmp_path / "elsewhere", tmp_path / "proj"
+    elsewhere.mkdir()
+    project.mkdir()
+    (elsewhere / "settings.json").write_text('{"model": "claude-sonnet-4-6"}', encoding="utf-8")
+    _link(project / ".agentx", elsewhere)
+    return project, elsewhere
+
+
+def test_write_project_model_refuses_a_linked_settings_folder(tmp_path):
+    from agentx_dev.cli.settings import write_project_model
+    project, elsewhere = _outside_settings(tmp_path)
+    path, message = write_project_model(project, "gpt-4o")
+    assert path is None
+    assert message == f"{project_settings_path(project)} is a link or points outside the folder, so it was left unchanged."
+    assert (elsewhere / "settings.json").read_text(encoding="utf-8") == '{"model": "claude-sonnet-4-6"}'
+    assert sorted(p.name for p in elsewhere.iterdir()) == ["settings.json"]
+
+
+def test_ensure_project_settings_refuses_a_linked_settings_folder(tmp_path):
+    from agentx_dev.cli.settings import ensure_project_settings
+    project, elsewhere = _outside_settings(tmp_path)
+    (elsewhere / "settings.json").unlink()
+    home = tmp_path / "home"
+    home.mkdir()
+    assert ensure_project_settings(project, home, "gpt-4o") is None
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_a_linked_settings_file_is_not_written_through(tmp_path):
+    from agentx_dev.cli.settings import write_project_model
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    project = tmp_path / "proj"
+    (project / ".agentx").mkdir(parents=True)
+    try:
+        (project / ".agentx" / "settings.json").symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("file symlinks cannot be created here")
+    path, message = write_project_model(project, "gpt-4o")
+    assert path is None and "is a link" in message and outside.read_text(encoding="utf-8") == "{}"
+
+
+def test_a_planted_settings_tmp_link_is_never_followed(tmp_path):
+    from agentx_dev.cli.settings import write_project_model
+    victim = tmp_path / "victim.txt"
+    victim.write_text("precious\n", encoding="utf-8")
+    project = tmp_path / "proj"
+    (project / ".agentx").mkdir(parents=True)
+    try:
+        (project / ".agentx" / "settings.tmp").symlink_to(victim)
+    except (OSError, NotImplementedError):
+        pytest.skip("file symlinks cannot be created here")
+    path, _ = write_project_model(project, "gpt-4o")
+    assert path == project_settings_path(project)
+    assert victim.read_text(encoding="utf-8") == "precious\n"
+
+
+def test_the_temporary_file_has_a_fresh_name_so_a_planted_one_is_never_opened(tmp_path):
+    """Runs where symlinks cannot be made: a file already at the old fixed temporary name is left alone."""
+    from agentx_dev.cli.settings import write_project_model
+    put(tmp_path / ".agentx" / "settings.tmp", "planted")
+    path, _ = write_project_model(tmp_path, "gpt-4o")
+    assert path is not None and (tmp_path / ".agentx" / "settings.tmp").read_text(encoding="utf-8") == "planted"
+    assert sorted(p.name for p in (tmp_path / ".agentx").iterdir()) == ["settings.json", "settings.tmp"]
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="file modes are not meaningful on Windows")
+def test_an_updated_folder_settings_file_keeps_its_mode(tmp_path):
+    import os
+    from agentx_dev.cli.settings import write_project_model
+    put(project_settings_path(tmp_path), {"model": "old"})
+    os.chmod(project_settings_path(tmp_path), 0o640)
+    write_project_model(tmp_path, "gpt-4o")
+    assert (project_settings_path(tmp_path).stat().st_mode & 0o777) == 0o640
+
+
+def test_a_failed_replace_leaves_no_temporary_file_behind(tmp_path, monkeypatch):
+    from agentx_dev.cli import safepaths
+    from agentx_dev.cli.settings import write_project_model
+    put(project_settings_path(tmp_path), {"model": "old"})
+
+    def refuse(source, target):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(safepaths.os, "replace", refuse)
+    path, message = write_project_model(tmp_path, "new")
+    assert path is None and "Could not write" in message
+    assert sorted(p.name for p in (tmp_path / ".agentx").iterdir()) == ["settings.json"]
+    assert json.loads(project_settings_path(tmp_path).read_text(encoding="utf-8")) == {"model": "old"}

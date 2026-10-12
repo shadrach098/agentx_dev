@@ -213,14 +213,90 @@ def test_a_summarised_conversation_resumes_with_a_valid_history(tmp_path):
 
 # -- folder settings -----------------------------------------------------------------------------------------
 
+def named_model(name="gpt-4o-mini", script=()):
+    """A scripted model whose label is a real model name (a plain MockModel's label is its class name)."""
+    model = MockModel(script=list(script))
+    model.model_name = name
+    return model
+
+
 def test_a_newly_trusted_folder_gets_its_own_settings_file(tmp_path):
-    model = MockModel(script=[])
+    model = named_model()
     app, out, cwd, _ = make_app(tmp_path, Lines("/exit"), model, newly_trusted=True)
     assert app.start() == 0
     path = cwd / ".agentx" / "settings.json"
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data == {"model": app.model_label} and app.project_settings_created == path
+    assert data == {"model": "gpt-4o-mini"} and app.project_settings_created == path
     assert "Created" in out.getvalue() and "--folder" in out.getvalue()
+
+
+def test_a_model_without_a_real_name_writes_no_folder_settings_file(tmp_path):
+    app, out, cwd, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]), newly_trusted=True)
+    assert app.start() == 0
+    assert not (cwd / ".agentx" / "settings.json").exists() and app.project_settings_created is None
+
+
+# -- the user's settings file on a first run -------------------------------------------------------------------
+
+def test_a_first_run_writes_the_user_settings_with_the_model_actually_built(tmp_path):
+    app, out, _, home = make_app(tmp_path, Lines("/exit"), named_model("claude-sonnet-4-6"))
+    assert app.start() == 0
+    path = home / ".agentx" / "settings.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["model"] == "claude-sonnet-4-6" and "(no model)" not in path.read_text(encoding="utf-8")
+    assert app.settings_created == path and "Created your settings file" in out.getvalue()
+
+
+def test_a_model_that_cannot_be_built_leaves_a_settings_file_without_a_model(tmp_path):
+    from agentx_dev.cli.models import ModelError
+
+    def refuse(name, env):
+        raise ModelError("No API key found: set ANTHROPIC_API_KEY (for Claude) or OPENAI_API_KEY (for GPT).")
+
+    app, out, _, home = make_app(tmp_path, Lines(), None, model_factory=refuse)
+    assert app.start() == 1
+    data = json.loads((home / ".agentx" / "settings.json").read_text(encoding="utf-8"))
+    assert "model" not in data and data["mode"] == "default"
+    assert "Created your settings file" in out.getvalue() and "ANTHROPIC_API_KEY" in out.getvalue()
+
+
+def test_a_second_run_after_a_first_one_starts_with_the_same_model(tmp_path):
+    from agentx_dev.cli.models import choose_model
+    from agentx_dev.cli.settings import load_settings
+    app, _, cwd, home = make_app(tmp_path, Lines("/exit"), named_model("gpt-4o"))
+    app.start()
+    settings = load_settings(cwd, home)
+    assert settings.model == "gpt-4o" and settings.problems == []
+    choose_model(settings.model, {"OPENAI_API_KEY": "sk-test-0123456789"})        # builds; no ModelError
+
+
+def test_an_error_for_a_model_from_settings_names_the_file(tmp_path):
+    from agentx_dev.cli.models import ModelError
+
+    def refuse(name, env):
+        raise ModelError(f"Cannot tell which provider runs {name!r}: start the name with 'claude' or 'gpt'.")
+
+    source = tmp_path / "proj" / ".agentx" / "settings.json"
+    app, out, _, _ = make_app(tmp_path, Lines(), None, model_factory=refuse, model_name="mistral-large",
+                              model_source=source)
+    assert app.start() == 1
+    text = " ".join(out.getvalue().split())
+    assert "mistral-large" in text and "settings.json" in text and "comes from" in text
+
+
+# -- a failure while writing the log never ends the chat -------------------------------------------------------
+
+def test_an_unexpected_error_while_logging_is_noticed_once_and_the_chat_goes_on(tmp_path, monkeypatch):
+    def broken(cwd, text, limit=0):
+        raise RuntimeError("rotation blew up")
+
+    monkeypatch.setattr(app_module, "append_entry", broken)
+    model = MockModel(script=[make_final("one"), make_final("two")])
+    app, out, _, _ = make_app(tmp_path, Lines("first", "second", "/exit"), model)
+    assert app.start() == 0
+    text = out.getvalue()
+    assert text.count("Could not write the work log") == 1 and "one" in text and "two" in text
+    assert "Something went wrong" not in text
 
 
 def test_an_already_trusted_folder_is_left_alone(tmp_path):

@@ -24,8 +24,9 @@ from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_
 from agentx_dev.cli.models import ModelError, choose_model
 from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
-from agentx_dev.cli.settings import (ensure_project_settings, ensure_user_settings, is_project_folder, load_settings,
-                                     project_settings_path, user_settings_path, write_project_model)
+from agentx_dev.cli.settings import (PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
+                                     is_project_folder, load_settings, project_settings_path, user_settings_path,
+                                     write_project_model)
 from agentx_dev.cli.team import make_team_tool, run_team_job, team_request
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
@@ -145,7 +146,8 @@ class ChatApp:
                  add_dirs: Iterable[Path] = (), model_factory: Callable[..., Any] = choose_model,
                  env: Optional[Mapping[str, str]] = None, problems: Iterable[str] = (),
                  project_allow: Iterable[str] = (),
-                 select: Optional[Callable[..., Optional[int]]] = None, newly_trusted: bool = False) -> None:
+                 select: Optional[Callable[..., Optional[int]]] = None, newly_trusted: bool = False,
+                 model_source: Optional[Path] = None) -> None:
         self.cwd = Path(cwd).resolve()
         self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
@@ -156,9 +158,10 @@ class ChatApp:
         self.model_factory = model_factory
         self.env = dict(os.environ if env is None else env)
         self.requested_model = model_name
+        self.model_source = model_source       # the settings file ``model_name`` came from (None: a flag, or none)
         self.problems = list(problems)
         self.project_allow = list(project_allow)
-        self.settings_created: Optional[Path] = None      # set by main when it wrote a first settings file
+        self.settings_created: Optional[Path] = None      # set by start when it wrote a first settings file
         self.add_dirs = [_resolved(Path(d).expanduser()) for d in add_dirs]
         self.gate = Gate(mode=mode, allow=allow, deny=[*default_deny(self.home), *deny], cwd=self.cwd)
         # The mode in force when "a" was answered at an edit prompt (None: accept-edits, if on, was chosen)
@@ -289,7 +292,7 @@ class ChatApp:
 
     @property
     def model_label(self) -> str:
-        return label_of(self.model) if self.model is not None else "(no model)"
+        return label_of(self.model) if self.model is not None else PLACEHOLDER_MODEL
 
     def request_exit(self) -> None:
         self._exit = True
@@ -314,8 +317,10 @@ class ChatApp:
             f"Extra folders: {', '.join(str(d) for d in self.add_dirs) or 'none'}\n"
             f"Your settings file ({state(user)}): {user}\n"
             f"This project's settings file ({state(project)}): {project}\n"
-            "Edit your file to change the default model, mode, extra folders and permission rules, then restart. "
-            "Use /model <name> or /mode <name> to change them for this session only. "
+            "Edit your file to change the default model, mode, extra folders and permission rules, then restart; "
+            "a model in this project's file wins over yours. "
+            "Use /model <name> or /mode <name> to change them for this session only, "
+            "or /model <name> --folder to also save the model in this project's file. "
             "The project file cannot turn on accept-edits or add folders outside the project.")
 
     def toolbar(self) -> str:
@@ -367,11 +372,17 @@ class ChatApp:
         try:
             self.model = self.model_factory(self.requested_model, self.env)
         except ModelError as e:
-            self.error(self._safe(e))
+            self.error(self._safe(e) + self._model_source_note())
+            self._create_user_settings(None)
+            self._show_settings_created()
             return 1
         except Exception as e:
-            self.error(f"Could not set up the model ({type(e).__name__}).")
+            self.error(f"Could not set up the model ({type(e).__name__}).{self._model_source_note()}")
+            self._create_user_settings(None)
+            self._show_settings_created()
             return 1
+        # Only now is the model's real name known: the first settings file is written with it (never overwritten).
+        self._create_user_settings(self.model_label)
         if self._newly_trusted and self._memory_on:         # never overwrites a file that is already there
             self.project_settings_created = ensure_project_settings(self.cwd, self.home, self.model_label)
         if resume is None:
@@ -395,13 +406,29 @@ class ChatApp:
                     "Shift+Tab changes the mode, Ctrl+D leaves.")
         if self.gate.mode == "auto":
             self.notice(AUTO_NOTICE)
-        if self.settings_created is not None:
-            self.notice(f"Created your settings file: {self.settings_created}\n"
-                        "Edit it to change the default model, mode and permission rules. /settings shows what is in force.")
+        self._show_settings_created()
         if self.project_settings_created is not None:
             self.notice(f"Created {self._safe(self.project_settings_created, 400)} with this folder's model. "
                         "/model <name> --folder changes it.")
         return self.loop()
+
+    def _create_user_settings(self, model: Optional[str]) -> None:
+        """Write ``~/.agentx/settings.json`` if there is none yet (``model`` only when it is a real name)."""
+        created = ensure_user_settings(self.home, model)
+        if created is not None:
+            self.settings_created = created
+
+    def _show_settings_created(self) -> None:
+        if self.settings_created is not None:
+            self.notice(f"Created your settings file: {self._safe(self.settings_created, 400)}\n"
+                        "Edit it to change the default model, mode and permission rules. /settings shows what is in force.")
+
+    def _model_source_note(self) -> str:
+        """For a model that cannot be built: which settings file named it, so the user knows what to edit."""
+        if self.model_source is None:
+            return ""
+        name, source = self._safe(self.requested_model, 60), self._safe(self.model_source, 300)
+        return f" The model name {name!r} comes from {source}."
 
     def _find_for_start(self, resume: str) -> Optional[SessionInfo]:
         if resume == "latest":
@@ -491,7 +518,10 @@ class ChatApp:
             self.progress.stop()
             self.save()
         if finished:
-            self._log_turn(text if log_title is None else log_title, events)
+            try:
+                self._log_turn(text if log_title is None else log_title, events)
+            except Exception:                  # the turn itself went well: a log failure must not end the app
+                self._warn_log_failed()
 
     # -- project memory: the work log and summarising ------------------------
 
@@ -507,8 +537,16 @@ class ChatApp:
 
     def _append_log(self, text: str) -> None:
         """Add ``text`` to ``.agentx/log.md``. A failure is noticed once per session and never stops the chat."""
-        if not self._memory_on or append_entry(self.cwd, text):
+        if not self._memory_on:
             return
+        try:
+            written = append_entry(self.cwd, text)
+        except Exception:                      # append_entry returns False for the expected failures
+            written = False
+        if not written:
+            self._warn_log_failed()
+
+    def _warn_log_failed(self) -> None:
         if not self._log_warned:
             self._log_warned = True
             self.notice("Could not write the work log in .agentx/log.md; carrying on without it.")
@@ -815,9 +853,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                       select=prompt.select,
                       model_name=args.model or settings.model, mode=args.mode or settings.mode or "default",
                       allow=settings.allow, deny=settings.deny, add_dirs=add_dirs, problems=settings.problems,
-                      project_allow=settings.project_allow, newly_trusted=not was_trusted)
+                      project_allow=settings.project_allow, newly_trusted=not was_trusted,
+                      model_source=None if args.model else settings.model_source)
         holder.append(app)
-        app.settings_created = ensure_user_settings(home, getattr(app, "model_label", None))
+        # ~/.agentx/settings.json is written by ChatApp.start once the model is built, so it holds its real name.
     except KeyboardInterrupt:
         print("agentx: interrupted while starting.", file=sys.stderr)
         return 130
