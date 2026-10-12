@@ -240,6 +240,23 @@ def _generic(tool: Any, args: Any) -> Preview:
     return Preview(title, body, "text", truncated, COMMAND_TOO_LONG if truncated else "")
 
 
+TEAM_HELPERS_LINE = ("Helpers, one at a time: explorer (reads and searches), coder (edits files), "
+                     "runner (runs commands and tests).")
+
+
+def _team_job(args: Mapping[str, Any]) -> Preview:
+    task = str(args.get("task") or "").strip()
+    why = str(args.get("why") or "").strip()
+    lines = [f"Task: {task}"]
+    if why:
+        lines.append(f"Why a team: {why}")
+    lines += ["", TEAM_HELPERS_LINE,
+              "A team job makes many model calls and can take several minutes. Every edit or command a "
+              "helper tries is asked about as usual."]
+    body, truncated = _whole("\n".join(lines))
+    return Preview("Start a team job", body, "text", truncated, COMMAND_TOO_LONG if truncated else "")
+
+
 def _build(tool: str, args: Mapping[str, Any], cwd: Path) -> Preview:
     if not isinstance(args, Mapping):
         return _generic(tool, args)
@@ -260,6 +277,8 @@ def _build(tool: str, args: Mapping[str, Any], cwd: Path) -> Preview:
         return Preview(f"Delete {args.get('path', '')}{extra}", "", "text")
     if tool == "move_file":
         return _move_file(args, cwd)
+    if tool == "start_team_job":
+        return _team_job(args)
     return _generic(tool, args)
 
 

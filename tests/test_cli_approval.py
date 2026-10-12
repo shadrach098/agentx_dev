@@ -1068,3 +1068,55 @@ def test_shift_tab_never_enters_auto_and_always_leaves_it(tmp_path):
 def test_plan_mode_still_refuses_what_auto_would_run(tmp_path):
     gate = Gate(mode="plan", cwd=tmp_path)
     assert gate.check("run_python", {"code": "print(1)"}) == PLAN_REFUSAL
+
+
+class TestTeamJobTool:
+    ARGS = {"task": "Survey the project and report", "why": "it spans many areas"}
+
+    def gate(self, mode="default", answer="y", **kw):
+        asked = []
+
+        def ask(request):
+            asked.append(request)
+            return Answer(answer)
+
+        return Gate(mode=mode, ask=ask, cwd=Path.cwd(), **kw), asked
+
+    def test_it_is_a_team_kind(self):
+        assert kind_of("start_team_job") == "team"
+
+    @pytest.mark.parametrize("mode", ["default", "accept-edits"])
+    def test_it_asks_and_never_offers_always(self, mode):
+        gate, asked = self.gate(mode)
+        assert gate.check("start_team_job", self.ARGS) is None
+        assert len(asked) == 1
+        assert asked[0].kind == "team" and asked[0].remember is False and asked[0].grant == ""
+        assert asked[0].subject == self.ARGS["task"]
+
+    def test_plan_mode_refuses_it_without_asking(self):
+        gate, asked = self.gate("plan")
+        assert gate.check("start_team_job", self.ARGS) == PLAN_REFUSAL
+        assert asked == []
+
+    def test_auto_mode_runs_it_without_asking(self):
+        gate, asked = self.gate("auto")
+        assert gate.check("start_team_job", self.ARGS) is None
+        assert asked == []
+
+    def test_a_deny_rule_turns_the_feature_off_in_every_mode(self):
+        for mode in ("default", "accept-edits", "auto"):
+            gate, asked = self.gate(mode, deny=["start_team_job:*"])
+            assert "deny rule" in gate.check("start_team_job", self.ARGS)
+            assert asked == []
+
+    def test_the_users_own_allow_rule_lets_it_run_in_default_mode(self):
+        gate, asked = self.gate("default", allow=["start_team_job"])
+        assert gate.check("start_team_job", self.ARGS) is None
+        assert asked == []
+
+    def test_answering_always_remembers_nothing(self):
+        gate, asked = self.gate("default", answer="a")
+        assert gate.check("start_team_job", self.ARGS) is None
+        assert not gate.grants and gate.mode == "default"
+        assert gate.check("start_team_job", self.ARGS) is None
+        assert len(asked) == 2                                   # asked again: "a" is not a grant here

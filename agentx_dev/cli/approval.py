@@ -21,6 +21,7 @@ TOOL_KINDS = {
     "write_file": "edit", "edit_file": "edit",
     "run_shell": "command", "run_python": "command",
     "delete_path": "destructive", "move_file": "destructive",
+    "start_team_job": "team",
 }
 _TWO_WORD_COMMANDS = frozenset({"git", "npm", "pnpm", "yarn", "pip", "cargo", "go", "docker", "make"})
 # Characters that chain, pipe, redirect, substitute or group. Any character outside printable ASCII
@@ -82,7 +83,7 @@ class Answer:
 
 
 def kind_of(tool: str) -> str:
-    """read / edit / command / destructive. A tool the gate does not know counts as a command."""
+    """read / edit / command / destructive / team. A tool the gate does not know counts as a command."""
     return TOOL_KINDS.get(tool, "command")
 
 
@@ -443,7 +444,7 @@ class Gate:
             return PLAN_REFUSAL
         if kind == "read":
             return None
-        if self._mode == "auto" and tool in TOOL_KINDS and kind in ("edit", "command"):
+        if self._mode == "auto" and tool in TOOL_KINDS and kind in ("edit", "command", "team"):
             return None             # auto: only delete / move and tools the gate does not know still ask
         compound = _is_compound(tool, args)
         if kind != "destructive" and not compound:

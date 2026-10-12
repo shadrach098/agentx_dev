@@ -300,3 +300,20 @@ def test_a_move_into_a_folder_that_already_holds_that_name_says_it_will_fail(tmp
     (tmp_path / "dest" / "a.txt").write_text("old", encoding="utf-8")
     title = preview_for("move_file", {"source": "a.txt", "destination": "dest"}, tmp_path).title
     assert title == "Move a.txt to dest/a.txt (refused: that name already exists in the folder)"
+
+
+def test_a_team_job_preview_names_the_task_the_reason_and_the_helpers(tmp_path):
+    preview = preview_for("start_team_job", {"task": "Survey the project", "why": "many areas"}, tmp_path)
+    assert preview.title == "Start a team job" and preview.kind == "text" and not preview.truncated
+    for text in ("Survey the project", "many areas", "explorer", "coder", "runner", "many model calls"):
+        assert text in preview.body
+
+
+def test_a_team_job_preview_without_a_reason_has_no_reason_line(tmp_path):
+    preview = preview_for("start_team_job", {"task": "Survey the project", "why": ""}, tmp_path)
+    assert "Why a team" not in preview.body and "Survey the project" in preview.body
+
+
+def test_a_team_job_preview_never_raises_on_odd_arguments(tmp_path):
+    assert preview_for("start_team_job", {"task": None, "why": 5}, tmp_path).title == "Start a team job"
+    assert preview_for("start_team_job", "not a mapping", tmp_path).title
