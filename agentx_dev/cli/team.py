@@ -28,6 +28,7 @@ OUT_OF_STEPS_NOTE = ("(This helper ran out of steps before finishing, so this is
                      "changed before relying on it.)\n")
 MAX_SUBTASKS = 6
 MAX_LISTED_FILES = 40                # files named in a partial helper's note
+RUNNER_ADVICE = ("Hit max_iterations (", "The agent likely needed more iterations")   # recap lines dropped
 MAX_TEAM_JOBS_PER_MESSAGE = 5        # a big task may take several batches; this bounds one message's cost
 MAX_QUESTIONS = 3
 ROLE_MARK = "Team role:"
@@ -88,7 +89,7 @@ def _partial_if_out_of_steps(completion: Any) -> Any:
         return completion
     try:
         recap = "\n".join(line for line in str(getattr(completion, "content", "") or "").splitlines()
-                          if "max_iterations" not in line)    # the runner's advice to developers, not to the team
+                          if not line.startswith(RUNNER_ADVICE))   # the runner's advice to developers, not the team
         completion.content = OUT_OF_STEPS_NOTE + _changed_files(completion) + "\n" + recap
         completion.outcome = "done"
     except Exception:                               # a completion that cannot be changed is left as it is

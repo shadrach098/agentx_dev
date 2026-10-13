@@ -817,8 +817,6 @@ def test_a_helper_that_runs_out_of_steps_hands_over_partial_work_and_the_next_st
 
 
 def test_a_job_where_no_step_finished_stops_the_next_one(tmp_path):
-    from agentx_dev.cli import team as team_module
-
     def helper(messages, n):                   # every helper gets stuck repeating one call
         return make_react_response("list_directory", {"path": "."})
 

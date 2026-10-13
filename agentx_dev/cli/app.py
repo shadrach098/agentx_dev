@@ -931,7 +931,9 @@ class ChatApp:
             self._team_helper = ""
             self.progress.start("Thinking")
         # A job in which no step got anywhere would most likely fail the same way again: stop the batches.
-        self._team_stalled = not re.search(r"(?m)^\d+\. .+ - (done|partial)", text)
+        # (A failed job, one that ended without a result, and outcome "stuck" - no step finished - all count.)
+        self._team_stalled = (not text.startswith("Team job finished (outcome: ")
+                              or text.startswith("Team job finished (outcome: stuck"))
         return f"{text}\n(team job {self._team_jobs} of {MAX_TEAM_JOBS_PER_MESSAGE} for this message)"
 
     def _team_refusal(self) -> str:
