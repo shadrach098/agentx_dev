@@ -24,6 +24,8 @@ def team_model(steps, synth="The survey is complete.", helper=None, main=("call"
 
     def script(messages):
         first = str(messages[0]["content"])
+        if "A coding assistant can run helper steps on these models" in str(messages[-1]["content"]):
+            return "{}"                                  # the question about helper models: no notes
         if PLANNER_MARK in first:
             return plan_json(*steps)
         if SYNTH_MARK in first:
@@ -637,3 +639,92 @@ def test_project_notes_are_shown_at_startup_and_in_settings(tmp_path):
     text = out.getvalue()
     assert "also use: gpt-5.5 (use for every step)" in text
     assert "Helper models: gpt-5.5 (use for every step)" in text
+
+
+# -- notes written by the chat model ---------------------------------------------------------------------------
+
+DESCRIBE_MARK = "A coding assistant can run helper steps on these models"
+
+
+def describing_model(reply='{"gpt-5.5": "fast, cheaper coding", "gpt-6-luna": "unknown", '
+                           '"claude-sonnet-5-5": "careful everyday coding"}', label="claude-sonnet-5-5"):
+    asked = []
+
+    def script(messages):
+        text = str(messages[-1]["content"])
+        if DESCRIBE_MARK in text:
+            asked.append(text)
+            if isinstance(reply, BaseException):
+                raise reply
+            return reply
+        return make_final("ok")
+
+    model = MockModel(script=script)
+    model.model_name = label
+    model.asked = asked
+    return model
+
+
+def test_setting_a_list_asks_the_chat_model_once_for_notes(tmp_path):
+    chat = describing_model()
+    app, out, _, _ = make_app(tmp_path, Lines("/team-models gpt-5.5 gpt-6-luna", "/exit"), chat, env=KEYS)
+    assert app.start() == 0
+    assert len(chat.asked) == 1 and "gpt-5.5" in chat.asked[0] and "claude-sonnet-5-5" in chat.asked[0]
+    assert app.team_model_uses["gpt-5.5"] == "auto: fast, cheaper coding"
+    assert app._use_of("claude-sonnet-5-5") == "auto: careful everyday coding"
+    assert "gpt-6-luna" not in app.team_model_uses                       # "unknown" gives no note
+    assert "gpt-5.5 (auto: fast, cheaper coding)" in out.getvalue()
+
+
+def test_a_note_you_wrote_is_never_asked_about_or_replaced(tmp_path):
+    chat = describing_model(reply='{"gpt-5.5": "something else", "gpt-6-luna": "fast reading"}')
+    app, _, _, _ = make_app(tmp_path, Lines('/team-models gpt-5.5="mine" gpt-6-luna', "/team-models describe",
+                                            "/exit"), chat, env=KEYS)
+    assert app.start() == 0
+    assert all("- gpt-5.5" not in text for text in chat.asked)
+    assert app.team_model_uses["gpt-5.5"] == "mine" and app.team_model_uses["gpt-6-luna"] == "auto: fast reading"
+    assert len(chat.asked) == 2                                            # set, then describe again
+
+
+def test_a_failed_description_leaves_the_list_set_and_says_so(tmp_path):
+    chat = describing_model(reply=RuntimeError("down"))
+    app, out, _, _ = make_app(tmp_path, Lines("/team-models gpt-5.5", "/exit"), chat, env=KEYS)
+    assert app.start() == 0
+    assert app.team_models == ["gpt-5.5"] and "Could not describe the models" in out.getvalue()
+    assert "down" not in out.getvalue()
+
+
+def test_folder_saves_the_auto_notes(tmp_path):
+    chat = describing_model()
+    app, _, cwd, _ = make_app(tmp_path, Lines("/team-models gpt-5.5 --folder", "/exit"), chat, env=KEYS)
+    assert app.start() == 0
+    data = json.loads((cwd / ".agentx" / "settings.json").read_text(encoding="utf-8"))
+    assert data["teamModels"] == [{"model": "gpt-5.5", "use": "auto: fast, cheaper coding"}]
+
+
+def test_clear_asks_nothing(tmp_path):
+    chat = describing_model()
+    app, _, _, _ = make_app(tmp_path, Lines("/team-models clear", "/exit"), chat, env=KEYS)
+    assert app.start() == 0
+    assert chat.asked == []
+
+
+def test_a_list_from_settings_is_described_at_the_first_job_only(tmp_path):
+    described = []
+    chat = team_model([step("s1", "explorer@claude-sonnet-5-5", "look")], main=("call", "final", "call", "final"))
+    chat.model_name = "claude-sonnet-5-5"
+    original = chat._script_fn
+
+    def script(messages):
+        if DESCRIBE_MARK in str(messages[-1]["content"]):
+            described.append(1)
+            return '{"claude-opus-5-5": "hard coding"}'
+        return original(messages)
+
+    chat._script_fn = script
+    opus = extra("claude-opus-5-5")
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "and another", "/exit"), chat,
+                              read_short=Lines("y", "y"), env=KEYS, team_models=["claude-opus-5-5"],
+                              model_factory=factory_for(chat, **{"claude-opus-5-5": opus}))
+    assert app.start() == 0
+    assert described == [1] and app.team_model_uses.get("claude-opus-5-5") == "auto: hard coding"

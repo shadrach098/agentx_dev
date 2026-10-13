@@ -205,3 +205,30 @@ def test_a_name_with_an_equals_sign_is_not_a_model_name():
 def test_a_null_note_means_no_note():
     from agentx_dev.cli.models import parse_team_models
     assert parse_team_models([{"model": "gpt-5.5", "use": None}]) == (["gpt-5.5"], {}, [])
+
+
+# -- notes written by the chat model ---------------------------------------------------------------------------
+
+def test_the_describe_prompt_names_every_model_and_asks_for_json():
+    from agentx_dev.cli.models import describe_prompt
+    prompt = describe_prompt(["gpt-5.5", "gpt-6-luna"])
+    assert "gpt-5.5" in prompt and "gpt-6-luna" in prompt and "JSON" in prompt and "unknown" in prompt
+
+
+def test_descriptions_are_read_from_a_json_reply_and_marked_auto():
+    from agentx_dev.cli.models import AUTO_PREFIX, parse_descriptions
+    reply = 'Sure:\n```json\n{"GPT-5.5": "fast, cheaper coding", "gpt-6-luna": "unknown", "other": "x"}\n```'
+    assert parse_descriptions(reply, ["gpt-5.5", "gpt-6-luna"]) == {"gpt-5.5": AUTO_PREFIX + "fast, cheaper coding"}
+
+
+def test_bad_or_hostile_descriptions_are_dropped():
+    from agentx_dev.cli.models import parse_descriptions
+    reply = '{"a": "x" , "gpt-5.5": "' + "y" * 200 + '", "gpt-6": "line\u001b[2J", "o3": 7}'
+    assert parse_descriptions(reply, ["gpt-5.5", "gpt-6", "o3"]) == {}
+    assert parse_descriptions("not json at all", ["gpt-5.5"]) == {}
+    assert parse_descriptions(None, ["gpt-5.5"]) == {}
+
+
+def test_an_auto_note_is_told_apart_from_the_users():
+    from agentx_dev.cli.models import AUTO_PREFIX, is_auto_note
+    assert is_auto_note(AUTO_PREFIX + "x") and not is_auto_note("hard coding") and not is_auto_note("")

@@ -21,8 +21,8 @@ from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_
 from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, compact, needs_compaction
 from agentx_dev.cli.context import build_addendum
 from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events, summary_entry_text
-from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, parse_team_models, team_models_line,
-                                   usable_team_models)
+from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, describe_prompt, is_auto_note,
+                                   parse_descriptions, parse_team_models, team_models_line, usable_team_models)
 from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
 from agentx_dev.cli.settings import (PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
@@ -164,6 +164,7 @@ class ChatApp:
         self.model_source = model_source       # the settings file ``model_name`` came from (None: a flag, or none)
         self.team_models: List[str] = list(team_models or [])
         self.team_model_uses: Dict[str, str] = dict(team_model_uses or {})    # what a listed model is for
+        self._described: set = set()       # models (lower case) the chat model was already asked about
         # The file the list came from. An empty list keeps its file: that file turned the extra models off.
         self.team_models_source = team_models_source
         self.problems = list(problems)
@@ -687,17 +688,74 @@ class ChatApp:
         self.team_models = cleaned
         self.team_model_uses = uses
         self.team_models_source = None
+        if cleaned:
+            self._describe_models()
         report: Optional[Tuple[Callable[[str], None], str]] = None
         if folder and not self._memory_on:
             report = (self.notice, "No folder settings file is kept for your home folder or a drive root.")
         elif folder:
-            path, message = write_project_team_models(self.cwd, cleaned, uses)
+            path, message = write_project_team_models(self.cwd, cleaned, self.team_model_uses)
             report = (self.notice if path is not None else self.error, self._safe(message, 600))
             if path is not None:
                 self.team_models_source = path
         self.show_team_models()               # after the write, so it names the file as the source
         if report is not None:
             report[0](report[1])
+
+    def describe_team_models(self, folder: bool = False) -> None:
+        """``/team-models describe``: ask the chat model again for a note on each model, replacing only its own
+        (``auto:``) notes, then show the list; with ``folder`` the notes are saved with the list too."""
+        if not self.team_models:
+            self.notice("No helper models are set, so there is nothing to describe. Set some with "
+                        "/team-models <name> ...")
+            return
+        self._describe_models(force=True)
+        self.set_team_models([self._entry(name) for name in self.team_models], folder=folder)
+
+    def _entry(self, name: str) -> str:
+        use = self._use_of(name)
+        return f"{name}={use}" if use else name
+
+    def _describe_models(self, force: bool = False) -> None:
+        """Ask the chat model, in one call, what each model a team may use (the list and the chat's own) is good
+        for, and keep the answers as ``auto:`` notes. A note the user wrote is never asked about or replaced; an
+        ``auto:`` note is replaced only when ``force``. Each model is asked about once per session unless
+        ``force``. A model the chat model does not know gets no note. A failure gives one notice; Ctrl+C skips
+        it. The reply is model output: only short, printable notes for the names asked about are kept."""
+        if self.model is None:
+            return
+        wanted: List[str] = []
+        for name in [self.model_label, *self.team_models]:
+            note = self._use_of(name)
+            if (name.lower() in (w.lower() for w in wanted) or (note and not is_auto_note(note))
+                    or (not force and (note or name.lower() in self._described))):
+                continue
+            wanted.append(name)
+        if not wanted:
+            return
+        self._described.update(name.lower() for name in wanted)
+        self.progress.start("Asking the model about the helper models")
+        try:
+            reply = self._summary_call(describe_prompt(wanted))
+        except KeyboardInterrupt:
+            self.progress.stop()
+            self.notice("Skipped describing the helper models.")
+            return
+        except Exception as error:
+            self.progress.stop()
+            self.notice(f"Could not describe the models ({type(error).__name__}); add notes yourself with "
+                        '/team-models <name>="what it is for".')
+            return
+        self.progress.stop()
+        found = parse_descriptions(reply, wanted)
+        for name, note in found.items():
+            for key in [key for key in self.team_model_uses if key.lower() == name.lower()]:
+                del self.team_model_uses[key]
+            self.team_model_uses[name] = note
+        unknown = [name for name in wanted if name not in found]
+        if unknown:
+            self.notice("No note for " + self._safe(", ".join(unknown), 400) + ": the chat model does not know "
+                        'what they are good at. Add one with /team-models <name>="what it is for" if you know.')
 
     def _refresh_instructions(self, with_log: bool = False) -> None:
         """Read AGENTX.md again (``/init`` or the user may have written or changed it). ``with_log`` adds the
@@ -821,6 +879,8 @@ class ChatApp:
         if self.model is None:
             return "Refused: no model is available for a team job."
         self._team_used = True
+        if self.team_models:
+            self._describe_models()               # a list loaded from settings gets its notes at the first job
         extras, notes = build_team_models(self.team_models, self.env, chat_label=self.model_label,
                                           factory=self.model_factory,
                                           uses={name: self._use_of(name) for name in self.team_models})

@@ -140,7 +140,7 @@ def _team(ctx: Any, arg: str) -> None:
 
 
 TEAM_MODELS_USAGE = ('Usage: /team-models <name>[="what it is for"] [<name> ...] [--folder], '
-                     "or /team-models clear [--folder]")
+                     "/team-models describe [--folder], or /team-models clear [--folder]")
 
 
 def _team_models(ctx: Any, arg: str) -> None:
@@ -156,6 +156,9 @@ def _team_models(ctx: Any, arg: str) -> None:
             ctx.error(TEAM_MODELS_USAGE)
             return
         ctx.show_team_models()
+        return
+    if [name.lower() for name in names] == ["describe"]:
+        ctx.describe_team_models(folder=folder)
         return
     if [name.lower() for name in names] == ["clear"]:
         names = []

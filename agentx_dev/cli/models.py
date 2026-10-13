@@ -3,6 +3,7 @@ team helpers may run on."""
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -236,3 +237,50 @@ def build_team_models(names: Sequence[str], env: Mapping[str, str], *, chat_labe
         except Exception as error:
             notes.append(f"Not used: {name} (could not be set up: {type(error).__name__})")
     return built, notes
+
+
+# -- notes written by the chat model ---------------------------------------------------------------------------
+
+AUTO_PREFIX = "auto: "                  # marks a note the chat model wrote; one the user wrote is never replaced
+MAX_AUTO_CHARS = MAX_USE_CHARS - len(AUTO_PREFIX)
+
+
+def is_auto_note(note: str) -> bool:
+    return isinstance(note, str) and note.startswith(AUTO_PREFIX)
+
+
+def describe_prompt(names: Sequence[str]) -> str:
+    """The one question the chat model is asked about the models a team may use."""
+    listed = "\n".join(f"- {name}" for name in names)
+    return ("A coding assistant can run helper steps on these models:\n" + listed + "\n\n"
+            "For each one, write what it is best at for coding work in at most 60 characters, for example "
+            "'hard coding and debugging', 'fast reading and search' or 'cheap, simple edits'. Only describe a "
+            "model you reliably know; for a model you do not know, or one newer than what you know, write "
+            "unknown. Do not guess from the name. Reply with only a JSON object mapping each name to its note.")
+
+
+def parse_descriptions(reply: Any, names: Sequence[str]) -> Dict[str, str]:
+    """The notes in the chat model's reply to ``describe_prompt``, keyed by the names asked about (matched in any
+    case), each marked with ``AUTO_PREFIX``. "unknown", a note that is not plain text of at most
+    ``MAX_AUTO_CHARS``, a name that was not asked about and an unreadable reply all give nothing."""
+    text = reply if isinstance(reply, str) else ""
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return {}
+    try:
+        data = json.loads(text[start:end + 1])
+    except (ValueError, RecursionError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    wanted = {str(name).lower(): str(name) for name in names}
+    notes: Dict[str, str] = {}
+    for key, value in data.items():
+        name = wanted.get(str(key).strip().lower())
+        if name is None or not isinstance(value, str):
+            continue
+        note = " ".join(value.split()).rstrip(".")
+        if not note or note.lower() == "unknown" or len(note) > MAX_AUTO_CHARS or not note.isprintable():
+            continue
+        notes[name] = AUTO_PREFIX + note
+    return notes
