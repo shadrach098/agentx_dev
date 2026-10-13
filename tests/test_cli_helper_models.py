@@ -154,3 +154,43 @@ def test_bad_names_never_reach_the_factory_in_build():
 def test_the_chat_label_in_the_line_is_shown_bounded_too():
     line = team_models_line("claude-\x1b[2J" + "x" * 5000, [], KEYS)
     assert line.startswith("Helper models: ") and _bounded_and_plain(line)
+
+
+# -- notes on what a model is for ----------------------------------------------------------------------------
+
+def test_entries_may_carry_a_note_as_name_equals_text_or_as_an_object():
+    from agentx_dev.cli.models import parse_team_models
+    names, uses, problems = parse_team_models(
+        ["gpt-6.1-sol=hard coding and bug fixing", {"model": "gpt-6-luna", "use": "fast reading"}, "gpt-5.5",
+         {"model": "gpt-6-astra"}])
+    assert names == ["gpt-6.1-sol", "gpt-6-luna", "gpt-5.5", "gpt-6-astra"]
+    assert uses == {"gpt-6.1-sol": "hard coding and bug fixing", "gpt-6-luna": "fast reading"}
+    assert problems == []
+
+
+def test_a_bad_note_is_dropped_but_the_model_is_kept():
+    from agentx_dev.cli.models import MAX_USE_CHARS, parse_team_models
+    names, uses, problems = parse_team_models(
+        ["gpt-5.5=" + "x" * (MAX_USE_CHARS + 1), {"model": "gpt-6-luna", "use": "line\x1b[2J"},
+         {"model": "gpt-6-astra", "use": 7}])
+    assert names == ["gpt-5.5", "gpt-6-luna", "gpt-6-astra"] and uses == {}
+    assert len(problems) == 3 and all("\x1b" not in p and len(p) < 300 for p in problems)
+
+
+def test_an_object_without_a_usable_model_is_skipped():
+    from agentx_dev.cli.models import parse_team_models
+    names, uses, problems = parse_team_models([{"use": "coding"}, {"model": 5}, {"model": "mistral-x"}])
+    assert names == [] and uses == {} and len(problems) == 3
+
+
+def test_an_empty_note_is_no_note_and_clean_team_models_still_returns_names():
+    from agentx_dev.cli.models import parse_team_models
+    names, uses, problems = parse_team_models(["gpt-5.5=", "gpt-5.5=again"])
+    assert names == ["gpt-5.5"] and uses == {} and problems == []
+    assert clean_team_models(["gpt-5.5=coding"]) == (["gpt-5.5"], [])
+
+
+def test_built_models_carry_their_note():
+    built, _ = build_team_models(["claude-opus-5-5"], KEYS, factory=lambda name, env: "M",
+                                 uses={"claude-opus-5-5": "hard coding"})
+    assert built == [HelperModel("claude-opus-5-5", "M", "hard coding")]

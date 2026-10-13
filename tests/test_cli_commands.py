@@ -349,3 +349,16 @@ def test_team_models_folder_needs_names_or_clear():
 def test_team_models_is_listed_in_help():
     from agentx_dev.cli.commands import command_names
     assert "/team-models" in command_names()
+
+
+def test_team_models_keeps_quoted_notes_together():
+    ctx = Ctx()
+    ctx.set_team_models = lambda names, folder=False: ctx.calls.append(("set-team", list(names), folder))
+    run_command(ctx, '/team-models gpt-6.1-sol="hard coding and bugs" gpt-5.5 --folder')
+    assert ctx.calls == [("set-team", ["gpt-6.1-sol=hard coding and bugs", "gpt-5.5"], True)]
+
+
+def test_team_models_with_an_unclosed_quote_shows_the_usage():
+    ctx = Ctx()
+    run_command(ctx, '/team-models gpt-6.1-sol="hard coding')
+    assert ctx.errors and "Usage: /team-models" in ctx.errors[-1]

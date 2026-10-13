@@ -4,8 +4,8 @@ import pytest
 
 from agentx_dev.cli import team as team_module
 from agentx_dev.cli.approval import Gate
-from agentx_dev.cli.team import (MAX_RESULT_CHARS, MAX_TASK_CHARS, ROLE_MARK, ROLES, TEAM_TOOL_NAME, TeamArgs,
-                                 build_helpers, format_result, make_team_tool, run_team_job, team_request)
+from agentx_dev.cli.team import (HELPER_STEPS, MAX_RESULT_CHARS, MAX_TASK_CHARS, ROLE_MARK, ROLES, TEAM_TOOL_NAME,
+                                 TeamArgs, build_helpers, format_result, make_team_tool, run_team_job, team_request)
 from agentx_dev.cli.tools import build_tools, gate_tool
 from tests.conftest import make_final, make_react_response
 from tests.subagent_helpers import plan_json, router, step
@@ -44,7 +44,7 @@ def test_each_helper_runner_gets_only_its_tools_and_its_role_text(tools):
         assert {t.name for t in runner.tools} == role_tools(name)
         assert description and "BASE PROMPT" in runner.system_addendum
         assert f"{ROLE_MARK} you are the {name} helper" in runner.system_addendum
-        assert runner.max_iterations == 25
+        assert runner.max_iterations == HELPER_STEPS
 
 
 def test_a_job_plans_dispatches_and_returns_the_result(tmp_path, tools):
@@ -292,25 +292,45 @@ def test_without_extra_models_the_helpers_are_exactly_todays(tools):
         assert helpers[role.name][0] == role.description
 
 
-def test_each_extra_model_adds_the_three_roles_named_role_at_model(tools):
+def test_with_extra_models_every_helper_names_its_model_the_chat_model_too(tools):
     chat = labelled("claude-sonnet-5-5")
     opus, gpt = labelled("claude-opus-5-5"), labelled("gpt-5.5")
     helpers = build_helpers(chat, tools, "BASE PROMPT",
                             extra_models=[HelperModel("claude-opus-5-5", opus), HelperModel("gpt-5.5", gpt)])
-    assert list(helpers) == ["explorer", "coder", "runner",
+    assert list(helpers) == ["explorer@claude-sonnet-5-5", "coder@claude-sonnet-5-5", "runner@claude-sonnet-5-5",
                              "explorer@claude-opus-5-5", "coder@claude-opus-5-5", "runner@claude-opus-5-5",
                              "explorer@gpt-5.5", "coder@gpt-5.5", "runner@gpt-5.5"]
-    assert helpers["coder"][1].model is chat and helpers["coder@claude-opus-5-5"][1].model is opus
+    assert helpers["coder@claude-sonnet-5-5"][1].model is chat and helpers["coder@claude-opus-5-5"][1].model is opus
     assert helpers["runner@gpt-5.5"][1].model is gpt
     for name, (description, runner) in helpers.items():
-        role = name.split("@")[0]
+        role, model = name.split("@")
         assert {t.name for t in runner.tools} == role_tools(role)
         assert f"{ROLE_MARK} you are the {role} helper" in runner.system_addendum
-        assert "BASE PROMPT" in runner.system_addendum and runner.max_iterations == 25
-    assert "Runs on claude-sonnet-5-5 (the chat's model)" in helpers["coder"][0]
-    assert "The same role on claude-opus-5-5" in helpers["coder@claude-opus-5-5"][0]
-    assert "(stronger, faster or cheaper)" in helpers["coder@claude-opus-5-5"][0]
-    assert "harder reasoning" not in helpers["coder@claude-opus-5-5"][0]
+        assert "BASE PROMPT" in runner.system_addendum and runner.max_iterations == HELPER_STEPS
+        assert f"Runs on {model}." in description and "one copy of each role per model" in description
+
+
+def test_no_model_is_favoured_in_the_descriptions(tools):
+    chat = labelled("claude-sonnet-5-5")
+    helpers = build_helpers(chat, tools, "", extra_models=[HelperModel("claude-opus-5-5", labelled("x"))])
+    plain = helpers["coder@claude-sonnet-5-5"][0].replace("claude-sonnet-5-5", "M")
+    extra = helpers["coder@claude-opus-5-5"][0].replace("claude-opus-5-5", "M")
+    assert plain == extra                                        # the same words for every model
+    for text in ("unless a step clearly needs", "the chat's model", "harder reasoning"):
+        assert text not in helpers["coder@claude-sonnet-5-5"][0] + helpers["coder@claude-opus-5-5"][0]
+
+
+def test_a_note_on_what_a_model_is_for_reaches_its_helpers_only(tools):
+    helpers = build_helpers(labelled("claude-sonnet-5-5"), tools, "", chat_use="everyday work",
+                            extra_models=[HelperModel("gpt-6.1-sol", labelled("x"), "hard coding"),
+                                          HelperModel("gpt-5.5", labelled("y"))])
+    assert "Good for: hard coding." in helpers["coder@gpt-6.1-sol"][0]
+    assert "Good for: everyday work." in helpers["runner@claude-sonnet-5-5"][0]
+    assert "Good for" not in helpers["coder@gpt-5.5"][0]
+
+
+def test_helpers_get_as_many_steps_as_the_chat():
+    assert HELPER_STEPS == 50
 
 
 def test_the_planner_picks_a_model_and_that_step_runs_on_it(tmp_path, tools):
@@ -326,7 +346,8 @@ def test_the_planner_picks_a_model_and_that_step_runs_on_it(tmp_path, tools):
 
 
 def test_the_planner_always_runs_on_the_chat_model(tmp_path, tools):
-    chat = router(plans=[plan_json(step("s1", "explorer", "look"))], synth="Done.")
+    chat = router(plans=[plan_json(step("s1", "explorer@claude-sonnet-5-5", "look"))], synth="Done.")
+    chat.model_name = "claude-sonnet-5-5"
     opus = labelled("claude-opus-5-5")
     run(tmp_path, tools, chat, extra_models=[HelperModel("claude-opus-5-5", opus)])
     assert chat.planner_prompts() and not opus.calls

@@ -570,3 +570,44 @@ def test_team_models_folder_reports_the_file_as_the_source(tmp_path):
 
 def squash_ws(text):
     return " ".join(text.split())
+
+
+def test_with_a_list_even_the_chat_model_helpers_name_their_model(tmp_path):
+    chat = team_model([step("s1", "runner@claude-sonnet-5-5", "check it")])
+    chat.model_name = "claude-sonnet-5-5"
+    opus = extra("claude-opus-5-5")
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"), env=KEYS,
+                              model_factory=factory_for(chat, **{"claude-opus-5-5": opus}),
+                              team_models=["claude-opus-5-5"])
+    assert app.start() == 0
+    assert "-> runner@claude-sonnet-5-5: check it" in out.getvalue() and not opus.calls
+
+
+def test_notes_reach_the_planner_and_show_in_team_models(tmp_path):
+    seen = []
+    chat = team_model([step("s1", "coder@claude-opus-5-5", "make it")])
+    chat.model_name = "claude-sonnet-5-5"
+    original = chat._script_fn
+
+    def spy(messages):
+        seen.append(str(messages[0]["content"]))
+        return original(messages)
+
+    chat._script_fn = spy
+    opus = extra("claude-opus-5-5")
+    app, out, _, _ = make_app(tmp_path, Lines('/team-models claude-opus-5-5="hard coding"', "/team-models",
+                                              "do the big job", "/exit"), chat, read_short=Lines("y"), env=KEYS,
+                              model_factory=factory_for(chat, **{"claude-opus-5-5": opus}))
+    assert app.start() == 0
+    assert "claude-opus-5-5 (hard coding)" in out.getvalue()
+    assert any("Good for: hard coding." in text for text in seen)         # in the planner's helper catalog
+    assert app.team_model_uses == {"claude-opus-5-5": "hard coding"}
+
+
+def test_team_models_folder_saves_the_notes(tmp_path):
+    chat = MockModel(script=[])
+    app, _, cwd, _ = make_app(tmp_path, Lines('/team-models gpt-5.5="fast reading" --folder', "/exit"), chat,
+                              env=KEYS)
+    assert app.start() == 0
+    data = json.loads((cwd / ".agentx" / "settings.json").read_text(encoding="utf-8"))
+    assert data["teamModels"] == [{"model": "gpt-5.5", "use": "fast reading"}]

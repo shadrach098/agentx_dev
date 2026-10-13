@@ -10,7 +10,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rich.console import Console
 
@@ -21,7 +21,7 @@ from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_
 from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, compact, needs_compaction
 from agentx_dev.cli.context import build_addendum
 from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events, summary_entry_text
-from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, clean_team_models, team_models_line,
+from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, parse_team_models, team_models_line,
                                    usable_team_models)
 from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
@@ -149,7 +149,8 @@ class ChatApp:
                  project_allow: Iterable[str] = (),
                  select: Optional[Callable[..., Optional[int]]] = None, newly_trusted: bool = False,
                  model_source: Optional[Path] = None, team_models: Optional[Sequence[str]] = None,
-                 team_models_source: Optional[Path] = None) -> None:
+                 team_models_source: Optional[Path] = None,
+                 team_model_uses: Optional[Mapping[str, str]] = None) -> None:
         self.cwd = Path(cwd).resolve()
         self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
@@ -162,6 +163,7 @@ class ChatApp:
         self.requested_model = model_name
         self.model_source = model_source       # the settings file ``model_name`` came from (None: a flag, or none)
         self.team_models: List[str] = list(team_models or [])
+        self.team_model_uses: Dict[str, str] = dict(team_model_uses or {})    # what a listed model is for
         # The file the list came from. An empty list keeps its file: that file turned the extra models off.
         self.team_models_source = team_models_source
         self.problems = list(problems)
@@ -652,28 +654,41 @@ class ChatApp:
         usable, notes = usable_team_models(self.model_label, self.team_models, self.env)
         source = (f" (from {self._safe(self.team_models_source, 300)})" if self.team_models_source
                   else " (this session)")
-        lines = [f"Helper models{source}: {self._safe(', '.join(self.team_models), 400)}",
-                 f"A team job may use: {self._safe(self.model_label, 80)} (chat)"
-                 + "".join(f", {self._safe(name, 80)}" for name in usable)]
+        listed = ", ".join(self._with_use(name) for name in self.team_models)
+        lines = [f"Helper models{source}: {self._safe(listed, 800)}",
+                 f"A team job may use: {self._safe(self.model_label, 110)} (chat)"
+                 + "".join(f", {self._safe(name, 110)}" for name in usable)]
         lines += [self._safe(note.replace('Not used:', 'Not used now:', 1), 200) for note in notes]
-        lines.append("Change them with /team-models <name> ..., /team-models clear, or add --folder to save.")
+        lines.append('Change them with /team-models <name>[="what it is for"] ..., /team-models clear, or add --folder '
+                     "to save.")
         self.notice("\n".join(lines))
 
+    def _use_of(self, name: str) -> str:
+        """The user's note on what model ``name`` is for ("" when none); names match in any case."""
+        wanted = str(name).strip().lower()
+        return next((use for listed, use in self.team_model_uses.items() if listed.lower() == wanted), "")
+
+    def _with_use(self, name: str) -> str:
+        use = self._use_of(name)
+        return f"{name} ({use})" if use else name
+
     def set_team_models(self, names: Sequence[str], folder: bool = False) -> None:
-        """``/team-models <names>`` (session) or ``... --folder`` (also saved in this folder's settings file)."""
-        cleaned, problems = clean_team_models(list(names))
+        """``/team-models <name>[=<what it is for>] ...`` (session) or ``... --folder`` (also saved in this
+        folder's settings file)."""
+        cleaned, uses, problems = parse_team_models(list(names))
         for problem in problems:
             self.error(self._safe(problem, 300))
         if names and not cleaned:
             self.error("No usable model name was given, so the list was left unchanged.")
             return
         self.team_models = cleaned
+        self.team_model_uses = uses
         self.team_models_source = None
         report: Optional[Tuple[Callable[[str], None], str]] = None
         if folder and not self._memory_on:
             report = (self.notice, "No folder settings file is kept for your home folder or a drive root.")
         elif folder:
-            path, message = write_project_team_models(self.cwd, cleaned)
+            path, message = write_project_team_models(self.cwd, cleaned, uses)
             report = (self.notice if path is not None else self.error, self._safe(message, 600))
             if path is not None:
                 self.team_models_source = path
@@ -804,7 +819,8 @@ class ChatApp:
             return "Refused: no model is available for a team job."
         self._team_used = True
         extras, notes = build_team_models(self.team_models, self.env, chat_label=self.model_label,
-                                          factory=self.model_factory)
+                                          factory=self.model_factory,
+                                          uses={name: self._use_of(name) for name in self.team_models})
         self.progress.stop()                      # the notices below must not be drawn over the spinner
         for note in notes:
             self.notice(self._safe(note, 300))
@@ -812,7 +828,8 @@ class ChatApp:
         try:
             return run_team_job(task, model=self.model, tools=self.base_tools, addendum=self.addendum,
                                 notify=self._team_notify, ask_user=self._team_question,
-                                describe_error=self._safe, extra_models=extras)
+                                describe_error=self._safe, extra_models=extras,
+                                chat_use=self._use_of(self.model_label))
         finally:
             self._team_helper = ""
             self.progress.start("Thinking")
@@ -935,7 +952,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                       allow=settings.allow, deny=settings.deny, add_dirs=add_dirs, problems=settings.problems,
                       project_allow=settings.project_allow, newly_trusted=not was_trusted,
                       model_source=None if args.model else settings.model_source,
-                      team_models=settings.team_models, team_models_source=settings.team_models_source)
+                      team_models=settings.team_models, team_models_source=settings.team_models_source,
+                      team_model_uses=settings.team_model_uses)
         holder.append(app)
         # ~/.agentx/settings.json is written by ChatApp.start once the model is built, so it holds its real name.
     except KeyboardInterrupt:

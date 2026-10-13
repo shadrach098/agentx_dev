@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from agentx_dev.ChatModel import GPT, Claude
 
@@ -13,6 +13,7 @@ ANTHROPIC_KEY = "ANTHROPIC_API_KEY"
 OPENAI_KEY = "OPENAI_API_KEY"
 MAX_TEAM_MODELS = 4
 MAX_ERROR_NOTE_CHARS = 160            # a ModelError's message, as shown in a "Not used" line
+MAX_USE_CHARS = 80                   # a note on what a helper model is for
 
 
 class ModelError(Exception):
@@ -87,9 +88,11 @@ def model_label(model: Any) -> str:
 
 @dataclass(frozen=True)
 class HelperModel:
-    """A model team helpers may run on; ``name`` is the label in the helper names (``coder@<name>``)."""
+    """A model team helpers may run on; ``name`` is the label in the helper names (``coder@<name>``) and ``use``
+    the user's note on what it is for ("" when none)."""
     name: str
     model: Any
+    use: str = ""
 
 
 def key_variable(provider: str) -> str:
@@ -108,14 +111,42 @@ def _shown_name(name: str) -> str:
     return repr(name if len(name) <= 40 else name[:40] + "...")
 
 
-def clean_team_models(values: Sequence[Any]) -> Tuple[List[str], List[str]]:
-    """The usable entries of a ``teamModels`` list, in order, and one problem line per entry that was dropped
-    (not text, not a plain model name, an unknown provider, past the first ``MAX_TEAM_MODELS``). Repeats, in any
-    case, are dropped silently."""
+def _acceptable_use(text: str) -> bool:
+    """A note on what a model is for: plain printable text (spaces allowed), at most ``MAX_USE_CHARS``."""
+    return len(text) <= MAX_USE_CHARS and text.isprintable()
+
+
+def _split_entry(value: Any, problems: List[str]) -> Tuple[Any, str]:
+    """``(name, note)`` from a ``teamModels`` entry: ``"name"``, ``"name=note"`` or ``{"model": ..., "use": ...}``.
+    A note that is not plain text up to ``MAX_USE_CHARS`` is dropped with a problem line; the name is kept."""
+    if isinstance(value, dict):
+        name, use = value.get("model"), value.get("use", "")
+    elif isinstance(value, str) and "=" in value:
+        name, use = value.split("=", 1)
+    else:
+        name, use = value, ""
+    if not isinstance(use, str):
+        problems.append(f"'teamModels': the note for {_shown_name(str(name))} is not text; ignored")
+        return name, ""
+    use = use.strip()
+    if use and not _acceptable_use(use):
+        problems.append(f"'teamModels': the note for {_shown_name(str(name))} is not plain text of at most "
+                        f"{MAX_USE_CHARS} characters; ignored")
+        return name, ""
+    return name, use
+
+
+def parse_team_models(values: Sequence[Any]) -> Tuple[List[str], Dict[str, str], List[str]]:
+    """The usable entries of a ``teamModels`` list: their names in order, the notes some of them carry (what the
+    model is for, keyed by name), and one problem line per entry or note that was dropped (not a plain model
+    name, an unknown provider, past the first ``MAX_TEAM_MODELS``, a bad note). Repeats, in any case, are
+    dropped silently (the first one's note is kept)."""
     names: List[str] = []
+    uses: Dict[str, str] = {}
     problems: List[str] = []
     seen = set()
     for value in values:
+        value, use = _split_entry(value, problems)
         if not isinstance(value, str) or not value.strip():
             problems.append("'teamModels' has an entry that is not a model name; skipped")
             continue
@@ -132,9 +163,18 @@ def clean_team_models(values: Sequence[Any]) -> Tuple[List[str], List[str]]:
             continue
         seen.add(name.lower())
         names.append(name)
+        if use:
+            uses[name] = use
     if len(names) > MAX_TEAM_MODELS:
         problems.append(f"'teamModels' lists {len(names)} models; only the first {MAX_TEAM_MODELS} are used")
         names = names[:MAX_TEAM_MODELS]
+        uses = {name: use for name, use in uses.items() if name in names}
+    return names, uses, problems
+
+
+def clean_team_models(values: Sequence[Any]) -> Tuple[List[str], List[str]]:
+    """``parse_team_models`` without the notes: the usable names and the problem lines."""
+    names, _, problems = parse_team_models(values)
     return names, problems
 
 
@@ -173,8 +213,8 @@ def team_models_line(chat_label: str, names: Sequence[str], env: Mapping[str, st
 
 
 def build_team_models(names: Sequence[str], env: Mapping[str, str], *, chat_label: str = "",
-                      factory: Optional[Callable[[str, Mapping[str, str]], Any]] = None
-                      ) -> Tuple[List[HelperModel], List[str]]:
+                      factory: Optional[Callable[[str, Mapping[str, str]], Any]] = None,
+                      uses: Optional[Mapping[str, str]] = None) -> Tuple[List[HelperModel], List[str]]:
     """Build the extra models for one team job with ``factory`` (``choose_model`` by default). A name without a
     key, or whose build raises, is skipped with a "Not used" line. For a ``ModelError`` the line carries its
     message (``choose_model`` writes those to be shown, for example the hint to install an optional package),
@@ -185,7 +225,7 @@ def build_team_models(names: Sequence[str], env: Mapping[str, str], *, chat_labe
     built: List[HelperModel] = []
     for name in usable:
         try:
-            built.append(HelperModel(name, build(name, env)))
+            built.append(HelperModel(name, build(name, env), (uses or {}).get(name, "")))
         except ModelError as error:
             message = " ".join(str(error).split())
             if len(message) > MAX_ERROR_NOTE_CHARS:

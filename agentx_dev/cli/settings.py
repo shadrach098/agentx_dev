@@ -6,10 +6,10 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from agentx_dev.cli.approval import MODES
-from agentx_dev.cli.models import clean_team_models, provider_for
+from agentx_dev.cli.models import parse_team_models, provider_for
 from agentx_dev.cli.safepaths import FOLDER, replace_file, safe_location
 
 SETTINGS_NAME = "settings.json"
@@ -28,6 +28,7 @@ class Settings:
     model_source: Optional[Path] = None                    # the file ``model`` was read from
     team_models: Optional[List[str]] = None                # "teamModels": None when no file sets it
     team_models_source: Optional[Path] = None              # the file the list was read from
+    team_model_uses: Dict[str, str] = field(default_factory=dict)   # notes on what a listed model is for
 
 
 def user_settings_path(home: Path) -> Path:
@@ -113,11 +114,14 @@ def write_project_model(cwd: Path, model: str) -> Tuple[Optional[Path], str]:
     return _write_project_key(cwd, "model", str(model), f"model {model}")
 
 
-def write_project_team_models(cwd: Path, names: Sequence[str]) -> Tuple[Optional[Path], str]:
-    """Save ``names`` as this folder's ``teamModels`` (``/team-models ... --folder``). See ``_write_project_key``."""
+def write_project_team_models(cwd: Path, names: Sequence[str],
+                              uses: Optional[Mapping[str, str]] = None) -> Tuple[Optional[Path], str]:
+    """Save ``names`` as this folder's ``teamModels`` (``/team-models ... --folder``); a name with a note in
+    ``uses`` is saved as ``{"model": name, "use": note}``. See ``_write_project_key``."""
     listed = [str(name) for name in names]
+    entries = [{"model": name, "use": str(uses[name])} if uses and uses.get(name) else name for name in listed]
     what = ("helper models " + ", ".join(listed)) if listed else "no helper models"
-    return _write_project_key(cwd, "teamModels", listed, what)
+    return _write_project_key(cwd, "teamModels", entries, what)
 
 
 def ensure_project_settings(cwd: Path, home: Path, model: Optional[str]) -> Optional[Path]:
@@ -221,9 +225,10 @@ def load_settings(cwd: Path, home: Path) -> Settings:
                 settings.problems.append(f"settings file {path}: 'teamModels' must be a list of model names; "
                                          "ignored")
             else:
-                names, issues = clean_team_models(listed)
+                names, uses, issues = parse_team_models(listed)
                 settings.problems += [f"settings file {path}: {issue}" for issue in issues]
                 settings.team_models = names               # the folder's list, read second, replaces the user's
+                settings.team_model_uses = uses
                 settings.team_models_source = path
         mode = data.get("mode")
         if mode is not None:

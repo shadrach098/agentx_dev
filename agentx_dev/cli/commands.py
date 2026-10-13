@@ -8,6 +8,7 @@ shown and is never read as markup."""
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -138,11 +139,16 @@ def _team(ctx: Any, arg: str) -> None:
     ctx.run_team_command(arg)
 
 
-TEAM_MODELS_USAGE = "Usage: /team-models <name> [<name> ...] [--folder], or /team-models clear [--folder]"
+TEAM_MODELS_USAGE = ('Usage: /team-models <name>[="what it is for"] [<name> ...] [--folder], '
+                     "or /team-models clear [--folder]")
 
 
 def _team_models(ctx: Any, arg: str) -> None:
-    words = arg.split()
+    try:
+        words = shlex.split(arg, posix=True)           # name="hard coding" stays one word, without the quotes
+    except ValueError:                                 # an unclosed quote
+        ctx.error(TEAM_MODELS_USAGE)
+        return
     folder = "--folder" in words
     names = [word for word in words if word != "--folder"]
     if not names:
@@ -177,7 +183,8 @@ COMMANDS = (
     Command("sessions", "List this folder's saved conversations", _sessions),
     Command("init", "Draft an AGENTX.md for this project", _init),
     Command("team", "Hand a big job to a team of helpers: /team <task>", _team),
-    Command("team-models", "Models team helpers may also use: /team-models [names|clear] [--folder]", _team_models),
+    Command("team-models", "Models team helpers may also use: /team-models [name[=use] ...|clear] [--folder]",
+            _team_models),
     Command("exit", "Leave", _exit),
 )
 _BY_NAME = {command.name: command for command in COMMANDS}

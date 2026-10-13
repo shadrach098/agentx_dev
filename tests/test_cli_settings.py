@@ -180,7 +180,7 @@ def test_settings_field_order_ends_with_problems_then_project_allow():
     from agentx_dev.cli.settings import Settings
     names = [f.name for f in dataclasses.fields(Settings)]
     assert names == ["model", "mode", "add_dirs", "allow", "deny", "problems", "project_allow", "model_source",
-                     "team_models", "team_models_source"]
+                     "team_models", "team_models_source", "team_model_uses"]
     assert Settings(None, None, [], [], [], ["p"]).project_allow == []
 
 
@@ -536,3 +536,30 @@ def test_write_project_model_still_says_what_it_did(tmp_path):
     from agentx_dev.cli.settings import write_project_model
     path, message = write_project_model(tmp_path, "gpt-4o-mini")
     assert message == f"Created {path} with model gpt-4o-mini."
+
+
+def test_team_model_notes_are_read_from_objects_and_name_equals_text(tmp_path):
+    home, folder = tmp_path / "home", tmp_path / "proj"
+    folder.mkdir()
+    put(user_settings_path(home), {"teamModels": [{"model": "gpt-6.1-sol", "use": "hard coding"},
+                                                  "gpt-6-luna=fast reading", "gpt-5.5"]})
+    settings = load_settings(folder, home)
+    assert settings.team_models == ["gpt-6.1-sol", "gpt-6-luna", "gpt-5.5"]
+    assert settings.team_model_uses == {"gpt-6.1-sol": "hard coding", "gpt-6-luna": "fast reading"}
+
+
+def test_the_folder_list_replaces_the_user_notes_too(tmp_path):
+    home, folder = tmp_path / "home", tmp_path / "proj"
+    folder.mkdir()
+    put(user_settings_path(home), {"teamModels": [{"model": "gpt-5.5", "use": "x"}]})
+    put(project_settings_path(folder), {"teamModels": ["gpt-6-luna"]})
+    settings = load_settings(folder, home)
+    assert settings.team_models == ["gpt-6-luna"] and settings.team_model_uses == {}
+
+
+def test_write_project_team_models_saves_notes_as_objects(tmp_path):
+    from agentx_dev.cli.settings import write_project_team_models
+    path, message = write_project_team_models(tmp_path, ["gpt-6.1-sol", "gpt-5.5"], {"gpt-6.1-sol": "hard coding"})
+    assert json.loads(path.read_text(encoding="utf-8"))["teamModels"] == [
+        {"model": "gpt-6.1-sol", "use": "hard coding"}, "gpt-5.5"]
+    assert "helper models gpt-6.1-sol, gpt-5.5" in message
