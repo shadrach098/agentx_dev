@@ -6,10 +6,10 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 from agentx_dev.cli.approval import MODES
-from agentx_dev.cli.models import provider_for
+from agentx_dev.cli.models import clean_team_models, provider_for
 from agentx_dev.cli.safepaths import FOLDER, replace_file, safe_location
 
 SETTINGS_NAME = "settings.json"
@@ -26,6 +26,8 @@ class Settings:
     problems: List[str] = field(default_factory=list)     # one line per unreadable file or bad value
     project_allow: List[str] = field(default_factory=list)   # the allow rules that came from the project file
     model_source: Optional[Path] = None                    # the file ``model`` was read from
+    team_models: Optional[List[str]] = None                # "teamModels": None when no file sets it
+    team_models_source: Optional[Path] = None              # the file the list was read from
 
 
 def user_settings_path(home: Path) -> Path:
@@ -78,11 +80,11 @@ def is_project_folder(cwd: Path, home: Path) -> bool:
         return False
 
 
-def write_project_model(cwd: Path, model: str) -> Tuple[Optional[Path], str]:
-    """Save ``model`` as this folder's model in ``<cwd>/.agentx/settings.json``, creating the file or keeping
-    its other keys. Returns ``(path, message)``; ``path`` is None when nothing was written (``.agentx`` or the
-    file is a link or leads outside the folder, the file is not valid JSON or not an object, or it could not be
-    written), and the message says why. Never raises."""
+def _write_project_key(cwd: Path, key: str, value: Any, what: str) -> Tuple[Optional[Path], str]:
+    """Set ``key`` to ``value`` in ``<cwd>/.agentx/settings.json``, creating the file or keeping its other keys.
+    Returns ``(path, message)``; ``path`` is None when nothing was written (``.agentx`` or the file is a link or
+    leads outside the folder, the file is not valid JSON or not an object, or it could not be written), and the
+    message says why. ``what`` names the change in the message. Never raises."""
     path = project_settings_path(cwd)
     if not safe_location(cwd, SETTINGS_NAME):
         return None, f"{path} is a link or points outside the folder, so it was left unchanged."
@@ -98,12 +100,24 @@ def write_project_model(cwd: Path, model: str) -> Tuple[Optional[Path], str]:
             if not isinstance(loaded, dict):
                 return None, f"{path} is not a JSON object, so it was left unchanged."
             data = loaded
-        data["model"] = str(model)
+        data[key] = value
         path.parent.mkdir(parents=True, exist_ok=True)
         replace_file(path, json.dumps(data, indent=2) + "\n", prefix=".settings-")
-        return path, f"{verb} {path} with model {model}."
+        return path, f"{verb} {path} with {what}."
     except (OSError, ValueError, TypeError):
         return None, f"Could not write {path}."
+
+
+def write_project_model(cwd: Path, model: str) -> Tuple[Optional[Path], str]:
+    """Save ``model`` as this folder's model (``/model <name> --folder``). See ``_write_project_key``."""
+    return _write_project_key(cwd, "model", str(model), f"model {model}")
+
+
+def write_project_team_models(cwd: Path, names: Sequence[str]) -> Tuple[Optional[Path], str]:
+    """Save ``names`` as this folder's ``teamModels`` (``/team-models ... --folder``). See ``_write_project_key``."""
+    listed = [str(name) for name in names]
+    what = ("helper models " + ", ".join(listed)) if listed else "no helper models"
+    return _write_project_key(cwd, "teamModels", listed, what)
 
 
 def ensure_project_settings(cwd: Path, home: Path, model: Optional[str]) -> Optional[Path]:
@@ -201,6 +215,16 @@ def load_settings(cwd: Path, home: Path) -> Settings:
             settings.model_source = path
         elif model is not None:
             settings.problems.append(f"settings file {path}: 'model' must be text; ignored")
+        if "teamModels" in data:
+            listed = data.get("teamModels")
+            if not isinstance(listed, list):
+                settings.problems.append(f"settings file {path}: 'teamModels' must be a list of model names; "
+                                         "ignored")
+            else:
+                names, issues = clean_team_models(listed)
+                settings.problems += [f"settings file {path}: {issue}" for issue in issues]
+                settings.team_models = names               # the folder's list, read second, replaces the user's
+                settings.team_models_source = path
         mode = data.get("mode")
         if mode is not None:
             if is_project and mode in ("accept-edits", "auto"):

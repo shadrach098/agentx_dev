@@ -179,7 +179,8 @@ def test_settings_field_order_ends_with_problems_then_project_allow():
     import dataclasses
     from agentx_dev.cli.settings import Settings
     names = [f.name for f in dataclasses.fields(Settings)]
-    assert names == ["model", "mode", "add_dirs", "allow", "deny", "problems", "project_allow", "model_source"]
+    assert names == ["model", "mode", "add_dirs", "allow", "deny", "problems", "project_allow", "model_source",
+                     "team_models", "team_models_source"]
     assert Settings(None, None, [], [], [], ["p"]).project_allow == []
 
 
@@ -468,3 +469,70 @@ def test_a_failed_replace_leaves_no_temporary_file_behind(tmp_path, monkeypatch)
     assert path is None and "Could not write" in message
     assert sorted(p.name for p in (tmp_path / ".agentx").iterdir()) == ["settings.json"]
     assert json.loads(project_settings_path(tmp_path).read_text(encoding="utf-8")) == {"model": "old"}
+
+
+def test_team_models_are_read_and_cleaned(tmp_path):
+    home, folder = tmp_path / "home", tmp_path / "proj"
+    folder.mkdir()
+    put(user_settings_path(home), {"teamModels": ["claude-opus-5-5", "mistral-x", "gpt-5.5", "claude-opus-5-5"]})
+    settings = load_settings(folder, home)
+    assert settings.team_models == ["claude-opus-5-5", "gpt-5.5"]
+    assert settings.team_models_source == user_settings_path(home)
+    assert any("mistral-x" in p for p in settings.problems)
+
+
+def test_no_team_models_key_means_none(tmp_path):
+    home, folder = tmp_path / "home", tmp_path / "proj"
+    folder.mkdir()
+    settings = load_settings(folder, home)
+    assert settings.team_models is None and settings.team_models_source is None
+
+
+def test_the_folder_list_replaces_the_user_list(tmp_path):
+    home, folder = tmp_path / "home", tmp_path / "proj"
+    folder.mkdir()
+    put(user_settings_path(home), {"teamModels": ["claude-opus-5-5"]})
+    put(project_settings_path(folder), {"teamModels": ["gpt-5.5"]})
+    settings = load_settings(folder, home)
+    assert settings.team_models == ["gpt-5.5"] and settings.team_models_source == project_settings_path(folder)
+
+
+def test_an_empty_folder_list_turns_extra_models_off_for_that_folder(tmp_path):
+    home, folder = tmp_path / "home", tmp_path / "proj"
+    folder.mkdir()
+    put(user_settings_path(home), {"teamModels": ["claude-opus-5-5"]})
+    put(project_settings_path(folder), {"teamModels": []})
+    assert load_settings(folder, home).team_models == []
+
+
+def test_team_models_that_are_not_a_list_are_reported_and_ignored(tmp_path):
+    home, folder = tmp_path / "home", tmp_path / "proj"
+    folder.mkdir()
+    put(user_settings_path(home), {"teamModels": "claude-opus-5-5"})
+    settings = load_settings(folder, home)
+    assert settings.team_models is None and any("'teamModels' must be a list" in p for p in settings.problems)
+
+
+def test_write_project_team_models_creates_and_keeps_other_keys(tmp_path):
+    from agentx_dev.cli.settings import write_project_team_models
+    put(project_settings_path(tmp_path), {"model": "claude-sonnet-5-5"})
+    path, message = write_project_team_models(tmp_path, ["claude-opus-5-5", "gpt-5.5"])
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data == {"model": "claude-sonnet-5-5", "teamModels": ["claude-opus-5-5", "gpt-5.5"]}
+    assert message.startswith("Updated") and "helper models claude-opus-5-5, gpt-5.5" in message
+    path, message = write_project_team_models(tmp_path, [])
+    assert json.loads(path.read_text(encoding="utf-8"))["teamModels"] == [] and "no helper models" in message
+
+
+def test_write_project_team_models_never_overwrites_invalid_json(tmp_path):
+    from agentx_dev.cli.settings import write_project_team_models
+    put(project_settings_path(tmp_path), "{not json")
+    path, message = write_project_team_models(tmp_path, ["gpt-5.5"])
+    assert path is None and "not valid JSON" in message
+    assert project_settings_path(tmp_path).read_text(encoding="utf-8") == "{not json"
+
+
+def test_write_project_model_still_says_what_it_did(tmp_path):
+    from agentx_dev.cli.settings import write_project_model
+    path, message = write_project_model(tmp_path, "gpt-4o-mini")
+    assert message == f"Created {path} with model gpt-4o-mini."
