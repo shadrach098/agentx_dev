@@ -259,7 +259,7 @@ class ChatApp:
         if not from_project:
             return
         self.notice(f"This project's settings let team helpers also use: "
-                    f"{self._safe(', '.join(self.team_models), 400)} (from {self._safe(source, 300)}). "
+                    f"{self._safe(self._listed_with_uses(), 800)} (from {self._safe(source, 300)}). "
                     "/team-models clear turns that off for this session.")
 
     def _confirm_project_rules(self) -> None:
@@ -340,7 +340,7 @@ class ChatApp:
             f"Mode: {self.gate.mode}\n"
             f"Rules: {allow}\n"
             f"Extra folders: {', '.join(str(d) for d in self.add_dirs) or 'none'}\n"
-            f"Helper models: {self._safe(', '.join(self.team_models), 400) or 'none (helpers use the chat model)'}\n"
+            f"Helper models: {self._safe(self._listed_with_uses(), 800) or 'none (helpers use the chat model)'}\n"
             f"Your settings file ({state(user)}): {user}\n"
             f"This project's settings file ({state(project)}): {project}\n"
             "Edit your file to change the default model, mode, extra folders and permission rules, then restart; "
@@ -654,8 +654,7 @@ class ChatApp:
         usable, notes = usable_team_models(self.model_label, self.team_models, self.env)
         source = (f" (from {self._safe(self.team_models_source, 300)})" if self.team_models_source
                   else " (this session)")
-        listed = ", ".join(self._with_use(name) for name in self.team_models)
-        lines = [f"Helper models{source}: {self._safe(listed, 800)}",
+        lines = [f"Helper models{source}: {self._safe(self._listed_with_uses(), 800)}",
                  f"A team job may use: {self._safe(self.model_label, 110)} (chat)"
                  + "".join(f", {self._safe(name, 110)}" for name in usable)]
         lines += [self._safe(note.replace('Not used:', 'Not used now:', 1), 200) for note in notes]
@@ -671,6 +670,10 @@ class ChatApp:
     def _with_use(self, name: str) -> str:
         use = self._use_of(name)
         return f"{name} ({use})" if use else name
+
+    def _listed_with_uses(self) -> str:
+        """The list as shown: ``gpt-6.1-sol (hard coding), gpt-5.5``."""
+        return ", ".join(self._with_use(name) for name in self.team_models)
 
     def set_team_models(self, names: Sequence[str], folder: bool = False) -> None:
         """``/team-models <name>[=<what it is for>] ...`` (session) or ``... --folder`` (also saved in this

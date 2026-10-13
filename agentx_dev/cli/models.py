@@ -101,8 +101,10 @@ def key_variable(provider: str) -> str:
 
 
 def _acceptable_name(name: str) -> bool:
-    """A model name is a plain token: at most 100 characters, no spaces and no control characters."""
-    return len(name) <= 100 and name.isprintable() and not any(ch.isspace() for ch in name)
+    """A model name is a plain token: at most 100 characters, no spaces, no control characters and no "=" (which
+    separates a name from its note)."""
+    return (len(name) <= 100 and name.isprintable() and "=" not in name
+            and not any(ch.isspace() for ch in name))
 
 
 def _shown_name(name: str) -> str:
@@ -120,7 +122,7 @@ def _split_entry(value: Any, problems: List[str]) -> Tuple[Any, str]:
     """``(name, note)`` from a ``teamModels`` entry: ``"name"``, ``"name=note"`` or ``{"model": ..., "use": ...}``.
     A note that is not plain text up to ``MAX_USE_CHARS`` is dropped with a problem line; the name is kept."""
     if isinstance(value, dict):
-        name, use = value.get("model"), value.get("use", "")
+        name, use = value.get("model"), value.get("use") or ""          # "use": null means no note
     elif isinstance(value, str) and "=" in value:
         name, use = value.split("=", 1)
     else:

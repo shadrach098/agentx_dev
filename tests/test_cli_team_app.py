@@ -611,3 +611,29 @@ def test_team_models_folder_saves_the_notes(tmp_path):
     assert app.start() == 0
     data = json.loads((cwd / ".agentx" / "settings.json").read_text(encoding="utf-8"))
     assert data["teamModels"] == [{"model": "gpt-5.5", "use": "fast reading"}]
+
+
+def test_a_note_on_the_chat_model_reaches_its_helpers(tmp_path):
+    seen = []
+    chat = team_model([step("s1", "runner@claude-sonnet-5-5", "check")])
+    chat.model_name = "claude-sonnet-5-5"
+    original = chat._script_fn
+    chat._script_fn = lambda messages: seen.append(str(messages[0]["content"])) or original(messages)
+    app, _, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"), env=KEYS,
+                            model_factory=factory_for(chat, **{"claude-opus-5-5": extra("claude-opus-5-5")}),
+                            team_models=["claude-opus-5-5"], team_model_uses={"Claude-Sonnet-5-5": "everyday work"})
+    assert app.start() == 0
+    assert any("Runs on claude-sonnet-5-5. Good for: everyday work." in text for text in seen)
+
+
+def test_project_notes_are_shown_at_startup_and_in_settings(tmp_path):
+    from agentx_dev.cli.settings import project_settings_path
+    chat = MockModel(script=[])
+    cwd = tmp_path / "proj"
+    app, out, cwd, _ = make_app(tmp_path, Lines("/settings", "/exit"), chat, env=KEYS,
+                                team_models=["gpt-5.5"], team_model_uses={"gpt-5.5": "use for every step"},
+                                team_models_source=project_settings_path(tmp_path / "proj"))
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "also use: gpt-5.5 (use for every step)" in text
+    assert "Helper models: gpt-5.5 (use for every step)" in text

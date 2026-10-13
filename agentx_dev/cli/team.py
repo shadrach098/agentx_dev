@@ -125,7 +125,7 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
         return helpers
     for helper_model in [HelperModel(model_label(model), model, chat_use), *extras]:
         note = MODEL_NOTE.format(model=helper_model.name,
-                                 use=USE_NOTE.format(use=helper_model.use) if helper_model.use else "")
+                                 use=USE_NOTE.format(use=helper_model.use.rstrip(".")) if helper_model.use else "")
         for role in ROLES:
             helpers[f"{role.name}@{helper_model.name}"] = (
                 role.description + note, _helper(role, helper_model.model, by_name, addendum, describe_error))

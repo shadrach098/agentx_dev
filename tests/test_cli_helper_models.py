@@ -194,3 +194,14 @@ def test_built_models_carry_their_note():
     built, _ = build_team_models(["claude-opus-5-5"], KEYS, factory=lambda name, env: "M",
                                  uses={"claude-opus-5-5": "hard coding"})
     assert built == [HelperModel("claude-opus-5-5", "M", "hard coding")]
+
+
+def test_a_name_with_an_equals_sign_is_not_a_model_name():
+    from agentx_dev.cli.models import parse_team_models
+    names, uses, problems = parse_team_models([{"model": "gpt-5.5=x"}])
+    assert names == [] and len(problems) == 1
+
+
+def test_a_null_note_means_no_note():
+    from agentx_dev.cli.models import parse_team_models
+    assert parse_team_models([{"model": "gpt-5.5", "use": None}]) == (["gpt-5.5"], {}, [])

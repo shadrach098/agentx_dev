@@ -147,7 +147,7 @@ def _team_models(ctx: Any, arg: str) -> None:
     try:
         words = shlex.split(arg, posix=True)           # name="hard coding" stays one word, without the quotes
     except ValueError:                                 # an unclosed quote
-        ctx.error(TEAM_MODELS_USAGE)
+        ctx.error("A quote is not closed (put a note with an apostrophe in double quotes). " + TEAM_MODELS_USAGE)
         return
     folder = "--folder" in words
     names = [word for word in words if word != "--folder"]

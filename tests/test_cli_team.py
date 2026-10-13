@@ -366,3 +366,9 @@ def test_a_helper_on_an_extra_model_still_goes_through_the_gate(tmp_path):
     opus = labelled("claude-opus-5-5", script=lambda messages: replies.pop(0))
     run(tmp_path, gated, chat, extra_models=[HelperModel("claude-opus-5-5", opus)])
     assert asked == ["write_file"] and not (tmp_path / "a.txt").exists()
+
+
+def test_a_note_ending_in_a_full_stop_is_not_doubled(tools):
+    helpers = build_helpers(labelled("claude-sonnet-5-5"), tools, "",
+                            extra_models=[HelperModel("gpt-5.5", labelled("y"), "hard coding.")])
+    assert "Good for: hard coding." in helpers["coder@gpt-5.5"][0] and ".." not in helpers["coder@gpt-5.5"][0]

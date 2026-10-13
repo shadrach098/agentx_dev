@@ -362,3 +362,9 @@ def test_team_models_with_an_unclosed_quote_shows_the_usage():
     ctx = Ctx()
     run_command(ctx, '/team-models gpt-6.1-sol="hard coding')
     assert ctx.errors and "Usage: /team-models" in ctx.errors[-1]
+
+
+def test_an_unclosed_quote_is_named_in_the_error():
+    ctx = Ctx()
+    run_command(ctx, "/team-models gpt-5.5=user's pick")
+    assert "quote" in ctx.errors[-1].lower()
