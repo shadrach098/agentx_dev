@@ -22,7 +22,9 @@ TEAM_TOOL_NAME = "start_team_job"
 MAX_TASK_CHARS = 4000
 MAX_WHY_CHARS = 500
 MAX_RESULT_CHARS = 6000
-HELPER_STEPS = 50                    # as many as the chat: a coder on a real change needs room
+HELPER_STEPS = 100                   # a coder on a real change needs room (50 ran out mid-change)
+OUT_OF_STEPS_NOTE = ("(This helper ran out of steps before finishing, so this is partial work: check what it "
+                     "changed before relying on it.)\n")
 MAX_SUBTASKS = 6
 MAX_QUESTIONS = 3
 ROLE_MARK = "Team role:"
@@ -75,6 +77,20 @@ def role_prompt(role: Role) -> str:
             f"{NO_TEAM_SENTENCE} Finish with a short report; the supervisor passes it on.")
 
 
+def _partial_if_out_of_steps(completion: Any) -> Any:
+    """A helper that ran out of steps counts as done with partial work, not as failed: its recap reaches the
+    supervisor marked as partial, and the steps that depend on it (the runner that tests the coder's edits, say)
+    still run. The Supervisor would otherwise mark it failed and skip them, losing the work."""
+    if getattr(completion, "outcome", None) != "iteration_limit":
+        return completion
+    try:
+        completion.content = OUT_OF_STEPS_NOTE + str(getattr(completion, "content", "") or "")
+        completion.outcome = "done"
+    except Exception:                               # a completion that cannot be changed is left as it is
+        pass
+    return completion
+
+
 class _HelperRunner(AgentRunner):
     """An ``AgentRunner`` whose run, when it raises an ``Exception``, raises a ``RuntimeError`` that carries only
     ``describe_error(error)``. The Supervisor catches such an error itself and shows its text on the screen,
@@ -87,13 +103,14 @@ class _HelperRunner(AgentRunner):
 
     def Initialize(self, *args: Any, **kwargs: Any) -> Any:
         try:
-            return super().Initialize(*args, **kwargs)
+            completion = super().Initialize(*args, **kwargs)
         except Exception as error:
             try:
                 text = str(self._describe_error(error))
             except Exception:                       # a broken describer must not let the raw text through
                 text = type(error).__name__
             raise RuntimeError(text) from None
+        return _partial_if_out_of_steps(completion)
 
 
 def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
@@ -152,6 +169,8 @@ def format_result(result: Any) -> str:
                 state = "skipped"
             elif _result_failed(sub):
                 state = "failed: " + _first_line(getattr(sub, "error", "") or getattr(sub, "outcome", ""), 80)
+            elif str(getattr(sub, "content", "") or "").startswith(OUT_OF_STEPS_NOTE):
+                state = "partial (ran out of steps)"
             else:
                 state = "done"
             lines.append(f"{number}. {sub.agent} - {state}: {_first_line(sub.query)}")
@@ -237,8 +256,10 @@ TOOL_DESCRIPTION = (
     "Hand a LARGE job to a team of helpers (an explorer that reads, a coder that edits files, a runner that "
     "runs commands and tests), led by a supervisor who plans the steps. Use it only for large, multi-part "
     "work: several files or areas, research plus changes plus tests. Do small and medium jobs yourself. The "
-    "user is asked before it starts unless auto mode is on. It makes many model calls, and only one team job "
-    "can run per user message. You get the supervisor's result back; then summarise it for the user or continue.")
+    "user is asked before it starts unless auto mode is on. It makes many model calls. Up to 5 team jobs can run "
+    "per user message: when a job ends partial and the user's task is not finished, call it again yourself for "
+    "what remains (say what is already done) instead of stopping to ask; after the 5th, report what is done and "
+    "what remains. You get the supervisor's result back; then summarise it for the user or continue.")
 
 
 def make_team_tool(run: Callable[[str, str], str]) -> StructuredTool:

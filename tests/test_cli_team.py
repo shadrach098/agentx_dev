@@ -329,8 +329,8 @@ def test_a_note_on_what_a_model_is_for_reaches_its_helpers_only(tools):
     assert "Good for" not in helpers["coder@gpt-5.5"][0]
 
 
-def test_helpers_get_as_many_steps_as_the_chat():
-    assert HELPER_STEPS == 50
+def test_helpers_get_room_for_a_real_change():
+    assert HELPER_STEPS == 100
 
 
 def test_the_planner_picks_a_model_and_that_step_runs_on_it(tmp_path, tools):

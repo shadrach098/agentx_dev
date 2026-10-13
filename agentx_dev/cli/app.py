@@ -40,8 +40,9 @@ INIT_PROMPT = (
     "already exists, tell me instead of overwriting it."
 )
 
-TEAM_ALREADY_RAN = ("Refused: a team job already ran in this turn. Use its result, or wait for the user's "
-                    "next message before starting another.")
+MAX_TEAM_JOBS_PER_MESSAGE = 5            # a big task may take several batches; this bounds one message's cost
+TEAM_LIMIT_REACHED = (f"Refused: {MAX_TEAM_JOBS_PER_MESSAGE} team jobs already ran for this message. Report to the "
+                      "user what is done and what remains, and let them say whether to continue.")
 
 NOT_A_TERMINAL = "agentx needs an interactive terminal (headless mode is not available yet)."
 MAX_RULES_SHOWN = 20
@@ -179,7 +180,7 @@ class ChatApp:
         self._watch_mode_changes()
         self.progress = Progress(console)
         self._team_helper = ""             # the helper whose step is running; "" outside a team job
-        self._team_used = False            # a turn may start one team job
+        self._team_jobs = 0                # team jobs started for the current message
         asker = make_asker(console, self.read_short, self.gate.cwd, select=select,
                            helper=lambda: self._team_helper, helper_models=self.helper_models_line)
 
@@ -522,7 +523,7 @@ class ChatApp:
         and, for a finished turn only, add an entry to the work log (titled ``log_title`` when given, else the
         message). Ctrl+C cancels the turn."""
         assert self.session is not None
-        self._team_used = False                        # a new message may start a new team job
+        self._team_jobs = 0                            # a new message may start new team jobs
         events: List[dict] = []
         finished = False
         try:
@@ -853,14 +854,14 @@ class ChatApp:
     # -- team jobs ----------------------------------------------------------
 
     def _once_per_turn(self, gated: Any) -> Any:
-        """``gated`` (the team tool behind the gate) with the one-job-per-turn rule checked first, so a second
-        call is refused without asking the user again. The first call goes through the gate as before; a job
-        the user declined does not count (``_team_used`` is set only when a job starts)."""
+        """``gated`` (the team tool behind the gate) with the jobs-per-message limit checked first, so a call past
+        ``MAX_TEAM_JOBS_PER_MESSAGE`` is refused without asking the user again. Other calls go through the gate
+        as before; a job the user declined does not count (``_team_jobs`` grows only when a job starts)."""
         inner = gated.func
 
         def once(**kwargs):
-            if self._team_used:
-                return TEAM_ALREADY_RAN
+            if self._team_jobs >= MAX_TEAM_JOBS_PER_MESSAGE:
+                return TEAM_LIMIT_REACHED
             return inner(**kwargs)
 
         once.__name__, once.__qualname__, once.__module__ = gated.name, f"once_per_turn.{gated.name}", __name__
@@ -903,11 +904,11 @@ class ChatApp:
 
     def _start_team_job(self, task: str, why: str) -> str:
         """The ``start_team_job`` tool: run the team and hand the result text back to the main agent."""
-        if self._team_used:
-            return TEAM_ALREADY_RAN
+        if self._team_jobs >= MAX_TEAM_JOBS_PER_MESSAGE:
+            return TEAM_LIMIT_REACHED
         if self.model is None:
             return "Refused: no model is available for a team job."
-        self._team_used = True
+        self._team_jobs += 1
         if self.team_models:
             self._describe_models()               # a list loaded from settings gets its notes at the first job
         extras, notes = build_team_models(self.team_models, self.env, chat_label=self.model_label,

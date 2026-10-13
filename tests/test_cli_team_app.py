@@ -35,8 +35,10 @@ def team_model(steps, synth="The survey is complete.", helper=None, main=("call"
             return (helper or (lambda messages, n: make_final("helper report")))(messages, state["helper_calls"])
         state["main"] += 1
         action = main[state["main"] - 1] if state["main"] <= len(main) else "final"
-        if action == "call":
-            return make_react_response("start_team_job", CALL)
+        if action == "call":                    # a later batch names what remains, as a real agent would
+            batch = state["main"]
+            return make_react_response("start_team_job", CALL if batch == 1 else
+                                       {**CALL, "task": f"{CALL['task']} (batch {batch})"})
         return make_final("The team finished; here is the summary.")
 
     model = MockModel(script=script)
@@ -96,12 +98,12 @@ def test_auto_mode_starts_the_team_without_asking(tmp_path):
     assert "Team plan" in out.getvalue() and asked == []
 
 
-def test_a_second_team_job_in_the_same_turn_is_refused(tmp_path):
-    model = team_model([step("s1", "explorer", "look around")], main=("call", "call", "final"))
+def test_a_message_may_run_up_to_five_team_jobs_then_the_next_is_refused(tmp_path):
+    model = team_model([step("s1", "explorer", "look around")], main=("call",) * 6 + ("final",))
     app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto")
     assert app.start() == 0
-    assert out.getvalue().count("Team plan:") == 1
-    assert "already ran in this turn" in history_text(app)
+    assert out.getvalue().count("Team plan:") == app_module.MAX_TEAM_JOBS_PER_MESSAGE == 5
+    assert "5 team jobs already ran for this message" in history_text(app)
 
 
 def test_the_next_message_may_start_another_job(tmp_path):
@@ -109,7 +111,7 @@ def test_the_next_message_may_start_another_job(tmp_path):
     app, out, _, _ = make_app(tmp_path, Lines("first big job", "second big job", "/exit"), model, mode="auto")
     assert app.start() == 0
     assert out.getvalue().count("Team plan:") == 2
-    assert "already ran in this turn" not in history_text(app)
+    assert "already ran for this message" not in history_text(app)
 
 
 def test_a_helper_edit_still_asks_in_default_mode_and_the_prompt_names_the_helper(tmp_path):
@@ -241,19 +243,19 @@ def test_helpers_are_told_they_cannot_start_a_team_although_the_chat_prompt_says
         assert "start_team_job" not in [tool.name for tool in runner.tools], name
 
 
-def test_a_second_job_in_a_turn_is_refused_before_the_user_is_asked_again(tmp_path):
+def test_a_job_past_the_limit_is_refused_before_the_user_is_asked_again(tmp_path):
     asked = []
 
     def read_short(prompt=""):
         asked.append(prompt)
         return "y"
 
-    model = team_model([step("s1", "explorer", "look around")], main=("call", "call", "final"))
+    model = team_model([step("s1", "explorer", "look around")], main=("call",) * 6 + ("final",))
     app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, read_short=read_short)
     assert app.start() == 0
-    assert len(asked) == 1                                      # the hand-off was approved once, not twice
-    assert out.getvalue().count("Team plan:") == 1
-    assert "already ran in this turn" in history_text(app)
+    assert len(asked) == 5                                      # each job asked once; the sixth never asked
+    assert out.getvalue().count("Team plan:") == 5
+    assert "already ran for this message" in history_text(app)
 
 
 def test_a_declined_hand_off_may_be_asked_again_in_the_same_turn(tmp_path):
@@ -261,7 +263,7 @@ def test_a_declined_hand_off_may_be_asked_again_in_the_same_turn(tmp_path):
     model = team_model([step("s1", "explorer", "look around")], main=("call", "call", "final"))
     app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, read_short=answers)
     assert app.start() == 0
-    assert out.getvalue().count("Team plan:") == 1 and "already ran in this turn" not in history_text(app)
+    assert out.getvalue().count("Team plan:") == 1 and "already ran for this message" not in history_text(app)
 
 
 def test_an_error_text_with_the_api_key_never_reaches_the_result_string(tmp_path, monkeypatch):
@@ -326,8 +328,8 @@ def test_the_tool_handles_a_missing_model_and_a_repeat_call_directly(tmp_path):
     app, _, _, _ = make_app(tmp_path, Lines("/exit"), model)
     assert "no model" in app._start_team_job("task", "why")
     app.model = model
-    app._team_used = True
-    assert app._start_team_job("task", "why") == app_module.TEAM_ALREADY_RAN
+    app._team_jobs = app_module.MAX_TEAM_JOBS_PER_MESSAGE
+    assert app._start_team_job("task", "why") == app_module.TEAM_LIMIT_REACHED
 
 
 from tests.conftest import MockModel as _Mock
@@ -790,3 +792,22 @@ def test_describe_drops_an_auto_note_the_model_no_longer_stands_by(tmp_path):
                             env=KEYS)
     assert app.start() == 0
     assert "gpt-5.5" not in app.team_model_uses
+
+
+def test_a_helper_that_runs_out_of_steps_hands_over_partial_work_and_the_next_step_runs(tmp_path, monkeypatch):
+    from agentx_dev.cli import team as team_module
+    monkeypatch.setattr(team_module, "HELPER_STEPS", 2)
+    loops = []
+
+    def helper(messages, n):                     # the coder never finishes; the runner does
+        if "coder helper" in str(messages[0]["content"]):
+            loops.append(n)
+            return make_react_response("list_directory", {"path": "."})
+        return make_final("checked the coder's partial work")
+
+    model = team_model([step("c1", "coder", "change it"), step("r1", "runner", "check it", ["c1"])], helper=helper)
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto")
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "skipped" not in text and "done (runner)" in text
+    assert "coder - partial (ran out of steps)" in history_text(app)
