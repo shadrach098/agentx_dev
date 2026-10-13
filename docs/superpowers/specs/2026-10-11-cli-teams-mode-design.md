@@ -74,14 +74,14 @@ Deny rules apply (`start_team_job:*` turns the feature off); the rule subject is
 allow rules apply as for any non-destructive tool; project allow rules still go through the startup question.
 The prompt shows the task, the reason, the three helpers and a warning that a team job makes many model calls.
 
-A turn may start at most one team job: once a job has started, a second call in the same turn is answered with a
+(Superseded 2026-10-13: a turn may now start up to 5 team jobs; see the decisions at the end.) A turn may start at most one team job: once a job has started, a second call in the same turn is answered with a
 refusal result ("Refused: a team job already ran in this turn. ...") before the gate, so the user is not asked
 again. A hand-off the user declined does not count, so it may be asked again in the same turn. The app resets the
 flag when a new user message is sent.
 
 ## 6. The helpers
 
-Three helpers, each an `AgentRunner` (ReAct, `auto_cache=False`, `parallel_tool_workers=1`, 50 steps (25 until 2026-10-13), the same
+Three helpers, each an `AgentRunner` (ReAct, `auto_cache=False`, `parallel_tool_workers=1`, 100 steps (25, then 50, until 2026-10-13), the same
 system addendum as the chat plus a short role paragraph), each with a subset of the existing **gated** tools:
 
 | Helper | Tools | For |
@@ -177,3 +177,6 @@ job).
 - The result joins the conversation as the tool result (the user's choice).
 - `max_subtask_retries=0` so a failed helper step is not repeated with its side effects (a ruling).
 - Roles steer, the gate protects (stated so nobody reads the tool lists as a sandbox).
+- Revised 2026-10-13 after real use (the user's choice): a turn may start up to 5 team jobs, so a big task
+  continues batch after batch; a helper that runs out of steps hands on partial work (its step is not failed and
+  the steps after it run); helpers get 100 steps.

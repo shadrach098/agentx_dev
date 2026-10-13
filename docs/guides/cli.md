@@ -305,7 +305,7 @@ Before a job starts you get a prompt like any other, with the task, the reason t
 | `plan` | Refused, like every other change. |
 | `auto` | Runs without asking. |
 
-A deny rule turns the feature off in every mode (see [Turning it off](#turning-it-off)). An allow rule of your own, `"allow": ["start_team_job"]`, lets it run without asking. If you decline, the agent may ask again in the same message. Once a job has started, a second one in the same message is refused at once, before any prompt ("a team job already ran in this turn"); your next message can start another.
+A deny rule turns the feature off in every mode (see [Turning it off](#turning-it-off)). An allow rule of your own, `"allow": ["start_team_job"]`, lets it run without asking. If you decline, the agent may ask again in the same message. One message may run **up to 5 team jobs**: a big task ("move all the calls") often takes several batches, so when a job ends partial and the task is not finished, the agent starts the next batch itself instead of stopping to ask you to "continue" (in `default` and `accept-edits` mode each job is still asked about; in `auto` mode they just run). A sixth is refused at once, before any prompt ("5 team jobs already ran for this message"), and the agent reports what is done and what remains; your next message can start more.
 
 ### What the helpers may do
 
@@ -384,7 +384,7 @@ An entry is a model name, optionally with a short note on what that model is for
 
 **Cost and data.**
 
-- Each step costs what its model costs. A job that uses a strong model for a hard step costs more than the same job on the chat's model. A helper may take up to 50 model steps per job step (it was 25), so the most a job can cost doubled too.
+- Each step costs what its model costs. A job that uses a strong model for a hard step costs more than the same job on the chat's model. A helper may take up to 100 model steps per job step (it was 25, then 50), and one message may run up to 5 jobs, so a single message on a big task can cost much more than a chat answer. Remove expensive models from the list, or stay out of `auto` mode, if that matters.
 - The planner always runs on the chat's model; only helpers move.
 - Helpers on another provider receive the same system prompt as the chat: your `AGENTX.md` files, the recent-work block from the log (in a conversation that started fresh) and the role text. They also receive the step's task, the results of earlier steps, and everything the helper reads or runs in that step, including files in your `addDirs` folders. So all of that goes to that provider's API. A folder's `.agentx/settings.json` can set `teamModels`, as it can set `model`, so a repository you cloned could send this to a provider you did not choose. Two things tell you: a notice at startup when the list comes from the project's file (`This project's settings let team helpers also use: ... (from <path>). /team-models clear turns that off for this session.`; it does not ask, and a list from your own settings file or set in the session gets none), and the `Helper models:` line in the approval panel before you approve a job (in `auto` mode, or with your own allow rule, nothing asks first, so the startup notice is the one to read).
 - Nothing about what a helper may do changes: every helper, on any model, goes through the same gate, modes, deny rules, protected files and prompts, and a deny rule `start_team_job:*` still turns team jobs off.
@@ -409,7 +409,7 @@ The agent is then refused every time it tries, in every mode, `auto` included. T
 - The three roles are fixed. Extra models (see [Helper models](#helper-models)) add the same roles on other models; they cannot add a new kind of helper, and the supervisor does not switch a failed step to another model.
 - There is no memory between jobs. Each step is a fresh helper (the supervisor passes earlier results along), built for the job from the model in use at that moment (and from the helper models list at that moment), so `/model` and `/team-models` apply from the next job.
 - A failed step is not retried, because a retry would repeat what the helper already did. A step that depends on the failed one is skipped, and the result lists each step as done, failed or skipped.
-- A step is at most 50 model steps for the helper (as many as the chat gets), and a job at most 6 plan steps.
+- A step is at most 100 model steps for the helper, and a job at most 6 plan steps. A helper that runs out of steps does not fail its step: what it did is handed on marked partial (`partial (ran out of steps)` in the result, `(This helper ran out of steps before finishing, so this is partial work ...)` in its report), and the steps after it, such as the runner that tests the coder's edits, still run.
 - The task the agent passes is at most 4,000 characters and its reason at 500; longer text is refused with a message, not cut.
 - A team job makes many model calls: expect it to cost much more than a normal turn, and more still when a step runs on a pricier model.
 - At most 4 extra models; the planner always runs on the chat's model.

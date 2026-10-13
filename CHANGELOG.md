@@ -44,8 +44,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
     none is favoured, and each model can carry a note on what it is for (`gpt-6.1-sol="hard coding"`), which
     the supervisor reads; without one, the chat model is asked once what each model is good for and its
     answer is kept as an `auto:` note (`/team-models describe` asks again). The approval box lists the models. A list that comes from a project's settings file
-    is announced at startup. With no list nothing changes. Team helpers now get 50 steps, as the chat does
-    (was 25). See the guide.
+    is announced at startup. With no list nothing changes. Team helpers now get 100 steps (was 25); a helper
+    that runs out of steps hands on its partial work instead of failing the step, and one message may run up to
+    5 team jobs, so a big task continues batch after batch without you typing "continue". See the guide.
   - **Project memory.** Each folder can have its own model: the first time you trust a folder, `agentx`
     writes `.agentx/settings.json` with the model in use, and `/model <name> --folder` changes it (plain
     `/model <name>` stays for the session). The app keeps a work log in `.agentx/log.md`, written by the app
