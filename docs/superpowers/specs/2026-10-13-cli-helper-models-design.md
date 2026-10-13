@@ -82,11 +82,14 @@ framework's plan format (approach B below); models from providers other than Ant
 - When a job starts, the app builds one model object per listed name with the existing `choose_model` rules, from
   the session's list at that moment (a change applies to the next job).
 - A name whose API key is not set is skipped: `Not used: gpt-5.5 (no OPENAI_API_KEY)` (the variable is
-  `ANTHROPIC_API_KEY` for a Claude model). A name whose model cannot be built is skipped with the error's type
-  only (`Not used: x (could not be set up: <type>)`), because a constructor's message could echo the key. In the
-  app the type is `ModelError`, since the app's model builder (`choose_model`) wraps every constructor error in
-  it, so the line reads `Not used: gpt-5.5 (could not be set up: ModelError)`. These lines are shown once,
-  above the job's plan.
+  `ANTHROPIC_API_KEY` for a Claude model). A name whose model cannot be built is skipped too. The app's model
+  builder (`choose_model`) raises `ModelError` with a message written to be shown (it never contains a key; it
+  wraps an unknown constructor error as "Could not set up the model (<Type>)." and passes on, for example, the
+  hint to install an optional package), so for a `ModelError` the line carries that message, flattened to one
+  line and cut to about 160 characters: `Not used: claude-opus-5-5 (No module named 'anthropic' - install
+  agentx-dev[anthropic])`. For any other exception only the type is named (`Not used: x (could not be set up:
+  <type>)`), because a constructor's message could echo the key. The app prints every line through its
+  redacting `_safe`, and stops the spinner first. These lines are shown once, above the job's plan.
 - The chat's model is always first and keeps today's helper names: `explorer`, `coder`, `runner`.
 - Each other usable model adds the three roles named `explorer@<model>`, `coder@<model>`, `runner@<model>`, with
   the same tools, step limit, addendum and role text as the plain helpers. At most 4 extra models: at most 15
@@ -94,8 +97,8 @@ framework's plan format (approach B below); models from providers other than Ant
 - Descriptions the planner reads: the role's description plus one sentence. Plain helpers (only when at least
   one extra model is in use; with none, the descriptions are exactly today's): "Runs on <chat model> (the
   chat's model); use it unless a step clearly needs another model." Others: "The same role on <model>. Choose
-  it when that model suits the step better, for example harder reasoning or a large change; its calls cost what
-  that model costs."
+  it when that model suits the step better (stronger, faster or cheaper); its calls cost what that model
+  costs." (Neutral on purpose: it does not nudge the planner towards the dearer model.)
 - The planner (the `Supervisor`'s own model) is always the chat's model.
 
 ## 7. What the user sees
@@ -118,10 +121,17 @@ framework's plan format (approach B below); models from providers other than Ant
 - A helper's model failing during a step (outage, rate limit, a name the provider rejects): the step fails like
   any failed step today (redacted error, marked failed, no retry since `max_subtask_retries=0`), and the job goes
   on or ends as it does now. The supervisor does not switch models on its own.
-- A project file may set `teamModels` like it may set `model`; the user still sees the list in the approval panel
-  before each job (outside auto mode). Helpers on another provider get the same system addendum (project
-  instructions, the recent-work block, the role text): that project text is sent to that provider's API. The
-  guide says so.
+- A project file may set `teamModels` like it may set `model`. The approval panel shows the list before each job,
+  but in auto mode (or with an allow rule for `start_team_job`) no panel appears, so a list that comes from the
+  project's own settings file is announced once at startup, with no prompt: `This project's settings let team
+  helpers also use: <names> (from <path>). /team-models clear turns that off for this session.` A list from the
+  user's own file, or set in the session, and an empty or absent list, give no notice. Helpers on another
+  provider get the same system addendum (project instructions, the recent-work block, the role text) and also see
+  the step's task, earlier step results and everything the helper reads or runs in that step (files in `addDirs`
+  folders included): all of that is sent to that provider's API. The guide says so.
+- `/team-models` on an empty list says whether a settings file turned the extra models off
+  (`Helper models: none - turned off by <path>.`) or none was ever set; `--folder` shows the list after the write,
+  so the file is named as its source.
 - The gate is unchanged: every helper call goes through the same modes, deny rules, protected files and prompts.
 
 ## 9. Testing
@@ -133,7 +143,11 @@ and the app tests:
   folder file beating the user file; the source recorded.
 - Building: no list gives exactly today's three helpers (names and descriptions unchanged);
   two extra models give nine helpers with the right names, models and tools; a model without a key is skipped and
-  noted; a build error shows only its type; the chat's model listed again is not duplicated.
+  noted; a `ModelError` shows its (bounded, one-line) message and any other build error only its type; the
+  chat's model listed again is not duplicated.
+- A project's `teamModels` is announced at startup (a user-file list, a session list and no list are not); an
+  empty list from a file is reported by `/team-models` as turned off by that file; a role@model name is shown
+  whole in the plan, dispatch, done and tool lines.
 - A whole job: a scripted planner picks `coder@<model>` and that step runs on that model's own scripted mock (and
   not on the chat's); the dispatch line and the result show the name; the helper's write still goes through the
   gate and prompts.
