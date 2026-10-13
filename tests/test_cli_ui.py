@@ -62,6 +62,20 @@ class TestScreen:
         c, _ = console()
         assert bullet(c) == "●"
 
+    def test_a_role_at_model_name_is_shown_whole_in_every_team_line(self):
+        name = "explorer@claude-sonnet-4-5-20250929"
+        assert len(name) > 30
+        c, out = console()
+        screen = Screen(c)
+        screen.team_plan([{"agent": name, "query": "look around"}])
+        screen.team_dispatch(name, "look around")
+        screen.team_result(name, True, "all good")
+        screen.helper_call(name, "read_path", {"path": "a.py"})
+        lines = out.getvalue().splitlines()
+        assert [name in line for line in lines].count(True) == 4
+        assert any(line.startswith("-> " + name + ":") for line in lines)
+        assert any(line.startswith("   done (" + name + "):") for line in lines)
+
     def test_a_tool_call_with_non_dict_args_does_not_crash(self):
         c, out = console()
         Screen(c).show_event({"type": "tool_call", "name": "mystery", "args": "plain text"})
@@ -806,8 +820,13 @@ class TestHelperLineInThePrompt:
     def test_the_helper_name_is_trimmed_and_cut(self):
         trimmed = self.ask(lambda: "  coder  ")
         assert "Helper: coder" in trimmed and "Helper:  coder" not in trimmed
-        long = self.ask(lambda: "x" * 100)
-        assert "Helper: " + "x" * 39 + "…" in long and "x" * 41 not in long
+        long = squash(self.ask(lambda: "x" * 300))
+        assert "x" * 109 + "…" in long and "x" * 111 not in long
+
+    def test_a_role_at_model_helper_name_is_shown_whole(self):
+        name = "explorer@claude-sonnet-4-5-20250929"
+        assert len(name) > 30
+        assert squash(name) in squash(self.ask(lambda: name))
 
     def test_a_team_request_prints_no_subject_line(self):
         text = self.ask(None, kind="team", tool="start_team_job",

@@ -309,6 +309,8 @@ def test_each_extra_model_adds_the_three_roles_named_role_at_model(tools):
         assert "BASE PROMPT" in runner.system_addendum and runner.max_iterations == 25
     assert "Runs on claude-sonnet-5-5 (the chat's model)" in helpers["coder"][0]
     assert "The same role on claude-opus-5-5" in helpers["coder@claude-opus-5-5"][0]
+    assert "(stronger, faster or cheaper)" in helpers["coder@claude-opus-5-5"][0]
+    assert "harder reasoning" not in helpers["coder@claude-opus-5-5"][0]
 
 
 def test_the_planner_picks_a_model_and_that_step_runs_on_it(tmp_path, tools):

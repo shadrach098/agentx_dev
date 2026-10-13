@@ -387,6 +387,54 @@ def test_a_model_that_cannot_be_built_shows_only_the_error_type(tmp_path):
     assert "Not used: gpt-5.5 (could not be set up: ValueError)" in text and KEYS["OPENAI_API_KEY"] not in text
 
 
+def test_a_model_error_while_building_shows_its_message_and_no_key(tmp_path):
+    chat = team_model([step("s1", "explorer", "look around")])
+    chat.model_name = "claude-sonnet-4-5"
+
+    def factory(name, env):
+        if name == "claude-opus-5-5":
+            raise app_module.ModelError("No module named 'anthropic' - install agentx-dev[anthropic]")
+        return chat
+
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"), env=KEYS,
+                              model_factory=factory, team_models=["claude-opus-5-5"])
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "Not used: claude-opus-5-5 (No module named 'anthropic' - install agentx-dev[anthropic])" in text
+    assert "done (explorer)" in text
+
+
+def test_a_model_error_that_carries_a_key_is_still_hidden_by_the_app(tmp_path):
+    chat = team_model([step("s1", "explorer", "look around")])
+    chat.model_name = "claude-sonnet-4-5"
+
+    def factory(name, env):
+        if name == "gpt-5.5":
+            raise app_module.ModelError(f"rejected {KEYS['OPENAI_API_KEY']}")
+        return chat
+
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"), env=KEYS,
+                              model_factory=factory, team_models=["gpt-5.5"])
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "Not used: gpt-5.5 (rejected" in text and KEYS["OPENAI_API_KEY"] not in text
+
+
+def test_the_spinner_is_stopped_before_the_not_used_notes(tmp_path):
+    chat = team_model([step("s1", "explorer", "look around")])
+    chat.model_name = "claude-sonnet-5-5"
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"),
+                              env={"ANTHROPIC_API_KEY": KEYS["ANTHROPIC_API_KEY"]}, team_models=["gpt-5.5"])
+    events = []
+    start, stop, notice = app.progress.start, app.progress.stop, app.notice
+    app.progress.start = lambda *a, **k: (events.append("start"), start(*a, **k))[1]
+    app.progress.stop = lambda *a, **k: (events.append("stop"), stop(*a, **k))[1]
+    app.notice = lambda text: (events.append("not used" if "Not used" in text else "notice"), notice(text))[1]
+    assert app.start() == 0
+    at = events.index("not used")
+    assert [e for e in events[:at] if e in ("start", "stop")][-1] == "stop"
+
+
 def test_without_a_list_the_team_job_is_unchanged(tmp_path):
     chat = team_model([step("s1", "explorer", "look around")])
     app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"))
@@ -437,3 +485,88 @@ def test_a_hostile_model_name_is_printed_inert(tmp_path):
                               chat, env=KEYS)
     assert app.start() == 0
     assert "\x1b" not in out.getvalue()
+
+
+# -- a repository's own helper models are announced; an empty list says it turned them off ---------------
+
+def project_file(tmp_path):
+    return tmp_path / "proj" / ".agentx" / "settings.json"
+
+
+def test_a_list_from_the_project_settings_is_announced_at_startup(tmp_path):
+    chat = MockModel(script=[])
+    app, out, cwd, _ = make_app(tmp_path, Lines("/exit"), chat, env=KEYS, team_models=["claude-opus-5-5", "gpt-5.5"],
+                                team_models_source=project_file(tmp_path))
+    assert app.start() == 0
+    text = squash_ws(out.getvalue())
+    assert "This project's settings let team helpers also use: claude-opus-5-5, gpt-5.5" in text
+    assert "settings.json" in text and "/team-models clear turns that off for this session." in text
+
+
+def test_the_announcement_hides_control_characters_and_keys(tmp_path):
+    chat = MockModel(script=[])
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), chat, env=KEYS,
+                              team_models=["claude-[2J" + KEYS["OPENAI_API_KEY"]],
+                              team_models_source=project_file(tmp_path))
+    assert app.start() == 0
+    assert "" not in out.getvalue() and KEYS["OPENAI_API_KEY"] not in out.getvalue()
+    assert "This project's settings let team helpers also use" in out.getvalue()
+
+
+def test_a_list_from_the_users_own_settings_is_not_announced(tmp_path):
+    chat = MockModel(script=[])
+    app, out, _, home = make_app(tmp_path, Lines("/exit"), chat, env=KEYS, team_models=["claude-opus-5-5"],
+                                 team_models_source=tmp_path / "home" / ".agentx" / "settings.json")
+    assert app.start() == 0
+    assert "This project's settings" not in out.getvalue()
+
+
+def test_no_list_means_no_announcement(tmp_path):
+    chat = MockModel(script=[])
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), chat, env=KEYS)
+    assert app.start() == 0
+    assert "team helpers also use" not in out.getvalue()
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), chat, env=KEYS, team_models=[],
+                              team_models_source=project_file(tmp_path))     # a project that turns them off
+    assert app.start() == 0
+    assert "team helpers also use" not in out.getvalue()
+
+
+def test_a_folder_file_with_an_empty_list_says_it_turned_the_extra_models_off(tmp_path):
+    chat = MockModel(script=[])
+    chat.model_name = "claude-sonnet-5-5"
+    app, out, _, _ = make_app(tmp_path, Lines("/team-models", "/exit"), chat, env=KEYS, team_models=[],
+                              team_models_source=project_file(tmp_path))
+    assert app.start() == 0
+    text = squash_ws(out.getvalue())
+    assert "Helper models: none - turned off by" in text and "settings.json" in text
+    assert "none set" not in text
+
+
+def test_without_any_file_the_list_is_none_set(tmp_path):
+    chat = MockModel(script=[])
+    app, out, _, _ = make_app(tmp_path, Lines("/team-models", "/exit"), chat, env=KEYS)
+    assert app.start() == 0
+    assert "Helper models: none set" in squash_ws(out.getvalue()) and "turned off" not in out.getvalue()
+
+
+def test_clearing_in_the_session_forgets_the_file(tmp_path):
+    chat = MockModel(script=[])
+    app, out, _, _ = make_app(tmp_path, Lines("/team-models clear", "/exit"), chat, env=KEYS,
+                              team_models=["claude-opus-5-5"], team_models_source=project_file(tmp_path))
+    assert app.start() == 0
+    assert app.team_models_source is None and "none set" in squash_ws(out.getvalue())
+
+
+def test_team_models_folder_reports_the_file_as_the_source(tmp_path):
+    chat = MockModel(script=[])
+    app, out, cwd, _ = make_app(tmp_path, Lines("/team-models claude-opus-5-5 --folder", "/exit"), chat, env=KEYS)
+    assert app.start() == 0
+    text = squash_ws(out.getvalue())
+    assert "Helper models (from " in text and "settings.json): claude-opus-5-5" in text
+    assert "(this session)" not in text
+    assert app.team_models_source == cwd.resolve() / ".agentx" / "settings.json"
+
+
+def squash_ws(text):
+    return " ".join(text.split())

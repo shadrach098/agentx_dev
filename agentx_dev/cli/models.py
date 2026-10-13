@@ -12,6 +12,7 @@ from agentx_dev.ChatModel import GPT, Claude
 ANTHROPIC_KEY = "ANTHROPIC_API_KEY"
 OPENAI_KEY = "OPENAI_API_KEY"
 MAX_TEAM_MODELS = 4
+MAX_ERROR_NOTE_CHARS = 160            # a ModelError's message, as shown in a "Not used" line
 
 
 class ModelError(Exception):
@@ -175,14 +176,21 @@ def build_team_models(names: Sequence[str], env: Mapping[str, str], *, chat_labe
                       factory: Optional[Callable[[str, Mapping[str, str]], Any]] = None
                       ) -> Tuple[List[HelperModel], List[str]]:
     """Build the extra models for one team job with ``factory`` (``choose_model`` by default). A name without a
-    key, or whose build raises, is skipped with a "Not used" line that names only the error's type: a
-    constructor's message could echo the key. ``KeyboardInterrupt`` and ``SystemExit`` pass through."""
+    key, or whose build raises, is skipped with a "Not used" line. For a ``ModelError`` the line carries its
+    message (``choose_model`` writes those to be shown, for example the hint to install an optional package),
+    flattened to one line and cut; for any other error only its type is named, because a constructor's message
+    could echo the key. ``KeyboardInterrupt`` and ``SystemExit`` pass through."""
     build = factory or choose_model
     usable, notes = usable_team_models(chat_label, names, env)
     built: List[HelperModel] = []
     for name in usable:
         try:
             built.append(HelperModel(name, build(name, env)))
+        except ModelError as error:
+            message = " ".join(str(error).split())
+            if len(message) > MAX_ERROR_NOTE_CHARS:
+                message = message[:MAX_ERROR_NOTE_CHARS - 3] + "..."
+            notes.append(f"Not used: {name} ({message or 'could not be set up: ModelError'})")
         except Exception as error:
             notes.append(f"Not used: {name} (could not be set up: {type(error).__name__})")
     return built, notes

@@ -27,8 +27,8 @@ MAX_SUBTASKS = 6
 MAX_QUESTIONS = 3
 ROLE_MARK = "Team role:"
 PLAIN_MODEL_NOTE = " Runs on {model} (the chat's model); use it unless a step clearly needs another model."
-EXTRA_MODEL_NOTE = (" The same role on {model}. Choose it when that model suits the step better, for example harder "
-                    "reasoning or a large change; its calls cost what that model costs.")
+EXTRA_MODEL_NOTE = (" The same role on {model}. Choose it when that model suits the step better (stronger, faster "
+                    "or cheaper); its calls cost what that model costs.")
 MAY_HAVE_CHANGED = "Some steps may already have changed files."
 READ_TOOLS = ("read_path", "list_directory", "find_files", "grep")
 

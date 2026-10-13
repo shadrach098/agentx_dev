@@ -10,7 +10,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rich.console import Console
 
@@ -162,7 +162,8 @@ class ChatApp:
         self.requested_model = model_name
         self.model_source = model_source       # the settings file ``model_name`` came from (None: a flag, or none)
         self.team_models: List[str] = list(team_models or [])
-        self.team_models_source = team_models_source if team_models else None   # the file the list came from
+        # The file the list came from. An empty list keeps its file: that file turned the extra models off.
+        self.team_models_source = team_models_source
         self.problems = list(problems)
         self.project_allow = list(project_allow)
         self.settings_created: Optional[Path] = None      # set by start when it wrote a first settings file
@@ -239,7 +240,25 @@ class ChatApp:
         for problem in self.problems:
             self.notice("Warning: " + self._safe(problem, 400))
         self._confirm_project_rules()
+        self._announce_project_team_models()
         self._check_extra_folders()
+
+    def _announce_project_team_models(self) -> None:
+        """A repository's own ``teamModels`` can send a team job's work to another provider or a dearer model, and
+        in auto mode (or with an allow rule for the team tool) nothing else would say so: one notice, no prompt.
+        A list from the user's own settings, or one set in this session, is not announced."""
+        source = self.team_models_source
+        if not self.team_models or source is None:
+            return
+        try:
+            from_project = Path(source).resolve() == project_settings_path(self.cwd).resolve()
+        except OSError:
+            from_project = False
+        if not from_project:
+            return
+        self.notice(f"This project's settings let team helpers also use: "
+                    f"{self._safe(', '.join(self.team_models), 400)} (from {self._safe(source, 300)}). "
+                    "/team-models clear turns that off for this session.")
 
     def _confirm_project_rules(self) -> None:
         """A repository's own allow rules can switch off the prompts (``"write_file"`` is accept-edits under
@@ -620,6 +639,11 @@ class ChatApp:
 
     def show_team_models(self) -> None:
         """``/team-models``: the list, where it came from, and which entries a job would use now."""
+        if not self.team_models and self.team_models_source is not None:
+            self.notice(f"Helper models: none - turned off by {self._safe(self.team_models_source, 300)}, so team "
+                        f"helpers use the chat's model ({self._safe(self.model_label, 80)}). Set some with "
+                        "/team-models <name> [<name> ...]; add --folder to keep them for this folder.")
+            return
         if not self.team_models:
             self.notice("Helper models: none set, so team helpers use the chat's model "
                         f"({self._safe(self.model_label, 80)}). Set some with /team-models <name> [<name> ...]; "
@@ -645,16 +669,17 @@ class ChatApp:
             return
         self.team_models = cleaned
         self.team_models_source = None
-        self.show_team_models()
-        if not folder:
-            return
-        if not self._memory_on:
-            self.notice("No folder settings file is kept for your home folder or a drive root.")
-            return
-        path, message = write_project_team_models(self.cwd, cleaned)
-        (self.notice if path is not None else self.error)(self._safe(message, 600))
-        if path is not None:
-            self.team_models_source = path
+        report: Optional[Tuple[Callable[[str], None], str]] = None
+        if folder and not self._memory_on:
+            report = (self.notice, "No folder settings file is kept for your home folder or a drive root.")
+        elif folder:
+            path, message = write_project_team_models(self.cwd, cleaned)
+            report = (self.notice if path is not None else self.error, self._safe(message, 600))
+            if path is not None:
+                self.team_models_source = path
+        self.show_team_models()               # after the write, so it names the file as the source
+        if report is not None:
+            report[0](report[1])
 
     def _refresh_instructions(self, with_log: bool = False) -> None:
         """Read AGENTX.md again (``/init`` or the user may have written or changed it). ``with_log`` adds the
@@ -780,8 +805,9 @@ class ChatApp:
         self._team_used = True
         extras, notes = build_team_models(self.team_models, self.env, chat_label=self.model_label,
                                           factory=self.model_factory)
+        self.progress.stop()                      # the notices below must not be drawn over the spinner
         for note in notes:
-            self.notice(self._safe(note, 200))
+            self.notice(self._safe(note, 300))
         self.progress.start("Planning the team job")
         try:
             return run_team_job(task, model=self.model, tools=self.base_tools, addendum=self.addendum,

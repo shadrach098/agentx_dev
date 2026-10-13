@@ -28,7 +28,7 @@ MAX_RESULT_LINES = 3
 MAX_SUMMARY_CHARS = 100
 MAX_QUESTION_LINES = 12
 MAX_QUESTION_CHARS = 1500
-MAX_HELPER_CHARS = 40
+MAX_HELPER_CHARS = 110             # helper and agent names: explorer@claude-sonnet-4-5-20250929 shows whole
 
 # What ``plain`` escapes: control characters (Cc), lone surrogates (Cs) and every format character (Cf: bidi
 # controls, zero-width spaces, word joiners, BOM, soft hyphen, tag characters, interlinear annotation marks...)
@@ -238,15 +238,17 @@ class Screen:
         for number, step in enumerate(steps if isinstance(steps, (list, tuple)) else [], 1):
             if not isinstance(step, dict):
                 continue
-            _print(self.console, Text(f"  {number}. {_short(step.get('agent'), 30)}: "
+            _print(self.console, Text(f"  {number}. {_short(step.get('agent'), MAX_HELPER_CHARS)}: "
                                       f"{_short(step.get('query'), 200)}", style="dim"))
 
     def team_dispatch(self, agent: Any, query: Any) -> None:
-        _print(self.console, Text(f"-> {_short(agent, 30)}: {_short(query, 200)}", style="bold magenta"))
+        _print(self.console, Text(f"-> {_short(agent, MAX_HELPER_CHARS)}: {_short(query, 200)}",
+                                  style="bold magenta"))
 
     def team_result(self, agent: Any, ok: bool, text: Any) -> None:
         report = _short(_nothing_if_none(text), 160) or "(no report)"
-        _print(self.console, Text(f"   {'done' if ok else 'failed'} ({_short(agent, 30)}): {report}",
+        mark = "done" if ok else "failed"
+        _print(self.console, Text(f"   {mark} ({_short(agent, MAX_HELPER_CHARS)}): {report}",
                                   style="dim" if ok else "red"))
 
     def helper_call(self, helper: Any, name: Any, args: Any) -> None:
@@ -255,7 +257,8 @@ class Screen:
             summary = _short(subject_of(str(name), args if isinstance(args, dict) else {}))
         except Exception:
             summary = ""
-        line = Text(f"{bullet(self.console)} [{_short(helper, 30)}] {_short(name, 40)}", style="bold")
+        line = Text(f"{bullet(self.console)} [{_short(helper, MAX_HELPER_CHARS)}] {_short(name, 40)}",
+                    style="bold")
         if summary:
             line.append(f"  {summary}", style="dim")
         _print(self.console, line)

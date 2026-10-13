@@ -70,12 +70,31 @@ def test_a_build_error_is_skipped_and_shows_only_its_type():
     assert notes == ["Not used: gpt-5.5 (could not be set up: ValueError)"] and secret not in " ".join(notes)
 
 
-def test_a_model_error_from_the_real_factory_is_skipped_too():
+def test_a_model_error_shows_its_message_which_is_written_to_be_shown():
     def factory(name, env):
-        raise ModelError("No API key for claude")
+        raise ModelError("No module named 'anthropic' - install agentx-dev[anthropic]")
 
     built, notes = build_team_models(["claude-opus-5-5"], KEYS, factory=factory)
-    assert built == [] and notes == ["Not used: claude-opus-5-5 (could not be set up: ModelError)"]
+    assert built == []
+    assert notes == ["Not used: claude-opus-5-5 (No module named 'anthropic' - install agentx-dev[anthropic])"]
+
+
+def test_a_long_multi_line_model_error_is_one_bounded_line():
+    def factory(name, env):
+        raise ModelError("first line\n" + "second " * 100)
+
+    _, notes = build_team_models(["claude-opus-5-5"], KEYS, factory=factory)
+    assert len(notes) == 1 and "\n" not in notes[0] and "first line second" in notes[0]
+    message = notes[0][len("Not used: claude-opus-5-5 ("):-1]
+    assert len(message) <= 160 and message.endswith("...")
+
+
+def test_an_empty_model_error_still_says_what_happened():
+    def factory(name, env):
+        raise ModelError()
+
+    _, notes = build_team_models(["claude-opus-5-5"], KEYS, factory=factory)
+    assert notes == ["Not used: claude-opus-5-5 (could not be set up: ModelError)"]
 
 
 def test_a_missing_key_is_noted_and_the_factory_is_not_called():
