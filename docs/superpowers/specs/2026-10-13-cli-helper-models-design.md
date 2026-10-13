@@ -179,4 +179,6 @@ by-hand checklist three items (set two models and watch a step run on one; a mod
   note; the user's own notes are never asked about or replaced; `/team-models describe` asks again. Rulings:
   the chat's own model is described too (so no model is favoured), an unknown model gets no note (no
   guessing), and a failure leaves the list working without notes.
+- The chat's own model does not count toward the 4 extra models (the user's choice, 2026-10-13): a list keeps
+  up to 5 names so the chat's model can be listed for its note; a fifth extra model is "Not used".
 - The planner stays on the chat's model; at most 4 extra models (rulings, easy to change).

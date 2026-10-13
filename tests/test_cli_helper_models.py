@@ -17,10 +17,24 @@ def test_unknown_providers_and_non_text_entries_are_skipped_with_a_problem():
     assert len(problems) == 4 and any("mistral-large" in p for p in problems)
 
 
-def test_more_than_the_cap_keeps_the_first_ones():
-    listed = [f"claude-model-{i}" for i in range(MAX_TEAM_MODELS + 2)]
+def test_the_list_may_hold_one_more_name_than_the_extra_model_cap():
+    from agentx_dev.cli.models import MAX_LISTED_MODELS
+    assert MAX_LISTED_MODELS == MAX_TEAM_MODELS + 1                  # room for the chat's own model
+    listed = [f"claude-model-{i}" for i in range(MAX_LISTED_MODELS + 1)]
     names, problems = clean_team_models(listed)
-    assert names == listed[:MAX_TEAM_MODELS] and any(f"first {MAX_TEAM_MODELS}" in p for p in problems)
+    assert names == listed[:MAX_LISTED_MODELS] and any(f"first {MAX_LISTED_MODELS}" in p for p in problems)
+
+
+def test_the_chat_model_on_the_list_does_not_take_an_extra_slot():
+    listed = ["gpt-6-sol", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "gpt-5.5"]
+    usable, notes = usable_team_models("gpt-6-sol", listed, KEYS)
+    assert usable == listed[1:] and notes == []
+
+
+def test_a_fifth_extra_model_is_reported_as_not_used():
+    listed = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "gpt-5.5", "o4-mini"]
+    usable, notes = usable_team_models("gpt-6-sol", listed, KEYS)
+    assert usable == listed[:4] and notes == [f"Not used: o4-mini (only {MAX_TEAM_MODELS} extra models)"]
 
 
 def test_a_huge_name_is_cut_in_the_problem_line():

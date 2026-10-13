@@ -12,7 +12,8 @@ from agentx_dev.ChatModel import GPT, Claude
 
 ANTHROPIC_KEY = "ANTHROPIC_API_KEY"
 OPENAI_KEY = "OPENAI_API_KEY"
-MAX_TEAM_MODELS = 4
+MAX_TEAM_MODELS = 4                  # extra models a team job may use, the chat's own not counted
+MAX_LISTED_MODELS = MAX_TEAM_MODELS + 1   # a list may also name the chat's own model (to give it a note)
 MAX_ERROR_NOTE_CHARS = 160            # a ModelError's message, as shown in a "Not used" line
 MAX_USE_CHARS = 80                   # a note on what a helper model is for
 
@@ -142,7 +143,7 @@ def _split_entry(value: Any, problems: List[str]) -> Tuple[Any, str]:
 def parse_team_models(values: Sequence[Any]) -> Tuple[List[str], Dict[str, str], List[str]]:
     """The usable entries of a ``teamModels`` list: their names in order, the notes some of them carry (what the
     model is for, keyed by name), and one problem line per entry or note that was dropped (not a plain model
-    name, an unknown provider, past the first ``MAX_TEAM_MODELS``, a bad note). Repeats, in any case, are
+    name, an unknown provider, past the first ``MAX_LISTED_MODELS``, a bad note). Repeats, in any case, are
     dropped silently (the first one's note is kept)."""
     names: List[str] = []
     uses: Dict[str, str] = {}
@@ -168,9 +169,10 @@ def parse_team_models(values: Sequence[Any]) -> Tuple[List[str], Dict[str, str],
         names.append(name)
         if use:
             uses[name] = use
-    if len(names) > MAX_TEAM_MODELS:
-        problems.append(f"'teamModels' lists {len(names)} models; only the first {MAX_TEAM_MODELS} are used")
-        names = names[:MAX_TEAM_MODELS]
+    if len(names) > MAX_LISTED_MODELS:
+        problems.append(f"'teamModels' lists {len(names)} models; only the first {MAX_LISTED_MODELS} are kept "
+                        f"({MAX_TEAM_MODELS} extra models, plus the chat's own if you list it)")
+        names = names[:MAX_LISTED_MODELS]
         uses = {name: use for name, use in uses.items() if name in names}
     return names, uses, problems
 
@@ -204,8 +206,11 @@ def usable_team_models(chat_label: str, names: Sequence[str],
         if not _key(env, variable):
             notes.append(f"Not used: {name} (no {variable})")
             continue
+        if len(usable) == MAX_TEAM_MODELS:
+            notes.append(f"Not used: {name} (only {MAX_TEAM_MODELS} extra models)")
+            continue
         usable.append(name)
-    return usable[:MAX_TEAM_MODELS], notes
+    return usable, notes
 
 
 def team_models_line(chat_label: str, names: Sequence[str], env: Mapping[str, str]) -> str:
