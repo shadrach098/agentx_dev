@@ -380,3 +380,55 @@ def test_the_planner_does_not_see_the_auto_marker(tools):
     assert "Good for: fast coding." in helpers["coder@gpt-5.5"][0]
     assert "Good for: careful work." in helpers["coder@claude-sonnet-5-5"][0]
     assert "auto:" not in "".join(description for description, _ in helpers.values())
+
+
+# -- partial work and the per-message job limit ------------------------------------------------------------
+
+def partial_completion(outcome="iteration_limit", calls=()):
+    from agentx_dev.Agents.Agent import AgentCompletion, ToolCall
+    return AgentCompletion(id="x", created=0, model="m", query="q", content="Hit max_iterations (100) ... recap",
+                           outcome=outcome,
+                           tool_calls=[ToolCall(name=name, args={"Input": args}, result=result)
+                                       for name, args, result in calls])
+
+
+def test_a_partial_note_lists_every_file_the_helper_changed():
+    from agentx_dev.cli.team import OUT_OF_STEPS_NOTE, _partial_if_out_of_steps
+    calls = [("write_file", {"path": f"f{i}.ts"}, "created") for i in range(1, 13)]
+    calls += [("edit_file", {"path": "f3.ts"}, "edited"), ("edit_file", {"path": "nope.ts"}, "Refused: plan mode"),
+              ("read_path", {"path": "r.ts"}, "text")]
+    done = _partial_if_out_of_steps(partial_completion(calls=calls))
+    assert done.outcome == "done" and done.content.startswith(OUT_OF_STEPS_NOTE)
+    assert "Files it changed (12): f1.ts, f2.ts" in done.content and "f12.ts" in done.content
+    assert "nope.ts" not in done.content and "r.ts" not in done.content
+    assert "higher max_iterations" not in done.content
+
+
+def test_a_partial_note_says_when_no_file_was_changed():
+    from agentx_dev.cli.team import _partial_if_out_of_steps
+    done = _partial_if_out_of_steps(partial_completion(calls=[("read_path", {"path": "a"}, "x")]))
+    assert "It changed no files." in done.content
+
+
+def test_stuck_and_out_of_time_still_fail():
+    from agentx_dev.cli.team import _partial_if_out_of_steps
+    for outcome in ("stuck", "out_of_time"):
+        completion = partial_completion(outcome=outcome)
+        assert _partial_if_out_of_steps(completion).outcome == outcome
+
+
+def test_a_job_with_a_partial_step_says_partial_in_its_first_line():
+    from types import SimpleNamespace
+    from agentx_dev.cli.team import OUT_OF_STEPS_NOTE
+    sub = SimpleNamespace(agent="coder", query="edit it", content=OUT_OF_STEPS_NOTE + "x", error="", skipped=False,
+                          outcome="done", superseded=False)
+    text = format_result(SimpleNamespace(outcome="done", subtasks=[sub], content="ok"))
+    assert text.splitlines()[0].startswith("Team job finished (outcome: partial - 1 step ran out of steps")
+    assert "1. coder - partial (ran out of steps)" in text
+
+
+def test_the_job_limit_is_written_from_one_constant():
+    from agentx_dev.cli.context import BASE_PROMPT
+    from agentx_dev.cli.team import MAX_TEAM_JOBS_PER_MESSAGE, TOOL_DESCRIPTION
+    assert f"up to {MAX_TEAM_JOBS_PER_MESSAGE}" in TOOL_DESCRIPTION.lower()
+    assert f"up to {MAX_TEAM_JOBS_PER_MESSAGE} jobs per message" in BASE_PROMPT

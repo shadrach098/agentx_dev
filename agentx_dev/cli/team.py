@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 from pydantic import BaseModel, Field
 
 from agentx_dev import AgentRunner, AgentType, SpawnConfig, Supervisor
+from agentx_dev.cli.memory import CHANGING_TOOLS, REFUSAL_STARTS
 from agentx_dev.cli.models import HelperModel, model_label, without_auto_prefix
 from agentx_dev.Supervisor import _result_failed
 from agentx_dev.Tools import StructuredTool
@@ -26,6 +27,8 @@ HELPER_STEPS = 100                   # a coder on a real change needs room (50 r
 OUT_OF_STEPS_NOTE = ("(This helper ran out of steps before finishing, so this is partial work: check what it "
                      "changed before relying on it.)\n")
 MAX_SUBTASKS = 6
+MAX_LISTED_FILES = 40                # files named in a partial helper's note
+MAX_TEAM_JOBS_PER_MESSAGE = 5        # a big task may take several batches; this bounds one message's cost
 MAX_QUESTIONS = 3
 ROLE_MARK = "Team role:"
 MODEL_NOTE = (" Runs on {model}.{use} There is one copy of each role per model: pick the copy whose model best "
@@ -84,11 +87,35 @@ def _partial_if_out_of_steps(completion: Any) -> Any:
     if getattr(completion, "outcome", None) != "iteration_limit":
         return completion
     try:
-        completion.content = OUT_OF_STEPS_NOTE + str(getattr(completion, "content", "") or "")
+        recap = "\n".join(line for line in str(getattr(completion, "content", "") or "").splitlines()
+                          if "max_iterations" not in line)    # the runner's advice to developers, not to the team
+        completion.content = OUT_OF_STEPS_NOTE + _changed_files(completion) + "\n" + recap
         completion.outcome = "done"
     except Exception:                               # a completion that cannot be changed is left as it is
         pass
     return completion
+
+
+def _changed_files(completion: Any) -> str:
+    """Every file the helper wrote or edited (refused and failed calls left out), so the next step and the next
+    batch know what is already done: the runner's own recap shows only its last few steps."""
+    paths: Dict[str, None] = {}
+    for call in getattr(completion, "tool_calls", None) or []:
+        if getattr(call, "name", "") not in CHANGING_TOOLS:
+            continue
+        result = str(getattr(call, "result", "") or "").lstrip()
+        if result.startswith(REFUSAL_STARTS):
+            continue
+        args = getattr(call, "args", None)
+        args = args.get("Input", args) if isinstance(args, dict) else {}
+        path = args.get("path") if isinstance(args, dict) else None
+        if path:
+            paths.setdefault(str(path), None)
+    if not paths:
+        return "It changed no files."
+    shown = list(paths)[:MAX_LISTED_FILES]
+    more = f" and {len(paths) - len(shown)} more" if len(paths) > len(shown) else ""
+    return f"Files it changed ({len(paths)}): " + ", ".join(shown) + more + "."
 
 
 class _HelperRunner(AgentRunner):
@@ -155,10 +182,19 @@ def _first_line(text: Any, limit: int = 160) -> str:
     return line if len(line) <= limit else line[: limit - 1] + "…"
 
 
+def _ran_out_of_steps(sub: Any) -> bool:
+    return str(getattr(sub, "content", "") or "").startswith(OUT_OF_STEPS_NOTE)
+
+
 def format_result(result: Any) -> str:
     """The one string the main agent gets back: the outcome, each step's fate, and the final answer."""
-    head = f"Team job finished (outcome: {getattr(result, 'outcome', 'done')})"
     subtasks = list(getattr(result, "subtasks", None) or [])
+    outcome = str(getattr(result, "outcome", "done"))
+    partial = sum(1 for sub in subtasks if _ran_out_of_steps(sub) and not _result_failed(sub))
+    if partial and outcome == "done":          # the steps "finished", but one of them did not get to the end
+        outcome = (f"partial - {partial} step{'s' if partial != 1 else ''} ran out of steps; the task may be "
+                   "unfinished")
+    head = f"Team job finished (outcome: {outcome})"
     content = str(getattr(result, "content", ""))
     if not subtasks:                           # nothing ran (no valid plan, say): the reason belongs on line one
         text = f"{head}: {content}"
@@ -169,7 +205,7 @@ def format_result(result: Any) -> str:
                 state = "skipped"
             elif _result_failed(sub):
                 state = "failed: " + _first_line(getattr(sub, "error", "") or getattr(sub, "outcome", ""), 80)
-            elif str(getattr(sub, "content", "") or "").startswith(OUT_OF_STEPS_NOTE):
+            elif _ran_out_of_steps(sub):
                 state = "partial (ran out of steps)"
             else:
                 state = "done"
@@ -221,7 +257,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                 if sub is not None and getattr(sub, "agent", "") != "__spawn__":
                     failed = bool(getattr(sub, "skipped", False)) or _result_failed(sub)
                     text = getattr(sub, "error", "") or getattr(sub, "content", "")
-                    tell("result", {"agent": str(sub.agent), "ok": not failed, "text": _first_line(text)})
+                    tell("result", {"agent": str(sub.agent), "ok": not failed, "text": _first_line(text),
+                                    "partial": not failed and _ran_out_of_steps(sub)})
             elif kind == "completion":
                 result = event.get("result")
     except Exception as error:                     # KeyboardInterrupt and SystemExit are not Exceptions
@@ -256,10 +293,12 @@ TOOL_DESCRIPTION = (
     "Hand a LARGE job to a team of helpers (an explorer that reads, a coder that edits files, a runner that "
     "runs commands and tests), led by a supervisor who plans the steps. Use it only for large, multi-part "
     "work: several files or areas, research plus changes plus tests. Do small and medium jobs yourself. The "
-    "user is asked before it starts unless auto mode is on. It makes many model calls. Up to 5 team jobs can run "
-    "per user message: when a job ends partial and the user's task is not finished, call it again yourself for "
-    "what remains (say what is already done) instead of stopping to ask; after the 5th, report what is done and "
-    "what remains. You get the supervisor's result back; then summarise it for the user or continue.")
+    "user is asked before it starts unless auto mode is on. It makes many model calls. Up to "
+    f"{MAX_TEAM_JOBS_PER_MESSAGE} team jobs can run per user message: when a job ends partial and the user's task "
+    "is not finished, call it again yourself for what remains (say what is already done, including the files it "
+    f"lists) instead of stopping to ask; after the {MAX_TEAM_JOBS_PER_MESSAGE}th, or when a job finished no step, "
+    "report what is done and what remains. You get the supervisor's result back; then summarise it for the user or "
+    "continue.")
 
 
 def make_team_tool(run: Callable[[str, str], str]) -> StructuredTool:

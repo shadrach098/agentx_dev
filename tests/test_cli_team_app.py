@@ -796,13 +796,14 @@ def test_describe_drops_an_auto_note_the_model_no_longer_stands_by(tmp_path):
 
 def test_a_helper_that_runs_out_of_steps_hands_over_partial_work_and_the_next_step_runs(tmp_path, monkeypatch):
     from agentx_dev.cli import team as team_module
-    monkeypatch.setattr(team_module, "HELPER_STEPS", 2)
-    loops = []
+    monkeypatch.setattr(team_module, "HELPER_STEPS", 4)
+    loops, seen_by_runner = [], []
 
     def helper(messages, n):                     # the coder never finishes; the runner does
         if "coder helper" in str(messages[0]["content"]):
             loops.append(n)
-            return make_react_response("list_directory", {"path": "."})
+            return make_react_response("list_directory", {"path": f"dir{n}"})   # varied: not a stuck loop
+        seen_by_runner.append(str(messages[-1]["content"]) + " ".join(str(m["content"]) for m in messages))
         return make_final("checked the coder's partial work")
 
     model = team_model([step("c1", "coder", "change it"), step("r1", "runner", "check it", ["c1"])], helper=helper)
@@ -811,3 +812,26 @@ def test_a_helper_that_runs_out_of_steps_hands_over_partial_work_and_the_next_st
     text = out.getvalue()
     assert "skipped" not in text and "done (runner)" in text
     assert "coder - partial (ran out of steps)" in history_text(app)
+    assert "partial (coder): (This helper ran out of steps" in text                # the live line says partial
+    assert any("ran out of steps" in seen for seen in seen_by_runner)              # the runner is told
+
+
+def test_a_job_where_no_step_finished_stops_the_next_one(tmp_path):
+    from agentx_dev.cli import team as team_module
+
+    def helper(messages, n):                   # every helper gets stuck repeating one call
+        return make_react_response("list_directory", {"path": "."})
+
+    model = team_model([step("s1", "explorer", "look")], helper=helper, main=("call", "call", "final"))
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto")
+    assert app.start() == 0
+    assert out.getvalue().count("Team plan:") == 1
+    assert "no step of the last team job finished" in history_text(app)
+
+
+def test_each_result_says_which_job_of_the_message_it_was(tmp_path):
+    model = team_model([step("s1", "explorer", "look around")], main=("call", "call", "final"))
+    app, _, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto")
+    assert app.start() == 0
+    assert "team job 1 of 5 for this message" in history_text(app)
+    assert "team job 2 of 5 for this message" in history_text(app)

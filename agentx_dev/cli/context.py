@@ -15,6 +15,8 @@ import stat
 from pathlib import Path
 from typing import List, Optional
 
+from agentx_dev.cli.team import MAX_TEAM_JOBS_PER_MESSAGE
+
 MAX_CONTEXT_CHARS = 20000
 MAX_PATH_CHARS = 1000                             # the working folder shown in the prompt is cut to its last this many characters
 OPEN_MARK = "<project-instructions>"
@@ -39,7 +41,7 @@ How to work:
 - Edits and commands are shown to the user for approval; if a request is declined, do not retry the same thing, adjust or ask what they want.
 - After changing code, run the project's tests or a quick check when you can, and say what you ran and what it showed.
 - Be brief in your answers: say what you did and what to look at.
-- For a large, multi-part job (several files or areas: research, changes and tests together), call start_team_job to hand it to a team of helpers instead of doing it all yourself. Do small and medium jobs yourself. If a team job ends partial and the user's task is not finished, call start_team_job again for what remains (up to 5 jobs per message) instead of stopping to ask; then report what is done and what remains."""
+- For a large, multi-part job (several files or areas: research, changes and tests together), call start_team_job to hand it to a team of helpers instead of doing it all yourself. Do small and medium jobs yourself. If a team job ends partial and the user's task is not finished, call start_team_job again for what remains (up to {jobs} jobs per message) instead of stopping to ask; then report what is done and what remains.""".replace("{jobs}", str(MAX_TEAM_JOBS_PER_MESSAGE))
 
 
 def _resolve(path: Path) -> Path:

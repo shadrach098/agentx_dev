@@ -28,7 +28,7 @@ from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, l
 from agentx_dev.cli.settings import (PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
                                      write_project_model, write_project_team_models)
-from agentx_dev.cli.team import make_team_tool, run_team_job, team_request
+from agentx_dev.cli.team import MAX_TEAM_JOBS_PER_MESSAGE, make_team_tool, run_team_job, team_request
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker
@@ -40,9 +40,10 @@ INIT_PROMPT = (
     "already exists, tell me instead of overwriting it."
 )
 
-MAX_TEAM_JOBS_PER_MESSAGE = 5            # a big task may take several batches; this bounds one message's cost
 TEAM_LIMIT_REACHED = (f"Refused: {MAX_TEAM_JOBS_PER_MESSAGE} team jobs already ran for this message. Report to the "
                       "user what is done and what remains, and let them say whether to continue.")
+TEAM_STALLED = ("Refused: no step of the last team job finished, so another job would likely fail the same way. "
+                "Report to the user what happened and what remains, and let them decide.")
 
 NOT_A_TERMINAL = "agentx needs an interactive terminal (headless mode is not available yet)."
 MAX_RULES_SHOWN = 20
@@ -181,6 +182,7 @@ class ChatApp:
         self.progress = Progress(console)
         self._team_helper = ""             # the helper whose step is running; "" outside a team job
         self._team_jobs = 0                # team jobs started for the current message
+        self._team_stalled = False         # the last job in this message finished no step
         asker = make_asker(console, self.read_short, self.gate.cwd, select=select,
                            helper=lambda: self._team_helper, helper_models=self.helper_models_line)
 
@@ -191,7 +193,7 @@ class ChatApp:
         self.gate.ask = self._remembering(ask_with_spinner_paused)
         self.base_tools = build_tools(self.cwd, self.add_dirs, self.gate, observer=self._observe_tool)
         self.tools = [*self.base_tools,
-                      self._once_per_turn(gate_tool(make_team_tool(self._start_team_job), self.gate))]
+                      self._within_job_limit(gate_tool(make_team_tool(self._start_team_job), self.gate))]
         self._memory_on = is_project_folder(self.cwd, self.home)    # no log or folder settings for home / a drive root
         self._newly_trusted = bool(newly_trusted)    # main: the user said yes to the trust question in this run
         self.project_settings_created: Optional[Path] = None
@@ -524,6 +526,7 @@ class ChatApp:
         message). Ctrl+C cancels the turn."""
         assert self.session is not None
         self._team_jobs = 0                            # a new message may start new team jobs
+        self._team_stalled = False
         events: List[dict] = []
         finished = False
         try:
@@ -853,18 +856,17 @@ class ChatApp:
 
     # -- team jobs ----------------------------------------------------------
 
-    def _once_per_turn(self, gated: Any) -> Any:
+    def _within_job_limit(self, gated: Any) -> Any:
         """``gated`` (the team tool behind the gate) with the jobs-per-message limit checked first, so a call past
         ``MAX_TEAM_JOBS_PER_MESSAGE`` is refused without asking the user again. Other calls go through the gate
         as before; a job the user declined does not count (``_team_jobs`` grows only when a job starts)."""
         inner = gated.func
 
         def once(**kwargs):
-            if self._team_jobs >= MAX_TEAM_JOBS_PER_MESSAGE:
-                return TEAM_LIMIT_REACHED
-            return inner(**kwargs)
+            refusal = self._team_refusal()
+            return refusal if refusal else inner(**kwargs)
 
-        once.__name__, once.__qualname__, once.__module__ = gated.name, f"once_per_turn.{gated.name}", __name__
+        once.__name__, once.__qualname__, once.__module__ = gated.name, f"within_job_limit.{gated.name}", __name__
         wrapped = type(gated)(func=once, args_schema=gated.args_schema, name=gated.name,
                               description=gated.description)
         wrapped.cacheable = False
@@ -889,7 +891,8 @@ class ChatApp:
             self.progress.start(f"Running {self._team_helper}")
         elif kind == "result":
             self._team_helper = ""
-            self.screen.team_result(data.get("agent"), bool(data.get("ok")), data.get("text"))
+            self.screen.team_result(data.get("agent"), bool(data.get("ok")), data.get("text"),
+                                    partial=bool(data.get("partial")))
             self.progress.start("Team is working")
 
     def _team_question(self, question: str) -> Optional[str]:
@@ -904,8 +907,9 @@ class ChatApp:
 
     def _start_team_job(self, task: str, why: str) -> str:
         """The ``start_team_job`` tool: run the team and hand the result text back to the main agent."""
-        if self._team_jobs >= MAX_TEAM_JOBS_PER_MESSAGE:
-            return TEAM_LIMIT_REACHED
+        refusal = self._team_refusal()
+        if refusal:
+            return refusal
         if self.model is None:
             return "Refused: no model is available for a team job."
         self._team_jobs += 1
@@ -919,13 +923,24 @@ class ChatApp:
             self.notice(self._safe(note, 300))
         self.progress.start("Planning the team job")
         try:
-            return run_team_job(task, model=self.model, tools=self.base_tools, addendum=self.addendum,
+            text = run_team_job(task, model=self.model, tools=self.base_tools, addendum=self.addendum,
                                 notify=self._team_notify, ask_user=self._team_question,
                                 describe_error=self._safe, extra_models=extras,
                                 chat_use=self._use_of(self.model_label))
         finally:
             self._team_helper = ""
             self.progress.start("Thinking")
+        # A job in which no step got anywhere would most likely fail the same way again: stop the batches.
+        self._team_stalled = not re.search(r"(?m)^\d+\. .+ - (done|partial)", text)
+        return f"{text}\n(team job {self._team_jobs} of {MAX_TEAM_JOBS_PER_MESSAGE} for this message)"
+
+    def _team_refusal(self) -> str:
+        """Why another team job may not start in this message ("" when it may)."""
+        if self._team_jobs >= MAX_TEAM_JOBS_PER_MESSAGE:
+            return TEAM_LIMIT_REACHED
+        if self._team_stalled:
+            return TEAM_STALLED
+        return ""
 
 
 # -- the command line -------------------------------------------------------

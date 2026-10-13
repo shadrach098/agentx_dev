@@ -245,9 +245,9 @@ class Screen:
         _print(self.console, Text(f"-> {_short(agent, MAX_HELPER_CHARS)}: {_short(query, 200)}",
                                   style="bold magenta"))
 
-    def team_result(self, agent: Any, ok: bool, text: Any) -> None:
+    def team_result(self, agent: Any, ok: bool, text: Any, partial: bool = False) -> None:
         report = _short(_nothing_if_none(text), 160) or "(no report)"
-        mark = "done" if ok else "failed"
+        mark = ("partial" if partial else "done") if ok else "failed"
         _print(self.console, Text(f"   {mark} ({_short(agent, MAX_HELPER_CHARS)}): {report}",
                                   style="dim" if ok else "red"))
 
