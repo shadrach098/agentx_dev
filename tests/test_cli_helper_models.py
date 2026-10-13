@@ -94,3 +94,44 @@ def test_ctrl_c_while_building_is_not_swallowed():
 
     with pytest.raises(KeyboardInterrupt):
         build_team_models(["claude-opus-5-5"], KEYS, factory=factory)
+
+
+BAD_NAMES = ["claude-" + "x" * 5000, "claude-\x1b[2J\x07 gpt\nbad", "claude opus"]
+
+
+def _bounded_and_plain(text):
+    return len(text) < 300 and not any(ch in text for ch in "\x1b\x07\n\r\t")
+
+
+def test_a_name_must_be_at_most_100_characters_with_no_spaces_or_control_characters():
+    names, _ = clean_team_models(["claude-" + "x" * 93, "claude-" + "x" * 94])
+    assert names == ["claude-" + "x" * 93]
+
+
+def test_long_or_control_character_names_are_skipped_by_clean_with_a_bounded_problem():
+    names, problems = clean_team_models(["claude-opus-5-5", *BAD_NAMES])
+    assert names == ["claude-opus-5-5"]
+    assert len(problems) == len(BAD_NAMES)
+    assert all(_bounded_and_plain(p) for p in problems)
+
+
+def test_bad_names_given_straight_to_usable_are_never_used_and_give_a_bounded_note():
+    for bad in BAD_NAMES:
+        usable, notes = usable_team_models("claude-sonnet-5-5", [bad], KEYS)
+        assert usable == []
+        assert len(notes) == 1 and notes[0].startswith("Not used: ") and notes[0].endswith("(not a model name)")
+        assert _bounded_and_plain(notes[0])
+
+
+def test_bad_names_never_reach_the_factory_in_build():
+    def factory(name, env):
+        raise AssertionError("must not build a name that is not a plain model name")
+
+    for bad in BAD_NAMES:
+        built, notes = build_team_models([bad], KEYS, factory=factory)
+        assert built == [] and len(notes) == 1 and _bounded_and_plain(notes[0])
+
+
+def test_the_chat_label_in_the_line_is_shown_bounded_too():
+    line = team_models_line("claude-\x1b[2J" + "x" * 5000, [], KEYS)
+    assert line.startswith("Helper models: ") and _bounded_and_plain(line)

@@ -96,14 +96,21 @@ def key_variable(provider: str) -> str:
     return ANTHROPIC_KEY if provider == "claude" else OPENAI_KEY
 
 
+def _acceptable_name(name: str) -> bool:
+    """A model name is a plain token: at most 100 characters, no spaces and no control characters."""
+    return len(name) <= 100 and name.isprintable() and not any(ch.isspace() for ch in name)
+
+
 def _shown_name(name: str) -> str:
-    return repr(name if len(name) <= 60 else name[:60] + "...")       # repr escapes control characters
+    """The name as a message shows it: at most 40 characters, repr-escaped so control characters stay visible
+    as text and cannot reach the output raw."""
+    return repr(name if len(name) <= 40 else name[:40] + "...")
 
 
 def clean_team_models(values: Sequence[Any]) -> Tuple[List[str], List[str]]:
     """The usable entries of a ``teamModels`` list, in order, and one problem line per entry that was dropped
-    (not text, an unknown provider, past the first ``MAX_TEAM_MODELS``). Repeats, in any case, are dropped
-    silently."""
+    (not text, not a plain model name, an unknown provider, past the first ``MAX_TEAM_MODELS``). Repeats, in any
+    case, are dropped silently."""
     names: List[str] = []
     problems: List[str] = []
     seen = set()
@@ -112,6 +119,10 @@ def clean_team_models(values: Sequence[Any]) -> Tuple[List[str], List[str]]:
             problems.append("'teamModels' has an entry that is not a model name; skipped")
             continue
         name = value.strip()
+        if not _acceptable_name(name):
+            problems.append(f"'teamModels': {_shown_name(name)} is not a model name "
+                            "(too long, spaces or control characters); skipped")
+            continue
         if provider_for(name) is None:
             problems.append(f"'teamModels': cannot tell which provider runs {_shown_name(name)} "
                             "(start the name with 'claude' or 'gpt'); skipped")
@@ -138,6 +149,9 @@ def usable_team_models(chat_label: str, names: Sequence[str],
         if not name or name.lower() in seen:
             continue
         seen.add(name.lower())
+        if not _acceptable_name(name):
+            notes.append(f"Not used: {_shown_name(name)} (not a model name)")
+            continue
         provider = provider_for(name)
         if provider is None:
             notes.append(f"Not used: {_shown_name(name)} (cannot tell which provider runs it)")
@@ -153,7 +167,8 @@ def usable_team_models(chat_label: str, names: Sequence[str],
 def team_models_line(chat_label: str, names: Sequence[str], env: Mapping[str, str]) -> str:
     """The approval panel's line: the chat's model first, then the usable extra models."""
     usable, _ = usable_team_models(chat_label, names, env)
-    return "Helper models: " + ", ".join([f"{chat_label} (chat)", *usable])
+    shown_chat = str(chat_label) if _acceptable_name(str(chat_label)) else _shown_name(str(chat_label))
+    return "Helper models: " + ", ".join([f"{shown_chat} (chat)", *usable])
 
 
 def build_team_models(names: Sequence[str], env: Mapping[str, str], *, chat_label: str = "",
