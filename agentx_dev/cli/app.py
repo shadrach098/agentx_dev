@@ -772,6 +772,10 @@ class ChatApp:
             return
         for name in wanted:
             self._auto_notes[name.lower()] = found.get(name, "")
+            if name not in found:                 # now unknown: an older auto note must not linger
+                for key in [key for key, use in self.team_model_uses.items()
+                            if key.lower() == name.lower() and is_auto_note(use)]:
+                    del self.team_model_uses[key]
         for name, note in found.items():
             for key in [key for key in self.team_model_uses if key.lower() == name.lower()]:
                 del self.team_model_uses[key]

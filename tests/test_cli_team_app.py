@@ -778,3 +778,15 @@ def test_team_models_shows_the_chat_models_note(tmp_path):
     app, out, _, _ = make_app(tmp_path, Lines("/team-models gpt-5.5", "/exit"), chat, env=KEYS)
     assert app.start() == 0
     assert "claude-sonnet-5-5 (chat; auto: careful everyday coding)" in out.getvalue()
+
+
+def test_describe_drops_an_auto_note_the_model_no_longer_stands_by(tmp_path):
+    replies = ['{"gpt-5.5": "fast"}', '{"gpt-5.5": "unknown"}']
+    chat = describing_model()
+    original = chat._script_fn
+    chat._script_fn = lambda messages: (replies.pop(0) if DESCRIBE_MARK in str(messages[-1]["content"])
+                                        else original(messages))
+    app, _, _, _ = make_app(tmp_path, Lines("/team-models gpt-5.5", "/team-models describe", "/exit"), chat,
+                            env=KEYS)
+    assert app.start() == 0
+    assert "gpt-5.5" not in app.team_model_uses
