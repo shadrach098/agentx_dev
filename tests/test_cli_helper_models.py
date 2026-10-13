@@ -223,12 +223,24 @@ def test_descriptions_are_read_from_a_json_reply_and_marked_auto():
 
 def test_bad_or_hostile_descriptions_are_dropped():
     from agentx_dev.cli.models import parse_descriptions
-    reply = '{"a": "x" , "gpt-5.5": "' + "y" * 200 + '", "gpt-6": "line\u001b[2J", "o3": 7}'
+    reply = '{"a": "x" , "gpt-5.5": "' + "y" * 200 + '", "gpt-6": "line\\u001b[2J", "o3": 7}'
     assert parse_descriptions(reply, ["gpt-5.5", "gpt-6", "o3"]) == {}
-    assert parse_descriptions("not json at all", ["gpt-5.5"]) == {}
-    assert parse_descriptions(None, ["gpt-5.5"]) == {}
+    assert parse_descriptions("not json at all", ["gpt-5.5"]) is None          # unreadable, not "unknown"
+    assert parse_descriptions(None, ["gpt-5.5"]) is None
 
 
 def test_an_auto_note_is_told_apart_from_the_users():
     from agentx_dev.cli.models import AUTO_PREFIX, is_auto_note
     assert is_auto_note(AUTO_PREFIX + "x") and not is_auto_note("hard coding") and not is_auto_note("")
+
+
+def test_text_with_braces_after_the_json_does_not_lose_the_reply():
+    from agentx_dev.cli.models import parse_descriptions
+    reply = '{"gpt-5.5": "fast"}' + chr(10) + "Also {see notes}"
+    assert parse_descriptions(reply, ["gpt-5.5"]) == {"gpt-5.5": "auto: fast"}
+
+
+def test_a_prefix_is_not_doubled_and_unknown_variants_give_no_note():
+    from agentx_dev.cli.models import parse_descriptions
+    reply = '{"gpt-5.5": "auto: fast", "gpt-6": "Unknown - newer than my training"}'
+    assert parse_descriptions(reply, ["gpt-5.5", "gpt-6"]) == {"gpt-5.5": "auto: fast"}

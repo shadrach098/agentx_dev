@@ -372,3 +372,11 @@ def test_a_note_ending_in_a_full_stop_is_not_doubled(tools):
     helpers = build_helpers(labelled("claude-sonnet-5-5"), tools, "",
                             extra_models=[HelperModel("gpt-5.5", labelled("y"), "hard coding.")])
     assert "Good for: hard coding." in helpers["coder@gpt-5.5"][0] and ".." not in helpers["coder@gpt-5.5"][0]
+
+
+def test_the_planner_does_not_see_the_auto_marker(tools):
+    helpers = build_helpers(labelled("claude-sonnet-5-5"), tools, "", chat_use="auto: careful work",
+                            extra_models=[HelperModel("gpt-5.5", labelled("y"), "auto: fast coding")])
+    assert "Good for: fast coding." in helpers["coder@gpt-5.5"][0]
+    assert "Good for: careful work." in helpers["coder@claude-sonnet-5-5"][0]
+    assert "auto:" not in "".join(description for description, _ in helpers.values())

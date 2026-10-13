@@ -259,28 +259,49 @@ def describe_prompt(names: Sequence[str]) -> str:
             "unknown. Do not guess from the name. Reply with only a JSON object mapping each name to its note.")
 
 
-def parse_descriptions(reply: Any, names: Sequence[str]) -> Dict[str, str]:
+MAX_REPLY_CHARS = 20_000                # a reply longer than this is not searched for JSON
+
+
+def _first_object(text: str) -> Optional[dict]:
+    """The first JSON object in ``text`` (prose before or after it, even with braces, is ignored)."""
+    decoder = json.JSONDecoder()
+    index = text.find("{")
+    while index != -1:
+        try:
+            data, _ = decoder.raw_decode(text, index)
+        except (ValueError, RecursionError):
+            data = None
+        if isinstance(data, dict):
+            return data
+        index = text.find("{", index + 1)
+    return None
+
+
+def parse_descriptions(reply: Any, names: Sequence[str]) -> Optional[Dict[str, str]]:
     """The notes in the chat model's reply to ``describe_prompt``, keyed by the names asked about (matched in any
-    case), each marked with ``AUTO_PREFIX``. "unknown", a note that is not plain text of at most
-    ``MAX_AUTO_CHARS``, a name that was not asked about and an unreadable reply all give nothing."""
-    text = reply if isinstance(reply, str) else ""
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end <= start:
-        return {}
-    try:
-        data = json.loads(text[start:end + 1])
-    except (ValueError, RecursionError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
+    case), each marked with ``AUTO_PREFIX``. A value starting with "unknown", a note that is not plain text of at
+    most ``MAX_AUTO_CHARS`` and a name that was not asked about give nothing. None when the reply holds no JSON
+    object at all (unreadable, which is not the same as "unknown")."""
+    text = reply[:MAX_REPLY_CHARS] if isinstance(reply, str) else ""
+    data = _first_object(text)
+    if data is None:
+        return None
     wanted = {str(name).lower(): str(name) for name in names}
     notes: Dict[str, str] = {}
     for key, value in data.items():
         name = wanted.get(str(key).strip().lower())
         if name is None or not isinstance(value, str):
             continue
-        note = " ".join(value.split()).rstrip(".")
-        if not note or note.lower() == "unknown" or len(note) > MAX_AUTO_CHARS or not note.isprintable():
+        note = " ".join(value.split())
+        if note.lower().startswith(AUTO_PREFIX.strip()):           # "auto: fast" from a model that copied the marker
+            note = note[len(AUTO_PREFIX.strip()):].strip()
+        note = note.rstrip(".")
+        if not note or note.lower().startswith("unknown") or len(note) > MAX_AUTO_CHARS or not note.isprintable():
             continue
         notes[name] = AUTO_PREFIX + note
     return notes
+
+
+def without_auto_prefix(note: str) -> str:
+    """``note`` as the planner reads it: the ``auto:`` marker is for the user, not the planner."""
+    return note[len(AUTO_PREFIX):] if is_auto_note(note) else note

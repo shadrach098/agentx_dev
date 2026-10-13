@@ -164,7 +164,9 @@ class ChatApp:
         self.model_source = model_source       # the settings file ``model_name`` came from (None: a flag, or none)
         self.team_models: List[str] = list(team_models or [])
         self.team_model_uses: Dict[str, str] = dict(team_model_uses or {})    # what a listed model is for
-        self._described: set = set()       # models (lower case) the chat model was already asked about
+        # What the chat model said each model (lower case) is good for this session: an ``auto:`` note, or ""
+        # when it did not know or could not be asked. A model in here is not asked about again unless forced.
+        self._auto_notes: Dict[str, str] = {}
         # The file the list came from. An empty list keeps its file: that file turned the extra models off.
         self.team_models_source = team_models_source
         self.problems = list(problems)
@@ -656,7 +658,8 @@ class ChatApp:
         source = (f" (from {self._safe(self.team_models_source, 300)})" if self.team_models_source
                   else " (this session)")
         lines = [f"Helper models{source}: {self._safe(self._listed_with_uses(), 800)}",
-                 f"A team job may use: {self._safe(self.model_label, 110)} (chat)"
+                 f"A team job may use: {self._safe(self.model_label, 110)} (chat"
+                 + (f"; {self._safe(self._use_of(self.model_label), 90)})" if self._use_of(self.model_label) else ")")
                  + "".join(f", {self._safe(name, 110)}" for name in usable)]
         lines += [self._safe(note.replace('Not used:', 'Not used now:', 1), 200) for note in notes]
         lines.append('Change them with /team-models <name>[="what it is for"] ..., /team-models clear, or add --folder '
@@ -689,51 +692,66 @@ class ChatApp:
         self.team_model_uses = uses
         self.team_models_source = None
         if cleaned:
+            self._apply_known_notes()             # what the chat model already said this session is kept
             self._describe_models()
-        report: Optional[Tuple[Callable[[str], None], str]] = None
-        if folder and not self._memory_on:
-            report = (self.notice, "No folder settings file is kept for your home folder or a drive root.")
-        elif folder:
-            path, message = write_project_team_models(self.cwd, cleaned, self.team_model_uses)
-            report = (self.notice if path is not None else self.error, self._safe(message, 600))
-            if path is not None:
-                self.team_models_source = path
+        report = self._save_team_models_in_folder() if folder else None
         self.show_team_models()               # after the write, so it names the file as the source
         if report is not None:
             report[0](report[1])
 
     def describe_team_models(self, folder: bool = False) -> None:
-        """``/team-models describe``: ask the chat model again for a note on each model, replacing only its own
-        (``auto:``) notes, then show the list; with ``folder`` the notes are saved with the list too."""
+        """``/team-models describe``: ask the chat model again what each model is good for, replacing only its own
+        (``auto:``) notes, then show the list; with ``folder`` the list and its notes are saved in this folder's
+        settings file. The list itself and where it came from are not changed."""
         if not self.team_models:
             self.notice("No helper models are set, so there is nothing to describe. Set some with "
                         "/team-models <name> ...")
             return
         self._describe_models(force=True)
-        self.set_team_models([self._entry(name) for name in self.team_models], folder=folder)
+        report = self._save_team_models_in_folder() if folder else None
+        self.show_team_models()
+        if report is not None:
+            report[0](report[1])
 
-    def _entry(self, name: str) -> str:
-        use = self._use_of(name)
-        return f"{name}={use}" if use else name
+    def _save_team_models_in_folder(self) -> Tuple[Callable[[str], None], str]:
+        """Write the list and its notes to this folder's settings file; what to print about it."""
+        if not self._memory_on:
+            return self.notice, "No folder settings file is kept for your home folder or a drive root."
+        path, message = write_project_team_models(self.cwd, self.team_models, self.team_model_uses)
+        if path is not None:
+            self.team_models_source = path
+        return (self.notice if path is not None else self.error), self._safe(message, 600)
+
+    def _apply_known_notes(self) -> None:
+        """Give each model on the list (and the chat's own) the note the chat model already wrote for it this
+        session, unless it has a note."""
+        for name in [self.model_label, *self.team_models]:
+            known = self._auto_notes.get(name.lower(), "")
+            if known and not self._use_of(name):
+                self.team_model_uses[name] = known
 
     def _describe_models(self, force: bool = False) -> None:
         """Ask the chat model, in one call, what each model a team may use (the list and the chat's own) is good
-        for, and keep the answers as ``auto:`` notes. A note the user wrote is never asked about or replaced; an
-        ``auto:`` note is replaced only when ``force``. Each model is asked about once per session unless
-        ``force``. A model the chat model does not know gets no note. A failure gives one notice; Ctrl+C skips
-        it. The reply is model output: only short, printable notes for the names asked about are kept."""
+        for, and keep the answers as ``auto:`` notes. A note the user wrote is never asked about or replaced.
+        Each model is asked about once per session (its answer, or the lack of one, is remembered and reused
+        when the list is set again); ``force`` asks again about every model without a note of the user's. A
+        model the chat model does not know gets no note. A failure or an unreadable reply gives one notice;
+        Ctrl+C skips it. The reply is model output: only short, printable notes for the names asked about are
+        kept."""
         if self.model is None:
             return
         wanted: List[str] = []
         for name in [self.model_label, *self.team_models]:
             note = self._use_of(name)
-            if (name.lower() in (w.lower() for w in wanted) or (note and not is_auto_note(note))
-                    or (not force and (note or name.lower() in self._described))):
+            if name.lower() in (w.lower() for w in wanted) or (note and not is_auto_note(note)):
                 continue
-            wanted.append(name)
+            if force or (not note and name.lower() not in self._auto_notes):
+                wanted.append(name)
         if not wanted:
+            self._apply_known_notes()
             return
-        self._described.update(name.lower() for name in wanted)
+        for name in wanted:                      # asked once, whatever happens below
+            self._auto_notes.setdefault(name.lower(), "")
         self.progress.start("Asking the model about the helper models")
         try:
             reply = self._summary_call(describe_prompt(wanted))
@@ -748,10 +766,17 @@ class ChatApp:
             return
         self.progress.stop()
         found = parse_descriptions(reply, wanted)
+        if found is None:
+            self.notice("The model's answer about the helper models could not be read; add notes yourself with "
+                        '/team-models <name>="what it is for", or try /team-models describe.')
+            return
+        for name in wanted:
+            self._auto_notes[name.lower()] = found.get(name, "")
         for name, note in found.items():
             for key in [key for key in self.team_model_uses if key.lower() == name.lower()]:
                 del self.team_model_uses[key]
             self.team_model_uses[name] = note
+        self._apply_known_notes()
         unknown = [name for name in wanted if name not in found]
         if unknown:
             self.notice("No note for " + self._safe(", ".join(unknown), 400) + ": the chat model does not know "

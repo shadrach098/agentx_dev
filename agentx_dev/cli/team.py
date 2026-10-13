@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 from pydantic import BaseModel, Field
 
 from agentx_dev import AgentRunner, AgentType, SpawnConfig, Supervisor
-from agentx_dev.cli.models import HelperModel, model_label
+from agentx_dev.cli.models import HelperModel, model_label, without_auto_prefix
 from agentx_dev.Supervisor import _result_failed
 from agentx_dev.Tools import StructuredTool
 
@@ -125,7 +125,8 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
         return helpers
     for helper_model in [HelperModel(model_label(model), model, chat_use), *extras]:
         note = MODEL_NOTE.format(model=helper_model.name,
-                                 use=USE_NOTE.format(use=helper_model.use.rstrip(".")) if helper_model.use else "")
+                                 use=USE_NOTE.format(use=without_auto_prefix(helper_model.use).rstrip("."))
+                                 if helper_model.use else "")
         for role in ROLES:
             helpers[f"{role.name}@{helper_model.name}"] = (
                 role.description + note, _helper(role, helper_model.model, by_name, addendum, describe_error))

@@ -676,14 +676,19 @@ def test_setting_a_list_asks_the_chat_model_once_for_notes(tmp_path):
     assert "gpt-5.5 (auto: fast, cheaper coding)" in out.getvalue()
 
 
-def test_a_note_you_wrote_is_never_asked_about_or_replaced(tmp_path):
-    chat = describing_model(reply='{"gpt-5.5": "something else", "gpt-6-luna": "fast reading"}')
+def test_a_note_you_wrote_is_never_asked_about_or_replaced_and_describe_refreshes_auto_notes(tmp_path):
+    replies = ['{"gpt-5.5": "something else", "gpt-6-luna": "fast reading", "claude-sonnet-5-5": "careful"}',
+               '{"gpt-5.5": "something else", "gpt-6-luna": "quick search", "claude-sonnet-5-5": "steady"}']
+    chat = describing_model(reply=None)
+    chat._script_fn = (lambda original: lambda messages: (chat.asked.append(str(messages[-1]["content"]))
+                                                          or replies.pop(0))
+                       if DESCRIBE_MARK in str(messages[-1]["content"]) else original(messages))(chat._script_fn)
     app, _, _, _ = make_app(tmp_path, Lines('/team-models gpt-5.5="mine" gpt-6-luna', "/team-models describe",
                                             "/exit"), chat, env=KEYS)
     assert app.start() == 0
-    assert all("- gpt-5.5" not in text for text in chat.asked)
-    assert app.team_model_uses["gpt-5.5"] == "mine" and app.team_model_uses["gpt-6-luna"] == "auto: fast reading"
-    assert len(chat.asked) == 2                                            # set, then describe again
+    assert all("- gpt-5.5" not in text for text in chat.asked) and len(chat.asked) == 2
+    assert app.team_model_uses["gpt-5.5"] == "mine" and app.team_model_uses["gpt-6-luna"] == "auto: quick search"
+    assert app._use_of("claude-sonnet-5-5") == "auto: steady"           # the chat's own note survives describe
 
 
 def test_a_failed_description_leaves_the_list_set_and_says_so(tmp_path):
@@ -728,3 +733,48 @@ def test_a_list_from_settings_is_described_at_the_first_job_only(tmp_path):
                               model_factory=factory_for(chat, **{"claude-opus-5-5": opus}))
     assert app.start() == 0
     assert described == [1] and app.team_model_uses.get("claude-opus-5-5") == "auto: hard coding"
+
+
+def test_setting_the_list_again_keeps_the_notes_already_written(tmp_path):
+    chat = describing_model()
+    app, _, _, _ = make_app(tmp_path, Lines("/team-models gpt-5.5", "/team-models gpt-5.5 gpt-6-luna", "/exit"),
+                            chat, env=KEYS)
+    assert app.start() == 0
+    assert app.team_model_uses["gpt-5.5"] == "auto: fast, cheaper coding"
+    assert app._use_of("claude-sonnet-5-5") == "auto: careful everyday coding"
+    assert len(chat.asked) == 2 and "- gpt-5.5" not in chat.asked[1]      # only the new model is asked about
+
+
+def test_describe_keeps_a_file_list_marked_as_from_the_file(tmp_path):
+    from agentx_dev.cli.settings import project_settings_path
+    source = project_settings_path(tmp_path / "proj")
+    chat = describing_model()
+    app, out, _, _ = make_app(tmp_path, Lines("/team-models describe", "/exit"), chat, env=KEYS,
+                              team_models=["gpt-5.5"], team_models_source=source)
+    assert app.start() == 0
+    assert app.team_models_source == source and "(from " in out.getvalue().split("/team-models describe")[-1]
+
+
+def test_describe_folder_saves_the_notes(tmp_path):
+    chat = describing_model()
+    app, _, cwd, _ = make_app(tmp_path, Lines("/team-models describe --folder", "/exit"), chat, env=KEYS,
+                              team_models=["gpt-5.5"])
+    assert app.start() == 0
+    data = json.loads((cwd / ".agentx" / "settings.json").read_text(encoding="utf-8"))
+    assert data["teamModels"] == [{"model": "gpt-5.5", "use": "auto: fast, cheaper coding"}]
+
+
+def test_ctrl_c_skips_describing_and_an_unreadable_reply_says_so(tmp_path):
+    chat = describing_model(reply=KeyboardInterrupt())
+    app, out, _, _ = make_app(tmp_path, Lines("/team-models gpt-5.5", "/exit"), chat, env=KEYS)
+    assert app.start() == 0 and app.team_models == ["gpt-5.5"] and "Skipped describing" in out.getvalue()
+    chat = describing_model(reply="I cannot answer that.")
+    app, out, _, _ = make_app(tmp_path, Lines("/team-models gpt-5.5", "/exit"), chat, env=KEYS)
+    assert app.start() == 0 and "could not be read" in out.getvalue()
+
+
+def test_team_models_shows_the_chat_models_note(tmp_path):
+    chat = describing_model()
+    app, out, _, _ = make_app(tmp_path, Lines("/team-models gpt-5.5", "/exit"), chat, env=KEYS)
+    assert app.start() == 0
+    assert "claude-sonnet-5-5 (chat; auto: careful everyday coding)" in out.getvalue()
