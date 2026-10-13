@@ -1,14 +1,17 @@
-"""Choosing the chat model: a --model name, then settings, then whichever API key is set."""
+"""Choosing the chat model (a --model name, then settings, then whichever API key is set) and the extra models
+team helpers may run on."""
 
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple
 
 from agentx_dev.ChatModel import GPT, Claude
 
 ANTHROPIC_KEY = "ANTHROPIC_API_KEY"
 OPENAI_KEY = "OPENAI_API_KEY"
+MAX_TEAM_MODELS = 4
 
 
 class ModelError(Exception):
@@ -77,3 +80,94 @@ def model_label(model: Any) -> str:
         if isinstance(value, str) and value:
             return value
     return type(model).__name__
+
+
+# -- the extra models team helpers may run on ------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class HelperModel:
+    """A model team helpers may run on; ``name`` is the label in the helper names (``coder@<name>``)."""
+    name: str
+    model: Any
+
+
+def key_variable(provider: str) -> str:
+    """The environment variable that holds the key for ``provider`` ("claude" or "gpt")."""
+    return ANTHROPIC_KEY if provider == "claude" else OPENAI_KEY
+
+
+def _shown_name(name: str) -> str:
+    return repr(name if len(name) <= 60 else name[:60] + "...")       # repr escapes control characters
+
+
+def clean_team_models(values: Sequence[Any]) -> Tuple[List[str], List[str]]:
+    """The usable entries of a ``teamModels`` list, in order, and one problem line per entry that was dropped
+    (not text, an unknown provider, past the first ``MAX_TEAM_MODELS``). Repeats, in any case, are dropped
+    silently."""
+    names: List[str] = []
+    problems: List[str] = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            problems.append("'teamModels' has an entry that is not a model name; skipped")
+            continue
+        name = value.strip()
+        if provider_for(name) is None:
+            problems.append(f"'teamModels': cannot tell which provider runs {_shown_name(name)} "
+                            "(start the name with 'claude' or 'gpt'); skipped")
+            continue
+        if name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        names.append(name)
+    if len(names) > MAX_TEAM_MODELS:
+        problems.append(f"'teamModels' lists {len(names)} models; only the first {MAX_TEAM_MODELS} are used")
+        names = names[:MAX_TEAM_MODELS]
+    return names, problems
+
+
+def usable_team_models(chat_label: str, names: Sequence[str],
+                       env: Mapping[str, str]) -> Tuple[List[str], List[str]]:
+    """Which of ``names`` a team job would use now, without building anything, and a "Not used" line for each
+    name whose key is not set. The chat's own model (``chat_label``) and repeats are left out silently."""
+    usable: List[str] = []
+    notes: List[str] = []
+    seen = {str(chat_label).strip().lower()}
+    for name in names:
+        name = str(name).strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        provider = provider_for(name)
+        if provider is None:
+            notes.append(f"Not used: {_shown_name(name)} (cannot tell which provider runs it)")
+            continue
+        variable = key_variable(provider)
+        if not _key(env, variable):
+            notes.append(f"Not used: {name} (no {variable})")
+            continue
+        usable.append(name)
+    return usable[:MAX_TEAM_MODELS], notes
+
+
+def team_models_line(chat_label: str, names: Sequence[str], env: Mapping[str, str]) -> str:
+    """The approval panel's line: the chat's model first, then the usable extra models."""
+    usable, _ = usable_team_models(chat_label, names, env)
+    return "Helper models: " + ", ".join([f"{chat_label} (chat)", *usable])
+
+
+def build_team_models(names: Sequence[str], env: Mapping[str, str], *, chat_label: str = "",
+                      factory: Optional[Callable[[str, Mapping[str, str]], Any]] = None
+                      ) -> Tuple[List[HelperModel], List[str]]:
+    """Build the extra models for one team job with ``factory`` (``choose_model`` by default). A name without a
+    key, or whose build raises, is skipped with a "Not used" line that names only the error's type: a
+    constructor's message could echo the key. ``KeyboardInterrupt`` and ``SystemExit`` pass through."""
+    build = factory or choose_model
+    usable, notes = usable_team_models(chat_label, names, env)
+    built: List[HelperModel] = []
+    for name in usable:
+        try:
+            built.append(HelperModel(name, build(name, env)))
+        except Exception as error:
+            notes.append(f"Not used: {name} (could not be set up: {type(error).__name__})")
+    return built, notes
