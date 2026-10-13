@@ -51,9 +51,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
     messages become one summary; the last six of your messages stay as they were). Not kept for the home
     folder or a drive root. See the guide.
   - **Slash commands.** `/help`, `/clear`, `/model`, `/mode`, `/settings`, `/resume`, `/sessions`, `/init`,
-    `/team`, `/team-models`, `/exit`. Typing `/` pops up the list with a one-line description of each. The first run writes
-    `~/.agentx/settings.json` with the model in use, once it is built, so there is a file to edit; `/settings`
-    shows what is in force and where the files are. A `"model": "(no model)"` line that an earlier build of
+    `/team`, `/team-models`, `/exit`. Typing `/` pops up the list with a one-line description of each. The first
+    run writes `~/.agentx/settings.json` with the model in use, once it is built, so there is a file to edit;
+    `/settings` shows what is in force and where the files are. A `"model": "(no model)"` line that an earlier build of
     this release could write there is ignored with a warning to delete it.
   - **Trust and menus.** The first start in a folder asks whether you trust it ("Accessing workspace", Yes /
     No); nothing from the folder (`AGENTX.md`, project settings) is read before you answer, and the answer is

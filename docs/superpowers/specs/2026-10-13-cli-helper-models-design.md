@@ -106,7 +106,8 @@ framework's plan format (approach B below); models from providers other than Ant
   the job starts). The chat's model is shown once; the line appears only when a list is set.
 - The plan list, the `-> coder@claude-opus-5-5: ...` dispatch line, a helper's tool bullet and the approval
   panel's `Helper:` line show the full helper name. The result the chat gets back lists each step's helper name,
-  so the conversation, the saved session and the work log show which model did each step.
+  so the conversation and the saved session show which model did each step. The work log keeps only its one
+  `Team job: <task> (<outcome>)` line.
 - Model names from settings reach the screen only through the existing `plain()` / `shown()` helpers.
 
 ## 8. Errors and edge cases
