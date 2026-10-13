@@ -124,9 +124,9 @@ def test_every_part_is_built_for_the_same_folder(tmp_path, monkeypatch):
     seen = {}
     real_asker, real_tools, real_addendum = app_module.make_asker, app_module.build_tools, app_module.build_addendum
 
-    def spy_asker(console, read_line, cwd, select=None, helper=None):
+    def spy_asker(console, read_line, cwd, select=None, helper=None, helper_models=None):
         seen["asker"] = cwd
-        return real_asker(console, read_line, cwd, select=select, helper=helper)
+        return real_asker(console, read_line, cwd, select=select, helper=helper, helper_models=helper_models)
 
     def spy_tools(cwd, add_dirs, gate, observer=None):
         seen["tools"], seen["tools_gate"] = cwd, gate

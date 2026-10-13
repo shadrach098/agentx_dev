@@ -326,3 +326,114 @@ def test_the_tool_handles_a_missing_model_and_a_repeat_call_directly(tmp_path):
     app.model = model
     app._team_used = True
     assert app._start_team_job("task", "why") == app_module.TEAM_ALREADY_RAN
+
+
+from tests.conftest import MockModel as _Mock
+
+KEYS = {"ANTHROPIC_API_KEY": "sk-ant-test-0123456789", "OPENAI_API_KEY": "sk-test-0123456789abcdef"}
+
+
+def extra(name, reply="opus report"):
+    model = _Mock(script=lambda messages: make_final(reply))
+    model.model_name = name
+    return model
+
+
+def factory_for(chat, **extras):
+    def factory(name, env):
+        return extras[name] if name in extras else chat
+    return factory
+
+
+def test_a_step_runs_on_the_model_the_planner_picked(tmp_path):
+    chat = team_model([step("s1", "coder@claude-opus-5-5", "make the change")])
+    chat.model_name = "claude-sonnet-5-5"
+    opus = extra("claude-opus-5-5")
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"), env=KEYS,
+                              model_factory=factory_for(chat, **{"claude-opus-5-5": opus}),
+                              team_models=["claude-opus-5-5"])
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "Helper models: claude-sonnet-5-5 (chat), claude-opus-5-5" in text        # in the approval panel
+    assert "-> coder@claude-opus-5-5: make the change" in text
+    assert opus.calls and chat.state["helper_calls"] == 0
+    assert "coder@claude-opus-5-5 - done" in history_text(app)
+
+
+def test_a_model_without_a_key_is_not_used_and_the_job_still_runs(tmp_path):
+    chat = team_model([step("s1", "explorer", "look around")])
+    chat.model_name = "claude-sonnet-5-5"
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"),
+                              env={"ANTHROPIC_API_KEY": KEYS["ANTHROPIC_API_KEY"]},
+                              team_models=["gpt-5.5"])
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "Not used: gpt-5.5 (no OPENAI_API_KEY)" in text and "done (explorer)" in text
+
+
+def test_a_model_that_cannot_be_built_shows_only_the_error_type(tmp_path):
+    chat = team_model([step("s1", "explorer", "look around")])
+    chat.model_name = "claude-sonnet-5-5"
+
+    def factory(name, env):
+        if name == "gpt-5.5":
+            raise ValueError(f"bad {KEYS['OPENAI_API_KEY']}")
+        return chat
+
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"), env=KEYS,
+                              model_factory=factory, team_models=["gpt-5.5"])
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "Not used: gpt-5.5 (could not be set up: ValueError)" in text and KEYS["OPENAI_API_KEY"] not in text
+
+
+def test_without_a_list_the_team_job_is_unchanged(tmp_path):
+    chat = team_model([step("s1", "explorer", "look around")])
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"))
+    assert app.start() == 0
+    assert "Helper models" not in out.getvalue() and "Not used" not in out.getvalue()
+
+
+def test_team_models_command_sets_shows_and_clears_for_the_session(tmp_path):
+    chat = MockModel(script=[])
+    chat.model_name = "claude-sonnet-5-5"
+    app, out, _, _ = make_app(tmp_path, Lines("/team-models claude-opus-5-5 mistral-x gpt-5.5", "/team-models",
+                                              "/team-models clear", "/exit"), chat,
+                              env={"ANTHROPIC_API_KEY": KEYS["ANTHROPIC_API_KEY"]})
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "mistral-x" in text                                        # the bad name is reported
+    assert "claude-opus-5-5" in text and "Not used now: gpt-5.5 (no OPENAI_API_KEY)" in text
+    assert app.team_models == []
+
+
+def test_team_models_folder_saves_them_in_the_folder_file(tmp_path):
+    chat = MockModel(script=[])
+    app, out, cwd, _ = make_app(tmp_path, Lines("/team-models claude-opus-5-5 --folder", "/exit"), chat, env=KEYS)
+    assert app.start() == 0
+    data = json.loads((cwd / ".agentx" / "settings.json").read_text(encoding="utf-8"))
+    assert data["teamModels"] == ["claude-opus-5-5"] and app.team_models == ["claude-opus-5-5"]
+
+
+def test_team_models_folder_is_refused_in_the_home_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "is_project_folder", lambda cwd, home: False)
+    chat = MockModel(script=[])
+    app, out, cwd, _ = make_app(tmp_path, Lines("/team-models claude-opus-5-5 --folder", "/exit"), chat, env=KEYS)
+    assert app.start() == 0
+    assert not (cwd / ".agentx" / "settings.json").exists() and "home folder" in out.getvalue()
+
+
+def test_settings_shows_the_helper_models(tmp_path):
+    chat = MockModel(script=[])
+    app, out, _, _ = make_app(tmp_path, Lines("/settings", "/exit"), chat, env=KEYS,
+                              team_models=["claude-opus-5-5"])
+    assert app.start() == 0
+    assert "Helper models: claude-opus-5-5" in out.getvalue()
+
+
+def test_a_hostile_model_name_is_printed_inert(tmp_path):
+    chat = MockModel(script=[])
+    app, out, _, _ = make_app(tmp_path, Lines("/team-models claude-[red]x[/red]\x1b[2J", "/team-models", "/exit"),
+                              chat, env=KEYS)
+    assert app.start() == 0
+    assert "\x1b" not in out.getvalue()

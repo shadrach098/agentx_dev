@@ -46,7 +46,7 @@ def test_help_lists_every_command():
     assert run_command(ctx, "/help") is True
     text = "\n".join(ctx.said)
     assert all(name in text for name in command_names())
-    assert command_names() == ["/help", "/clear", "/model", "/mode", "/settings", "/resume", "/sessions", "/init", "/team", "/exit"]
+    assert command_names() == ["/help", "/clear", "/model", "/mode", "/settings", "/resume", "/sessions", "/init", "/team", "/team-models", "/exit"]
 
 
 def test_clear_exit_init_sessions():
@@ -321,3 +321,31 @@ def test_hide_secrets_hides_key_shaped_tokens_and_keeps_newlines():
     from agentx_dev.cli.commands import hide_secrets
     text = hide_secrets("key sk-abcdefghijklmnop1234\nsecond line")
     assert "sk-abcdefghijklmnop1234" not in text and "[hidden]" in text and "\nsecond line" in text
+
+
+def test_team_models_without_arguments_shows_the_list():
+    ctx = Ctx()
+    ctx.show_team_models = lambda: ctx.calls.append(("show-team",))
+    run_command(ctx, "/team-models")
+    assert ctx.calls == [("show-team",)]
+
+
+def test_team_models_with_names_sets_them_for_the_session_or_the_folder():
+    ctx = Ctx()
+    ctx.set_team_models = lambda names, folder=False: ctx.calls.append(("set-team", list(names), folder))
+    run_command(ctx, "/team-models claude-opus-5-5 gpt-5.5")
+    run_command(ctx, "/team-models gpt-5.5 --folder")
+    run_command(ctx, "/team-models clear")
+    assert ctx.calls == [("set-team", ["claude-opus-5-5", "gpt-5.5"], False), ("set-team", ["gpt-5.5"], True),
+                         ("set-team", [], False)]
+
+
+def test_team_models_folder_needs_names_or_clear():
+    ctx = Ctx()
+    run_command(ctx, "/team-models --folder")
+    assert "Usage: /team-models" in ctx.errors[-1]
+
+
+def test_team_models_is_listed_in_help():
+    from agentx_dev.cli.commands import command_names
+    assert "/team-models" in command_names()

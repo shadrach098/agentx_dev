@@ -21,12 +21,13 @@ from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_
 from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, compact, needs_compaction
 from agentx_dev.cli.context import build_addendum
 from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events, summary_entry_text
-from agentx_dev.cli.models import ModelError, choose_model
+from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, clean_team_models, team_models_line,
+                                   usable_team_models)
 from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
 from agentx_dev.cli.settings import (PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
-                                     write_project_model)
+                                     write_project_model, write_project_team_models)
 from agentx_dev.cli.team import make_team_tool, run_team_job, team_request
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
@@ -147,7 +148,8 @@ class ChatApp:
                  env: Optional[Mapping[str, str]] = None, problems: Iterable[str] = (),
                  project_allow: Iterable[str] = (),
                  select: Optional[Callable[..., Optional[int]]] = None, newly_trusted: bool = False,
-                 model_source: Optional[Path] = None) -> None:
+                 model_source: Optional[Path] = None, team_models: Optional[Sequence[str]] = None,
+                 team_models_source: Optional[Path] = None) -> None:
         self.cwd = Path(cwd).resolve()
         self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
@@ -159,6 +161,8 @@ class ChatApp:
         self.env = dict(os.environ if env is None else env)
         self.requested_model = model_name
         self.model_source = model_source       # the settings file ``model_name`` came from (None: a flag, or none)
+        self.team_models: List[str] = list(team_models or [])
+        self.team_models_source = team_models_source if team_models else None   # the file the list came from
         self.problems = list(problems)
         self.project_allow = list(project_allow)
         self.settings_created: Optional[Path] = None      # set by start when it wrote a first settings file
@@ -171,7 +175,7 @@ class ChatApp:
         self._team_helper = ""             # the helper whose step is running; "" outside a team job
         self._team_used = False            # a turn may start one team job
         asker = make_asker(console, self.read_short, self.gate.cwd, select=select,
-                           helper=lambda: self._team_helper)
+                           helper=lambda: self._team_helper, helper_models=self.helper_models_line)
 
         def ask_with_spinner_paused(request: Any) -> Any:           # a prompt must not fight the spinner
             with self.progress.paused():
@@ -315,12 +319,14 @@ class ChatApp:
             f"Mode: {self.gate.mode}\n"
             f"Rules: {allow}\n"
             f"Extra folders: {', '.join(str(d) for d in self.add_dirs) or 'none'}\n"
+            f"Helper models: {self._safe(', '.join(self.team_models), 400) or 'none (helpers use the chat model)'}\n"
             f"Your settings file ({state(user)}): {user}\n"
             f"This project's settings file ({state(project)}): {project}\n"
             "Edit your file to change the default model, mode, extra folders and permission rules, then restart; "
             "a model in this project's file wins over yours. "
             "Use /model <name> or /mode <name> to change them for this session only, "
             "or /model <name> --folder to also save the model in this project's file. "
+            "/team-models sets the models team helpers may also use. "
             "The project file cannot turn on accept-edits or add folders outside the project.")
 
     def toolbar(self) -> str:
@@ -606,6 +612,50 @@ class ChatApp:
         path, message = write_project_model(self.cwd, name)
         (self.notice if path is not None else self.error)(self._safe(message, 600))
 
+    def helper_models_line(self) -> str:
+        """The approval panel's ``Helper models:`` line; "" when no extra models are set or there is no model."""
+        if not self.team_models or self.model is None:
+            return ""
+        return team_models_line(self.model_label, self.team_models, self.env)
+
+    def show_team_models(self) -> None:
+        """``/team-models``: the list, where it came from, and which entries a job would use now."""
+        if not self.team_models:
+            self.notice("Helper models: none set, so team helpers use the chat's model "
+                        f"({self._safe(self.model_label, 80)}). Set some with /team-models <name> [<name> ...]; "
+                        "add --folder to keep them for this folder.")
+            return
+        usable, notes = usable_team_models(self.model_label, self.team_models, self.env)
+        source = (f" (from {self._safe(self.team_models_source, 300)})" if self.team_models_source
+                  else " (this session)")
+        lines = [f"Helper models{source}: {self._safe(', '.join(self.team_models), 400)}",
+                 f"A team job may use: {self._safe(self.model_label, 80)} (chat)"
+                 + "".join(f", {self._safe(name, 80)}" for name in usable)]
+        lines += [self._safe(note.replace('Not used:', 'Not used now:', 1), 200) for note in notes]
+        lines.append("Change them with /team-models <name> ..., /team-models clear, or add --folder to save.")
+        self.notice("\n".join(lines))
+
+    def set_team_models(self, names: Sequence[str], folder: bool = False) -> None:
+        """``/team-models <names>`` (session) or ``... --folder`` (also saved in this folder's settings file)."""
+        cleaned, problems = clean_team_models(list(names))
+        for problem in problems:
+            self.error(self._safe(problem, 300))
+        if names and not cleaned:
+            self.error("No usable model name was given, so the list was left unchanged.")
+            return
+        self.team_models = cleaned
+        self.team_models_source = None
+        self.show_team_models()
+        if not folder:
+            return
+        if not self._memory_on:
+            self.notice("No folder settings file is kept for your home folder or a drive root.")
+            return
+        path, message = write_project_team_models(self.cwd, cleaned)
+        (self.notice if path is not None else self.error)(self._safe(message, 600))
+        if path is not None:
+            self.team_models_source = path
+
     def _refresh_instructions(self, with_log: bool = False) -> None:
         """Read AGENTX.md again (``/init`` or the user may have written or changed it). ``with_log`` adds the
         newest work-log entries: only for a fresh conversation, never for a resumed one."""
@@ -728,11 +778,15 @@ class ChatApp:
         if self.model is None:
             return "Refused: no model is available for a team job."
         self._team_used = True
+        extras, notes = build_team_models(self.team_models, self.env, chat_label=self.model_label,
+                                          factory=self.model_factory)
+        for note in notes:
+            self.notice(self._safe(note, 200))
         self.progress.start("Planning the team job")
         try:
             return run_team_job(task, model=self.model, tools=self.base_tools, addendum=self.addendum,
                                 notify=self._team_notify, ask_user=self._team_question,
-                                describe_error=self._safe)
+                                describe_error=self._safe, extra_models=extras)
         finally:
             self._team_helper = ""
             self.progress.start("Thinking")
@@ -854,7 +908,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                       model_name=args.model or settings.model, mode=args.mode or settings.mode or "default",
                       allow=settings.allow, deny=settings.deny, add_dirs=add_dirs, problems=settings.problems,
                       project_allow=settings.project_allow, newly_trusted=not was_trusted,
-                      model_source=None if args.model else settings.model_source)
+                      model_source=None if args.model else settings.model_source,
+                      team_models=settings.team_models, team_models_source=settings.team_models_source)
         holder.append(app)
         # ~/.agentx/settings.json is written by ChatApp.start once the model is built, so it holds its real name.
     except KeyboardInterrupt:
