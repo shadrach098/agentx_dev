@@ -39,9 +39,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
     `start_team_job:*` turns it off.
   - **Helper models for team jobs.** Allow extra models with `teamModels` (in either settings file; a folder's
     list replaces yours) or `/team-models`, and the supervisor picks per step which model a helper runs on
-    (Claude and GPT can be mixed when both keys are set). The approval box lists the models; helpers on
-    another model are named like `coder@claude-opus-5-5`. A list that comes from a project's settings file is
-    announced at startup. With no list nothing changes. See the guide.
+    (Claude and GPT can be mixed when both keys are set). Every helper then names its model, the chat's own
+    included (`coder@claude-opus-5-5`, `runner@claude-sonnet-5-5`), with the same wording for every model so
+    none is favoured, and each model can carry a note on what it is for (`gpt-6.1-sol="hard coding"`), which
+    the supervisor reads. The approval box lists the models. A list that comes from a project's settings file
+    is announced at startup. With no list nothing changes. Team helpers now get 50 steps, as the chat does
+    (was 25). See the guide.
   - **Project memory.** Each folder can have its own model: the first time you trust a folder, `agentx`
     writes `.agentx/settings.json` with the model in use, and `/model <name> --folder` changes it (plain
     `/model <name>` stays for the session). The app keeps a work log in `.agentx/log.md`, written by the app

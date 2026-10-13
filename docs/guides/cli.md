@@ -276,7 +276,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/sessions` | List this folder's saved conversations. |
 | `/init` | Ask the model to draft an `AGENTX.md` for this project. |
 | `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage. |
-| `/team-models [names\|clear] [--folder]` | Show or set the extra models team helpers may run on (see [Helper models](#helper-models)). `/team-models <names>` lasts for this session only; with `--folder` it is also saved for this folder. `/team-models clear` empties the list. |
+| `/team-models [name[=use] ...\|clear] [--folder]` | Show or set the extra models team helpers may run on, with an optional note on what each is for (see [Helper models](#helper-models)). `/team-models <names>` lasts for this session only; with `--folder` it is also saved for this folder. `/team-models clear` empties the list. |
 | `/exit` | Leave (Ctrl+D does the same). |
 
 ## Team jobs
@@ -340,15 +340,21 @@ Ctrl+C at an approval prompt declines that one call, as always. Ctrl+C anywhere 
 
 ### Helper models
 
-By default every helper, and the planner, runs on the chat's model. You can allow extra models, and then the supervisor chooses, step by step, which model a helper runs on. One job may mix Claude and GPT helpers when both keys are set. The chat's model is always available to the helpers and keeps the plain names `explorer`, `coder` and `runner`. With no list set nothing changes: no `Helper models:` line, and the helpers have today's names and descriptions.
+By default every helper, and the planner, runs on the chat's model. You can allow extra models, and then the supervisor chooses, step by step, which model a helper runs on. One job may mix Claude and GPT helpers when both keys are set. The chat's model is always available to the helpers. With a list set, every helper names its model, the chat's own included (`runner@gpt-6-sol`, `coder@gpt-6.1-sol`), and no model is presented as the default. With no list set nothing changes: no `Helper models:` line, and the helpers are the plain `explorer`, `coder` and `runner` with their usual descriptions.
 
 **Setting the list.** Add `teamModels` to `~/.agentx/settings.json` or to a folder's `.agentx/settings.json`:
 
 ```json
 {
-  "teamModels": ["claude-opus-5-5", "gpt-5.5"]
+  "teamModels": [
+    {"model": "gpt-6.1-sol", "use": "hard coding and bug fixing"},
+    "gpt-6-luna=fast reading and search",
+    "gpt-5.5"
+  ]
 }
 ```
+
+An entry is a model name, optionally with a short note on what that model is for, written as `"name=note"` or as `{"model": "name", "use": "note"}`. The note goes into the description the supervisor reads for that model's helpers (`Good for: hard coding and bug fixing.`), which gives it a reason to pick one model over another. A note is plain text of at most 80 characters; a longer one, or one with control characters, is dropped with a warning and the model is kept. A note on the chat's own model applies to its helpers too.
 
 - A name must start with `claude`, `gpt` or `o` and a digit (`o3`), be at most 100 characters, and contain no spaces or control characters. At most 4 are kept (the first 4). A repeat, in any case, is dropped. A bad entry is listed in the warnings at startup (or right after `/team-models`) and ignored; the rest of the list works. For a name that is too long or has a space or control character the warning reads `'teamModels': <name> is not a model name (too long, spaces or control characters); skipped`, and for an unknown provider `'teamModels': cannot tell which provider runs <name> (start the name with 'claude' or 'gpt'); skipped`. In both, `<name>` is shown in quotes (and cut at 40 characters). The provider hint names only `claude` and `gpt`, but `o3`-style names are accepted too.
 - The folder's list **replaces** yours entirely; the lists are not joined. `"teamModels": []` in a folder's file (or a list whose entries are all invalid) turns extra models off for that folder. A value that is not a list is ignored with a warning (`'teamModels' must be a list of model names; ignored`) and your own list stays in force. As for `model`, a folder's file is read only after you trust the folder.
@@ -358,8 +364,8 @@ By default every helper, and the planner, runs on the chat's model. You can allo
 
 | Command | Does |
 |---|---|
-| `/team-models` | Show the list, where it came from (a settings file, or `this session`), which models a job may use now, and a `Not used now: ...` line for each name that cannot be used. When a settings file holds an empty list it says `Helper models: none - turned off by <path>.` |
-| `/team-models <name> [<name> ...]` | Set the list for this session only. Bad names are reported and the good ones kept; if none is good, the list is left as it was. |
+| `/team-models` | Show the list with its notes (`gpt-6.1-sol (hard coding)`), where it came from (a settings file, or `this session`), which models a job may use now, and a `Not used now: ...` line for each name that cannot be used. When a settings file holds an empty list it says `Helper models: none - turned off by <path>.` |
+| `/team-models <name>[="what it is for"] ...` | Set the list (and any notes) for this session only, for example `/team-models gpt-6.1-sol="hard coding" gpt-6-luna="fast reading" gpt-5.5`. Bad names or notes are reported and the rest kept; if no name is good, the list is left as it was. An unclosed quote shows the usage. |
 | `/team-models <name> ... --folder` | The same, and also save the list in this folder's `.agentx/settings.json`, keeping its other keys. It follows the rules of `/model --folder`: nothing is written for your home folder or a drive root (`No folder settings file is kept for your home folder or a drive root.`), through a link, or over a file that is not valid JSON; the session still changes. |
 | `/team-models clear` | Empty the list for this session: helpers use the chat's model only. |
 | `/team-models clear --folder` | The same, and save an empty list (`[]`) in the folder's file, so extra models stay off for this folder. |
@@ -370,8 +376,8 @@ By default every helper, and the planner, runs on the chat's model. You can allo
 
 - The approval panel gets one more line, for example `Helper models: claude-sonnet-5-5 (chat), claude-opus-5-5, gpt-5.5`: the chat's model first, then the listed models whose key is set. It appears only when a list is set. It is worked out from the keys without building the models, so a model that then cannot be set up still appears there.
 - When the job starts, a name that cannot be used is reported once, above the plan, and the job runs with the rest. With a missing key: `Not used: gpt-5.5 (no OPENAI_API_KEY)` (`ANTHROPIC_API_KEY` for a Claude model). With a model that cannot be set up, the line carries the reason when the app wrote one to be shown, cut to about 160 characters on one line, for example `Not used: claude-opus-5-5 (No module named 'anthropic' - install agentx-dev[anthropic])` for a GPT chat that lists a Claude model without the optional `anthropic` package. For any other failure only the kind of error is shown (`Not used: gpt-5.5 (could not be set up: ValueError)`), because that error's own message could contain the key. The chat's model is always there, so a job never has zero helpers.
-- Each extra model adds the three roles under the names `explorer@<model>`, `coder@<model>` and `runner@<model>`, such as `coder@claude-opus-5-5`: with 4 extra models that is up to 15 helpers. The name appears in the plan, in the `-> coder@claude-opus-5-5: ...` line, in the `[coder@claude-opus-5-5]` tool bullets, in the `Helper:` line of an approval box, in the `done (...)` and `failed (...)` lines, and in the result the agent gets back, so the conversation and the saved session show which model did each step. (The work log keeps its one `Team job:` line.)
-- The supervisor reads a one-sentence description of each helper that says which model it runs on, that it suits a step when that model is stronger, faster or cheaper, and that its calls cost what that model costs, and picks a helper for each step. Whether it ever picks an extra model is its call; nothing forces it to.
+- Each model, the chat's included, gets the three roles under the names `explorer@<model>`, `coder@<model>` and `runner@<model>`, such as `coder@claude-opus-5-5` and `runner@claude-sonnet-5-5`: with 4 extra models that is up to 15 helpers. The name appears in the plan, in the `-> coder@claude-opus-5-5: ...` line, in the `[coder@claude-opus-5-5]` tool bullets, in the `Helper:` line of an approval box, in the `done (...)` and `failed (...)` lines, and in the result the agent gets back, so the conversation and the saved session show which model did each step. (The work log keeps its one `Team job:` line.)
+- The supervisor reads each helper's description: the role, `Runs on <model>.`, your note if there is one (`Good for: ...`), and `There is one copy of each role per model: pick the copy whose model best fits this step.` Every model gets the same words, so none is favoured, and it picks a helper for each step. It may still choose the chat's model for every step when it judges that best; a note on each model gives it the most to go on.
 
 **Cost and data.**
 
@@ -400,7 +406,7 @@ The agent is then refused every time it tries, in every mode, `auto` included. T
 - The three roles are fixed. Extra models (see [Helper models](#helper-models)) add the same roles on other models; they cannot add a new kind of helper, and the supervisor does not switch a failed step to another model.
 - There is no memory between jobs. Each step is a fresh helper (the supervisor passes earlier results along), built for the job from the model in use at that moment (and from the helper models list at that moment), so `/model` and `/team-models` apply from the next job.
 - A failed step is not retried, because a retry would repeat what the helper already did. A step that depends on the failed one is skipped, and the result lists each step as done, failed or skipped.
-- A step is at most 25 model steps for the helper, and a job at most 6 plan steps.
+- A step is at most 50 model steps for the helper (as many as the chat gets), and a job at most 6 plan steps.
 - The task the agent passes is at most 4,000 characters and its reason at 500; longer text is refused with a message, not cut.
 - A team job makes many model calls: expect it to cost much more than a normal turn, and more still when a step runs on a pricier model.
 - At most 4 extra models; the planner always runs on the chat's model.

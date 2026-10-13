@@ -41,7 +41,7 @@ framework's plan format (approach B below); models from providers other than Ant
 | Piece | Change |
 |---|---|
 | `agentx_dev/cli/settings.py` | `Settings.team_models` and `Settings.team_models_source`; `load_settings` reads and validates `"teamModels"`; `write_project_team_models(cwd, names)` for `--folder`. |
-| `agentx_dev/cli/team.py` | `build_helpers(model, tools, addendum, describe_error, extra_models=())` builds the three roles for the chat's model and again for each extra model; `run_team_job(..., extra_models=...)`; `PLAIN_MODEL_NOTE` and `EXTRA_MODEL_NOTE` say which model a helper runs on. |
+| `agentx_dev/cli/team.py` | `build_helpers(model, tools, addendum, describe_error, extra_models=())` builds the three roles for the chat's model and again for each extra model; `run_team_job(..., extra_models=..., chat_use=...)`; `MODEL_NOTE` and `USE_NOTE` say which model a helper runs on and what the user says it is for. |
 | `agentx_dev/cli/models.py` | `MAX_TEAM_MODELS = 4`; `HelperModel(name, model)` (a frozen dataclass; it lives here, next to the list helpers, so `settings.py` never imports the Supervisor); `clean_team_models(values)` returns the usable names and the problems; `usable_team_models(chat_label, names, env)` returns the names a job would use and a "Not used" line per skipped name, without building anything; `team_models_line(chat_label, names, env)` is the approval panel's line; `build_team_models(names, env, *, chat_label, factory)` returns the built models and one "Not used" line per skipped name. |
 | `agentx_dev/cli/preview.py` | The `start_team_job` preview gets a `Helper models:` line (`preview_for(..., helper_models=...)`). |
 | `agentx_dev/cli/app.py` | Keeps the session's list; builds the helper models when a job starts; passes them to `run_team_job` and to the preview; shows the "Not used" lines; `/settings` shows the list. |
@@ -90,15 +90,17 @@ framework's plan format (approach B below); models from providers other than Ant
   agentx-dev[anthropic])`. For any other exception only the type is named (`Not used: x (could not be set up:
   <type>)`), because a constructor's message could echo the key. The app prints every line through its
   redacting `_safe`, and stops the spinner first. These lines are shown once, above the job's plan.
-- The chat's model is always first and keeps today's helper names: `explorer`, `coder`, `runner`.
-- Each other usable model adds the three roles named `explorer@<model>`, `coder@<model>`, `runner@<model>`, with
-  the same tools, step limit, addendum and role text as the plain helpers. At most 4 extra models: at most 15
-  helpers.
-- Descriptions the planner reads: the role's description plus one sentence. Plain helpers (only when at least
-  one extra model is in use; with none, the descriptions are exactly today's): "Runs on <chat model> (the
-  chat's model); use it unless a step clearly needs another model." Others: "The same role on <model>. Choose
-  it when that model suits the step better (stronger, faster or cheaper); its calls cost what that model
-  costs." (Neutral on purpose: it does not nudge the planner towards the dearer model.)
+- Without usable extra models the helpers are today's: `explorer`, `coder`, `runner` with the roles' own
+  descriptions.
+- With at least one, every model, the chat's own included, gets the three roles named `explorer@<model>`,
+  `coder@<model>`, `runner@<model>` (the chat's model comes first), with the same tools, step limit, addendum
+  and role text. At most 4 extra models: at most 15 helpers.
+- Descriptions the planner reads: the role's description, then the same words for every model so that none is
+  favoured: "Runs on <model>." then, when the user gave a note, "Good for: <note>." then "There is one copy of
+  each role per model: pick the copy whose model best fits this step."
+- A list entry may carry a note on what the model is for: `"name=note"` or `{"model": "name", "use": "note"}`
+  in settings, `name="note"` on the `/team-models` line. A note is plain text of at most 80 characters; a bad
+  note is dropped with a warning and the model kept. `--folder` saves a model with a note as an object.
 - The planner (the `Supervisor`'s own model) is always the chat's model.
 
 ## 7. What the user sees
@@ -166,6 +168,10 @@ by-hand checklist three items (set two models and watch a step run on one; a mod
 - The supervisor picks the model per step from a list the user allows (the user's choice, 2026-10-13).
 - One job may mix providers when both keys are set (the user's choice).
 - Approach A, no framework change (the user's choice).
-- The chat's model is always available to helpers and keeps today's names; with no list nothing changes (a
-  ruling: a job never has zero helpers, and existing behaviour is untouched).
+- The chat's model is always available to helpers; with no list nothing changes (a ruling: a job never has zero
+  helpers, and existing behaviour is untouched).
+- Revised 2026-10-13 after first use: with a list, the planner ran every step on the chat's model, because the
+  plain helpers were described as the default and the planner knew nothing about the others. Now every helper
+  names its model with the same wording, and a model can carry a note on what it is for (the user's choice:
+  "supervisor picks, no bias"). Helpers also get 50 steps instead of 25: a coder ran out of steps mid-change.
 - The planner stays on the chat's model; at most 4 extra models (rulings, easy to change).

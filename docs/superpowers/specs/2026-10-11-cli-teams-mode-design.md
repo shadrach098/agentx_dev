@@ -81,7 +81,7 @@ flag when a new user message is sent.
 
 ## 6. The helpers
 
-Three helpers, each an `AgentRunner` (ReAct, `auto_cache=False`, `parallel_tool_workers=1`, 25 steps, the same
+Three helpers, each an `AgentRunner` (ReAct, `auto_cache=False`, `parallel_tool_workers=1`, 50 steps (25 until 2026-10-13), the same
 system addendum as the chat plus a short role paragraph), each with a subset of the existing **gated** tools:
 
 | Helper | Tools | For |
