@@ -398,13 +398,14 @@ def select_menu(options: Sequence[str], default: int = 0,
 def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
                cwd: Path,
                select: Optional[Callable[..., Optional[int]]] = None,
-               helper: Optional[Callable[[], str]] = None) -> Callable[[Request], Answer]:
+               helper: Optional[Callable[[], str]] = None,
+               helper_models: Optional[Callable[[], str]] = None) -> Callable[[Request], Answer]:
     """The gate's ``ask`` function: show what is about to happen, read y / a / n.
 
     ``cwd`` must be the SAME folder the gate was built with (the application passes the gate's ``cwd``), or the
     preview and the gate would look at different files. ``read_line`` defaults to plain ``input``.
     ``helper`` (optional) returns the name of the team helper whose step is running, shown as a ``Helper:``
-    line.
+    line. ``helper_models`` (optional) returns the ``Helper models:`` line for a ``start_team_job`` prompt.
 
     The prompt shows the full action text and ``Request.subject`` (what the gate judged, in its resolved
     form), never cut. A command, code or tool-argument text longer than ``MAX_COMMAND_CHARS`` cannot be shown
@@ -416,7 +417,14 @@ def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
     read_line = read_line or input
 
     def ask(request: Request) -> Answer:
-        preview = preview_for(request.tool, request.args, cwd)
+        line = ""
+        if helper_models is not None and request.tool == "start_team_job":
+            try:
+                value = helper_models()
+                line = plain(value) if isinstance(value, str) else ""
+            except Exception:                         # a broken source must never stop the question
+                line = ""
+        preview = preview_for(request.tool, request.args, cwd, helper_models=line)
         if preview.truncated:
             reason = preview.reason or "preview unavailable; nothing was run"
             _print(console, Text(f"Declined without asking ({plain(request.tool)}): {plain(reason)}.",

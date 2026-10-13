@@ -317,3 +317,18 @@ def test_a_team_job_preview_without_a_reason_has_no_reason_line(tmp_path):
 def test_a_team_job_preview_never_raises_on_odd_arguments(tmp_path):
     assert preview_for("start_team_job", {"task": None, "why": 5}, tmp_path).title == "Start a team job"
     assert preview_for("start_team_job", "not a mapping", tmp_path).title == "start_team_job"
+
+
+def test_the_team_preview_shows_the_helper_models_line(tmp_path):
+    p = preview_for("start_team_job", {"task": "Survey", "why": ""}, tmp_path,
+                    helper_models="Helper models: claude-sonnet-5-5 (chat), claude-opus-5-5")
+    assert "Helper models: claude-sonnet-5-5 (chat), claude-opus-5-5" in p.body
+
+
+def test_without_a_line_the_team_preview_is_unchanged(tmp_path):
+    assert "Helper models" not in preview_for("start_team_job", {"task": "Survey"}, tmp_path).body
+
+
+def test_other_tools_ignore_the_helper_models_line(tmp_path):
+    p = preview_for("run_shell", {"command": "ls"}, tmp_path, helper_models="Helper models: x")
+    assert "Helper models" not in p.body

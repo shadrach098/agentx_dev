@@ -813,3 +813,37 @@ class TestHelperLineInThePrompt:
         text = self.ask(None, kind="team", tool="start_team_job",
                         args={"task": "Survey the project", "why": "big"})
         assert "Survey the project" in text and "Subject:" not in text
+
+
+def team_request_for_ui():
+    return Request(tool="start_team_job", kind="team", subject="Survey", args={"task": "Survey", "why": ""},
+                   remember=False, grant="")
+
+
+class TestHelperModelsLine:
+    def test_the_team_panel_shows_the_line(self, tmp_path):
+        c, out = console()
+        make_asker(c, lines("y"), tmp_path,
+                   helper_models=lambda: "Helper models: claude-sonnet-5-5 (chat), gpt-5.5")(team_request_for_ui())
+        assert "Helper models: claude-sonnet-5-5 (chat), gpt-5.5" in out.getvalue()
+
+    def test_markup_in_a_model_name_is_printed_literally(self, tmp_path):
+        c, out = console()
+        make_asker(c, lines("y"), tmp_path,
+                   helper_models=lambda: "Helper models: x (chat), [red]evil[/red]\x1b[2J")(team_request_for_ui())
+        assert "[red]evil[/red]" in out.getvalue() and "\x1b" not in out.getvalue()
+
+    def test_a_failing_line_source_gives_no_line_and_still_asks(self, tmp_path):
+        c, out = console()
+
+        def broken():
+            raise RuntimeError("boom")
+
+        answer = make_asker(c, lines("y"), tmp_path, helper_models=broken)(team_request_for_ui())
+        assert answer.choice == "y" and "Helper models" not in out.getvalue()
+
+    def test_other_tools_never_call_the_line_source(self, tmp_path):
+        c, _ = console()
+        called = []
+        make_asker(c, lines("y"), tmp_path, helper_models=lambda: called.append(1) or "x")(edit_request())
+        assert called == []

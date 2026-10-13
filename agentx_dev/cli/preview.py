@@ -244,20 +244,22 @@ TEAM_HELPERS_LINE = ("Helpers, one at a time: explorer (reads and searches), cod
                      "runner (runs commands and tests).")
 
 
-def _team_job(args: Mapping[str, Any]) -> Preview:
+def _team_job(args: Mapping[str, Any], helper_models: str = "") -> Preview:
     task = str(args.get("task") or "").strip()
     why = str(args.get("why") or "").strip()
     lines = [f"Task: {task}"]
     if why:
         lines.append(f"Why a team: {why}")
-    lines += ["", TEAM_HELPERS_LINE,
-              "A team job makes many model calls and can take several minutes. Every edit or command a "
-              "helper tries is asked about as usual."]
+    lines += ["", TEAM_HELPERS_LINE]
+    if helper_models:
+        lines.append(helper_models)
+    lines.append("A team job makes many model calls and can take several minutes. Every edit or command a "
+                 "helper tries is asked about as usual.")
     body, truncated = _whole("\n".join(lines))
     return Preview("Start a team job", body, "text", truncated, COMMAND_TOO_LONG if truncated else "")
 
 
-def _build(tool: str, args: Mapping[str, Any], cwd: Path) -> Preview:
+def _build(tool: str, args: Mapping[str, Any], cwd: Path, helper_models: str = "") -> Preview:
     if not isinstance(args, Mapping):
         return _generic(tool, args)
     if tool == "write_file":
@@ -278,13 +280,14 @@ def _build(tool: str, args: Mapping[str, Any], cwd: Path) -> Preview:
     if tool == "move_file":
         return _move_file(args, cwd)
     if tool == "start_team_job":
-        return _team_job(args)
+        return _team_job(args, helper_models)
     return _generic(tool, args)
 
 
-def preview_for(tool: str, args: Mapping[str, Any], cwd: Path) -> Preview:
-    """What to show the user before ``tool`` runs with ``args`` in ``cwd``. Never raises."""
+def preview_for(tool: str, args: Mapping[str, Any], cwd: Path, helper_models: str = "") -> Preview:
+    """What to show the user before ``tool`` runs with ``args`` in ``cwd``. ``helper_models`` (the models a team
+    job may use) is shown in a ``start_team_job`` preview only. Never raises."""
     try:
-        return _build(tool, args, cwd)
+        return _build(tool, args, cwd, helper_models)
     except Exception:
         return _generic(tool, args)
