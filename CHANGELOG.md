@@ -37,6 +37,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
     coder edits, runner runs commands) carry them out one at a time. Every helper call goes through the same
     gate, modes, deny rules and prompts as the chat; the result joins the conversation. A deny rule
     `start_team_job:*` turns it off.
+  - **Helper models for team jobs.** Allow extra models with `teamModels` (in either settings file; a folder's
+    list replaces yours) or `/team-models`, and the supervisor picks per step which model a helper runs on
+    (Claude and GPT can be mixed when both keys are set). The approval box lists the models; helpers on
+    another model are named like `coder@claude-opus-5-5`. With no list nothing changes. See the guide.
   - **Project memory.** Each folder can have its own model: the first time you trust a folder, `agentx`
     writes `.agentx/settings.json` with the model in use, and `/model <name> --folder` changes it (plain
     `/model <name>` stays for the session). The app keeps a work log in `.agentx/log.md`, written by the app
@@ -47,7 +51,7 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
     messages become one summary; the last six of your messages stay as they were). Not kept for the home
     folder or a drive root. See the guide.
   - **Slash commands.** `/help`, `/clear`, `/model`, `/mode`, `/settings`, `/resume`, `/sessions`, `/init`,
-    `/team`, `/exit`. Typing `/` pops up the list with a one-line description of each. The first run writes
+    `/team`, `/team-models`, `/exit`. Typing `/` pops up the list with a one-line description of each. The first run writes
     `~/.agentx/settings.json` with the model in use, once it is built, so there is a file to edit; `/settings`
     shows what is in force and where the files are. A `"model": "(no model)"` line that an earlier build of
     this release could write there is ignored with a warning to delete it.

@@ -451,7 +451,8 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 ask for changes. It reads files, edits them and runs commands there, and asks you before it edits a file, runs
 a command, or deletes or moves anything. Conversations are saved and can be resumed. It has no headless mode
 and does not stream the answer token by token yet. For big jobs it can hand the work to a team of helpers (with
-your approval, unless you run in auto mode or have allowed it with your own rule). It also keeps a work log and a
+your approval, unless you run in auto mode or have allowed it with your own rule), and those helpers can run on
+other models you allow (`teamModels` in the settings, or `/team-models`). It also keeps a work log and a
 model for each folder (in `.agentx/`) and summarises long conversations; see the guide.
 
 ```bash

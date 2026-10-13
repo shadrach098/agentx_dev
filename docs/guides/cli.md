@@ -188,6 +188,7 @@ Two optional files, both JSON:
   "model": "claude-sonnet-4-6",
   "mode": "default",
   "addDirs": ["../shared"],
+  "teamModels": ["claude-opus-5-5", "gpt-5.5"],
   "permissions": {
     "allow": ["run_shell:pytest*", "run_shell:git status*"],
     "deny": ["run_shell:*sudo*", "read_path:.env"]
@@ -195,7 +196,7 @@ Two optional files, both JSON:
 }
 ```
 
-**Merging.** User settings are read first, then the project's. Single values (`model`, `mode`) from the project win; `addDirs` and the allow and deny lists are joined (the project's allow rules only if you say yes at startup, see [Project settings are untrusted](#project-settings-are-untrusted)). A deny rule from either file wins. Flags override the settings files. A file with invalid JSON, or a value of the wrong type, is reported by path as a warning before the first prompt and ignored. A model named in a settings file that cannot be built is reported with the path of the file it came from. `"model": "(no model)"` (a placeholder an earlier 3.7.0 build could write into your file) is ignored with a warning asking you to delete that line; the file itself is not changed.
+**Merging.** User settings are read first, then the project's. Single values (`model`, `mode`) from the project win, and so does the whole `teamModels` list (see [Helper models](#helper-models)); `addDirs` and the allow and deny lists are joined (the project's allow rules only if you say yes at startup, see [Project settings are untrusted](#project-settings-are-untrusted)). A deny rule from either file wins. Flags override the settings files. A file with invalid JSON, or a value of the wrong type, is reported by path as a warning before the first prompt and ignored. A model named in a settings file that cannot be built is reported with the path of the file it came from. `"model": "(no model)"` (a placeholder an earlier 3.7.0 build could write into your file) is ignored with a warning asking you to delete that line; the file itself is not changed.
 
 **Rule syntax.** A rule is `tool:glob`, matched with `fnmatch` against a subject that depends on the tool. A rule with no colon (`run_shell`) matches every call of that tool, so write it only if you mean that.
 
@@ -269,11 +270,12 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/clear` | Start a new conversation. Clears the "don't ask again" grants and undoes an edit grant. |
 | `/model [name] [--folder]` | Show or switch the model. The conversation is kept. A model that cannot be built (no key) leaves the old one in place. `/model <name>` lasts for this session only; `/model <name> --folder` also saves it for this folder (see [Project memory](#project-memory)). |
 | `/mode [name]` | Show or set the mode: `default`, `accept-edits`, `plan` or `auto`. |
-| `/settings` | Show the model, mode and rules in force, and the paths of your settings file and the project's. |
+| `/settings` | Show the model, mode, rules and helper models in force, and the paths of your settings file and the project's. |
 | `/resume [id]` | Load a saved conversation (a list to pick from, or an id). |
 | `/sessions` | List this folder's saved conversations. |
 | `/init` | Ask the model to draft an `AGENTX.md` for this project. |
 | `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage. |
+| `/team-models [names\|clear] [--folder]` | Show or set the extra models team helpers may run on (see [Helper models](#helper-models)). `/team-models <names>` lasts for this session only; with `--folder` it is also saved for this folder. `/team-models clear` empties the list. |
 | `/exit` | Leave (Ctrl+D does the same). |
 
 ## Team jobs
@@ -290,7 +292,7 @@ For a big, multi-part job (several files or areas: research, then changes, then 
 | `coder` | the explorer's, plus `write_file`, `edit_file` | Changing files. |
 | `runner` | the explorer's, plus `run_shell`, `run_python` | Running commands and tests. |
 
-No helper has `delete_path`, `move_file` or `start_team_job`, so a helper cannot delete, move or start another team. The roster is fixed; the supervisor cannot invent a helper. The roles steer the helpers, they are not a sandbox: `run_shell` can write files. What protects you is the gate, and the helpers use the same one as the chat.
+No helper has `delete_path`, `move_file` or `start_team_job`, so a helper cannot delete, move or start another team. The roster is fixed; the supervisor cannot invent a helper. (With [helper models](#helper-models) set, each of the three roles also exists once per extra model, named `coder@<model>` and so on.) The roles steer the helpers, they are not a sandbox: `run_shell` can write files. What protects you is the gate, and the helpers use the same one as the chat.
 
 ### The approval
 
@@ -335,6 +337,48 @@ When the job ends, the agent gets one text back as the result of its tool call: 
 
 Ctrl+C at an approval prompt declines that one call, as always. Ctrl+C anywhere else during a job (a helper working, the planner thinking) stops the job and aborts the turn: "Turn interrupted" is printed, changes the helpers already made stay on disk, and the turn is not recorded in the conversation. At a team question it only skips the question.
 
+### Helper models
+
+By default every helper, and the planner, runs on the chat's model. You can allow extra models, and then the supervisor chooses, step by step, which model a helper runs on. One job may mix Claude and GPT helpers when both keys are set. The chat's model is always available to the helpers and keeps the plain names `explorer`, `coder` and `runner`. With no list set nothing changes: no `Helper models:` line, and the helpers have today's names and descriptions.
+
+**Setting the list.** Add `teamModels` to `~/.agentx/settings.json` or to a folder's `.agentx/settings.json`:
+
+```json
+{
+  "teamModels": ["claude-opus-5-5", "gpt-5.5"]
+}
+```
+
+- A name must start with `claude`, `gpt` or `o` and a digit (`o3`), be at most 100 characters, and contain no spaces or control characters. At most 4 are kept (the first 4). A repeat, in any case, is dropped. A bad entry is listed in the warnings at startup (or right after `/team-models`) and ignored; the rest of the list works. For a name that is too long or has a space or control character the warning reads `'teamModels': <name> is not a model name (too long, spaces or control characters); skipped`, and for an unknown provider `'teamModels': cannot tell which provider runs <name> (start the name with 'claude' or 'gpt'); skipped`.
+- The folder's list **replaces** yours entirely; the lists are not joined. `"teamModels": []` in a folder's file (or a list whose entries are all invalid) turns extra models off for that folder. A value that is not a list is ignored with a warning (`'teamModels' must be a list of model names; ignored`) and your own list stays in force. As for `model`, a folder's file is read only after you trust the folder.
+- The list names models helpers may use **in addition to** the chat's model. The chat's model is never listed twice: if you name it, the name is dropped. After `/model <name>` the next job works out the list again against the new chat model.
+
+**Commands.**
+
+| Command | Does |
+|---|---|
+| `/team-models` | Show the list, where it came from (a settings file, or `this session`), which models a job may use now, and a `Not used now: ...` line for each name that cannot be used. |
+| `/team-models <name> [<name> ...]` | Set the list for this session only. Bad names are reported and the good ones kept; if none is good, the list is left as it was. |
+| `/team-models <name> ... --folder` | The same, and also save the list in this folder's `.agentx/settings.json`, keeping its other keys. It follows the rules of `/model --folder`: nothing is written for your home folder or a drive root (`No folder settings file is kept for your home folder or a drive root.`), through a link, or over a file that is not valid JSON; the session still changes. |
+| `/team-models clear` | Empty the list for this session: helpers use the chat's model only. |
+| `/team-models clear --folder` | The same, and save an empty list (`[]`) in the folder's file, so extra models stay off for this folder. |
+
+`/settings` shows the list as `Helper models: ...` (or `none (helpers use the chat model)`).
+
+**What you see.**
+
+- The approval panel gets one more line, for example `Helper models: claude-sonnet-5-5 (chat), claude-opus-5-5, gpt-5.5`: the chat's model first, then the listed models whose key is set. It appears only when a list is set. It is worked out from the keys without building the models, so a model that then cannot be set up still appears there.
+- When the job starts, a name that cannot be used is reported once, above the plan, and the job runs with the rest. With a missing key: `Not used: gpt-5.5 (no OPENAI_API_KEY)` (`ANTHROPIC_API_KEY` for a Claude model). With a model that cannot be set up: `Not used: gpt-5.5 (could not be set up: ModelError)`. Only the kind of error is shown, because the error's own message could contain the key. The chat's model is always there, so a job never has zero helpers.
+- Each extra model adds the three roles under the names `explorer@<model>`, `coder@<model>` and `runner@<model>`, such as `coder@claude-opus-5-5`: with 4 extra models that is up to 15 helpers. The name appears in the plan, in the `-> coder@claude-opus-5-5: ...` line, in the `[coder@claude-opus-5-5]` tool bullets, in the `Helper:` line of an approval box, in the `done (...)` and `failed (...)` lines, and in the result the agent gets back, so the conversation and the saved session show which model did each step. (The work log keeps its one `Team job:` line.)
+- The supervisor reads a one-sentence description of each helper that says which model it runs on and that its calls cost what that model costs, and picks a helper for each step. Whether it ever picks an extra model is its call; nothing forces it to.
+
+**Cost and data.**
+
+- Each step costs what its model costs. A job that uses a strong model for a hard step costs more than the same job on the chat's model.
+- The planner always runs on the chat's model; only helpers move.
+- Helpers on another provider receive the same system prompt as the chat: your `AGENTX.md` files, the recent-work block from the log (in a conversation that started fresh) and the role text. So that text goes to that provider's API. A folder's `.agentx/settings.json` can set `teamModels`, as it can set `model`, so a repository you cloned could send this text to a provider you did not choose. Read the `Helper models:` line before you approve a job (in `auto` mode, or with your own allow rule, nothing asks first).
+- Nothing about what a helper may do changes: every helper, on any model, goes through the same gate, modes, deny rules, protected files and prompts, and a deny rule `start_team_job:*` still turns team jobs off.
+
 ### Turning it off
 
 Add a deny rule to `~/.agentx/settings.json` (or the project's file):
@@ -352,12 +396,13 @@ The agent is then refused every time it tries, in every mode, `auto` included. T
 ### Limits
 
 - Helpers run one at a time; nothing runs in parallel.
-- The three helpers are fixed.
-- There is no memory between jobs. Each step is a fresh helper (the supervisor passes earlier results along), built for the job from the model in use at that moment, so `/model` applies from the next job.
+- The three roles are fixed. Extra models (see [Helper models](#helper-models)) add the same roles on other models; they cannot add a new kind of helper, and the supervisor does not switch a failed step to another model.
+- There is no memory between jobs. Each step is a fresh helper (the supervisor passes earlier results along), built for the job from the model in use at that moment (and from the helper models list at that moment), so `/model` and `/team-models` apply from the next job.
 - A failed step is not retried, because a retry would repeat what the helper already did. A step that depends on the failed one is skipped, and the result lists each step as done, failed or skipped.
 - A step is at most 25 model steps for the helper, and a job at most 6 plan steps.
 - The task the agent passes is at most 4,000 characters and its reason at 500; longer text is refused with a message, not cut.
-- A team job makes many model calls: expect it to cost much more than a normal turn.
+- A team job makes many model calls: expect it to cost much more than a normal turn, and more still when a step runs on a pricier model.
+- At most 4 extra models; the planner always runs on the chat's model.
 
 ## Project memory
 
@@ -454,7 +499,7 @@ The status bar shows the model, the mode, the folder, the short session id and t
 - **No headless mode.** There is no `agentx -p "task"`; a non-terminal exits with code 1.
 - **No MCP configuration, custom commands or hooks.**
 - **No mode that never asks.** `auto` still asks before delete and move and for tools the gate does not know. The protected files (`.git`, `.agentx`, git and shell config) are refused in every mode.
-- **Teams mode is limited:** helpers run one at a time and the roster is fixed (see [Team jobs](#team-jobs)).
+- **Teams mode is limited:** helpers run one at a time and the roster is fixed, though each role can run on extra models you allow (see [Team jobs](#team-jobs)).
 - You cannot type while the agent is working.
 - **No size cap on `read_path`.** A very large file the model reads goes into the history whole, and every later turn sends it again, so a single huge read can exceed the model's context window before [summarising](#summarising-a-long-conversation) can help (it works on the history before a turn, not on one oversized result), and later turns then fail until you start over with `/clear`. Ask for the part of a file you need, or use `grep`.
 - **Project memory is approximate.** The work log is a short text record, not a search index, and summarising is triggered by a character count (see [Project memory](#project-memory)).
@@ -498,3 +543,6 @@ A checklist for the maintainer to run once on a real terminal before release. Te
 32. Type `/clear` and ask "what did we do here?": the answer comes from the log. Start with `agentx --continue` instead: the log is not loaded, the old conversation is.
 33. Type a request that contains a key-shaped text such as `sk-test-1234567890abcdef` (or your real key in the environment, in a scratch folder): the log shows it hidden.
 34. Make a very long conversation (or lower `THRESHOLD_CHARS` in `agentx_dev/cli/compact.py` temporarily in a scratch copy, for example to 3000) and send one more message: a spinner reads "Summarising the conversation", `Summarised N earlier messages to keep the conversation short.` is printed, the last answers still make sense, and the log has an `Earlier conversation summarised` entry.
+35. With both keys set, type `/team-models claude-opus-5-5 gpt-5.5` (or two other models) and ask for a big job: the approval box has a `Helper models:` line naming the chat's model and both, and at least one step is dispatched as `-> coder@<model>: ...` with a matching `done (coder@<model>)` line.
+36. Type `/team-models` with a model whose key is not set (unset `OPENAI_API_KEY` and list `gpt-5.5`): it shows `Not used now: gpt-5.5 (no OPENAI_API_KEY)`. Ask for a big job: `Not used: gpt-5.5 (no OPENAI_API_KEY)` is printed once above the plan and the job runs on the rest.
+37. Type `/team-models clear` and ask for a big job: the approval box has no `Helper models:` line and the helpers are the plain `explorer`, `coder` and `runner`. `/team-models gpt-5.5 --folder` then writes `teamModels` into `.agentx/settings.json` (other keys kept), and `/settings` lists it.

@@ -41,9 +41,9 @@ framework's plan format (approach B below); models from providers other than Ant
 | Piece | Change |
 |---|---|
 | `agentx_dev/cli/settings.py` | `Settings.team_models` and `Settings.team_models_source`; `load_settings` reads and validates `"teamModels"`; `write_project_team_models(cwd, names)` for `--folder`. |
-| `agentx_dev/cli/team.py` | `MAX_TEAM_MODELS = 4`; `HelperModel(name, model, is_chat)`; `build_helpers(models, tools, addendum, describe_error)` builds the roles for each model; `run_team_job(..., helper_models=...)`; descriptions say which model a helper runs on. |
-| `agentx_dev/cli/models.py` | `build_team_models(chat_model, names, env)` returns the usable models and one "Not used" line per skipped name. |
-| `agentx_dev/cli/preview.py` | The `start_team_job` preview gets a `Helper models:` line. |
+| `agentx_dev/cli/team.py` | `build_helpers(model, tools, addendum, describe_error, extra_models=())` builds the three roles for the chat's model and again for each extra model; `run_team_job(..., extra_models=...)`; `PLAIN_MODEL_NOTE` and `EXTRA_MODEL_NOTE` say which model a helper runs on. |
+| `agentx_dev/cli/models.py` | `MAX_TEAM_MODELS = 4`; `HelperModel(name, model)` (a frozen dataclass; it lives here, next to the list helpers, so `settings.py` never imports the Supervisor); `clean_team_models(values)` returns the usable names and the problems; `usable_team_models(chat_label, names, env)` returns the names a job would use and a "Not used" line per skipped name, without building anything; `team_models_line(chat_label, names, env)` is the approval panel's line; `build_team_models(names, env, *, chat_label, factory)` returns the built models and one "Not used" line per skipped name. |
+| `agentx_dev/cli/preview.py` | The `start_team_job` preview gets a `Helper models:` line (`preview_for(..., helper_models=...)`). |
 | `agentx_dev/cli/app.py` | Keeps the session's list; builds the helper models when a job starts; passes them to `run_team_job` and to the preview; shows the "Not used" lines; `/settings` shows the list. |
 | `agentx_dev/cli/commands.py` | `/team-models` (show, set for the session, `--folder`, `clear`). |
 | Docs | Guide "Team jobs" gets "Helper models"; CHANGELOG 3.7.0 line; README sentence; checklist items. |
@@ -54,43 +54,56 @@ framework's plan format (approach B below); models from providers other than Ant
   folder's `.agentx/settings.json`; the folder file wins (the whole list, like `"model"`). A folder file is read
   only after the folder is trusted. The list names the models helpers may use *in addition to* the chat's model,
   which is always available to them.
-- **Validation** (in `load_settings`, reported in the startup problems list, never fatal): a value that is not a
-  list is ignored; entries that are not non-empty text are skipped; entries whose provider is unknown
-  (`provider_for` is None) are skipped; duplicates are dropped (case-insensitive); more than 4 entries keep the
-  first 4. The chat's model is dropped from the list when the job is built (it is already there).
+- **Validation** (`clean_team_models`, called by `load_settings` and by `/team-models`; problems are reported in
+  the startup list or after the command, never fatal): a value that is not a list is ignored with a warning, and
+  the list already in force (the user file's) stays; entries that are not non-empty text are skipped; a name must
+  be a plain token, at most 100 characters with no spaces or control characters, or it is skipped; entries
+  whose provider is unknown (`provider_for` is None: the name must start with `claude`, `gpt` or `o<digit>`) are
+  skipped; repeats (any case) are dropped silently; more than 4 valid entries keep the first 4 (with a warning).
+  A folder file's list replaces the user file's even when it is `[]` or has no valid entry; that turns extra
+  models off for the folder. The chat's model is dropped from the list when the job is built (it is already
+  there), and so are repeats of it; after `/model <name>` the next job works it out again.
 - **Commands:**
-  - `/team-models` shows the list in use, where it came from, and which entries are usable now (key set) and
-    which are not (and why).
+  - `/team-models` shows the list in use, where it came from (a settings file, or `this session`), what a job
+    may use now (the chat's model first, then the entries whose key is set) and a `Not used now: <name> (no
+    <KEY_VARIABLE>)` line for each entry that cannot be used.
   - `/team-models <name> [<name> ...]` sets the list for this session only, validated as above (errors listed,
     valid names kept).
   - `/team-models <name> ... --folder` also saves it in the folder's `.agentx/settings.json`, keeping other keys,
     with the same rules as `/model --folder` (never in the home folder or a drive root, never through a link,
     never over invalid JSON).
-  - `/team-models clear` empties the list for this session (helpers use the chat's model only).
+  - `/team-models clear` empties the list for this session (helpers use the chat's model only);
+    `/team-models clear --folder` also saves an empty list (`[]`) in the folder's file. `--folder` with no names
+    prints the usage.
 - `/settings` shows the list.
 
 ## 6. Building the helpers for a job
 
 - When a job starts, the app builds one model object per listed name with the existing `choose_model` rules, from
   the session's list at that moment (a change applies to the next job).
-- A name whose API key is not set is skipped: `Not used: gpt-5.5 (no OPENAI_API_KEY)`. A name whose model cannot
-  be built is skipped with the error's type only (`Not used: x (could not be set up: ValueError)`), because a
-  constructor's message could echo the key. These lines are shown once, above the job's plan.
+- A name whose API key is not set is skipped: `Not used: gpt-5.5 (no OPENAI_API_KEY)` (the variable is
+  `ANTHROPIC_API_KEY` for a Claude model). A name whose model cannot be built is skipped with the error's type
+  only (`Not used: x (could not be set up: <type>)`), because a constructor's message could echo the key. In the
+  app the type is `ModelError`, since the app's model builder (`choose_model`) wraps every constructor error in
+  it, so the line reads `Not used: gpt-5.5 (could not be set up: ModelError)`. These lines are shown once,
+  above the job's plan.
 - The chat's model is always first and keeps today's helper names: `explorer`, `coder`, `runner`.
 - Each other usable model adds the three roles named `explorer@<model>`, `coder@<model>`, `runner@<model>`, with
   the same tools, step limit, addendum and role text as the plain helpers. At most 4 extra models: at most 15
   helpers.
-- Descriptions the planner reads: the role's description plus one sentence. Plain helpers: "Runs on
-  <chat model> (the chat's model); use it unless a step clearly needs another model." Others: "The same role on
-  <model>. Choose it when that model suits the step better, for example harder reasoning or a large change; its
-  calls cost what that model costs."
+- Descriptions the planner reads: the role's description plus one sentence. Plain helpers (only when at least
+  one extra model is in use; with none, the descriptions are exactly today's): "Runs on <chat model> (the
+  chat's model); use it unless a step clearly needs another model." Others: "The same role on <model>. Choose
+  it when that model suits the step better, for example harder reasoning or a large change; its calls cost what
+  that model costs."
 - The planner (the `Supervisor`'s own model) is always the chat's model.
 
 ## 7. What the user sees
 
 - The approval panel for `start_team_job` gets one line: `Helper models: claude-sonnet-5-5 (chat),
   claude-opus-5-5, gpt-5.5` (only the usable ones; computed without building the models: a listed name counts
-  when its key is set).
+  when its key is set, so a model that later cannot be set up still appears there and gets a "Not used" line when
+  the job starts). The chat's model is shown once; the line appears only when a list is set.
 - The plan list, the `-> coder@claude-opus-5-5: ...` dispatch line, a helper's tool bullet and the approval
   panel's `Helper:` line show the full helper name. The result the chat gets back lists each step's helper name,
   so the conversation, the saved session and the work log show which model did each step.
@@ -117,7 +130,7 @@ and the app tests:
 
 - Settings: a valid list; the 4-entry cap; an unknown provider; duplicates; not a list; non-text entries; the
   folder file beating the user file; the source recorded.
-- Building: no list gives exactly today's three helpers (names, descriptions unchanged except the one sentence);
+- Building: no list gives exactly today's three helpers (names and descriptions unchanged);
   two extra models give nine helpers with the right names, models and tools; a model without a key is skipped and
   noted; a build error shows only its type; the chat's model listed again is not duplicated.
 - A whole job: a scripted planner picks `coder@<model>` and that step runs on that model's own scripted mock (and
