@@ -273,3 +273,73 @@ def test_a_notify_that_raises_does_not_abort_the_job(tmp_path, tools):
                    agent=lambda messages: make_final("found things"))
     result, _ = run(tmp_path, tools, model, notify=broken)
     assert result.startswith("Team job finished (outcome: done).") and "All done." in result
+
+
+from agentx_dev.cli.models import HelperModel
+from tests.conftest import MockModel
+
+
+def labelled(name, script=None):
+    model = MockModel(script=script or (lambda messages: make_final(f"{name} report")))
+    model.model_name = name
+    return model
+
+
+def test_without_extra_models_the_helpers_are_exactly_todays(tools):
+    helpers = build_helpers(router(), tools, "BASE PROMPT")
+    assert list(helpers) == ["explorer", "coder", "runner"]
+    for role in ROLES:
+        assert helpers[role.name][0] == role.description
+
+
+def test_each_extra_model_adds_the_three_roles_named_role_at_model(tools):
+    chat = labelled("claude-sonnet-5-5")
+    opus, gpt = labelled("claude-opus-5-5"), labelled("gpt-5.5")
+    helpers = build_helpers(chat, tools, "BASE PROMPT",
+                            extra_models=[HelperModel("claude-opus-5-5", opus), HelperModel("gpt-5.5", gpt)])
+    assert list(helpers) == ["explorer", "coder", "runner",
+                             "explorer@claude-opus-5-5", "coder@claude-opus-5-5", "runner@claude-opus-5-5",
+                             "explorer@gpt-5.5", "coder@gpt-5.5", "runner@gpt-5.5"]
+    assert helpers["coder"][1].model is chat and helpers["coder@claude-opus-5-5"][1].model is opus
+    assert helpers["runner@gpt-5.5"][1].model is gpt
+    for name, (description, runner) in helpers.items():
+        role = name.split("@")[0]
+        assert {t.name for t in runner.tools} == role_tools(role)
+        assert f"{ROLE_MARK} you are the {role} helper" in runner.system_addendum
+        assert "BASE PROMPT" in runner.system_addendum and runner.max_iterations == 25
+    assert "Runs on claude-sonnet-5-5 (the chat's model)" in helpers["coder"][0]
+    assert "The same role on claude-opus-5-5" in helpers["coder@claude-opus-5-5"][0]
+
+
+def test_the_planner_picks_a_model_and_that_step_runs_on_it(tmp_path, tools):
+    chat_helper_calls = []
+    chat = router(plans=[plan_json(step("s1", "coder@claude-opus-5-5", "make the change"))], synth="All done.",
+                  agent=lambda messages: chat_helper_calls.append(1) or make_final("chat report"))
+    chat.model_name = "claude-sonnet-5-5"
+    opus = labelled("claude-opus-5-5")
+    result, seen = run(tmp_path, tools, chat, extra_models=[HelperModel("claude-opus-5-5", opus)])
+    assert opus.calls and not chat_helper_calls                 # the step ran on opus, not on the chat's model
+    assert ("dispatch", {"agent": "coder@claude-opus-5-5", "query": "make the change"}) in seen
+    assert "1. coder@claude-opus-5-5 - done" in result
+
+
+def test_the_planner_always_runs_on_the_chat_model(tmp_path, tools):
+    chat = router(plans=[plan_json(step("s1", "explorer", "look"))], synth="Done.")
+    opus = labelled("claude-opus-5-5")
+    run(tmp_path, tools, chat, extra_models=[HelperModel("claude-opus-5-5", opus)])
+    assert chat.planner_prompts() and not opus.calls
+    assert "coder@claude-opus-5-5" in chat.planner_prompts()[0]          # the planner sees the extra helpers
+
+
+def test_a_helper_on_an_extra_model_still_goes_through_the_gate(tmp_path):
+    from agentx_dev.cli.approval import Answer
+    asked = []
+    gate = Gate(cwd=tmp_path)
+    gate.ask = lambda request: asked.append(request.tool) or Answer("n", "no")
+    gated = build_tools(tmp_path, [], gate)
+    chat = router(plans=[plan_json(step("s1", "coder@claude-opus-5-5", "write it"))], synth="Done.")
+    replies = [make_react_response("write_file", {"path": "a.txt", "content": "x", "if_exists": "refuse"}),
+               make_final("declined, stopped")]
+    opus = labelled("claude-opus-5-5", script=lambda messages: replies.pop(0))
+    run(tmp_path, gated, chat, extra_models=[HelperModel("claude-opus-5-5", opus)])
+    assert asked == ["write_file"] and not (tmp_path / "a.txt").exists()
