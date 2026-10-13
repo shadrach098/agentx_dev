@@ -125,7 +125,7 @@ tool call:
 - `completion` ends the job and carries the result.
 
 The tool returns one string to the main agent: "Team job finished (outcome: ...)", the numbered steps each marked
-done, failed or skipped, and the final answer. The whole text (outcome line, steps and answer) is cut at
+done, partial (ran out of steps, since 2026-10-13), failed or skipped, and the final answer. The whole text (outcome line, steps and answer) is cut at
 6,000 characters with a marker when longer. The main agent then carries on as with any
 tool result, so the conversation, its autosave and `--continue` / `/resume` already include the job.
 
@@ -180,3 +180,6 @@ job).
 - Revised 2026-10-13 after real use (the user's choice): a turn may start up to 5 team jobs, so a big task
   continues batch after batch; a helper that runs out of steps hands on partial work (its step is not failed and
   the steps after it run); helpers get 100 steps.
+  A partial helper's report lists every file it changed; the result's first line says partial; each result ends
+  with "(team job N of 5 for this message)"; after a job in which no step finished, no further job starts in
+  that message.
