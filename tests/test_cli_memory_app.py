@@ -330,7 +330,7 @@ def test_model_folder_leaves_a_damaged_settings_file_alone(tmp_path):
     (cwd / ".agentx" / "settings.json").write_text("{not json", encoding="utf-8")
     assert app.start() == 0
     assert (cwd / ".agentx" / "settings.json").read_text(encoding="utf-8") == "{not json"
-    assert "not valid JSON" in out.getvalue()
+    assert "not valid JSON" in " ".join(out.getvalue().split())   # the long path may wrap
 
 
 def test_the_log_title_for_init_and_team_commands_is_the_command(tmp_path):

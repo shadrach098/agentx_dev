@@ -65,9 +65,11 @@ def test_a_write_outside_the_sandbox_is_refused_by_the_tool_even_when_approved(t
     project.mkdir()
     outside = tmp_path / "outside.txt"
     tools = tools_by_name(build_tools(project, [], Gate(mode="accept-edits")))
-    # the framework's tool raises PermissionError (its runner turns that into a tool error for the model)
+    # the framework's tool raises PermissionError (its runner turns that into a tool error for the model).
+    # "../outside.txt" leaves the project on every platform; an absolute "/tmp/..." path would not on POSIX,
+    # where a leading "/" means the workspace root (3.6).
     with pytest.raises(PermissionError, match="outside the allowed sandbox"):
-        tools["write_file"].func(path=str(outside), content="x", if_exists="refuse")
+        tools["write_file"].func(path="../outside.txt", content="x", if_exists="refuse")
     assert not outside.exists()
 
 
@@ -322,8 +324,8 @@ def test_a_path_the_tool_rejects_reaches_the_gate_as_written_and_the_tool_still_
     gate = Recording(mode="accept-edits", cwd=project)
     tools = tools_by_name(build_tools(project, [], gate))
     with pytest.raises(PermissionError):
-        tools["write_file"].func(path=str(outside), content="x", if_exists="refuse")
-    assert gate.seen[0][1]["path"] == str(outside) and not outside.exists()
+        tools["write_file"].func(path="../outside.txt", content="x", if_exists="refuse")
+    assert gate.seen[0][1]["path"] == "../outside.txt" and not outside.exists()
 
 
 def test_run_shell_cwd_is_rerooted_like_a_path(tmp_path):
