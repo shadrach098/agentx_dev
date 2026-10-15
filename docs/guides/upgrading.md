@@ -15,7 +15,7 @@ module stays imported until you do, which shows up as errors like
 
 ## Upgrading to 3.7.0
 
-*(Not released yet; the version in `pyproject.toml` is still 3.6.2.)* **Nothing breaks.** The CHANGELOG lists no changed or removed API for 3.7.0. Two bug fixes change behavior for code that already used `Session`, `chat_history` or `edit_file`, in the direction you would want.
+**Nothing breaks.** The CHANGELOG lists no changed or removed API for 3.7.0. Two bug fixes change behavior for code that already used `Session`, `chat_history` or `edit_file`, in the direction you would want.
 
 - **New:** `agentx`, a terminal coding assistant, is a new console script installed with the package. `python -m agentx_dev` starts the same program. You do not need to change any code; if you never run the command, nothing about your install is different except the new dependency below. See [The `agentx` command](cli.md).
 - **New:** `Session.stream(user_input, **kw)` is like `Session.invoke` but yields the runner's events and absorbs the result on the final `completion` event. A turn abandoned before then is not recorded.

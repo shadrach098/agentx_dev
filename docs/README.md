@@ -126,7 +126,7 @@ operational lever (memory, caching, budgets, rate limits).
   parameter support (`adapt_params`); new Claude settings; workspace-
   rooted paths and `run_python` starting in the workspace. See
   [media](media/overview.md) and [upgrading](guides/upgrading.md).
-- **3.7** *(unreleased)* — the `agentx` terminal assistant: approvals and
+- **3.7** — the `agentx` terminal assistant: approvals and
   modes, trusted folders, `AGENTX.md`, saved sessions, team jobs with helpers
   on several models, and a work log and model per folder; plus
   `Session.stream()` and two fixes (conversations after a function-call final

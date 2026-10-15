@@ -4,7 +4,7 @@
 
 It is a front end over `AgentRunner`, `DefaultTools` and `Session`: the chat loop, the approval prompts, the settings file and the slash commands are new; the engine and the tools are the ones you already have.
 
-Version 3.7.0 (unreleased). Not in this version: token-by-token output, a headless mode (`agentx -p "task"`), MCP configuration, custom commands, hooks and a mode that never asks about anything (see [Limits in this version](#limits-in-this-version)).
+Version 3.7.0. Not in this version: token-by-token output, a headless mode (`agentx -p "task"`), MCP configuration, custom commands, hooks and a mode that never asks about anything (see [Limits in this version](#limits-in-this-version)).
 
 ## Quick start
 

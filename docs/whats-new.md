@@ -5,7 +5,7 @@ change in detail is in the [changelog](https://github.com/shadrach098/agentx_dev
 
 ## 3.7 — the `agentx` terminal assistant
 
-*(3.7.0 is not released yet.)* `pip install agentx-dev` now also installs `agentx`, a coding assistant for your
+`pip install agentx-dev` now also installs `agentx`, a coding assistant for your
 terminal, like Claude Code but built on this framework. Run it in a project folder and ask for changes: it reads
 files, edits them and runs commands there, and asks you first. It works with GPT and Claude, from
 `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
