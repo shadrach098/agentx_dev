@@ -212,6 +212,102 @@ It gave up or crashed; the message after the colon says how, and
 `runner.spawned` / `result.spawned` hold its outcome. Give it a clearer
 `task` (it sees nothing else) or different `instructions`.
 
+## The `agentx` command *(3.7)*
+
+**`agentx needs an interactive terminal (headless mode is not available yet).`**
+Standard input or output is not a terminal (a pipe, a CI job, a redirect). There is no
+`agentx -p "task"` in this version; run it in a real terminal. The exit code is 1.
+
+**`Unknown command /team-models. Commands: ...`**
+Your installed `agentx-dev` is older than the feature (`/team`, `/team-models` and `--folder`
+came in later builds of the `agentx` command). Upgrade with `pip install -U agentx-dev` and start
+`agentx` again; `agentx --version` shows what you run. The list in the message is what your
+version has, and `/help` prints it too.
+
+**A line typed with a leading `> ` is sent to the model instead of running**
+The `>` is the prompt `agentx` draws; the docs show it so you can tell what you type from
+what comes back. Type only `/team-models gpt-5.5`, not `> /team-models gpt-5.5`. A line is a
+command only when it starts with `/` and a plain name (`/tmp/build.log fails` is a message).
+An unknown name prints the list instead of reaching the model.
+
+**`No note for gpt-6: the chat model does not know what they are good at.`**
+You listed a model with `/team-models` and let `agentx` write the notes, and the chat model
+does not know that model (a model only knows models older than itself, so a newer one gets no
+note rather than a guess). The list still works. Write the note yourself:
+`/team-models gpt-6="fast reading"`. A note you wrote is never replaced.
+
+**`Could not describe the models (<kind of error>); add notes yourself ...` or `The model's answer about the helper models could not be read ...`**
+The one call that asks the chat model what each model is for failed or answered with something
+unreadable. The list works without notes. Add them by hand, or try `/team-models describe`
+again.
+
+**`Not used: gpt-5.5 (no OPENAI_API_KEY)`**
+A model in `teamModels` has no key in the environment (`ANTHROPIC_API_KEY` for a Claude model).
+It is reported once above the plan and the job runs on the rest; the chat's model is always
+there. Set the key and start `agentx` again, or `/team-models clear`. `/team-models` shows the
+same thing as `Not used now: ...`.
+
+**`Not used: claude-opus-5-5 (No module named 'anthropic' - install agentx-dev[anthropic])` or `Not used: gpt-5.5 (could not be set up: ValueError)`**
+The key is set but the model could not be built. For a Claude model with a GPT chat the usual
+cause is the optional package: `pip install "agentx-dev[anthropic]"`. For any other failure only
+the kind of error is shown, because the error's own text could contain the key; check the model
+name and the key.
+
+**`Not used: <name> (only 4 extra models)`**
+At most 4 extra models are used (the chat's own model does not count). Remove one from the list.
+
+**`'teamModels': cannot tell which provider runs <name> ...; skipped`**
+A model name must start with `claude`, `gpt`, or `o` and a digit (`o3`), and have no spaces or
+control characters. The warning is shown at startup (or after `/team-models`) and the rest of the
+list is kept.
+
+**`"model": "(no model)"` in a settings file, with a warning to delete that line**
+An earlier build of this release wrote the status bar's placeholder into
+`~/.agentx/settings.json`. It is ignored and the file is not changed; delete the line by hand.
+
+**A team step shows `partial (ran out of steps)`**
+The helper used its 100 model steps before finishing. Its work is kept and handed on, with every
+file it changed listed, and the steps after it still run. The agent will normally start the next
+batch itself. If it does not, say "continue", or split the task. The outcome line of the result
+reads `partial - 1 step ran out of steps; the task may be unfinished`.
+
+**`Refused: 5 team jobs already ran for this message`**
+One message may run at most 5 team jobs. The agent reports what is done and what remains; your
+next message ("continue with the rest") starts a fresh count.
+
+**`Refused: no step of the last team job finished, so another job would likely fail the same way`**
+The last batch got nowhere (every step failed or was skipped), so the agent stops instead of
+spending more. Read the `failed (...)` lines for the cause: a deny rule, a declined edit, a
+command that cannot run, a missing model key. Fix it and ask again.
+
+**A team job is refused with no prompt**
+A deny rule `start_team_job:*` is in your settings or the project's, or the mode is `plan`
+(reads only). `/settings` shows the rules in force.
+
+**`Honour these project rules? [y/N]` at startup**
+The repository you opened has a `.agentx/settings.json` with allow rules (for example
+`write_file`). They are listed and kept only if you answer `y` or `yes`; anything else drops
+them for the session. Its deny rules are always kept.
+
+**`command too long to review` / a preview "declined for you"**
+A command or code over 20,000 characters, or a file over 1,000,000 bytes, is declined rather than
+approved on a partial view. Ask the model for a smaller step, or for the part of the file it needs.
+
+**`No folder settings file is kept for your home folder or a drive root.`**
+`/model <name> --folder` and `/team-models ... --folder` write nothing in your home folder or a
+drive root, which are not projects. The change still applies to the session. Start `agentx` in a
+project folder, or put the setting in `~/.agentx/settings.json`.
+
+**`Could not write the work log in .agentx/log.md; carrying on without it.`**
+The folder is read-only, the disk is full, or `.agentx` or the log file is a link (a symlink or
+junction) or leads outside the folder, which is refused on purpose. The chat carries on; fix the
+folder or remove the link.
+
+**`The conversation is getting long, but it could not be summarised right now; it will be tried again later.`**
+The summary call failed, so nothing was removed. It is tried again after 10 more messages, or in
+a new conversation (`/clear`). If one huge file read is the cause (there is no size cap on
+`read_path`), summarising cannot help: `/clear` and ask for the part of the file you need.
+
 ## Tool errors
 
 **Model calls the wrong tool**

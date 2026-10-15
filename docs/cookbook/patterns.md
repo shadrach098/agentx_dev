@@ -1177,3 +1177,203 @@ Things to know:
 - **Cost.** Each lookup is one embedding request plus a search (planning, each step, each exact-answer check). `memory_top_k=0` turns recall off; writes and exact-answer reuse still run.
 - **`delegate` helpers and synthesis get no memory block.** A `delegate` helper sees only the task its parent passes.
 - See [Long-term memory](../guides/sub-agents.md#long-term-memory) for the arguments, the block format and the events.
+
+---
+
+## 34. Use the `agentx` assistant on a project *(3.7)*
+
+You want a coding assistant in your terminal that reads your project, edits files and runs the tests, but asks before it changes anything. `pip install agentx-dev` installs the `agentx` command; run it in the project folder.
+
+```bash
+pip install agentx-dev            # Claude also needs: pip install "agentx-dev[anthropic]"
+export ANTHROPIC_API_KEY=sk-ant-...      # or OPENAI_API_KEY
+cd my-project
+agentx
+```
+
+The first start in a folder asks whether you trust it (`1. Yes, I trust this folder` / `2. No, exit`). Nothing from the folder is read until you say yes, and the answer is kept in `~/.agentx/trusted.json`.
+
+Then type requests. Reads run on their own; an edit, a command or a delete shows a box with a diff or the full command and asks:
+
+```text
+Do you want to proceed?
+> 1. Yes
+  2. Yes, and don't ask again: all edits this session
+  3. No, and tell the model what to do instead
+```
+
+Choose how much it asks with a mode: `agentx --mode accept-edits`, `/mode plan` (reads only, the model proposes a plan instead) or Shift+Tab, which cycles `default`, `accept-edits` and `plan`. `auto` (edits, shell and Python without asking) is only entered on purpose, with `--mode auto` or `/mode auto`.
+
+Teach it your project once. `/init` asks the model to look around and draft an `AGENTX.md` (you see the file as a diff before it is written):
+
+```text
+> /init
+```
+
+Come back to a conversation later:
+
+```bash
+agentx --continue          # the latest conversation for this folder
+agentx --resume            # pick from a numbered list
+```
+
+or, inside a session, `/sessions` to list and `/resume` to load one.
+
+Things to know:
+
+- **Protected files.** Writes, edits, deletes and moves of `.git`, of `.agentx/*` and of git and shell config files in your home folder are refused in every mode, `auto` included.
+- **Shell and Python are not sandboxed.** They ask, and what they can do is what your account can. Keep secrets out of the project folder and read each command before you approve it.
+- **`a` is narrow.** It remembers all edits, or a plain command prefix such as `pytest`, for the conversation; never `run_python`, delete, move, interpreters or compound commands. `/clear` forgets it.
+- **Session files hold file contents.** Conversations in `~/.agentx/sessions/` include what the model read and the output of commands, unencrypted.
+- **A cloned repository's `.agentx/settings.json` is untrusted.** It cannot turn on `accept-edits` or `auto`, and its allow rules need your yes at startup.
+- See [The `agentx` command](../guides/cli.md) for the settings, rules and limits.
+
+---
+
+## 35. Hand a big job to a team of helpers *(3.7)*
+
+"Survey this project, add a docstring to each module and run the tests" is too much for one conversation to keep straight. In `agentx` the model can hand it to a team: a supervisor plans up to six steps and three helpers carry them out one at a time (`explorer` reads, `coder` edits, `runner` runs commands).
+
+Usually you just ask, and the agent decides. To ask for a team on purpose:
+
+```text
+> /team survey this project, add a docstring to each module, then run the tests
+```
+
+You get an approval prompt with the task, the reason, the helpers and a warning that a team job makes many model calls. In `default` and `accept-edits` mode it asks every time and never offers "don't ask again". Approve it and you see:
+
+```text
+Team plan:
+  1. explorer: list the modules
+  2. coder: add the docstrings
+  3. runner: run pytest
+-> explorer: list the modules
+done (explorer): ...
+-> coder: add the docstrings
+● [coder] edit_file src/app.py        <- each edit still asks, with "Helper: coder" in the box
+done (coder): ...
+```
+
+(Illustrative: the steps are whatever the supervisor plans for your task.) Every helper call goes through the same gate as the chat: the modes, your deny rules, the protected files, the previews.
+
+A big task often does not fit in one job. A helper may take up to 100 model steps per plan step; one that runs out does not fail its step but hands on its partial work (`partial (ran out of steps)`, with every file it changed listed), and the steps after it still run. When a job ends partial and the task is not finished, the agent starts the next batch itself, up to **5 team jobs per message**. In `default` and `accept-edits` mode each job is still asked about; in `auto` mode they just run. A sixth is refused (`Refused: 5 team jobs already ran for this message`) and the agent reports what is done and what remains; your next message can start more. If a batch finished no step at all, the agent stops there instead of repeating it.
+
+Turn it off with a deny rule in your settings:
+
+```json
+{ "permissions": { "deny": ["start_team_job:*"] } }
+```
+
+Things to know:
+
+- **Cost.** A team job makes many model calls. In the worst case one message is 5 jobs of up to 6 steps with up to 100 calls each, plus planning, so a single message on a big task can cost far more than a chat answer. Stay out of `auto` mode if that matters.
+- **`/team` is a message, not a command to the program.** The model may still decline, and then nothing runs. With no task, `/team` prints the usage.
+- **Ctrl+C** at an approval prompt declines that one call. Anywhere else during a job it stops the job and aborts the turn; changes already made stay on disk.
+- **The result stays in the conversation,** so "now fix the second item" works, and `--continue` brings it back.
+- **No memory between jobs.** Each step is a fresh helper; the supervisor passes earlier results along.
+- See [Team jobs](../guides/cli.md#team-jobs).
+
+---
+
+## 36. Run team helpers on several models *(3.7)*
+
+By default every helper and the planner use the chat's model. If you have both keys, you can let the supervisor send a hard coding step to a stronger model and a read-through to a cheaper one.
+
+List the extra models, with a note on what each is for:
+
+```text
+> /team-models gpt-6.1-sol="hard coding" gpt-6-luna="fast reading" claude-opus-5-5
+```
+
+That lasts for the session. To keep it for this folder, add `--folder`; it is saved in `.agentx/settings.json` and your other keys stay:
+
+```text
+> /team-models gpt-6.1-sol="hard coding" gpt-5.5 --folder
+```
+
+or put it in a settings file yourself (a folder's list replaces yours, it is not joined):
+
+```json
+{
+  "teamModels": [
+    {"model": "gpt-6.1-sol", "use": "hard coding and bug fixing"},
+    "gpt-6-luna=fast reading and search",
+    "gpt-5.5"
+  ]
+}
+```
+
+Now the approval box has a `Helper models:` line (`claude-sonnet-5-5 (chat), claude-opus-5-5, gpt-5.5`), and every helper names its model: `-> coder@claude-opus-5-5: ...`, `[runner@claude-sonnet-5-5]`, `done (coder@claude-opus-5-5)`. The chat's own model is one of the choices, listed alike, so none is favoured.
+
+You do not have to write notes. With none, `agentx` asks the chat model once what each model is good for and keeps the answers as `auto:` notes:
+
+```text
+> /team-models gpt-5.5 claude-opus-5-5
+> /team-models                    # shows gpt-5.5 (auto: fast, cheaper coding), ...
+> /team-models describe           # ask again, replacing only auto: notes
+```
+
+A note you wrote yourself is never replaced. Edit an auto note into your own words to keep it. `/team-models clear` empties the list (`clear --folder` also saves the empty list).
+
+If a repository's own `.agentx/settings.json` carries a `teamModels` list, you are told at startup, before anything runs:
+
+```text
+This project's settings let team helpers also use: gpt-5.5 (fast reading) (from <path>). /team-models clear turns that off for this session.
+```
+
+Read it: those models' providers will receive the helper prompts, which include your `AGENTX.md` files and every file a helper reads in that step.
+
+Things to know:
+
+- **Keys.** A model whose key is not set is reported once above the plan (`Not used: gpt-5.5 (no OPENAI_API_KEY)`) and the job runs on the rest. The chat's model is always there.
+- **Names.** Start with `claude`, `gpt`, or `o` and a digit. At most 4 extra models; the chat's own model does not count against that, so list it only to give it a note.
+- **Notes are the chat model's opinion,** not the provider's. A model can only know older models: a newer one gets no note (`No note for ...`) rather than a guess, so write one yourself.
+- **The planner always runs on the chat's model;** only helpers move. Each step costs what its model costs.
+- **The supervisor may still choose the chat model for every step** when it judges that best. A note on each model gives it the most to go on.
+- See [Helper models](../guides/cli.md#helper-models).
+
+---
+
+## 37. Keep a model, a log and a short history per folder *(3.7)*
+
+A project should not start from nothing every time. In a folder you trust, `agentx` keeps its memory in `.agentx/` and needs no setting for it. (None of it is kept for your home folder or a drive root.)
+
+**A model for each folder.** The first time you say yes to the trust question, `agentx` writes `.agentx/settings.json` with the model in use. Change it later:
+
+```text
+> /model gpt-4o-mini --folder
+Updated .../.agentx/settings.json with model gpt-4o-mini.
+> /model claude-sonnet-4-6          # this session only
+```
+
+The order is `--model`, then the folder's file, then your `~/.agentx/settings.json`, then the default your API key decides.
+
+**The work log.** After each finished turn the app (not the model) adds an entry to `.agentx/log.md`:
+
+```text
+## 2026-10-12 14:03 - Add a docstring to each module
+Changed: src/a.py, src/b.py
+Ran: pytest -q
+Answer: I added docstrings to 6 modules and the tests pass.
+```
+
+It is plain markdown you can read, edit or delete. Keys are hidden before anything is written.
+
+**Starting from it.** A fresh conversation (a plain `agentx`, or `/clear`) reads the newest entries and adds them to the model's instructions, so this works after a restart:
+
+```text
+> what did we do here last time?
+```
+
+Loading a saved conversation (`--continue`, `--resume`, `/resume`) brings it back as it was and does not add the log.
+
+**Long conversations.** Every turn sends the whole history again. Over about 150,000 characters, `agentx` replaces the older part with one summary written by the model in use, keeping your last 6 messages and everything after them word for word, and prints `Summarised N earlier messages to keep the conversation short.` There is no `/compact`; it happens by itself.
+
+Things to know:
+
+- **The log goes into git unless you stop it.** Add `.agentx/log.md` and `.agentx/log-older.md` to `.gitignore` if it should stay private; `agentx` never edits `.gitignore`. `.agentx/settings.json` can be committed.
+- **A log from a cloned repository is data, not instructions.** The block is marked as possibly out of date and cannot override the approval prompts.
+- **The log rotates.** Above 200 KB the oldest half moves to `log-older.md`, which is never loaded.
+- **Summaries are model output.** If a summary call fails nothing is removed; you see a notice and it is tried again later.
+- **Team jobs are one log line** (`Team job: <task> (<outcome>)`); the files the helpers changed are not listed.
+- See [Project memory](../guides/cli.md#project-memory).

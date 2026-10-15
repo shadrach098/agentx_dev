@@ -437,6 +437,42 @@ result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"
           </a>`).join("")}
       </div>
 
+      <h2 class="section-title">What's new in 3.7 (unreleased)</h2>
+      <ul class="whats-new-list">
+        <li>
+          <strong>The <code>agentx</code> terminal assistant</strong>
+          <div class="desc"><code>pip install agentx-dev</code> now also installs <code>agentx</code>: run it in a project folder and ask for changes. It works with GPT and Claude, and asks before it edits a file, runs a command, or deletes or moves anything. <a href="#guides/cli">Guide</a>.</div>
+        </li>
+        <li>
+          <strong>Approvals, modes &amp; trust</strong>
+          <div class="desc">Modes <code>default</code>, <code>accept-edits</code>, <code>plan</code> and <code>auto</code> (on purpose only). The first start in a folder asks whether you trust it. <code>.git</code>, <code>.agentx</code> and shell/git config files are never written. <code>AGENTX.md</code> gives the model your project's instructions (<code>/init</code> drafts one).</div>
+        </li>
+        <li>
+          <strong>Sessions &amp; slash commands</strong>
+          <div class="desc">Conversations autosave; <code>--continue</code>, <code>--resume</code> and <code>/resume</code> pick one up. <code>/help</code>, <code>/model</code>, <code>/mode</code>, <code>/settings</code>, <code>/init</code>, <code>/team</code>, <code>/team-models</code> and more.</div>
+        </li>
+        <li>
+          <strong>Team jobs</strong>
+          <div class="desc">For a big job the agent calls <code>start_team_job</code> (or you type <code>/team &lt;task&gt;</code>): a supervisor plans up to six steps for three helpers (explorer, coder, runner), through the same approval gate. Up to 5 jobs per message; a helper that runs out of steps hands on partial work.</div>
+        </li>
+        <li>
+          <strong>Helper models</strong>
+          <div class="desc"><code>teamModels</code> in the settings, or <code>/team-models</code>, lets the supervisor pick the model for each step (<code>coder@claude-opus-5-5</code>), mixing Claude and GPT. Notes say what each model is for; the chat model writes <code>auto:</code> notes when you give none.</div>
+        </li>
+        <li>
+          <strong>Project memory</strong>
+          <div class="desc">A model for each folder (<code>/model &lt;name&gt; --folder</code>), a work log in <code>.agentx/log.md</code> that a fresh conversation starts from, and automatic summaries of very long conversations.</div>
+        </li>
+        <li>
+          <strong>Framework fixes</strong>
+          <div class="desc"><code>Session.stream()</code>; a conversation can continue after a final answer given as a function call; <code>edit_file</code> keeps a file's line endings. New base dependency: <code>prompt_toolkit&gt;=3.0</code>.</div>
+        </li>
+        <li>
+          <strong>Upgrading</strong>
+          <div class="desc">Nothing breaks. See <a href="#guides/upgrading">Upgrading</a>.</div>
+        </li>
+      </ul>
+
       <h2 class="section-title">What's new in 3.6</h2>
       <ul class="whats-new-list">
         <li>

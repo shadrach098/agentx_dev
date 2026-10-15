@@ -13,6 +13,31 @@ module stays imported until you do, which shows up as errors like
 
 ---
 
+## Upgrading to 3.7.0
+
+*(Not released yet; the version in `pyproject.toml` is still 3.6.2.)* **Nothing breaks.** The CHANGELOG lists no changed or removed API for 3.7.0. Two bug fixes change behavior for code that already used `Session`, `chat_history` or `edit_file`, in the direction you would want.
+
+- **New:** `agentx`, a terminal coding assistant, is a new console script installed with the package. `python -m agentx_dev` starts the same program. You do not need to change any code; if you never run the command, nothing about your install is different except the new dependency below. See [The `agentx` command](cli.md).
+- **New:** `Session.stream(user_input, **kw)` is like `Session.invoke` but yields the runner's events and absorbs the result on the final `completion` event. A turn abandoned before then is not recorded.
+- **New dependency:** `prompt_toolkit>=3.0` (the input line of `agentx`) is now a base dependency. `pip install -U agentx-dev` installs it; `rich` was already one. Claude still needs `pip install "agentx-dev[anthropic]"`.
+- **Fixed, behavior change:** a conversation can continue after a run that ended on a final answer given as a function call (`React_` or `respond`). Before, the run ended without a result for that call and the next turn was rejected by OpenAI ("An assistant message with 'tool_calls' must be followed by tool messages"). The history a run returns now closes the call, and a history saved by an older version is repaired when it is resumed. This affects `Session` and `chat_history` users; the closing entry is a `tool` message whose content is `(final answer delivered)`, so code that reads the last entries of `result.history` may now see it.
+- **Fixed, behavior change:** `edit_file` no longer rewrites a file's line endings. It used to turn an LF file into CRLF on Windows and a CRLF file into LF on Linux and macOS, changing every line. It now keeps every byte outside the edit, and a model's bare newlines in `find` and `replace` are put in the file's own ending, so CRLF files can be edited across lines. If you had worked around the old behavior (for example by normalising endings after an edit), you can drop the workaround.
+
+If you want to try `agentx`:
+
+```bash
+pip install -U agentx-dev
+export ANTHROPIC_API_KEY=sk-ant-...      # or OPENAI_API_KEY
+cd my-project
+agentx
+```
+
+The first start in a folder asks whether you trust it. Nothing from the folder is read until you say yes. A cloned repository's `.agentx/settings.json` is untrusted: it cannot turn on `accept-edits` or `auto`, its extra folders outside the project are ignored, and its allow rules are listed and honoured only if you answer yes. Team helper models set by a project file (`teamModels`) are announced at startup. See [Project settings are untrusted](cli.md#project-settings-are-untrusted).
+
+If you work in a notebook, restart the kernel after upgrading, as always.
+
+---
+
 ## Upgrading to 3.6.0
 
 **Nothing breaks unless you imported `SUPERVISOR_SPAWN_INSTRUCTION` or relied on spawned agents staying on the supervisor.** Sub-agents are opt-in, with five behavior changes (the **Changed** bullets below) for code that already used spawning or a persistent supervisor.

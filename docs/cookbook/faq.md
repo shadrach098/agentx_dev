@@ -144,6 +144,80 @@ input) cannot add to it. Tune `memory_min_score` to the embeddings (about
 0.5 for `OpenAIEmbeddings`, about 0.1 for `HashEmbeddings`). See
 [pattern 33](patterns.md).
 
+## How do I stop `agentx` asking before every edit? *(3.7)*
+
+Pick a mode. `agentx --mode accept-edits` (or `/mode accept-edits`, or
+Shift+Tab) runs edits without asking; commands and delete / move still
+ask. Answering `a` ("don't ask again") at an edit prompt switches to the
+same mode for the rest of the conversation. `/mode auto` also runs shell
+commands and Python without asking, and team jobs; delete, move and tools
+it does not know still ask. `auto` is only entered on purpose (never from
+Shift+Tab, an `a` answer or a project's settings file), so use it in
+folders you trust. To skip the prompt for one kind of command, add an
+allow rule to `~/.agentx/settings.json`:
+`{"permissions": {"allow": ["run_shell:pytest*", "run_shell:git status*"]}}`.
+Compound commands (`&&`, pipes, redirects) are never covered by an allow
+rule, and `.git` and `.agentx` are refused in every mode. See
+[pattern 34](patterns.md) and [Approvals](../guides/cli.md#approvals).
+
+## How do I make team helpers use other models? *(3.7)*
+
+List them: `/team-models gpt-6.1-sol="hard coding" gpt-5.5` for this
+session, add `--folder` to keep it for the folder, or set `teamModels` in a
+settings file. The supervisor then picks the model for each step, and
+Claude and GPT can be mixed when both keys are set. The planner stays on
+the chat's model. See [pattern 36](patterns.md) and
+[Helper models](../guides/cli.md#helper-models).
+
+## Why does the supervisor keep picking my chat model? *(3.7)*
+
+It reads one note per model about what the model is for, and without
+notes it has little to choose with. Give each model a note
+(`gpt-6.1-sol="hard coding"`), or let `agentx` ask the chat model once;
+the answers show as `auto:` notes in `/team-models`, and
+`/team-models describe` asks again (it replaces only `auto:` notes, never
+ones you wrote). A model can only know models older than itself, so a
+model it does not know gets no note (`No note for ...: the chat model does
+not know what they are good at.`): write that note yourself. The notes are
+the chat model's opinion, not the provider's. The supervisor may also just
+judge the chat model best for the job. A model whose key is not set is not
+used at all (`Not used: gpt-5.5 (no OPENAI_API_KEY)`). See
+[pattern 36](patterns.md).
+
+## Why did my team job stop before finishing? *(3.7)*
+
+Four things end a job early:
+
+- **A helper ran out of steps** (100 model steps for one plan step). The
+  step is marked `partial (ran out of steps)` with the files it changed
+  listed, the steps after it still run, and the agent starts the next batch.
+- **Five jobs ran for one message.** The sixth is refused (`Refused: 5
+  team jobs already ran for this message`); the agent says what is done and
+  what remains, and your next message ("continue") can start more.
+- **The last job finished no step** (`Refused: no step of the last team
+  job finished`): another batch would likely fail the same way, so the
+  agent stops and reports. Look at the `failed (...)` lines, fix the cause
+  (a missing key, a deny rule, a command that cannot run) and ask again.
+- **You declined the hand-off** or pressed Ctrl+C (which stops the job and
+  keeps the changes already made).
+
+A job is also at most 6 plan steps. A failed step is not retried and the
+steps that depend on it are skipped. See [pattern 35](patterns.md) and
+[Team jobs](../guides/cli.md#team-jobs).
+
+## Where does `agentx` keep its memory, and does it go into git? *(3.7)*
+
+In the folder, under `.agentx/`: `settings.json` (the folder's model),
+`log.md` (the work log) and `log-older.md` (the oldest entries once the log
+passes 200 KB). Conversations are in your home folder, in
+`~/.agentx/sessions/`. A commit would include `.agentx/` files, so add
+`.agentx/log.md` and `.agentx/log-older.md` to `.gitignore` if the log
+should stay private (`agentx` never edits `.gitignore`). `settings.json`
+can be committed, but remember a cloned repository's file is untrusted:
+it cannot switch on `accept-edits` or `auto`. Nothing is kept for your home
+folder or a drive root. See [pattern 37](patterns.md) and
+[Project memory](../guides/cli.md#project-memory).
+
 ## When should I use ReAct vs. function-calling vs. native binding?
 
 | Mode | When |
