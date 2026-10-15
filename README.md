@@ -9,6 +9,47 @@ you can paste and run.
 
 ---
 
+## What's new in 3.7 — the `agentx` terminal assistant
+
+`pip install agentx-dev` now also installs `agentx`, a coding assistant for your
+terminal, like Claude Code but built on this framework. Run it in a project folder and ask for changes: it reads
+files, edits them and runs commands there, and asks you first. It works with GPT and Claude, from
+`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
+
+```bash
+pip install agentx-dev          # Claude also needs: pip install "agentx-dev[anthropic]"
+export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY
+cd my-project
+agentx                          # or: python -m agentx_dev
+```
+
+| Feature | What you get |
+|---|---|
+| **Approvals and modes** | Reads run; edits, commands, delete and move ask first, with a diff or the full command shown. Modes `default`, `accept-edits`, `plan` and `auto` (set on purpose only, never from Shift+Tab or a project file). `a` ("don't ask again") remembers all edits, or a plain command prefix, for the conversation. |
+| **Trust a folder** | The first start in a folder asks "Accessing workspace ... Yes / No". Nothing from the folder (`AGENTX.md`, its settings) is read before you say yes. `.git`, `.agentx` and shell/git config files are never written, in any mode. |
+| **`AGENTX.md`** | Instructions for the model (how to run the tests, the layout, conventions), read from your home folder and from the working folder up. `/init` drafts one. |
+| **Sessions** | Conversations autosave. `--continue`, `--resume [ID]` and `/resume` pick one up again. |
+| **Slash commands** | `/help`, `/clear`, `/model`, `/mode`, `/settings`, `/resume`, `/sessions`, `/init`, `/team`, `/team-models`, `/exit`. Typing `/` shows the list. |
+| **Team jobs** | For a big job the agent calls `start_team_job` (or you type `/team <task>`): a supervisor plans up to six steps and three helpers (explorer reads, coder edits, runner runs commands) carry them out through the same approval gate. One message may run up to 5 team jobs, so a big task continues batch after batch. A helper that runs out of its 100 steps hands on its partial work. |
+| **Helper models** | `teamModels` in the settings, or `/team-models gpt-6.1-sol="hard coding" gpt-5.5`, lets the supervisor choose per step which model a helper runs on (`coder@claude-opus-5-5`); Claude and GPT can be mixed. Each model can carry a note on what it is for; without one, the chat model writes an `auto:` note. |
+| **Project memory** | Each folder keeps its own model (`/model <name> --folder`) and a work log in `.agentx/log.md`. A fresh conversation starts from the newest log entries, and a very long conversation is summarised before it overflows. |
+
+[Guide](docs/guides/cli.md). Not in this version: token-by-token output, a headless mode (`agentx -p`), MCP configuration, custom commands and hooks.
+
+Framework changes in 3.7.0 that help anyone, not only the command:
+
+- **`Session.stream(user_input, **kw)`** is like `Session.invoke` but yields the runner's events and records the result on the final `completion` event.
+- **Conversations continue after a final answer given as a function call** (`React_` / `respond`). Before, the next turn was rejected by OpenAI ("An assistant message with 'tool_calls' must be followed by tool messages"). The history a run returns now closes that call, and an older saved history is repaired when resumed.
+- **`edit_file` keeps a file's line endings.** It used to rewrite them (LF to CRLF on Windows, CRLF to LF elsewhere); now every byte outside the edit stays, and a model's bare newlines in `find` / `replace` are put in the file's own ending.
+- **New base dependency:** `prompt_toolkit>=3.0`.
+
+### Upgrade notes
+
+- Nothing breaks. `agentx` is a new console script installed with the package; your code is not affected.
+- The two fixes above change behaviour for `Session`, `chat_history` and `edit_file` users (for the better); the new dependency is installed by `pip install -U agentx-dev`.
+
+Full notes: [docs/guides/upgrading.md](docs/guides/upgrading.md).
+
 ## What's new in 3.6 — sub-agents
 
 A Supervisor can now create its own helpers, like Claude Code's Task tool.
@@ -34,7 +75,7 @@ print(result.spawned)       # the helpers it created, with outcomes
 | **One ceiling** | `SpawnConfig(capabilities=..., tools=..., max_spawns=..., max_depth=...)` bounds every helper. Over-asks are clipped, not fatal. |
 | **Sync and async** | `AsyncSupervisor` takes `spawn_config=` too; spawned steps run in parallel. |
 | **Persistent mode** | On by default with a safe ceiling (web plus read-only files); helpers share the run deadline; recovery plans can spawn a replacement. |
-| **Ask the operator** | `Supervisor(ask_user=True)` lets the planner ask for facts the task leaves out ("which three competitors?") and gives every agent an `ask_user` tool. Works in a notebook's input box and in terminals; `ask_user=my_function` routes questions through your own channel. |
+| **Ask the operator** | `Supervisor(ask_user=True)` lets the planner ask for facts the task leaves out ("which three competitors?") and gives every agent an `ask_user` tool. Works in a notebook's input box and in terminals; `ask_user=my_function` routes questions through your own channel. `ask_when_done=True` makes the Supervisor ask what to do next when it finishes, and `follow_up=True` keeps going on your replies ([details](docs/guides/sub-agents.md#asking-when-the-work-is-done)). |
 | **Long-term memory** | `Supervisor(memory=store)` (any vector store: `VectorStore`, Chroma, Qdrant, pgvector) gives the planner and every step the few relevant stored items, saves operator answers and finished results, and answers an exact repeat of a question from memory instead of asking again. |
 
 [Guide](docs/guides/sub-agents.md). To let the Supervisor ask you for missing facts, see [Asking the operator](docs/guides/sub-agents.md#asking-the-operator). To keep what it learns between runs, see [Long-term memory](docs/guides/sub-agents.md#long-term-memory).
@@ -425,13 +466,13 @@ Add optional providers / integrations as extras:
 pip install agentx-dev[anthropic]      # enables agentx_dev.Claude
 pip install agentx-dev[mcp]            # enables MCPClient (stdio / sse / http)
 pip install agentx-dev[otel]           # OpenTelemetry observability adapter
-pip install agentx-dev[chroma]         # ChromaVectorStore (also [qdrant], [pgvector])
 pip install agentx-dev[all]            # everything above
 ```
 
-A plain `pip install agentx-dev` does not install these on purpose (most users need one provider
-and one store). If a class says it needs a package, install the extra it names, with the same
-Python that runs your code: `python -m pip install "agentx-dev[chroma]"`.
+The vector-store clients (`chromadb`, `qdrant-client`, `psycopg`) install with the base package, so
+`ChromaVectorStore`, `QdrantVectorStore` and `PgVectorStore` work right away. (`[chroma]`, `[qdrant]`
+and `[pgvector]` still exist as aliases.) If a class says a package is missing, install it into the
+same Python that runs your code: `python -m pip install agentx-dev`.
 
 Requires Python **3.10+** (the codebase uses PEP 604 union types).
 
@@ -444,6 +485,25 @@ export ANTHROPIC_API_KEY=sk-ant-...      # if you installed [anthropic]
 $env:OPENAI_API_KEY = "sk-..."           # Windows PowerShell
 $env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
+
+### The `agentx` command
+
+`pip install agentx-dev` also gives you `agentx`, a terminal coding assistant: run it in a project folder and
+ask for changes. It reads files, edits them and runs commands there, and asks you before it edits a file, runs
+a command, or deletes or moves anything. Conversations are saved and can be resumed. It has no headless mode
+and does not stream the answer token by token yet. For big jobs it can hand the work to a team of helpers (with
+your approval, unless you run in auto mode or have allowed it with your own rule), and those helpers can run on
+other models you allow (`teamModels` in the settings, or `/team-models`). It also keeps a work log and a
+model for each folder (in `.agentx/`) and summarises long conversations; see the guide.
+
+```bash
+pip install agentx-dev          # Claude also needs: pip install "agentx-dev[anthropic]"
+export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY
+agentx                          # in your project folder
+```
+
+See the [agentx command guide](docs/guides/cli.md) for the approval modes, settings and rules, the protections
+that are always on, and what it does not cover.
 
 ---
 

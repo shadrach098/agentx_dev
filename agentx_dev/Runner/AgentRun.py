@@ -539,6 +539,36 @@ _FORMAT_NAMES = frozenset({"React_", "StandardParser", "ChainOfThought", "ZeroSh
                            "FewShot", "Instruction_Tuned_"})
 
 
+def _close_open_tool_calls(history: List[Dict[str, Any]]) -> None:
+    """Answer a trailing assistant ``tool_calls`` message that has no tool message after it.
+
+    With function calling the model delivers its final answer as a call to the response-format function, and
+    the run ends without a tool result for it. A provider rejects the next request when that history is
+    resumed ("An assistant message with 'tool_calls' must be followed by tool messages"), so the history a
+    run returns always closes the call."""
+    last = None
+    for index in range(len(history) - 1, -1, -1):
+        role = history[index].get("role")
+        if role == "assistant":
+            last = index
+            break
+        if role not in ("tool", "function"):
+            return
+    if last is None:
+        return
+    calls = history[last].get("tool_calls") or []
+    answered = {m.get("tool_call_id") for m in history[last + 1:]}
+    for call in calls:
+        call_id = call.get("id")
+        if call_id and call_id not in answered:
+            history.append({
+                "role": "tool",
+                "name": (call.get("function") or {}).get("name", ""),
+                "tool_call_id": call_id,
+                "content": "(final answer delivered)",
+            })
+
+
 class ToolRegistry:
     """Owns tool storage, name lookup, and prompt-block generation.
 
@@ -2032,6 +2062,8 @@ class AgentRunner(PersistenceMixin):
                 # a bare empty message is noise either way.
                 if msg['content'] or msg.get('tool_calls') or role == 'tool':
                     working_history.append(msg)
+            # A history saved by an older version can end with an unanswered final call.
+            _close_open_tool_calls(working_history)
 
         # Text-only turns stay a plain string; with media the turn becomes
         # [text, image, ...] parts, rendered per provider by the model.
@@ -2763,6 +2795,8 @@ class AgentRunner(PersistenceMixin):
             print(f"\x1B[32m[final] {final_answer}\x1B[0m")
         else:
             logger.info(f"final_answer: {final_answer}")
+
+        _close_open_tool_calls(working_history)
 
         if self.auto_memory and self._memory:
             self._memory.add_message("user", user_input)

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import contextmanager
+from contextlib import aclosing, closing, contextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union, Any
 
@@ -37,8 +37,8 @@ from agentx_dev.SubAgents import (   # noqa: F401  (SpawnConfig/SpawnRequest are
     spec_from_legacy_spawn,
 )
 from agentx_dev.Operator import (
-    NO_ANSWER_PLAN_NOTE, PLANNER_SOURCE, OperatorChannel, ask_instruction, attach_ask_user,
-    parse_ask_request, validate_ask_user,
+    ASK_TOOL_NAME, MAX_ANSWER_CHARS, NO_ANSWER_PLAN_NOTE, PLANNER_SOURCE, OperatorChannel, ask_instruction,
+    attach_ask_user, checkpoint_text, is_stop_reply, parse_ask_request, validate_ask_user,
 )
 from agentx_dev.SupervisorMemory import MEMORY_ASK_LINE, RunMemory, validate_memory
 from agentx_dev.Runner.Persistence import (
@@ -180,6 +180,12 @@ class SupervisorResult(BaseModel):
     # What this run saved to long-term memory (3.6): kind, id, text (first 80 characters).
     # Empty when memory is off, read-only, or nothing qualified.
     memory: List[Dict[str, Any]] = Field(default_factory=list)
+    # The operator's reply to "what should I do next?" (3.6.2), as typed; None when
+    # ask_when_done is off or nobody answered.
+    next_step: Optional[str] = None
+    # One {"round", "query", "content", "outcome"} per round, filled only once a follow-up round
+    # has run (follow_up=True). Empty for a single-round run.
+    rounds: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 # ----------------------------------------------------------------------------
@@ -296,6 +302,52 @@ def _result_failed(r: "SubtaskResult") -> bool:
 
 def _result_done(r: "SubtaskResult") -> bool:
     return r.agent != "__spawn__" and not r.skipped and not r.superseded and not _result_failed(r)
+
+
+SESSION_ANSWER_CHARS = 3000        # how much of an earlier round's answer a follow-up round is shown
+
+
+def _session_settings(ask_user: Any, ask_when_done: bool, follow_up: bool, max_follow_ups: int):
+    """``(follow_up, ask_when_done, max_follow_ups)`` for a constructor. ``follow_up`` implies
+    ``ask_when_done``; either needs ``ask_user``."""
+    follow = bool(follow_up)
+    when_done = bool(ask_when_done) or follow
+    if when_done and (ask_user is None or ask_user is False):
+        raise ValueError("ask_when_done and follow_up need ask_user: pass ask_user=True or a function")
+    return follow, when_done, max(0, int(max_follow_ups))
+
+
+def _cap_text(text: Any, limit: int) -> str:
+    s = str(text or "").strip()
+    return s if len(s) <= limit else s[:limit].rstrip() + " ..."
+
+
+def _outcome_line(result: "SupervisorResult") -> str:
+    """The sentence under the answer in a checkpoint prompt: how the round ended."""
+    outcome = result.outcome
+    if outcome == OUTCOME_OUT_OF_TIME:
+        return f"Outcome: {outcome} (time limit reached)."
+    if outcome == OUTCOME_OUT_OF_BUDGET:
+        return f"Outcome: {outcome} (cost limit reached)."
+    steps = [r for r in result.subtasks if r.agent != "__spawn__" and not r.superseded]
+    failed = [r for r in steps if _result_failed(r)]
+    if outcome in (OUTCOME_PARTIAL, OUTCOME_STUCK) and failed:
+        return f"Outcome: {outcome} ({len(failed)} of {len(steps)} steps failed)."
+    return f"Outcome: {outcome}."
+
+
+def _follow_up_task(original: str, rounds: List[Dict[str, Any]], reply: str) -> str:
+    """The task a follow-up round plans: the original, what each earlier round produced, and the
+    operator's new instruction. The operator's earlier answers are not repeated here: the round's
+    channel is seeded with them and the Supervisor appends its OPERATOR ANSWERS block."""
+    lines = [original, "", "WHAT HAS HAPPENED SO FAR"]
+    for r in rounds:
+        asked = "" if r["round"] == 1 else f" (the operator asked: {_cap_text(r['query'], MAX_ANSWER_CHARS)})"
+        lines += [f"Round {r['round']}{asked}, outcome {r['outcome']}:",
+                  _cap_text(r["content"], SESSION_ANSWER_CHARS), ""]
+    lines += [f"The operator now asks: {reply}",
+              "Do this now, building on the results above. Do not repeat work that is already done."]
+    return "\n".join(lines)
 
 
 def _supervisor_outcome(results: List["SubtaskResult"], budget_reason: Optional[str] = None) -> str:
@@ -576,13 +628,39 @@ def _evaluate_success_verdict(verdict) -> tuple:
 # 3.3: plan-graph helpers (pure functions — unit-testable without a model)
 # ----------------------------------------------------------------------------
 
+_CATALOG_HIDDEN_TOOLS = frozenset({"ask_user", "delegate"})      # added by the framework, not the developer
+_CATALOG_MAX_TOOLS = 12
+
+
+def _catalog_tools_line(runner: Any) -> str:
+    """``"    tools: a, b"`` for a registered agent, or ``""`` when it has none to show.
+
+    The planner chooses between a registered agent and a new helper from this catalog, and it
+    saw only the description. A developer who wrote "File management" had to add "writes and
+    edits files" by hand so the planner would pick it; the agent's own tool list says so."""
+    try:
+        names = [n for n in runner.registry.names if n not in _CATALOG_HIDDEN_TOOLS]
+    except Exception:
+        return ""
+    if not names:
+        return ""
+    shown = ", ".join(names[:_CATALOG_MAX_TOOLS])
+    if len(names) > _CATALOG_MAX_TOOLS:
+        shown += f", ... ({len(names) - _CATALOG_MAX_TOOLS} more)"
+    return f"    tools: {shown}"
+
+
 def _render_agent_catalog(agents: Dict[str, Any]) -> str:
     """Render the planner-facing catalog. Specialist entries (3.3) get
-    their extra metadata lines; classic tuples render as before."""
+    their extra metadata lines; classic tuples render as before. Each agent's tools are
+    listed under it."""
     lines: List[str] = []
     for name, entry in agents.items():
+        tools_line = _catalog_tools_line(entry.runner if isinstance(entry, Specialist) else entry[1])
         if isinstance(entry, Specialist):
             lines.append(f"- {name}: {entry.description}")
+            if tools_line:
+                lines.append(tools_line)
             if entry.depends_on:
                 lines.append(f"    typically after: {', '.join(entry.depends_on)}")
             if entry.output_schema is not None:
@@ -596,6 +674,8 @@ def _render_agent_catalog(agents: Dict[str, Any]) -> str:
         else:
             desc, _ = entry
             lines.append(f"- {name}: {desc}")
+            if tools_line:
+                lines.append(tools_line)
     return "\n".join(lines)
 
 
@@ -957,9 +1037,13 @@ class _SpawnMixin:
             yield from self._run_memory.drain()
 
     def _new_operator_channel(self) -> Optional[OperatorChannel]:
-        return OperatorChannel.create(self.ask_user, max_questions=self.max_questions,
-                                      timeout=self.ask_timeout, is_async=self._SPAWN_ASYNC,
-                                      verbose=self.verbose)
+        channel = OperatorChannel.create(self.ask_user, max_questions=self.max_questions,
+                                         timeout=self.ask_timeout, is_async=self._SPAWN_ASYNC,
+                                         verbose=self.verbose)
+        if channel is not None:
+            # the Supervisor asks "what next?" itself: the planner and the helpers are told not to
+            channel.session_checkpoint = bool(self.ask_when_done)
+        return channel
 
     def _task_for_model(self, user_task: str) -> str:
         """The task as every model prompt sees it: the original plus any operator answers."""
@@ -1014,7 +1098,7 @@ class _SpawnMixin:
     def _overlapping(self, built) -> Optional[str]:
         """Name of a registered specialist that already has every tool ``built`` has (log only)."""
         have = {getattr(t, "name", None) for t in getattr(built.runner, "tools", [])}
-        have -= {DELEGATE_TOOL_NAME, None}
+        have -= {DELEGATE_TOOL_NAME, ASK_TOOL_NAME, None}      # the framework gives these to every agent
         if not have:
             return None
         for n, (_d, runner) in self.agents.items():
@@ -1086,6 +1170,9 @@ class Supervisor(_SpawnMixin):
         memory_top_k: int = 4,
         memory_min_score: float = 0.2,
         memory_write: bool = True,
+        ask_when_done: bool = False,
+        follow_up: bool = False,
+        max_follow_ups: int = 5,
     ):
         """
         Args:
@@ -1172,6 +1259,20 @@ class Supervisor(_SpawnMixin):
             memory_min_score: Matches below this score are dropped (default 0.2; about 0.5
                 for OpenAI embeddings, about 0.1 for HashEmbeddings).
             memory_write: False makes the store read-only.
+            ask_when_done: (3.6.2) When a round's answer is ready, the framework itself asks the
+                operator "What should I do next?" through the same asker as ``ask_user`` (the
+                answer is shown in the prompt) and returns the reply in ``result.next_step``
+                (``None`` if nobody answered). Asked whatever the outcome. Needs ``ask_user``.
+                The planner and the helpers are told the Supervisor asks it, so they do not.
+            follow_up: (3.6.2) Run another round on the operator's reply, with the earlier
+                results as context, until the operator replies blank or with a closing word
+                (any of "done", "stop", "quit", "exit", "no", "nothing", "that's all", "that's
+                it", "all done", "nope", "bye", "goodbye", "thanks", "thank you", "no thanks",
+                "no thank you", "done thanks", "done thank you", "nothing thanks", "stop
+                thanks"; case-insensitive; apostrophes (``thats all`` works), commas, extra spaces and trailing ``.``, ``!``, ``?`` ignored).
+                Implies ``ask_when_done``. ``result.rounds`` lists every round.
+            max_follow_ups: (3.6.2) Rounds allowed after the first (default 5). After the last
+                one no question is asked.
         """
         self.model = model
         # Normalize (and copy) so run-time spawns don't mutate the
@@ -1198,6 +1299,8 @@ class Supervisor(_SpawnMixin):
         self.max_questions = max(0, int(max_questions))
         self.ask_timeout = ask_timeout
         self._operator: Optional[OperatorChannel] = None
+        self.follow_up, self.ask_when_done, self.max_follow_ups = _session_settings(
+            self.ask_user, ask_when_done, follow_up, max_follow_ups)
         self.memory = validate_memory(memory)
         if int(memory_top_k) < 0:
             raise ValueError("memory_top_k must be >= 0")
@@ -1637,32 +1740,12 @@ class Supervisor(_SpawnMixin):
             if self.verbose:
                 _log_result(sub_result)
 
-    def stream(self, user_task: str):
-        """Yield structured events as the supervisor plans, dispatches,
-        and synthesizes.
-
-        Event shapes:
-          - {"type": "plan_start"}
-          - {"type": "plan",           "plan": <list of steps>}
-          - {"type": "spawn",          "name": str, "origin": "plan" | "delegate", "tools": list,
-                                        "dropped": list, "reused": str | None, "refused": str | None,
-                                        "capabilities": list, "rerouted_from": None}
-          - {"type": "delegate_result", "name": str, "outcome": str, "chars": int}
-          - {"type": "question",       "source": "planner" | <agent name>, "question": str, "context": str}
-          - {"type": "answer",         "source": str, "answered": bool, "reason": None | str}
-          - {"type": "memory",         "stage": "plan" | "step", "hits": int}
-          - {"type": "dispatch",       "agent": str, "query": str, "step": int}
-          - {"type": "subtask_result", "result": SubtaskResult, "step": int}
-          - {"type": "replan",         "round": int, "unresolved": list, "plan": list}  (persistent)
-          - {"type": "budget",         "reason": "time" | "cost"}  (persistent; before synthesis)
-          - {"type": "synthesize_start"}
-          - {"type": "final",          "content": str}
-          - {"type": "completion",     "result": SupervisorResult}   (last)
-
-        The last event is always ``completion`` so ``run()`` can build
-        on top of this and callers who want live UI updates can consume
-        the intermediate events.
-        """
+    def _stream_round(self, user_task: str, *, save_result: bool = True,
+                      seed: Optional[OperatorChannel] = None):
+        """One plan / dispatch / synthesize round, as a stream of events. ``save_result`` False
+        keeps the round's answer out of long-term memory (a follow-up round, whose task is a
+        composed one). ``seed`` is the previous round's operator channel, whose answers this
+        round's channel starts with. The last event is this round's ``completion``."""
         self._spawn_run_policy = self._new_spawn_policy()
         budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
         self._spawn_run_policy.budget = budget        # delegate falls back to it (see SpawnPolicy)
@@ -1670,9 +1753,14 @@ class Supervisor(_SpawnMixin):
         self._spawn_run_policy.operator = self._operator
         if self._operator is not None:
             self._operator.budget = budget            # waiting on the operator pauses the deadline
+        if self._operator is not None and seed is not None:
+            self._operator.seed_from(seed)
         self._run_memory = self._new_run_memory()
         if self._operator is not None:
             self._operator.memory = self._run_memory
+            if seed is not None and self._run_memory is not None:
+                for question, _answer in seed._answers:       # OPERATOR ANSWERS already has these
+                    self._run_memory.note_answered(question)
         self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
                           if budget is not None else None)
 
@@ -1766,7 +1854,7 @@ class Supervisor(_SpawnMixin):
             _log_final(final)
 
         outcome = _supervisor_outcome(subtask_results, budget_reason)
-        if (self._run_memory is not None and outcome == OUTCOME_DONE
+        if (save_result and self._run_memory is not None and outcome == OUTCOME_DONE
                 and not self._synth_fell_back and str(final).strip()):
             self._run_memory.remember_result(user_task, final)
 
@@ -1780,6 +1868,85 @@ class Supervisor(_SpawnMixin):
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
+
+    def stream(self, user_task: str):
+        """Yield structured events as the supervisor plans, dispatches,
+        and synthesizes.
+
+        Event shapes:
+          - {"type": "plan_start"}
+          - {"type": "plan",           "plan": <list of steps>}
+          - {"type": "spawn",          "name": str, "origin": "plan" | "delegate", "tools": list,
+                                        "dropped": list, "reused": str | None, "refused": str | None,
+                                        "capabilities": list, "rerouted_from": None}
+          - {"type": "delegate_result", "name": str, "outcome": str, "chars": int}
+          - {"type": "question",       "source": "planner" | "supervisor" | <agent name>, "question": str, "context": str}
+          - {"type": "answer",         "source": str, "answered": bool, "reason": None | str}
+          - {"type": "memory",         "stage": "plan" | "step", "hits": int}
+          - {"type": "dispatch",       "agent": str, "query": str, "step": int}
+          - {"type": "subtask_result", "result": SubtaskResult, "step": int}
+          - {"type": "replan",         "round": int, "unresolved": list, "plan": list}  (persistent)
+          - {"type": "budget",         "reason": "time" | "cost"}  (persistent; before synthesis)
+          - {"type": "synthesize_start"}
+          - {"type": "final",          "content": str}   (once per round)
+          - {"type": "checkpoint",     "round": int, "outcome": str}  (ask_when_done; before the question)
+          - {"type": "round",          "round": int, "query": str}  (follow_up; starts each round after the first)
+          - {"type": "completion",     "result": SupervisorResult}   (last)
+
+        The last event is always ``completion`` so ``run()`` can build
+        on top of this and callers who want live UI updates can consume
+        the intermediate events. With ``ask_when_done`` / ``follow_up`` the
+        stream covers every round and ends with one ``completion`` for the
+        session.
+        """
+        if not self.ask_when_done:
+            yield from self._stream_round(user_task)
+            return
+        rounds: List[Dict[str, Any]] = []
+        asked: List[Dict[str, Any]] = []
+        task, instruction, seed = user_task, user_task, None
+        while True:
+            number = len(rounds) + 1
+            if number > 1:
+                yield {"type": "round", "round": number, "query": instruction}
+                if self.verbose:
+                    print(f"{_C_PLAN}[supervisor.round] round {number}: {_cap_text(instruction, 120)}{_C_RESET}")
+            result: Optional[SupervisorResult] = None
+            # closing: closing this stream early closes the round generator too, as aclosing does in astream
+            with closing(self._stream_round(task, save_result=number == 1, seed=seed)) as stream:
+                for event in stream:
+                    if event["type"] == "completion":
+                        result = event["result"]
+                    else:
+                        yield event
+            assert result is not None, "a round must yield a completion event"
+            rounds.append({"round": number, "query": instruction, "content": result.content,
+                           "outcome": result.outcome})
+            asked.extend(result.asked)
+            channel = self._operator
+            if channel is None:                           # ask_user was cleared after construction: nobody to ask
+                next_step = None
+                break
+            if self.follow_up and number > 1 and number == 1 + self.max_follow_ups:
+                if self.verbose:
+                    print(f"{_C_PLAN}[supervisor.round] follow-up limit reached{_C_RESET}")
+                next_step = None
+                break
+            yield {"type": "checkpoint", "round": number, "outcome": result.outcome}
+            before = len(channel.records)
+            reply = channel.checkpoint(checkpoint_text(
+                result.content, _outcome_line(result), question_first=channel.builtin))
+            asked.extend(channel.records[before:])
+            yield from self._drain_operator_events()
+            next_step = reply.text
+            more = (self.follow_up and number <= self.max_follow_ups
+                    and result.outcome != OUTCOME_OUT_OF_BUDGET and not is_stop_reply(reply.text))
+            if not more:
+                break
+            task, instruction, seed = _follow_up_task(user_task, rounds, reply.text), reply.text, channel
+        yield {"type": "completion", "result": result.model_copy(update={
+            "query": instruction, "asked": asked, "next_step": next_step,
+            "rounds": rounds if len(rounds) > 1 else []})}
 
     def run(self, user_task: str) -> SupervisorResult:
         """Plan, execute sub-tasks sequentially, and synthesize.
@@ -1839,6 +2006,9 @@ class AsyncSupervisor(_SpawnMixin):
         memory_top_k: int = 4,
         memory_min_score: float = 0.2,
         memory_write: bool = True,
+        ask_when_done: bool = False,
+        follow_up: bool = False,
+        max_follow_ups: int = 5,
     ):
         """
         Args:
@@ -1902,6 +2072,20 @@ class AsyncSupervisor(_SpawnMixin):
             memory_min_score: Matches below this score are dropped (default 0.2; about 0.5
                 for OpenAI embeddings, about 0.1 for HashEmbeddings).
             memory_write: False makes the store read-only.
+            ask_when_done: (3.6.2) When a round's answer is ready, the framework itself asks the
+                operator "What should I do next?" through the same asker as ``ask_user`` (the
+                answer is shown in the prompt) and returns the reply in ``result.next_step``
+                (``None`` if nobody answered). Asked whatever the outcome. Needs ``ask_user``.
+                The planner and the helpers are told the Supervisor asks it, so they do not.
+            follow_up: (3.6.2) Run another round on the operator's reply, with the earlier
+                results as context, until the operator replies blank or with a closing word
+                (any of "done", "stop", "quit", "exit", "no", "nothing", "that's all", "that's
+                it", "all done", "nope", "bye", "goodbye", "thanks", "thank you", "no thanks",
+                "no thank you", "done thanks", "done thank you", "nothing thanks", "stop
+                thanks"; case-insensitive; apostrophes (``thats all`` works), commas, extra spaces and trailing ``.``, ``!``, ``?`` ignored).
+                Implies ``ask_when_done``. ``result.rounds`` lists every round.
+            max_follow_ups: (3.6.2) Rounds allowed after the first (default 5). After the last
+                one no question is asked.
         """
         self.model = model
         self.agents = _normalize_agents(agents)
@@ -1919,6 +2103,8 @@ class AsyncSupervisor(_SpawnMixin):
         self.max_questions = max(0, int(max_questions))
         self.ask_timeout = ask_timeout
         self._operator: Optional[OperatorChannel] = None
+        self.follow_up, self.ask_when_done, self.max_follow_ups = _session_settings(
+            self.ask_user, ask_when_done, follow_up, max_follow_ups)
         self.memory = validate_memory(memory)
         if int(memory_top_k) < 0:
             raise ValueError("memory_top_k must be >= 0")
@@ -2426,13 +2612,12 @@ class AsyncSupervisor(_SpawnMixin):
                 await asyncio.gather(*running, return_exceptions=True)
             running.clear()
 
-    async def astream(self, user_task: str):
-        """Async event stream. Same event shapes as ``Supervisor.stream``.
-
-        Concurrent-dispatch mode (``sequential=False``) yields
-        ``subtask_result`` events as each sub-task finishes -- so the
-        UI sees whichever completes first, not the plan order.
-        """
+    async def _astream_round(self, user_task: str, *, save_result: bool = True,
+                             seed: Optional[OperatorChannel] = None):
+        """One plan / dispatch / synthesize round, as an async stream of events. See
+        ``Supervisor._stream_round``. Concurrent-dispatch mode (``sequential=False``) yields
+        ``subtask_result`` events as each sub-task finishes, so the UI sees whichever
+        completes first, not the plan order."""
         self._spawn_run_policy = self._new_spawn_policy()
         budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
         self._spawn_run_policy.budget = budget        # delegate falls back to it (see SpawnPolicy)
@@ -2440,9 +2625,14 @@ class AsyncSupervisor(_SpawnMixin):
         self._spawn_run_policy.operator = self._operator
         if self._operator is not None:
             self._operator.budget = budget            # waiting on the operator pauses the deadline
+        if self._operator is not None and seed is not None:
+            self._operator.seed_from(seed)
         self._run_memory = self._new_run_memory()
         if self._operator is not None:
             self._operator.memory = self._run_memory
+            if seed is not None and self._run_memory is not None:
+                for question, _answer in seed._answers:       # OPERATOR ANSWERS already has these
+                    self._run_memory.note_answered(question)
         self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
                           if budget is not None else None)
         yield {"type": "plan_start"}
@@ -2545,7 +2735,7 @@ class AsyncSupervisor(_SpawnMixin):
             _log_final(final)
 
         outcome = _supervisor_outcome(subtask_results, budget_reason)
-        if (self._run_memory is not None and outcome == OUTCOME_DONE
+        if (save_result and self._run_memory is not None and outcome == OUTCOME_DONE
                 and not self._synth_fell_back and str(final).strip()):
             await asyncio.to_thread(self._run_memory.remember_result, user_task, final)
 
@@ -2559,6 +2749,68 @@ class AsyncSupervisor(_SpawnMixin):
         )
         yield {"type": "final", "content": final}
         yield {"type": "completion", "result": result}
+
+    async def astream(self, user_task: str):
+        """Async event stream. Same event shapes as ``Supervisor.stream``, including the
+        ``checkpoint`` and ``round`` events of ``ask_when_done`` / ``follow_up``.
+
+        Concurrent-dispatch mode (``sequential=False``) yields
+        ``subtask_result`` events as each sub-task finishes -- so the
+        UI sees whichever completes first, not the plan order.
+        """
+        # aclosing: closing this stream early must close the round generator too, so its
+        # running sub-tasks are cancelled before aclose() returns (``yield from`` did this
+        # implicitly in the sync version).
+        if not self.ask_when_done:
+            async with aclosing(self._astream_round(user_task)) as stream:
+                async for event in stream:
+                    yield event
+            return
+        rounds: List[Dict[str, Any]] = []
+        asked: List[Dict[str, Any]] = []
+        task, instruction, seed = user_task, user_task, None
+        while True:
+            number = len(rounds) + 1
+            if number > 1:
+                yield {"type": "round", "round": number, "query": instruction}
+                if self.verbose:
+                    print(f"{_C_PLAN}[supervisor.round] round {number}: {_cap_text(instruction, 120)}{_C_RESET}")
+            result: Optional[SupervisorResult] = None
+            async with aclosing(self._astream_round(task, save_result=number == 1, seed=seed)) as stream:
+                async for event in stream:
+                    if event["type"] == "completion":
+                        result = event["result"]
+                    else:
+                        yield event
+            assert result is not None, "a round must yield a completion event"
+            rounds.append({"round": number, "query": instruction, "content": result.content,
+                           "outcome": result.outcome})
+            asked.extend(result.asked)
+            channel = self._operator
+            if channel is None:                           # ask_user was cleared after construction: nobody to ask
+                next_step = None
+                break
+            if self.follow_up and number > 1 and number == 1 + self.max_follow_ups:
+                if self.verbose:
+                    print(f"{_C_PLAN}[supervisor.round] follow-up limit reached{_C_RESET}")
+                next_step = None
+                break
+            yield {"type": "checkpoint", "round": number, "outcome": result.outcome}
+            before = len(channel.records)
+            reply = await channel.acheckpoint(checkpoint_text(
+                result.content, _outcome_line(result), question_first=channel.builtin))
+            asked.extend(channel.records[before:])
+            for event in self._drain_operator_events():
+                yield event
+            next_step = reply.text
+            more = (self.follow_up and number <= self.max_follow_ups
+                    and result.outcome != OUTCOME_OUT_OF_BUDGET and not is_stop_reply(reply.text))
+            if not more:
+                break
+            task, instruction, seed = _follow_up_task(user_task, rounds, reply.text), reply.text, channel
+        yield {"type": "completion", "result": result.model_copy(update={
+            "query": instruction, "asked": asked, "next_step": next_step,
+            "rounds": rounds if len(rounds) > 1 else []})}
 
     async def run(self, user_task: str) -> SupervisorResult:
         """Plan, execute sub-tasks concurrently, and synthesize.

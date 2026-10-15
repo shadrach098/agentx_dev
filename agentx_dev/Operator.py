@@ -49,6 +49,26 @@ NO_QUESTIONS_LEFT_TEXT = (
 )
 
 PLANNER_SOURCE = "planner"
+CHECKPOINT_SOURCE = "supervisor"                    # who asks "what next?" at the end of a round
+CHECKPOINT_QUESTION = "What should I do next?"
+CHECKPOINT_SHOWN_CHARS = 3000                       # how much of the answer the checkpoint prompt shows
+
+
+def _closing_form(text: str) -> str:
+    """``text`` as it is compared with the closing words: lower case, apostrophes (straight or
+    curly) and commas removed, runs of spaces collapsed, trailing ``.``, ``!``, ``?`` dropped. So
+    "That's all", "thats all" and "THATS ALL!" are the same reply, and so are "no, thanks" and
+    "No  thanks"."""
+    word = text.lower().replace("’", "").replace("'", "").replace(",", " ")
+    return " ".join(word.split()).rstrip(".!? ")
+
+
+_STOP_WORDS = frozenset(_closing_form(w) for w in (
+    "done", "stop", "quit", "exit", "no", "nothing", "that's all", "that's it", "all done", "nope",
+    "bye", "goodbye", "thanks", "thank you", "no thanks", "no thank you", "done thanks",
+    "done thank you", "nothing thanks", "stop thanks",
+))
+
 MAX_QUESTIONS_PER_AGENT = 1     # one agent should not spend the whole shared budget clarifying
 
 
@@ -358,6 +378,34 @@ def _shown(question: str, context: str = "") -> str:
     return f"{question}\n(context: {context})" if context else question
 
 
+def is_stop_reply(text: Optional[str]) -> bool:
+    """True when ``text`` ends a follow-up session: no reply, a blank one, or one of the fixed
+    closing words ("Done!", " quit. ", "That's all", "thats all", "No, thanks"). The match is
+    case-insensitive; apostrophes, commas, extra spaces and trailing ``.``, ``!``, ``?`` are
+    ignored."""
+    if text is None:
+        return True
+    word = _closing_form(text)
+    return word == "" or word in _STOP_WORDS
+
+
+def checkpoint_text(answer: Any, outcome_line: str, *, question_first: bool = False) -> str:
+    """The one string the asker receives at the end of a round: the answer (cut at
+    ``CHECKPOINT_SHOWN_CHARS``), how the round ended, and the question.
+
+    ``question_first`` is for the built-in terminal prompt, which labels the first line
+    ``question:``: the order is then the question, the outcome, the answer."""
+    shown = str(answer or "").strip()
+    if len(shown) > CHECKPOINT_SHOWN_CHARS:
+        shown = shown[:CHECKPOINT_SHOWN_CHARS].rstrip() + "\n(full text in result.content)"
+    question = f'{CHECKPOINT_QUESTION} (blank or "done" to finish)'
+    if question_first:
+        tail = f"\n\n{shown}" if shown else ""
+        return f"{question}\n\n{outcome_line}{tail}"
+    head = f"{shown}\n\n" if shown else ""
+    return f"{head}{outcome_line}\n{question}"
+
+
 def reply_text(reply: Reply) -> str:
     """The tool result an agent sees. Never an error, so its stuck logic is not triggered."""
     if reply.answered:
@@ -394,6 +442,7 @@ class OperatorChannel:
                  per_agent_limit: int = MAX_QUESTIONS_PER_AGENT):
         self._asker = asker
         self._builtin = builtin
+        self.session_checkpoint = False               # True when the Supervisor asks "what next?" itself (ask_when_done)
         self.max_questions = max(0, int(max_questions))
         self.per_agent_limit = max(0, int(per_agent_limit))    # the planner is exempt
         self._by_source: Dict[str, int] = {}
@@ -453,7 +502,18 @@ class OperatorChannel:
     def plan_note(self) -> str:
         """Appended to a planning prompt once the operator has answered something: do the
         work, do not plan another step that only asks."""
-        return ANSWERED_PLAN_NOTE if self._answers else ""
+        note = SESSION_PLAN_NOTE if self.session_checkpoint else CHECKPOINT_PLAN_NOTE
+        return note + ANSWERED_PLAN_NOTE if self._answers else note
+
+    def addendum_line(self) -> str:
+        """The ask_user paragraph a spawned helper's prompt carries. When the Supervisor asks
+        "what next?" itself (``session_checkpoint``) the helper is told not to."""
+        return ASK_ADDENDUM_BASE + ASK_ADDENDUM_SESSION if self.session_checkpoint else ASK_ADDENDUM_LINE
+
+    @property
+    def builtin(self) -> bool:
+        """True when the built-in terminal asker is in use (``ask_user=True``)."""
+        return self._builtin
 
     def emit(self, event: Dict[str, Any]) -> None:
         with self._events_lock:
@@ -569,6 +629,49 @@ class OperatorChannel:
         if self._pending_writes:
             await asyncio.to_thread(self._flush_writes)
         return result
+
+    # -- the checkpoint (3.6.2) -----------------------------------------------
+
+    def seed_from(self, previous: "OperatorChannel") -> None:
+        """Start a later round knowing what the operator already told this session: the answers
+        (so the planner sees them) and the questions already answered (so none is asked twice).
+        Questions nobody answered are not carried over, so they may be asked again."""
+        self._answers = list(previous._answers)
+        self._seen = {key: reply for key, reply in previous._seen.items() if reply.answered}
+
+    def _checkpoint_asked(self) -> None:
+        self.emit({"type": "question", "source": CHECKPOINT_SOURCE, "question": CHECKPOINT_QUESTION,
+                   "context": ""})
+        self._say(f"{CHECKPOINT_SOURCE} asks: {CHECKPOINT_QUESTION}")
+
+    def _checkpoint_answered(self, reply: Reply) -> Reply:
+        self.records.append({"source": CHECKPOINT_SOURCE, "question": CHECKPOINT_QUESTION,
+                             "answered": reply.answered, "reason": reply.reason, "deduped": False})
+        self.emit({"type": "answer", "source": CHECKPOINT_SOURCE, "answered": reply.answered,
+                   "reason": reply.reason})
+        self._say("answered" if reply.answered else f"no answer ({reply.reason})")
+        return reply
+
+    def checkpoint(self, shown: str) -> Reply:
+        """Ask what to do next, with ``shown`` as the prompt. Unlike ``ask`` this uses no question
+        slot, ignores the per-agent limit, is not de-duplicated and never touches memory (a next
+        instruction is a command, not a fact). It shares the ask lock, the timeout, the headless
+        handling and the pause of the persistent deadline."""
+        self._checkpoint_asked()
+        with self._lock:
+            reply = self._ask_sync(shown, CHECKPOINT_SOURCE)
+        return self._checkpoint_answered(reply)
+
+    async def acheckpoint(self, shown: str) -> Reply:
+        """The async form of :meth:`checkpoint`."""
+        self._checkpoint_asked()
+        while not self._lock.acquire(blocking=False):      # never blocks the loop; a cancel cannot leak the lock
+            await asyncio.sleep(0.02)
+        try:
+            reply = await self._ask_async(shown, CHECKPOINT_SOURCE)
+        finally:
+            self._lock.release()
+        return self._checkpoint_answered(reply)
 
     def _ask_sync(self, shown: str, source: str = "") -> Reply:
         try:
@@ -703,9 +806,40 @@ ASK_USER_DESCRIPTION = (
     "assumption)."
 )
 
-ASK_ADDENDUM_LINE = (
+ASK_ADDENDUM_BASE = (
     "\n\n- If a fact you need is missing and your tools cannot find it, call ask_user with one "
     "specific question (you may ask at most once, so search with your tools first). Do not guess."
+)
+ASK_ADDENDUM_CHECKIN = (
+    " If your task tells you to check with the user at some point (for example \"when done, ask what "
+    "to do next\"), call ask_user at that point instead of writing the question in your answer, "
+    "then act on the reply."
+)
+ASK_ADDENDUM_LINE = ASK_ADDENDUM_BASE + ASK_ADDENDUM_CHECKIN
+
+# Used instead of the check-in clause when the Supervisor asks "what next?" itself (ask_when_done).
+ASK_ADDENDUM_SESSION = (
+    " The Supervisor itself asks the operator what to do next once the work is finished, so do not "
+    "ask that yourself: finish your step and give your answer."
+)
+
+# Added to every planning prompt when the operator can be asked. A task that says "ask me when
+# you are done" is not a missing fact for the up-front round; it is a request that the agent
+# doing the work calls ask_user at that point, and a question typed into an answer reaches no one.
+CHECKPOINT_PLAN_NOTE = (
+    "\n\nIf the task asks you to check with the operator at some point (for example \"when done, ask "
+    "me what to do next\"), do not plan a step whose only job is to ask. Tell the specialist doing "
+    "that work, in its step query, to call ask_user at that point and to act on the reply. A "
+    "question written into a specialist's answer is never shown to the operator."
+)
+
+# Replaces CHECKPOINT_PLAN_NOTE when ask_when_done / follow_up is on: the Supervisor asks "what
+# next?" itself after the final answer, so neither the plan nor a specialist should.
+SESSION_PLAN_NOTE = (
+    "\n\nThe Supervisor itself asks the operator what to do next once the final answer is written. "
+    "If the task says to check with the operator when done (for example \"when done, ask me what "
+    "to do next\"), do not plan a step to ask it and do not tell any specialist to ask it. Plan "
+    "only the work."
 )
 
 

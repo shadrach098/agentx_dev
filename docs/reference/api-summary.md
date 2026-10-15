@@ -123,16 +123,16 @@ CLI: `python -m agentx_dev.Evals run <dir> --config <yaml>`
 
 | Symbol | Kind | Doc |
 |---|---|---|
-| `Supervisor` | class | Sync decompose + dispatch + synthesize (3.3: `depends_on` DAG plans, `skip_when` conditional steps, `max_plan_retries`) (3.5: `persistence=` replans unfinished steps under one shared deadline) (3.6: `ask_user=True \| function`, `max_questions=3`, `ask_timeout=` let the planner and every agent ask the operator for missing facts) (3.6: `memory=<vector store>`, `memory_top_k=4`, `memory_min_score=0.2`, `memory_write=True` give the planner and every dispatched step relevant stored items, save operator answers and `done` results, and answer an exact repeat of an answered question from memory) |
-| `AsyncSupervisor` | class | Async concurrent dispatch (3.3: completion-driven DAG scheduler, `max_parallel=` cap) (3.6: same `ask_user=`, `max_questions=`, `ask_timeout=`; `ask_user` may be an `async` function; same `memory=`, `memory_top_k=`, `memory_min_score=`, `memory_write=`) |
-| `SupervisorResult` | dataclass | Plan + subtask results + final (3.5: `.outcome`) (3.6: `.asked`, one dict per question put to the operator: `source`, `question`, `answered`, `reason`, `deduped`; no answer text) (3.6: `.memory`, what the run saved to long-term memory: `kind`, `id`, `text` cut at 80 characters) |
+| `Supervisor` | class | Sync decompose + dispatch + synthesize (3.3: `depends_on` DAG plans, `skip_when` conditional steps, `max_plan_retries`) (3.5: `persistence=` replans unfinished steps under one shared deadline) (3.6: `ask_user=True \| function`, `max_questions=3`, `ask_timeout=` let the planner and every agent ask the operator for missing facts) (3.6: `memory=<vector store>`, `memory_top_k=4`, `memory_min_score=0.2`, `memory_write=True` give the planner and every dispatched step relevant stored items, save operator answers and `done` results, and answer an exact repeat of an answered question from memory) (3.6.2: `ask_when_done=True` asks "What should I do next?" when a round's answer is ready, `follow_up=True` runs another round on each reply, `max_follow_ups=5` bounds it; both need `ask_user`) |
+| `AsyncSupervisor` | class | Async concurrent dispatch (3.3: completion-driven DAG scheduler, `max_parallel=` cap) (3.6: same `ask_user=`, `max_questions=`, `ask_timeout=`; `ask_user` may be an `async` function; same `memory=`, `memory_top_k=`, `memory_min_score=`, `memory_write=`) (3.6.2: same `ask_when_done=`, `follow_up=`, `max_follow_ups=`) |
+| `SupervisorResult` | dataclass | Plan + subtask results + final (3.5: `.outcome`) (3.6: `.asked`, one dict per question put to the operator: `source`, `question`, `answered`, `reason`, `deduped`; no answer text) (3.6: `.memory`, what the run saved to long-term memory: `kind`, `id`, `text` cut at 80 characters) (3.6.2: `.next_step`, the operator's reply to "What should I do next?" or `None`; `.rounds`, one dict per round: `round`, `query`, `content`, `outcome`, filled once a follow-up has run) |
 | `SubtaskResult` | dataclass | One specialist's contribution. *(3.2)* `.output` carries the validated Pydantic instance when the runner declared an `output_schema` |
 | `SpawnConfig` | dataclass | Sub-agent settings: `enabled`, `capabilities` / `tools` (the ceiling), `allowed_paths`, `max_spawns`, `max_depth`, `max_iterations` (step limit for Supervisor-created helpers), `approver` (3.6: ceiling mode; `AsyncSupervisor` and `AgentRunner(delegation=)` accept it) |
 | `AgentSpec` *(3.6)* | dataclass | One sub-agent to build: `name`, `instructions`, `tools`, `origin` |
 | `SpawnRequest` | dataclass | One planner-issued spawn ask |
 | `Specialist` *(3.3)* | dataclass | Registry entry with planner metadata: `depends_on` hints, `output_schema` display, `when_to_use` |
 | `ask_human_tool` *(3.6)* | function | `ask_human_tool(prompt_prefix="[agent]", ask_timeout=None)` returns a standalone `ask_human` tool (`question`, `context`) for any `AgentRunner`, built on the notebook-aware built-in asker |
-| Supervisor stream events *(3.6)* | events | `{"type": "question", "source", "question", "context"}` and `{"type": "answer", "source", "answered", "reason"}` when `ask_user` is set. See [Sub-agents](../guides/sub-agents.md#asking-the-operator) |
+| Supervisor stream events *(3.6)* | events | `{"type": "question", "source", "question", "context"}` and `{"type": "answer", "source", "answered", "reason"}` when `ask_user` is set; `{"type": "checkpoint", "round", "outcome"}` and `{"type": "round", "round", "query"}` with `ask_when_done` / `follow_up` (3.6.2). See [Sub-agents](../guides/sub-agents.md#asking-the-operator) and [Asking when the work is done](../guides/sub-agents.md#asking-when-the-work-is-done) |
 | Supervisor `memory` event *(3.6)* | event | `{"type": "memory", "stage": "plan" or "step", "hits": int}` when items from long-term memory were added to a prompt; the `answer` event gains `"from_memory": True` when an answer came from memory. See [Long-term memory](../guides/sub-agents.md#long-term-memory) |
 
 ## Session persistence
@@ -140,6 +140,13 @@ CLI: `python -m agentx_dev.Evals run <dir> --config <yaml>`
 | Symbol | Kind | Doc |
 |---|---|---|
 | `Session` | class | Serializable conversation state |
+| `Session.stream(user_input, **kw)` *(3.7)* | method | Like `invoke`, but yields the runner's events (`thought`, `tool_call`, `tool_result`, `final`, `completion`) and absorbs the result on the `completion` event. A turn abandoned before then (Ctrl+C, closing the generator) is not recorded |
+
+## Command line
+
+| Symbol | Kind | Doc |
+|---|---|---|
+| `agentx` *(3.7)* | command | Terminal coding assistant: chat loop, file and shell tools behind approval prompts, `AGENTX.md` context, saved conversations. Also `python -m agentx_dev`. Needs `prompt_toolkit>=3.0` (a base dependency). See [the agentx command](../guides/cli.md) |
 
 ## Streaming
 

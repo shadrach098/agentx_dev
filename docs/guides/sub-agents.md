@@ -85,6 +85,28 @@ The planner's plan is model output, which can be steered by the user's text. So 
 | `approver` | `None` | Optional `(SpawnRequest) -> bool`. In ceiling mode it is an extra gate, not required. |
 | `auto_spawn`, `auto_spawn_allowed_caps` | | The older approval flow, used only when neither `capabilities` nor `tools` is set. |
 
+### Letting helpers write files
+
+`capabilities` is a ceiling, and these are the words it takes:
+
+| Word | What a helper gets |
+|---|---|
+| `web` | `web_search`, `web_fetch` |
+| `files_read` | read, list, find, grep (read-only) |
+| `files` | the `files_read` tools plus `write_file` and `edit_file` |
+| `code` | `run_python` |
+| `delete` | file deletion |
+
+`{"web", "files_read"}` lets helpers read files but never write them. To let them save results, put `files` in the ceiling and name the folder:
+
+```python
+SpawnConfig(enabled=True, capabilities={"web", "files"}, allowed_paths=["./workspace"])
+```
+
+`allowed_paths` is the only place the file tools can reach. The planner still decides what each helper gets within the ceiling, so say in the task where the result goes ("save the list to ./workspace/prospects.md") and it will ask for `files`. `result.spawned[i]["tools"]` shows what a helper received and `["dropped"]` what the ceiling clipped.
+
+A specialist you registered is different: it has the tools you gave its own `AgentRunner` (its `permissions=`, for example `Permissions(read_files=True, write_files=True, edit_files=True, allowed_paths=[...])`), and the ceiling does not apply. Since 3.6.2 the planner's catalog lists each registered agent's tools under its description (`tools: read_path, write_file, ...`), so you do not need to repeat them in the description. Tools the framework adds itself (`ask_user`, `delegate`) are left out of that list.
+
 ### Where the step limit is set
 
 A step is one turn of an agent's loop (a model reply, usually followed by a tool call). The limit lives in two places, depending on who built the agent:
@@ -165,8 +187,9 @@ supervisor = Supervisor(model=model, agents={"explorer": ("Reads files in ./work
 - **Every agent can ask mid-run.** Specialists, planner-defined helpers and `delegate` helpers get an `ask_user(question, context="")` tool for the run (removed afterwards, so your runners are untouched). The answer goes to the agent as `[operator] ...` and to every step dispatched later. Helpers also get a line in their instructions telling them to ask rather than guess; your registered specialists learn about the tool from its description.
 - **After you answer, the planner is told to do the work.** Once you have answered something, every planning prompt (the replan, and any recovery round) adds: do not plan a step whose job is only to ask for more information; find what is still unknown with tools (give the helper the tools it needs, such as `web`) or state the assumption. A partial answer, such as one URL where three competitors were needed, should lead to research, not to another round of questions.
 - **A helper can only look things up with the tools it is given.** The helper-creation instructions tell the planner that a helper with no tools can only reason and cannot fetch anything, and name `web` when your ceiling allows it. The `ceiling` only caps what a helper may use; the plan decides what it asks for.
+- **Asking at a checkpoint (the model-driven route).** A task such as "research this, and when done ask me what to do next" works: the planner is told to put "call `ask_user` at that point" in the step's query, and a helper's instructions say to call `ask_user` when the task tells it to check with you, not to write the question into its answer (a question in an answer is never shown to you). With `ask_when_done=True` this changes: the Supervisor asks itself once the final answer is written, so the planner and the helpers are told not to ask that question (no double question, no slot spent on it); see [Asking when the work is done](#asking-when-the-work-is-done). The same helper then acts on your reply with its own tools, so it needs the tools for what you will ask it to do (for example `files` to save something). It uses its one question for this. With `ask_user` unset, nothing changes. In a verbose run the `[spawn]` line ends `tools=['web'] + ask_user` for a helper that can ask; `result.spawned` is unchanged.
 - **An agent may ask once.** Each agent (by name) gets one question per run, and its tool description says to search with its tools first. The planner is exempt (it may ask several questions in its one round). The second question from the same agent gets "no more questions available; proceed on a stated assumption", so one helper cannot spend the whole shared budget clarifying.
-- **One question budget per run**, shared by all of them. An identical question is asked once; a repeat gets the first answer and uses no slot. A question counts against the budget once it is put to you, whether or not you answer it. The one reply that is not remembered is `no_channel` (for example a terminal that is busy), so the same question can be asked again once the channel is free.
+- **One question budget per run** (per round when `follow_up` is on), shared by all of them. An identical question is asked once; a repeat gets the first answer and uses no slot. A question counts against the budget once it is put to you, whether or not you answer it. The one reply that is not remembered is `no_channel` (for example a terminal that is busy), so the same question can be asked again once the channel is free.
 - **No answer is not a failure.** If nobody can answer (headless, your function raised, it timed out, you sent an empty reply, the budget is spent) the agent is told to proceed on a stated assumption and say what it assumed.
 
 `ask_user` takes:
@@ -213,6 +236,37 @@ Things to know:
 
 For a standalone `AgentRunner` that needs a human step, give it `agentx_dev.ask_human_tool()`: the same asker as a tool called `ask_human` (arguments `question` and optional `context`), so it works in a notebook's input box as well as a terminal. `ask_human_tool(prompt_prefix="[agent]", ask_timeout=None)`.
 
+### Asking when the work is done
+
+A model has to choose to call `ask_user`; the framework does not have to. Two settings make it ask by itself when a round's answer is ready:
+
+```python
+sup = Supervisor(model=model, agents=agents, ask_user=True, ask_when_done=True)
+result = sup.run("Research veltehub.com and find 10 prospects in Barrie")
+print(result.next_step)        # what you replied to "What should I do next?", or None
+
+sup = Supervisor(model=model, agents=agents, ask_user=True, follow_up=True, max_follow_ups=5)
+result = sup.run("Research veltehub.com and find 10 prospects in Barrie")   # keeps going on your replies
+```
+
+| Setting | Default | What it does |
+|---|---|---|
+| `ask_when_done` | `False` | After the answer is ready, ask "What should I do next?" through the `ask_user` asker. The prompt shows the answer (cut at 3,000 characters), how the round ended, and the question. The reply goes in `result.next_step`. |
+| `follow_up` | `False` | Run another round on your reply, until you reply blank or with a closing word (below). Implies `ask_when_done`. |
+| `max_follow_ups` | `5` | With `follow_up`: rounds allowed after the first (default 5); after the last one no question is asked. |
+
+- Either setting without `ask_user` raises `ValueError`.
+- It asks whatever the outcome (`done`, `partial`, `stuck`, `out_of_time`, `out_of_budget`) and says which in the prompt.
+- Closing words (end the session instead of starting a round): any of `done`, `stop`, `quit`, `exit`, `no`, `nothing`, `that's all`, `that's it`, `all done`, `nope`, `bye`, `goodbye`, `thanks`, `thank you`, `no thanks`, `no thank you`, `done thanks`, `done thank you`, `nothing thanks`, `stop thanks`, case-insensitive, with apostrophes (`thats all` works), commas, extra spaces and trailing `.`, `!`, `?` ignored; a blank reply ends it too. Anything else is an instruction ("no, tell me more" and "thanks, now write the emails" run a round). The list is fixed; "ok" is not on it because it can be an instruction.
+- `result.next_step` keeps what you typed, so it can be `"done"` or `"No, thanks"`; it is `None` when nobody answered (headless, timed out, empty reply).
+- **Your reply is cut at 2,000 characters**, the same cap as any other answer.
+- **On a terminal, one line is read per prompt.** A pasted multi-line reply is read one line at a time, and the next line answers the next prompt.
+- **A follow-up round is a new run.** It plans on your original task, what each earlier round produced (each capped at 3,000 characters) and your new instruction. Your earlier answers carry over, and a question you already answered is not asked again. The question budget, the helpers and the persistent time budget start over each round; a model cost cap does not. No round starts after `out_of_budget`, though you are still asked.
+- **The checkpoint is not a question to a helper.** It uses no `max_questions` slot, is not looked up in or saved to memory, and appears in `result.asked` and as `question` / `answer` events with source `supervisor`.
+- **What you get back.** `run()` returns the last round's result. `result.rounds` lists every round (`round`, `query`, `content`, `outcome`) once a follow-up has run, and `result.asked` holds every question across rounds. `result.memory`, `spawned`, `subtasks` and `plan` are the last round's only. In memory, only round 1's result is saved.
+- **Streaming.** `stream()` / `astream()` add `{"type": "checkpoint", "round", "outcome"}` before each question and `{"type": "round", "round", "query"}` when a round after the first starts. Each round's `final` is yielded, and one `completion` ends the stream.
+- **Closing a stream early** still cancels a round's running sub-tasks before the close returns, in both modes.
+
 ## Long-term memory
 
 Every run starts from nothing: a fact you gave once ("our competitors are Notion, Obsidian, Coda") is asked for again next time, and earlier research is not available to the planner. Give the Supervisor a vector store and it remembers.
@@ -224,7 +278,7 @@ store = VectorStore(embeddings=HashEmbeddings())          # any store with add()
 supervisor = Supervisor(model=model, agents=agents, ask_user=True, memory=store)
 ```
 
-`memory` takes anything with callable `add` and `search`: `VectorStore`, `ChromaVectorStore`, `QdrantVectorStore`, `PgVectorStore`. The last three need their extra (`pip install "agentx-dev[chroma]"`, `[qdrant]`, `[pgvector]`); the in-memory `VectorStore` needs nothing. Anything else raises `TypeError` at construction. Keeping the store persistent is yours to do: the in-memory `VectorStore` has `save(path)` and `VectorStore.load(path, embeddings)` (call `save` after the run); Chroma (with a `persist_directory`), Qdrant and pgvector persist themselves. With `memory=None` (the default) nothing changes. `AsyncSupervisor` takes the same arguments.
+`memory` takes anything with callable `add` and `search`: `VectorStore`, `ChromaVectorStore`, `QdrantVectorStore`, `PgVectorStore`. The three client libraries come with `pip install agentx-dev` (3.6.2); the in-memory `VectorStore` needs nothing. Anything else raises `TypeError` at construction. Keeping the store persistent is yours to do: the in-memory `VectorStore` has `save(path)` and `VectorStore.load(path, embeddings)` (call `save` after the run); Chroma (with a `persist_directory`), Qdrant and pgvector persist themselves. With `memory=None` (the default) nothing changes. `AsyncSupervisor` takes the same arguments.
 
 | Argument | Default | Meaning |
 |---|---|---|
@@ -282,6 +336,8 @@ Things to know:
 | `{"type": "question", "source": "planner"\|<agent name>, "question", "context"}` | A question was put to the operator (`ask_user` set). |
 | `{"type": "answer", "source", "answered", "reason": None\|"no_channel"\|"declined"\|"timeout"\|"limit"\|"error"}` | The reply, or why there was none. The answer text is not in the event. `"from_memory": True` is added when the answer came from long-term memory. |
 | `{"type": "memory", "stage": "plan"\|"step", "hits": int}` | Items from long-term memory were added to a prompt (`memory=` set). |
+| `{"type": "checkpoint", "round", "outcome"}` | The framework is about to ask what to do next (`ask_when_done`). |
+| `{"type": "round", "round", "query"}` | A follow-up round starts (`follow_up`); `query` is your reply. |
 
 With `verbose=True` the same moments print as `[spawn]`, `[ask]` and `[memory]` lines.
 

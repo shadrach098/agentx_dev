@@ -37,6 +37,8 @@ Task guides:
 - [Connect an MCP server](guides/mcp.md)
 - [Configure from YAML](guides/yaml-config.md)
 - [Author your own tools](guides/custom-tools.md)
+- [The `agentx` terminal assistant](guides/cli.md) *(3.7)* — approvals and
+  modes, AGENTX.md, sessions, team jobs, helper models, project memory
 - [Upgrading between releases](guides/upgrading.md)
 
 Advanced topics:
@@ -56,7 +58,12 @@ Advanced topics:
 Reference & recipes:
 - [API summary](reference/api-summary.md) — every exported symbol at a glance
 - [Patterns cookbook](cookbook/patterns.md) — reusable multi-agent shapes
+  (`agentx` patterns 34-37 *(3.7)*: [using the assistant](cookbook/patterns.md#34-use-the-agentx-assistant-on-a-project-37),
+  [team jobs](cookbook/patterns.md#35-hand-a-big-job-to-a-team-of-helpers-37),
+  [helper models](cookbook/patterns.md#36-run-team-helpers-on-several-models-37),
+  [project memory](cookbook/patterns.md#37-keep-a-model-a-log-and-a-short-history-per-folder-37))
 - [Troubleshooting](cookbook/troubleshooting.md) — common errors + fixes
+  (see [The `agentx` command](cookbook/troubleshooting.md#the-agentx-command-37))
 - [FAQ](cookbook/faq.md)
 
 ---
@@ -119,6 +126,12 @@ operational lever (memory, caching, budgets, rate limits).
   parameter support (`adapt_params`); new Claude settings; workspace-
   rooted paths and `run_python` starting in the workspace. See
   [media](media/overview.md) and [upgrading](guides/upgrading.md).
+- **3.7** — the `agentx` terminal assistant: approvals and
+  modes, trusted folders, `AGENTX.md`, saved sessions, team jobs with helpers
+  on several models, and a work log and model per folder; plus
+  `Session.stream()` and two fixes (conversations after a function-call final
+  answer, `edit_file` line endings). See the [guide](guides/cli.md) and
+  [upgrading](guides/upgrading.md).
 
 ## Where things live in the source
 

@@ -4,6 +4,144 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [3.7.0] - 2026-10-15
+
+### Added
+
+- **The `agentx` command**: a terminal coding assistant (`agentx`, or `python -m agentx_dev`), built on
+  `AgentRunner`, `DefaultTools` and `Session`. Run it in a project folder; it works with GPT and Claude from
+  `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. Flags: `--model`, `--mode`, `--add-dir`, `--continue`,
+  `--resume [ID]`, `--version`. See the new [guide](docs/guides/cli.md).
+  - **Approvals and modes.** Reads run; edits, commands and delete / move ask first, with a diff or the full
+    command shown. Modes `default`, `accept-edits`, `plan` and `auto` (edits, shell and Python run without asking; delete, move and unknown tools still ask; entered only on purpose, never from Shift+Tab, an `a` answer or a project settings file). Answering `a` ("don't ask again") remembers
+    all edits or a plain command prefix for the conversation, never for interpreters, shells, compound
+    commands, `run_python`, delete or move. A preview that cannot be shown, or a command over 20,000
+    characters, is declined with the reason.
+  - **Default protections.** Writes, edits, deletes and moves of the whole `.git`, of `.agentx/*` in the
+    project, and (when the home folder is reachable) of `~/.agentx`, git config files and common shell
+    profiles are always refused, in every mode. Deny and allow rules are a convenience layer, not a secrets
+    vault: `grep`, `find_files` and `list_directory` can still read a file a read rule denies, and
+    `run_shell` / `run_python` are not covered by path rules.
+  - **Settings and rules.** `~/.agentx/settings.json` and `.agentx/settings.json` (`model`, `mode`,
+    `addDirs`, `permissions.allow` / `deny` as `tool:glob`). Project settings are untrusted: an
+    `accept-edits` mode and `addDirs` outside the project are ignored with a warning, and the project's
+    allow rules are listed at startup and honoured only if you answer yes to "Honour these project rules?"
+    (deny rules from the project are always kept).
+  - **`AGENTX.md` context.** `~/.agentx/AGENTX.md` and the files from the working folder up through its
+    parents are passed to the model as instructions (nearest last, 20,000 characters); `/init` drafts one.
+  - **Sessions.** Conversations autosave to `~/.agentx/sessions/` and resume with `--continue`,
+    `--resume` and `/resume`. The files hold tool results (file contents) and are not encrypted.
+  - **Team jobs.** For a big job the chat agent can call `start_team_job` (the user approves each hand-off,
+    unless you run in auto mode or have allowed it with your own rule; `/team <task>` does it by hand): a
+    `Supervisor` plans up to six steps and three helpers (explorer reads,
+    coder edits, runner runs commands) carry them out one at a time. Every helper call goes through the same
+    gate, modes, deny rules and prompts as the chat; the result joins the conversation. A deny rule
+    `start_team_job:*` turns it off.
+  - **Helper models for team jobs.** Allow extra models with `teamModels` (in either settings file; a folder's
+    list replaces yours) or `/team-models`, and the supervisor picks per step which model a helper runs on
+    (Claude and GPT can be mixed when both keys are set). Every helper then names its model, the chat's own
+    included (`coder@claude-opus-5-5`, `runner@claude-sonnet-5-5`), with the same wording for every model so
+    none is favoured, and each model can carry a note on what it is for (`gpt-6.1-sol="hard coding"`), which
+    the supervisor reads; without one, the chat model is asked once what each model is good for and its
+    answer is kept as an `auto:` note (`/team-models describe` asks again). The approval box lists the models. A list that comes from a project's settings file
+    is announced at startup. With no list nothing changes. Team helpers now get 100 steps (was 25); a helper
+    that runs out of steps hands on its partial work instead of failing the step, and one message may run up to
+    5 team jobs, so a big task continues batch after batch without you typing "continue". See the guide.
+  - **Project memory.** Each folder can have its own model: the first time you trust a folder, `agentx`
+    writes `.agentx/settings.json` with the model in use, and `/model <name> --folder` changes it (plain
+    `/model <name>` stays for the session). The app keeps a work log in `.agentx/log.md`, written by the app
+    (not the model) after each finished turn with the request, the files changed, the commands run and the
+    start of the answer; keys are hidden and the file is readable by its owner only where the platform
+    allows. A fresh conversation (a start without `--continue` / `--resume`, and `/clear`) starts from the
+    newest entries of that log, and a very long conversation is summarised before it overflows (the older
+    messages become one summary; the last six of your messages stay as they were). Not kept for the home
+    folder or a drive root. See the guide.
+  - **Slash commands.** `/help`, `/clear`, `/model`, `/mode`, `/settings`, `/resume`, `/sessions`, `/init`,
+    `/team`, `/team-models`, `/exit`. Typing `/` pops up the list with a one-line description of each. The
+    first run writes `~/.agentx/settings.json` with the model in use, once it is built, so there is a file to
+    edit; `/settings` shows what is in force and where the files are. A `"model": "(no model)"` line that an
+    earlier build of this release could write there is ignored with a warning to delete it.
+  - **Trust and menus.** The first start in a folder asks whether you trust it ("Accessing workspace", Yes /
+    No); nothing from the folder (`AGENTX.md`, project settings) is read before you answer, and the answer is
+    kept in `~/.agentx/trusted.json`. Choices are numbered menus you move through with the arrow keys and
+    confirm with Enter (or a number, or `y` / `a` / `n`): the approval prompt, the folder question and the
+    `/resume` list. Without a terminal they fall back to typed answers.
+  - **A prompt that looks alive.** The input prompt is coloured and its cursor blinks while it waits for you.
+  - **Progress.** While the agent works, a spinner with the seconds elapsed shows what it is doing
+    ("Thinking...", "Running run_python... 12s"). It is paused while a prompt waits and drawn only on a
+    terminal. Python code may run for 2 minutes and shell commands for 5 (the framework's defaults, 10 s and
+    30 s, stopped web fetches and test runs); time spent waiting for approval does not count.
+- **`Session.stream(user_input, **kw)`**: like `Session.invoke`, but yields the runner's events and absorbs the
+  result on the final `completion` event. A turn abandoned before then is not recorded.
+- **New base dependency: `prompt_toolkit>=3.0`** (the input line: history, multi-line, completion, status
+  bar). `rich` was already a dependency.
+
+### Fixed
+
+- **A conversation can continue after a run that ended on a final answer given as a function call.** With
+  function calling the model delivers its answer as a call (`React_` or `respond`) and the run ended
+  without a result for it, so the next turn was rejected by OpenAI ("An assistant message with
+  'tool_calls' must be followed by tool messages" / "No tool output found for function call"). The history
+  a run returns now closes that call, and a history saved by an older version is repaired when resumed.
+  This affects `Session` and `chat_history` users as well as the CLI.
+- **`edit_file` no longer rewrites a file's line endings.** It read and wrote through the platform's newline
+  translation, so on Windows an LF file came back CRLF and on Linux and macOS a CRLF file came back LF, with
+  every line changed. It now keeps every byte outside the edit. A model's bare newlines in `find` and
+  `replace` are put in the file's own ending (CRLF if the file mostly uses it), so CRLF files can be edited
+  across lines.
+
+## [3.6.2] - 2026-10-09
+
+### Added
+
+- **`Supervisor(ask_when_done=True)` / `follow_up=True`** (and the same on `AsyncSupervisor`): when a
+  round's answer is ready the framework itself asks the operator "What should I do next?" through the
+  `ask_user` asker (the answer, the outcome and the question in one prompt) and returns the reply in
+  `SupervisorResult.next_step`. `follow_up=True` runs another round on each reply, with the earlier
+  results as context, until the operator replies blank or with a closing word (any of `done`, `stop`,
+  `quit`, `exit`, `no`, `nothing`, `that's all`, `that's it`, `all done`, `nope`, `bye`, `goodbye`,
+  `thanks`, `thank you`, `no thanks`, `no thank you`, `done thanks`, `done thank you`, `nothing thanks`,
+  `stop thanks`; case-insensitive; apostrophes (`thats all` works), commas, extra spaces and trailing `.`, `!`, `?` ignored); `max_follow_ups` (default
+  5) bounds it and `SupervisorResult.rounds` lists the rounds. Asked whatever the outcome. The
+  checkpoint uses no `max_questions` slot and is never saved to memory; only round 1's result is.
+  New `checkpoint` and `round` stream events. Either setting needs `ask_user`. With `ask_when_done`
+  on, the Supervisor asks itself, so the planner and the helpers are told not to ask "what next?"
+  (no double question); the built-in terminal prompt puts the question first.
+
+### Fixed
+
+- **"When done, ask me" now reaches `ask_user`.** With `ask_user=True` and a task that said to ask the
+  operator what to do when finished, the helper wrote the question into its answer and the run ended
+  with nobody to answer. A helper's instruction covered only a missing fact; it now also covers a task
+  that tells it to check with the user, and says to call `ask_user` at that point and act on the reply.
+  The planner is told to put that instruction in the step's query rather than plan a step that only
+  asks.
+
+- A planner-defined helper built with no tools (a research step the planner forgot to give `web`) is
+  now called out in the verbose `[spawn]` line ("no tools, so it can only reason"). The planner is
+  reminded, as the last rule of the helper instructions, to give every `new_agent` the tools its job
+  needs, and `capabilities` is accepted as an alias for `tools` in a `new_agent` (the 3.5 spelling).
+- The verbose line "has the same tools as the registered specialist" no longer fires because both
+  agents were given `ask_user`.
+
+### Changed
+
+- **The vector-store clients are core dependencies.** `chromadb`, `qdrant-client` and `psycopg[binary]`
+  now install with `pip install agentx-dev`, so `ChromaVectorStore`, `QdrantVectorStore` and
+  `PgVectorStore` work without an extra. `[chroma]`, `[qdrant]` and `[pgvector]` remain as aliases.
+  The base install is larger (chromadb brings onnxruntime and others); `anthropic`, `mcp` and
+  `opentelemetry` are still extras.
+- The planner's catalog lists each registered agent's tools under its description (framework tools
+  `ask_user` and `delegate` left out, long lists cut at 12), so a description no longer has to say
+  that an agent can write files. Registered agents whose runner has no tool registry are unchanged.
+- The verbose `[spawn]` line ends with `+ ask_user` for a helper that can ask. `result.spawned` is
+  unchanged.
+
+### Docs
+
+- Sub-agents guide: how to let helpers write files (`capabilities={"web", "files"}` and
+  `allowed_paths`), the capability words, and asking at a checkpoint; FAQ entry.
+
 ## [3.6.1] - 2026-10-09
 
 ### Fixed

@@ -21,14 +21,20 @@ def _is_missing(error: BaseException, modules: Tuple[str, ...]) -> bool:
 
 
 def optional_import_error(feature: str, error: BaseException, *, modules: Tuple[str, ...],
-                          pip: str, extra: str = "") -> ImportError:
+                          pip: str, extra: str = "", core: bool = False) -> ImportError:
     """The ``ImportError`` to raise (``from error``) when ``feature``'s package fails to import.
 
     ``modules`` are the top-level module names whose absence means "not installed", ``pip`` is
-    the requirement to install, ``extra`` the agentx-dev extra that includes it."""
+    the requirement to install, ``extra`` the agentx-dev extra that includes it. ``core`` marks a
+    package that ``pip install agentx-dev`` already brings (the vector-store clients), so the
+    advice is to install agentx-dev itself."""
     if _is_missing(error, modules):
-        cmd = f'python -m pip install "agentx-dev[{extra}]"' if extra else f"python -m pip install {pip}"
-        also = f" (or: python -m pip install {pip})" if extra else ""
+        if core:
+            cmd, also = "python -m pip install --upgrade agentx-dev", f" (or: python -m pip install {pip})"
+        elif extra:
+            cmd, also = f'python -m pip install "agentx-dev[{extra}]"', f" (or: python -m pip install {pip})"
+        else:
+            cmd, also = f"python -m pip install {pip}", ""
         return ImportError(
             f"{feature} requires the {pip} package, which is not installed. "
             f"Install it with: {cmd}{also}. "
