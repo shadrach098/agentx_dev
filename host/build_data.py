@@ -22,6 +22,7 @@ OUT = ROOT / "host" / "data.js"
 NAV = [
     ("Home", [
         ("index", None, "Overview"),                # rendered from JS
+        ("whats-new", DOCS_DIR / "whats-new.md", "What's new"),
         ("getting-started", DOCS_DIR / "getting-started.md", None),
         ("use-cases", DOCS_DIR / "use-cases.md", None),
     ]),
