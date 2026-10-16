@@ -489,6 +489,9 @@ result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"
       ? currentSlug.slice(0, currentSlug.lastIndexOf("/"))
       : "";
     return md.replace(/\]\(([^)]+)\)/g, (match, href) => {
+      // "#section" in a page means a heading on that page (as on GitHub); the router reads "#page#section".
+      const section = /^#([^#\/]+)$/.exec(href);
+      if (section && !DOCS[section[1]]) return `](#${currentSlug}#${section[1]})`;
       if (/^(https?:|mailto:|#|\/)/.test(href)) return match;
       if (!/\.md(#.*)?$/.test(href)) return match;
       const [path, anchor] = href.split("#");
