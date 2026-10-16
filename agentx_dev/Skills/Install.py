@@ -43,6 +43,8 @@ ALLOWED_HOSTS = {"api.github.com", "codeload.github.com", "github.com"}
 _GITHUB = re.compile(
     r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?(?:/tree/([^/]+)(?:/(.+?))?)?/?$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+# Windows treats these names (with or without an extension) as devices in every folder.
+_DEVICE_NAME = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", re.IGNORECASE)
 
 HttpGet = Callable[[str, int, Optional[str]], bytes]
 
@@ -157,23 +159,28 @@ def extract_zip(data: bytes, dest: Path) -> Path:
                 raise SkillInstallError("The archive has an unsafe path, so nothing was installed.")
             if info.file_size > MAX_FILE_BYTES:
                 continue                                   # one huge file is skipped, not unpacked
+            if any(_DEVICE_NAME.match(part) for part in parts):
+                continue                                   # on Windows "CON" or "nul.txt" is the console, not a file
             target = dest.joinpath(*parts)
             try:
                 target.resolve().relative_to(base)
             except ValueError:
                 raise SkillInstallError("The archive has an unsafe path, so nothing was installed.") from None
-            target.parent.mkdir(parents=True, exist_ok=True)
             written = 0
-            with archive.open(info) as source, open(target, "wb") as out:
-                while True:
-                    chunk = source.read(64 * 1024)
-                    if not chunk:
-                        break
-                    written += len(chunk)
-                    total += len(chunk)
-                    if written > MAX_FILE_BYTES or total > MAX_TOTAL_BYTES:
-                        raise SkillInstallError("The archive unpacks to more than the limit, so it was stopped.")
-                    out.write(chunk)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as source, open(target, "wb") as out:
+                    while True:
+                        chunk = source.read(64 * 1024)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        total += len(chunk)
+                        if written > MAX_FILE_BYTES or total > MAX_TOTAL_BYTES:
+                            raise SkillInstallError("The archive unpacks to more than the limit, so it was stopped.")
+                        out.write(chunk)
+            except OSError as e:
+                raise SkillInstallError(f"The archive could not be unpacked ({type(e).__name__}).") from None
     tops = [p for p in dest.iterdir()]
     return tops[0] if len(tops) == 1 and tops[0].is_dir() else dest
 
@@ -245,10 +252,13 @@ def discover(root: Path, subpath: str = "") -> Tuple[List[Candidate], List[str]]
             dirnames[:] = []                               # a skill's sub-folders are its files, not more skills
             try:
                 skill = load_skill(here)
+                listing = _files_of(here)
             except SkillFormatError as e:
                 problems.append(f"{one_line(shown, 60)}: {e}")
                 continue
-            listing = _files_of(here)
+            except Exception as e:                         # one unreadable folder must not hide the others
+                problems.append(f"{one_line(shown, 60)}: could not be read ({type(e).__name__})")
+                continue
             if listing is None:
                 problems.append(f"{one_line(shown, 60)}: too big (over the file limits)")
             elif skill.name in names:

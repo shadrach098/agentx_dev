@@ -96,11 +96,22 @@ def parse_skill_md(text: str) -> Tuple[Dict[str, object], str]:
         raise SkillFormatError("SKILL.md has no --- front matter")
     try:
         meta = yaml.safe_load(match.group(1))
-    except yaml.YAMLError:
+    except Exception:        # YAMLError, RecursionError on deeply nested brackets, ValueError on a bad date...
         meta = None
     if not isinstance(meta, dict):
         meta = _loose_meta(match.group(1))
     return meta, text[match.end():].strip()
+
+
+def _text(meta: Dict[str, object], key: str) -> str:
+    """``meta[key]`` as text. Only plain scalars: turning a list or mapping into text would expand YAML aliases
+    (a few hundred bytes of ``&a`` / ``*a`` lines can stand for billions of values)."""
+    value = meta.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float, bool)):
+        return str(value)
+    raise SkillFormatError(f"{key} in the front matter is not text")
 
 
 def _names(value: object) -> Tuple[str, ...]:
@@ -146,10 +157,10 @@ def load_skill(folder: Path, kind: str = "user") -> Skill:
     if b"\x00" in data:
         raise SkillFormatError("SKILL.md is binary")
     meta, body = parse_skill_md(data.decode("utf-8", errors="replace"))
-    name = str(meta.get("name") or folder.name).strip()
+    name = (_text(meta, "name") or folder.name).strip()
     if not NAME_RE.match(name):
         raise SkillFormatError(f"{one_line(name, 40)!r} is not a skill name (lower-case letters, digits, hyphens)")
-    description = " ".join(str(meta.get("description") or "").split())
+    description = " ".join(_text(meta, "description").split())
     if not description:
         raise SkillFormatError("no description in the front matter")
     if len(description) > MAX_DESCRIPTION_CHARS:
@@ -180,12 +191,15 @@ class SkillStore:
             except OSError:
                 continue
             for folder in folders:
-                if folder.name.startswith(".") or _is_link(folder):
-                    continue
                 try:
+                    if folder.name.startswith(".") or _is_link(folder):
+                        continue
                     skill = load_skill(folder, kind)
                 except SkillFormatError as e:
                     self.problems.append(f"{one_line(folder.name, 60)}: {e}")
+                    continue
+                except Exception as e:           # one odd folder must never stop the agent from starting
+                    self.problems.append(f"{one_line(folder.name, 60)}: could not be read ({type(e).__name__})")
                     continue
                 if skill.name in self.skills:
                     self.problems.append(f"{one_line(folder.name, 60)}: the name {skill.name} is already used by "

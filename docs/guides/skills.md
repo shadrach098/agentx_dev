@@ -41,6 +41,11 @@ runner = AgentRunner(model=llm, agent=AgentType.ReAct, tools=my_tools,
                      skills=Skills("./my-skills"))
 ```
 
+Keep the skills folder **outside** the folders your agent's write tools can reach. A skill is instructions the agent
+will follow; if the agent could write `~/.agentx/skills/x/SKILL.md` itself, it could plant one that every later run
+trusts. The terminal app enforces this (its file tools can never write to `.agentx` or `~/.agentx`); with
+`Permissions.full_access(...)` in your own code, it is up to you not to include the skills folder.
+
 `skills=None` (the default) changes nothing. The list of skills and the tool list are fixed when the runner is
 built; to pick up a skill added later, build a new runner.
 

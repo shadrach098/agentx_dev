@@ -114,7 +114,11 @@ def attach_skills(skills: Any, tools: Optional[Sequence[Any]], addendum: Optiona
     tools = list(tools or [])
     if any(t.name == USE_SKILL for t in tools):
         raise ValueError(f"a tool named {USE_SKILL!r} is already registered; skills= adds it itself")
-    loaded = skills.load(tools)
+    try:
+        loaded = skills.load(tools)
+    except Exception as e:                  # skills are a help: whatever goes wrong, the agent still runs
+        logger.warning("Skills could not be loaded (%s: %s); the agent runs without them", type(e).__name__, e)
+        return tools, addendum
     for problem in loaded.problems:
         logger.warning("Skipped a skill: %s", problem)
     if not loaded.skills:

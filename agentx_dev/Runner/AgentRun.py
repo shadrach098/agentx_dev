@@ -1610,7 +1610,11 @@ class AgentRunner(PersistenceMixin):
                 agentx ships there on first use. The tool list and the
                 list of skills are fixed when the runner is built, so the
                 prompt stays identical from call to call (prompt-cache
-                friendly). Default ``None``: nothing changes.
+                friendly). Keep the skills folder outside the paths the
+                write tools can reach: a skill is instructions the agent
+                follows, so an agent that can write one can plant
+                instructions for later runs. Default ``None``: nothing
+                changes.
 
         Raises:
             TypeError: If both ``Agent`` and ``agent`` are passed, if

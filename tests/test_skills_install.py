@@ -96,6 +96,36 @@ class TestUnpacking:
         assert not (root / "link.txt").exists() and (root / "real.txt").exists()
 
 
+class TestHostileArchives:
+    @pytest.mark.parametrize("name", ["CON", "nul.txt", "sub/AUX", "com1", "LPT9.md", "prn.tar.gz"])
+    def test_windows_device_names_are_not_written(self, tmp_path, name):
+        # on Windows, opening ".../CON" writes to the console instead of making a file
+        root = extract_zip(make_zip([("repo/ok.txt", "1"), (f"repo/{name}", "x" * 50)]), tmp_path)
+        assert (root / "ok.txt").exists()
+        assert not [p for p in root.rglob("*") if p.is_file() and p.name != "ok.txt"]
+
+    def test_names_that_merely_start_like_a_device_are_kept(self, tmp_path):
+        root = extract_zip(make_zip([("repo/console.md", "1"), ("repo/auxiliary.py", "2")]), tmp_path)
+        assert (root / "console.md").exists() and (root / "auxiliary.py").exists()
+
+    def test_a_file_where_a_later_entry_needs_a_folder_is_a_clear_error(self, tmp_path):
+        with pytest.raises(SkillInstallError):
+            extract_zip(make_zip([("repo/a", "file"), ("repo/a/b.txt", "x")]), tmp_path)
+
+    def test_an_unreadable_skill_is_reported_not_raised(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path / "repo")
+        import agentx_dev.Skills.Install as install_module
+        real = install_module.load_skill
+
+        def flaky(folder, *args):
+            if folder.name == "beta":
+                raise PermissionError("denied")
+            return real(folder, *args)
+        monkeypatch.setattr(install_module, "load_skill", flaky)
+        found, problems = discover(repo)
+        assert [c.name for c in found] == ["alpha"] and "PermissionError" in problems[0]
+
+
 class TestRedirects:
     def test_only_github_over_https(self):
         handler = _SameHosts()

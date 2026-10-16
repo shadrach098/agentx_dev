@@ -81,6 +81,32 @@ class TestLoad:
         assert (managed.source, installed.source, claimed.source) == ("bundled", "installed", "project")
 
 
+class TestHostileFrontMatter:
+    def test_deeply_nested_front_matter_is_not_a_crash(self):
+        # 1 KB of brackets recurses PyYAML's composer until RecursionError
+        text = "---\nname: a\ndescription: " + "[" * 500 + "]" * 500 + "\n---\nbody"
+        meta, body = parse_skill_md(text)
+        assert body == "body" and isinstance(meta, dict)
+
+    def test_aliases_that_fan_out_are_never_expanded(self, tmp_path):
+        lines = ["a0: &a0 [z, z, z, z, z, z, z, z, z, z]"]
+        lines += [f"a{i}: &a{i} [" + ", ".join([f"*a{i - 1}"] * 10) + "]" for i in range(1, 12)]
+        folder = tmp_path / "x"
+        folder.mkdir()
+        (folder / "SKILL.md").write_text("---\nname: x\n" + "\n".join(lines) + "\ndescription: *a11\n---\nbody",
+                                         encoding="utf-8")
+        with pytest.raises(SkillFormatError):      # and it returns at once instead of building 10**12 leaves
+            load_skill(folder)
+
+    @pytest.mark.parametrize("front", ["name: [a, b]\ndescription: d", "name: a\ndescription: {x: 1}"])
+    def test_a_name_or_description_that_is_not_text_is_refused(self, tmp_path, front):
+        folder = tmp_path / "x"
+        folder.mkdir()
+        (folder / "SKILL.md").write_text(f"---\n{front}\n---\nbody", encoding="utf-8")
+        with pytest.raises(SkillFormatError):
+            load_skill(folder)
+
+
 class TestStore:
     def test_lists_sorted_and_reports_problems(self, tmp_path):
         make_skill(tmp_path, "zeta")
@@ -92,6 +118,20 @@ class TestStore:
         store = SkillStore([(tmp_path, "user")])
         assert [s.name for s in store.all()] == ["alpha", "zeta"]
         assert len(store.problems) == 1 and store.problems[0].startswith("broken:")
+
+    def test_an_unexpected_error_on_one_folder_is_a_problem_not_a_crash(self, tmp_path, monkeypatch):
+        make_skill(tmp_path, "good")
+        make_skill(tmp_path, "bad")
+        import agentx_dev.Skills.Store as store_module
+        real = store_module.load_skill
+
+        def flaky(folder, kind="user"):
+            if folder.name == "bad":
+                raise PermissionError("denied")
+            return real(folder, kind)
+        monkeypatch.setattr(store_module, "load_skill", flaky)
+        store = SkillStore([(tmp_path, "user")])
+        assert [s.name for s in store.all()] == ["good"] and "PermissionError" in store.problems[0]
 
     def test_missing_folder_is_fine(self, tmp_path):
         assert SkillStore([(tmp_path / "nope", "user")]).all() == []

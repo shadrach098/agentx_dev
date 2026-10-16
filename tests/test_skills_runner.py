@@ -86,6 +86,16 @@ class TestAttach:
         assert "exploring-a-project" not in runner.system_addendum      # nothing was created, so nothing is listed
 
 
+class TestFailureNeverStopsTheAgent:
+    def test_a_failure_while_loading_skills_is_logged_and_the_runner_still_builds(self, tmp_path, monkeypatch, caplog):
+        def boom(self, tools):
+            raise RuntimeError("disk on fire")
+        monkeypatch.setattr(Skills, "load", boom)
+        runner = build(tmp_path, Skills(tmp_path / "skills"), system_addendum="ROLE")
+        assert runner.registry.has("read_path") and not runner.registry.has("use_skill")
+        assert runner.system_addendum == "ROLE" and "disk on fire" in caplog.text
+
+
 class TestStablePrompt:
     def test_two_runners_from_one_folder_have_identical_prompts_and_tool_order(self, tmp_path):
         one = build(tmp_path, Skills(tmp_path / "skills"))
