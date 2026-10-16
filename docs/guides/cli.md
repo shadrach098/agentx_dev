@@ -265,19 +265,19 @@ When a tool raises an error, the framework logs it with a full traceback. `agent
 
 A line that starts with `/` followed by a plain name is a command and is never sent to the model. `/tmp/build.log fails` or `/README.md` is a message, not a command. An unknown command prints the list.
 
-| Command | Does |
-|---|---|
-| `/help` | List the commands. |
-| `/clear` | Start a new conversation. Clears the "don't ask again" grants and undoes an edit grant. |
-| `/model [name] [--folder]` | Show or switch the model. The conversation is kept. A model that cannot be built (no key) leaves the old one in place. `/model <name>` lasts for this session only; `/model <name> --folder` also saves it for this folder (see [Project memory](#project-memory)). |
-| `/mode [name]` | Show or set the mode: `default`, `accept-edits`, `plan` or `auto`. |
-| `/settings` | Show the model, mode, rules and helper models in force, and the paths of your settings file and the project's. |
-| `/resume [id]` | Load a saved conversation (a list to pick from, or an id). |
-| `/sessions` | List this folder's saved conversations. |
-| `/init` | Ask the model to draft an `AGENTX.md` for this project. |
-| `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage. |
-| `/team-models [name[=use] ...\|clear] [--folder]` | Show or set the extra models team helpers may run on, with an optional note on what each is for (see [Helper models](#helper-models)). `/team-models <names>` lasts for this session only; with `--folder` it is also saved for this folder. `/team-models clear` empties the list. |
-| `/exit` | Leave (Ctrl+D does the same). |
+| Command | Does | Example |
+|---|---|---|
+| `/help` | List the commands. | `/help` |
+| `/clear` | Save this conversation and start a new one, which begins from the newest entries of the [work log](#the-work-log). Clears the "don't ask again" grants and undoes an edit grant; the mode and your settings rules stay. | `/clear` |
+| `/model [name] [--folder]` | Show or switch the model. The conversation is kept. A model that cannot be built (no key) leaves the old one in place. `/model <name>` lasts for this session only; `/model <name> --folder` also saves it for this folder (see [Project memory](#project-memory)). | `/model claude-opus-5-5 --folder` |
+| `/mode [name]` | Show or set the mode: `default`, `accept-edits`, `plan` or `auto` (see [Modes](#modes)). | `/mode plan` |
+| `/settings` | Show the model, mode, rules and helper models in force, and the paths of your settings file and the project's. | `/settings` |
+| `/resume [id]` | Load a saved conversation: with no id, a list to pick from; with an id, or its first characters, that one. | `/resume 3f9a2c1b` |
+| `/sessions` | List this folder's saved conversations, newest first: date, first message and id. | `/sessions` |
+| `/init` | Ask the model to draft an `AGENTX.md` for this project. Writing it goes through the approval prompt. | `/init` |
+| `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage. | `/team add type hints to every module and run the tests` |
+| `/team-models [name[=use] ...\|describe\|clear] [--folder]` | Show or set the extra models team helpers may run on, with an optional note on what each is for (see [Helper models](#helper-models)). `/team-models <names>` lasts for this session only; with `--folder` it is also saved for this folder. `/team-models describe` asks the chat model to write the missing notes (marked `auto:`). `/team-models clear` empties the list. | `/team-models gpt-6.1-sol="hard coding" claude-sonnet-5-5 --folder` |
+| `/exit` | Save the conversation and leave (Ctrl+D does the same). | `/exit` |
 
 ## Team jobs
 

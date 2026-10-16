@@ -23,10 +23,30 @@ agentx                          # or: python -m agentx_dev
 | **Trust a folder** | The first start in a folder asks whether you trust it. Nothing from the folder (`AGENTX.md`, its settings) is read before you say yes. `.git`, `.agentx` and shell/git config files are never written, in any mode. |
 | **`AGENTX.md`** | Instructions for the model (how to run the tests, the layout, conventions), read from your home folder and from the working folder up. `/init` drafts one. |
 | **Sessions** | Conversations autosave. `--continue`, `--resume [ID]` and `/resume` pick one up again. |
-| **Slash commands** | `/help`, `/clear`, `/model`, `/mode`, `/settings`, `/resume`, `/sessions`, `/init`, `/team`, `/team-models`, `/exit`. Typing `/` shows the list. |
+| **Slash commands** | Eleven commands for the session itself (switch the model, change the mode, resume a conversation, start a team job). Typing `/` shows the list; each is explained [below](#slash-commands). |
 | **Team jobs** | For a big job the agent calls `start_team_job` (or you type `/team <task>`): a supervisor plans up to six steps and three helpers (explorer reads, coder edits, runner runs commands) carry them out through the same approval gate. One message may run up to 5 team jobs, so a big task continues batch after batch. A helper that runs out of its 100 steps hands on its partial work, with every file it changed, and the step after it still runs. |
 | **Helper models** | `teamModels` in the settings, or `/team-models gpt-6.1-sol="hard coding" gpt-5.5`, lets the supervisor choose per step which model a helper runs on (`coder@claude-opus-5-5`); Claude and GPT can be mixed. Every model gets the same wording, so none is favoured. Each model can carry a note on what it is for; without one, the chat model writes an `auto:` note (`/team-models describe` asks again). |
 | **Project memory** | Each folder keeps its own model (`/model <name> --folder`) and a work log in `.agentx/log.md`. A fresh conversation starts from the newest log entries, and a very long conversation is summarised before it overflows. |
+
+### Slash commands
+
+A line that starts with `/` and a command name runs the command; it is never sent to the model. Typing `/` shows
+the list with a one-line summary of each. A path such as `/README.md` or `/tmp/build.log fails` is not a command, it
+goes to the model as a normal message. An unknown command prints the list.
+
+| Command | What it does | Example |
+|---|---|---|
+| `/help` | Lists every command with a one-line summary. | `/help` |
+| `/clear` | Saves the current conversation and starts a new one, which begins from the newest entries of the folder's work log. "Don't ask again" grants are cleared; your mode and your settings rules stay. Earlier conversations stay on disk for `/resume`. | `/clear` |
+| `/model [name] [--folder]` | With no name, shows the model in use. With a name, switches to it and keeps the conversation. Without `--folder` the switch lasts for this session; with `--folder` it is also saved in `.agentx/settings.json`, so this folder starts on that model next time. A model that cannot be built (no API key, unknown name) leaves the old one in place. | `/model claude-opus-5-5 --folder` |
+| `/mode [name]` | With no name, shows the mode. With a name, sets it: `default` (asks before edits and commands), `accept-edits` (edits run without asking, commands still ask), `plan` (reads only, and answers with a plan instead of changing anything) or `auto` (edits, commands and team jobs run without asking; delete and move still ask, and the deny rules and protected files still apply). `auto` is only set on purpose, never by Shift+Tab. | `/mode accept-edits` |
+| `/settings` | Shows what is in force: the model, the mode, the allow and deny rules, the helper models with their notes, and the paths of your settings file and the folder's. | `/settings` |
+| `/resume [id]` | Loads a saved conversation from this folder. With no id it lists them (newest first) to pick from; with an id, or its first few characters, it loads that one. | `/resume 3f9a2c1b` |
+| `/sessions` | Lists this folder's saved conversations: date, the first message as a title, and the id to give `/resume`. | `/sessions` |
+| `/init` | Asks the model to look at the project and draft an `AGENTX.md` (how to run the tests, the layout, conventions). The write goes through the approval prompt like any other edit. | `/init` |
+| `/team <task>` | Hands a big job to a team: a supervisor plans the steps, then explorer, coder and runner helpers carry them out. You are asked once before it starts (in `auto` mode it starts straight away). With no task it prints the usage. | `/team add type hints to every module and run the tests` |
+| `/team-models ...` | Shows or sets the extra models team helpers may run on. `/team-models` shows the list; `/team-models a b` sets it (up to 4 extra models besides the chat model), with an optional note on what each is for (`name="hard coding"`); `describe` asks the chat model to write the missing notes (marked `auto:`); `clear` empties the list. Add `--folder` to save it for this folder. | `/team-models gpt-6.1-sol="hard coding" claude-sonnet-5-5 --folder` |
+| `/exit` | Saves the conversation and leaves. Ctrl+D does the same. | `/exit` |
 
 Read the [agentx guide](guides/cli.md). Recipes: [cookbook patterns 34–37](cookbook/patterns.md), the
 [FAQ](cookbook/faq.md) and [troubleshooting](cookbook/troubleshooting.md). Not in this version: token-by-token
