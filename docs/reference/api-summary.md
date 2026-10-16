@@ -24,7 +24,7 @@ from agentx_dev import X
 
 | Symbol | Kind | Doc |
 |---|---|---|
-| `AgentRunner` | class | Sync runner (3.1: `bind_tools_natively`, `parallel_tool_workers`; 3.2: constructor `output_schema=` — typed output coerced via native FC after the loop, on `completion.output`; 3.4: `invoke` / `stream` take `media=[...]`) |
+| `AgentRunner` | class | Sync runner (3.1: `bind_tools_natively`, `parallel_tool_workers`; 3.2: constructor `output_schema=` — typed output coerced via native FC after the loop, on `completion.output`; 3.4: `invoke` / `stream` take `media=[...]`; new: constructor `skills=True` / `Skills(...)` — a `use_skill` tool and a skill index in the system prompt, see the [skills guide](../guides/skills.md)) |
 | `AsyncAgentRunner` | class | Async runner with concurrent tool dispatch (3.2: constructor `output_schema=` too; 3.4: `ainvoke` / `astream` take `media=[...]`) |
 | `Persistence` *(3.5)* | dataclass | Opt-in settings for runs that keep working through errors: `max_minutes`, `reflect_after`, `max_reflections`, `compact_at_tokens`, `keep_recent_turns`, `max_replans`, `max_turns`, `patient_retries`. Pass as `persistence=` to a runner or Supervisor |
 | `AgentType` | enum | `ReAct` / `Chain_of_Thought` / `Zero_Shot` / `Few_Shot` / `Instruction_Tuned` |

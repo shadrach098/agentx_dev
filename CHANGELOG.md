@@ -4,6 +4,22 @@ All notable changes to `agentx-dev` are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semver](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Skills.** `AgentRunner(..., skills=True)` (and `AsyncAgentRunner`) gives an agent a `use_skill` tool and a short
+  list of skills at the end of its system prompt; the model reads a skill's full text only when it needs it. The
+  list is built the same way every time, so the prompt stays identical for the provider's prompt cache. Five
+  skills ship with agentx (`exploring-a-project`, `changing-files`, `running-code`, `web-research`,
+  `delegating-work`) and are created in `~/.agentx/skills/` on first use; edits and deletions are respected. The
+  agent's own tools are described by a generated `custom-tools` skill. `SKILL.md` folders written for Claude work
+  as they are. See the new [guide](docs/guides/skills.md).
+- **`agentx` terminal app:** skills are on by default; `/skills` lists them, `/skills install <github link or
+  folder>` installs after showing what it found (the exact commit is downloaded and recorded; archives are
+  unpacked with path, link and size limits), `/skills remove <name>` deletes one. Only the user can install: the
+  agent has no tool for it, and `.agentx/*` and `~/.agentx` stay protected from its file tools.
+
 ## [3.7.0] - 2026-10-15
 
 ### Added

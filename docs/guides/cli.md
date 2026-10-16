@@ -243,6 +243,8 @@ They are read when `agentx` starts and again on `/clear` and `/resume`.
 
 `/init` asks the model to look at the project and write an `AGENTX.md` in the current folder (it uses `write_file`, so you see the file as a diff first, and if one exists it tells you instead of overwriting). The new file is used from the next conversation (`/clear`).
 
+The agent also reads **skills**: short guides in `~/.agentx/skills` for kinds of work (exploring a project, changing files safely, running commands). The built-in ones are created the first time you run `agentx`; see [Skills](skills.md).
+
 ## Conversations
 
 Each conversation is saved as it goes, to `~/.agentx/sessions/<project>/<UTC timestamp>-<id>.json`, where `<project>` is the absolute folder with separators and colons replaced by `-`, followed by `-` and a short hash of the full path (so `C:\a-b` and `C:\a\b` keep separate conversations). It is saved after every turn and when you leave. An empty conversation leaves no file.
@@ -277,6 +279,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/init` | Ask the model to draft an `AGENTX.md` for this project. Writing it goes through the approval prompt. | `/init` |
 | `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage. | `/team add type hints to every module and run the tests` |
 | `/team-models [name[=use] ...\|describe\|clear] [--folder]` | Show or set the extra models team helpers may run on, with an optional note on what each is for (see [Helper models](#helper-models)). `/team-models <names>` lasts for this session only; with `--folder` it is also saved for this folder. `/team-models describe` asks the chat model to write the missing notes (marked `auto:`). `/team-models clear` empties the list. | `/team-models gpt-6.1-sol="hard coding" claude-sonnet-5-5 --folder` |
+| `/skills [install <link>\|remove <name>]` | List the skills the agent can read, or add one from a `https://github.com/<owner>/<repo>` link or a folder (you are shown what it contains and asked first), or remove one. See [Skills](skills.md). | `/skills install https://github.com/obra/superpowers` |
 | `/exit` | Save the conversation and leave (Ctrl+D does the same). | `/exit` |
 
 ## Team jobs
