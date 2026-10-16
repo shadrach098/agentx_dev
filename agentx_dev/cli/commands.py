@@ -165,6 +165,22 @@ def _team_models(ctx: Any, arg: str) -> None:
     ctx.set_team_models(names, folder=folder)
 
 
+SKILLS_USAGE = "Usage: /skills | /skills install <github link or folder> | /skills remove <name>"
+
+
+def _skills(ctx: Any, arg: str) -> None:
+    word, _, rest = arg.strip().partition(" ")
+    rest = rest.strip()
+    if not word:
+        ctx.show_skills()
+    elif word.lower() == "install" and rest:
+        ctx.install_skills(rest)
+    elif word.lower() == "remove" and rest:
+        ctx.remove_skill(rest)
+    else:
+        ctx.error(SKILLS_USAGE)
+
+
 def _exit(ctx: Any, arg: str) -> None:
     ctx.request_exit()
 
@@ -188,6 +204,7 @@ COMMANDS = (
     Command("team", "Hand a big job to a team of helpers: /team <task>", _team),
     Command("team-models", "Models team helpers may also use: /team-models [name[=use] ...|clear] [--folder]",
             _team_models),
+    Command("skills", "List the skills, or add one: /skills [install <link>|remove <name>]", _skills),
     Command("exit", "Leave", _exit),
 )
 _BY_NAME = {command.name: command for command in COMMANDS}

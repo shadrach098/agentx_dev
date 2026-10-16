@@ -24,6 +24,7 @@ from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_
 from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, describe_prompt, is_auto_note,
                                    parse_descriptions, parse_team_models, team_models_line, usable_team_models)
 from agentx_dev.cli.models import model_label as label_of
+from agentx_dev.cli.safepaths import safe_location
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
 from agentx_dev.cli.settings import (PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
@@ -32,6 +33,8 @@ from agentx_dev.cli.team import MAX_TEAM_JOBS_PER_MESSAGE, make_team_tool, run_t
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker
+from agentx_dev.Skills import (SkillInstallError, Skills, discover, install, open_source, preview_text,
+                               remove_skill)
 
 INIT_PROMPT = (
     "Look at this project: list the top-level files, read the README and the main config files. Then write a "
@@ -195,6 +198,11 @@ class ChatApp:
         self.tools = [*self.base_tools,
                       self._within_job_limit(gate_tool(make_team_tool(self._start_team_job), self.gate))]
         self._memory_on = is_project_folder(self.cwd, self.home)    # no log or folder settings for home / a drive root
+        # The agent's skills: the user's own folder, and (read-only, untrusted) this project's, when it is a real
+        # project and neither .agentx nor .agentx/skills is a link that leads out of it.
+        project_skills = ([self.cwd / ".agentx" / "skills"]
+                          if self._memory_on and safe_location(self.cwd, "skills") else [])
+        self.skills = Skills.default(self.home, project_dirs=project_skills)
         self._newly_trusted = bool(newly_trusted)    # main: the user said yes to the trust question in this run
         self.project_settings_created: Optional[Path] = None
         self._log_warned = False
@@ -367,7 +375,8 @@ class ChatApp:
         # effects. No timeout is set anywhere: an approval prompt waits for the user as long as it takes.
         # One tool call at a time: one approval prompt open, on the main thread, and edits made in order.
         return AgentRunner(model=model, agent=AgentType.ReAct, tools=self.tools, system_addendum=self.addendum,
-                           max_iterations=50, auto_cache=False, verbose=False, parallel_tool_workers=1)
+                           max_iterations=50, auto_cache=False, verbose=False, parallel_tool_workers=1,
+                           skills=self.skills)
 
     def _new_conversation_state(self) -> None:
         """A new conversation is a clean slate for "don't ask again": the session-wide command grants are
@@ -904,6 +913,61 @@ class ChatApp:
             except (EOFError, KeyboardInterrupt):
                 return None
         return str(answer).strip() or None
+
+    # -- skills ---------------------------------------------------------------
+
+    def show_skills(self) -> None:
+        """``/skills``: every skill found on disk, and how to add or remove one."""
+        store = self.skills.store()
+        lines = [f"  {s.name} ({s.source}) - {self._safe(s.description, 100)}" for s in store.all()]
+        lines += [f"  Skipped: {self._safe(problem, 160)}" for problem in store.problems[:5]]
+        shown = "\n".join(lines) if lines else "  none yet; the built-in ones are created when a conversation starts"
+        self.notice(f"Skills (the agent reads one when its work matches):\n{shown}\n"
+                    f"They live in {self._safe(self.skills.dir, 300)}. /skills install <github link or folder> adds "
+                    "more; /skills remove <name> deletes one. A new conversation (/clear) picks up changes.")
+
+    def install_skills(self, link: str) -> None:
+        """``/skills install <link>``. Only the user can start this (no tool does), and nothing is saved until
+        they have seen what was found and said yes."""
+        self.notice("Downloading...")
+        try:
+            with open_source(link) as fetched:
+                found, problems = discover(fetched.root, fetched.subpath)
+                if not found:
+                    skipped = "".join(f"\n  {self._safe(p, 160)}" for p in problems[:5])
+                    self.error("No skills found there (a skill is a folder with a SKILL.md file)." + skipped)
+                    return
+                self.notice(preview_text(fetched, found, problems))
+                if not self._yes(f"Install {len(found)} skill{'s' if len(found) != 1 else ''} into "
+                                 f"{self._safe(self.skills.dir, 200)}? [y/N] "):
+                    self.notice("Nothing was installed.")
+                    return
+                names = install(found, self.skills.dir, fetched)
+        except SkillInstallError as e:
+            self.error(self._safe(e, 400))
+            return
+        self.notice("Installed: " + ", ".join(names) + ". Start a new conversation (/clear) to use "
+                    + ("them." if len(names) != 1 else "it."))
+
+    def remove_skill(self, name: str) -> None:
+        """``/skills remove <name>``: deletes a skill folder from the user's skills folder after a yes."""
+        skill = self.skills.store().skills.get(name.strip())
+        if skill is None or skill.folder is None:
+            self.error(f"No skill named {self._safe(name, 60)!r}. /skills lists them.")
+            return
+        if skill.source == "project":
+            self.error("That skill belongs to this project's folder. Delete .agentx/skills/<name> yourself if you "
+                       "want it gone.")
+            return
+        if not self._yes(f"Remove the skill {skill.name} from {self._safe(self.skills.dir, 200)}? [y/N] "):
+            self.notice("Nothing was removed.")
+            return
+        try:
+            remove_skill(skill.folder.name, self.skills.dir)
+        except SkillInstallError as e:
+            self.error(self._safe(e, 400))
+            return
+        self.notice(f"Removed {skill.name}.")
 
     def _start_team_job(self, task: str, why: str) -> str:
         """The ``start_team_job`` tool: run the team and hand the result text back to the main agent."""
