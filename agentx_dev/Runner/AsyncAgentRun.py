@@ -125,6 +125,7 @@ class AsyncAgentRunner(PersistenceMixin):
         persistence: Optional[Persistence] = None,
         system_addendum: Optional[str] = None,
         delegation: Optional[Any] = None,
+        skills: Optional[Any] = None,
     ):
         """Construct an ``AsyncAgentRunner``. Parameters mirror
         :class:`AgentRunner` -- see that docstring for the full details;
@@ -222,6 +223,10 @@ class AsyncAgentRunner(PersistenceMixin):
                     f"capability from permissions to avoid the conflict."
                 )
             tools = list(default_tools) + list(tools)
+        if skills is not None and skills is not False:
+            # Once, here: the tool list and the skill index stay the same for the life of the runner.
+            from agentx_dev.Skills import attach_skills
+            tools, system_addendum = attach_skills(skills, tools, system_addendum)
         self.Query = ""
         self.Agent = Agent
         self.tools = tools

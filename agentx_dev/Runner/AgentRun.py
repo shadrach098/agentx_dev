@@ -1455,6 +1455,7 @@ class AgentRunner(PersistenceMixin):
         output_schema: Optional[Type[BaseModel]] = None,
         persistence: Optional[Persistence] = None,
         delegation: Optional[Any] = None,
+        skills: Optional[Any] = None,
     ):
         """Construct an ``AgentRunner``.
 
@@ -1601,6 +1602,15 @@ class AgentRunner(PersistenceMixin):
                 sub-agent (clean context, tools clipped to the config's
                 ceiling) and get a short summary back. ``runner.spawned``
                 lists this run's sub-agents. Default ``None``: no tool.
+            skills: ``True`` or a ``Skills(...)``. The runner gets a
+                ``use_skill`` tool and a short list of skills (name and
+                description) at the end of its system addendum; the model
+                reads a skill's full text only when it calls the tool.
+                ``True`` uses ``~/.agentx/skills`` and creates the skills
+                agentx ships there on first use. The tool list and the
+                list of skills are fixed when the runner is built, so the
+                prompt stays identical from call to call (prompt-cache
+                friendly). Default ``None``: nothing changes.
 
         Raises:
             TypeError: If both ``Agent`` and ``agent`` are passed, if
@@ -1656,6 +1666,11 @@ class AgentRunner(PersistenceMixin):
                 )
             tools = list(default_tools) + list(tools)
             auto_sandbox_hint = _build_sandbox_hint(permissions)
+
+        if skills is not None and skills is not False:
+            # Once, here: the tool list and the skill index stay the same for the life of the runner.
+            from agentx_dev.Skills import attach_skills
+            tools, system_addendum = attach_skills(skills, tools, system_addendum)
 
         self.Query = ""
         self.Agent = Agent
