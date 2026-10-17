@@ -5,6 +5,7 @@ from agentx_dev.Runner.Persistence import (
     run_persistent, unrecognized_action_headline,
 )
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
+from agentx_dev.Runner.Trim import coerce_trim_policy as _coerce_trim_policy, trim_tool_results
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
 from typing import Dict, Callable, List, Type, Optional, Any
 from pydantic import BaseModel, Field
@@ -1456,6 +1457,7 @@ class AgentRunner(PersistenceMixin):
         persistence: Optional[Persistence] = None,
         delegation: Optional[Any] = None,
         skills: Optional[Any] = None,
+        trim_results: Optional[Any] = None,
     ):
         """Construct an ``AgentRunner``.
 
@@ -1615,6 +1617,15 @@ class AgentRunner(PersistenceMixin):
                 follows, so an agent that can write one can plant
                 instructions for later runs. Default ``None``: nothing
                 changes.
+            trim_results: ``True`` or a ``TrimPolicy`` (from
+                ``agentx_dev.Runner.Trim``). Every request carries the
+                whole conversation, so a big tool result is paid for
+                again at every later step. With this set, the model is
+                sent a one-line stub in place of each big tool result
+                except the newest few (default: the newest 4 stay
+                whole; results under 800 characters and ``use_skill``
+                results are never stubbed). The saved history is not
+                changed. Default ``None``: nothing is trimmed.
 
         Raises:
             TypeError: If both ``Agent`` and ``agent`` are passed, if
@@ -1772,6 +1783,7 @@ class AgentRunner(PersistenceMixin):
         # After max_iterations and the registry exist: persistent runs override the
         # iteration cap and suspend the tool-result cache (see PersistenceMixin).
         self.persistence = persistence
+        self._trim_policy = _coerce_trim_policy(trim_results)
         self.func: Dict[str, Callable] = self.registry.sync_std
         self.args: Dict[str, Dict] = self.registry.sync_struct
         self._tool_prompt_block = self.registry.prompt_block()
@@ -1931,6 +1943,11 @@ class AgentRunner(PersistenceMixin):
             )
         else:
             logger.info(f"malformed tool args for '{name}'; feeding error back")
+
+    def _model_view(self, messages):
+        """What the model is sent for ``messages``: the same list, or (``trim_results=``) a copy in which old big
+        tool results are stubs. The history itself is never changed."""
+        return trim_tool_results(messages, self._trim_policy) if self._trim_policy is not None else messages
 
     def add_tool(self, tool) -> None:
         """Register ``tool`` on a built runner (used to attach ``delegate`` for the
@@ -2159,7 +2176,7 @@ class AgentRunner(PersistenceMixin):
                 # Multiple tool_use blocks in one turn → concurrent dispatch
                 # via ThreadPoolExecutor. Synthetic "respond" tool ends the loop.
                 call_result = _model_call(lambda: self.model.call_with_tools(
-                    messages=working_history,
+                    messages=self._model_view(working_history),
                     tools=native_tool_specs,
                     force_tool=None,
                 ))
@@ -2392,7 +2409,7 @@ class AgentRunner(PersistenceMixin):
 
             if self.use_function_calling:
                 call_result = _model_call(lambda: self.model.call_with_tools(
-                    messages=working_history,
+                    messages=self._model_view(working_history),
                     tools=[parser_tool_spec],
                     force_tool=parser_tool_name,
                 ))
@@ -2455,12 +2472,12 @@ class AgentRunner(PersistenceMixin):
                     # the default stream_text fallback. Streamed responses are
                     # not retried (a response cannot be replayed half-way).
                     parts: List[str] = []
-                    for chunk in self.model.stream_text(working_history):
+                    for chunk in self.model.stream_text(self._model_view(working_history)):
                         parts.append(chunk)
                         yield {"type": "text_delta", "content": chunk}
                     response = "".join(parts)
                 else:
-                    response = _model_call(lambda: self.model.Initialize(messages=working_history))
+                    response = _model_call(lambda: self.model.Initialize(messages=self._model_view(working_history)))
                 working_history.append({"role": "assistant", "content": response})
                 try:
                     parser_instance = self._resolve_parser_step(response)

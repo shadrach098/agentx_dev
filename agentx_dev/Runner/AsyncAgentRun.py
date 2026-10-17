@@ -10,6 +10,7 @@ Set ``use_function_calling=True`` to route the AgentType parser through
 
 from agentx_dev.Agents import AgentFormattor, AgentCompletion, AgentPrompt
 from agentx_dev.ChatModel import BaseChatModel
+from agentx_dev.Runner.Trim import coerce_trim_policy as _coerce_trim_policy, trim_tool_results
 from agentx_dev.Runner.Persistence import (
     OUTCOME_ITERATION_LIMIT, OUTCOME_STUCK, Persistence, PersistenceMixin, RunBudget,
     budget_event, run_persistent_async, unrecognized_action_headline,
@@ -126,6 +127,7 @@ class AsyncAgentRunner(PersistenceMixin):
         system_addendum: Optional[str] = None,
         delegation: Optional[Any] = None,
         skills: Optional[Any] = None,
+        trim_results: Optional[Any] = None,
     ):
         """Construct an ``AsyncAgentRunner``. Parameters mirror
         :class:`AgentRunner` -- see that docstring for the full details;
@@ -285,6 +287,7 @@ class AsyncAgentRunner(PersistenceMixin):
         # After max_iterations and the registry exist: persistent runs override the
         # iteration cap and suspend the tool-result cache (see PersistenceMixin).
         self.persistence = persistence
+        self._trim_policy = _coerce_trim_policy(trim_results)
         self.func: Dict[str, Callable] = self.registry.sync_std
         self.args: Dict[str, Dict] = self.registry.sync_struct
         self.async_func: Dict[str, Callable] = self.registry.async_std
@@ -484,6 +487,10 @@ class AsyncAgentRunner(PersistenceMixin):
         else:
             logger.info(f"malformed tool args for '{name}'; feeding error back")
 
+    def _model_view(self, messages):
+        """What the model is sent for ``messages`` (see ``AgentRunner._model_view``)."""
+        return trim_tool_results(messages, self._trim_policy) if self._trim_policy is not None else messages
+
     def add_tool(self, tool) -> None:
         """Register ``tool`` on a built runner. See ``AgentRunner.add_tool``."""
         if self.registry.has(tool.name):
@@ -667,7 +674,7 @@ class AsyncAgentRunner(PersistenceMixin):
                 # tool calls in one turn → dispatched concurrently via
                 # asyncio.gather. The synthetic "respond" tool signals done.
                 call_result = await _model_call(lambda: self.model.async_call_with_tools(
-                    messages=working_history,
+                    messages=self._model_view(working_history),
                     tools=native_tool_specs,
                     force_tool=None,
                 ))
@@ -814,7 +821,7 @@ class AsyncAgentRunner(PersistenceMixin):
 
             if self.use_function_calling:
                 call_result = await _model_call(lambda: self.model.async_call_with_tools(
-                    messages=working_history,
+                    messages=self._model_view(working_history),
                     tools=[parser_tool_spec],
                     force_tool=parser_tool_name,
                 ))
@@ -874,7 +881,7 @@ class AsyncAgentRunner(PersistenceMixin):
                 })
                 self._last_function_call_id = tool_call_id
             else:
-                response = await _model_call(lambda: self.model.async_initialize(messages=working_history))
+                response = await _model_call(lambda: self.model.async_initialize(messages=self._model_view(working_history)))
                 working_history.append({"role": "assistant", "content": response})
                 try:
                     parser_instance = self._resolve_parser_step(response)
