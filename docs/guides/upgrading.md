@@ -13,6 +13,16 @@ module stays imported until you do, which shows up as errors like
 
 ---
 
+## Upgrading to the release after 3.7.0 (skills)
+
+**Nothing breaks.** The CHANGELOG lists no changed or removed API.
+
+- **New:** `AgentRunner(..., skills=True)` and `AsyncAgentRunner(..., skills=True)` (or `skills=Skills("./folder")`) give the agent a `use_skill` tool and a short list of skills at the end of its system prompt. The default, `skills=None`, changes nothing: no new tool, no prompt change, no new files. See the [Skills guide](skills.md).
+- **New in `agentx`:** skills are on. The first time you start it after upgrading, it creates five skill folders in `~/.agentx/skills/`, and the agent gets one more tool, `use_skill`, which only reads. Its system prompt gains a short list of skills, so the first request after the upgrade is not served from a prompt cache built before it. `/skills` lists them, `/skills install <github link or folder>` installs more after showing you what it found, `/skills remove <name>` deletes one. Edit the created skills freely: they are never overwritten, and one you delete is not recreated.
+- **New folder:** `~/.agentx/skills/` (and `~/.agentx/skills/.state.json`, the names of the default skills created so far). A project may also keep skills in `<project>/.agentx/skills/`; the terminal app shows them to the agent in a separate block marked as coming from the project, after you have trusted the folder.
+- **If you give an agent write access to your home folder** (`Permissions.full_access(["~"])` and `skills=True`), keep `~/.agentx/skills` outside what its write tools can reach: a skill is instructions the agent follows.
+- **No new dependency.**
+
 ## Upgrading to 3.7.0
 
 **Nothing breaks.** The CHANGELOG lists no changed or removed API for 3.7.0. Two bug fixes change behavior for code that already used `Session`, `chat_history` or `edit_file`, in the direction you would want.

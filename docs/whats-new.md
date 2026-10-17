@@ -3,6 +3,31 @@
 The newest release first. For what to change when you upgrade, see [Upgrading](guides/upgrading.md); every
 change in detail is in the [changelog](https://github.com/shadrach098/agentx_dev/blob/main/CHANGELOG.md).
 
+## Next release — skills
+
+An agent can now read short **skills**: guides for a kind of work ("how to explore a project", "how to change
+files safely"). The prompt carries one line per skill; the model opens the full text only when it needs it, by
+calling a `use_skill` tool. The prompt stays small and is built the same way every time, so the provider's prompt
+cache can reuse it. It works the same with GPT and Claude.
+
+```python
+from agentx_dev import AgentRunner, AgentType, Permissions
+
+runner = AgentRunner(model=llm, agent=AgentType.ReAct,
+                     permissions=Permissions.full_access(["./project"]),
+                     skills=True)        # ~/.agentx/skills; the built-in skills are created there on first use
+```
+
+| Feature | What you get |
+|---|---|
+| **Built-in skills** | Five ship with agentx and are created on first use: `exploring-a-project`, `changing-files`, `running-code`, `web-research`, `delegating-work`. Together they cover every default tool. A skill is listed only when the agent has at least one of its tools. Your edits are never overwritten and a skill you delete stays deleted. |
+| **Your own tools** | Tools no skill covers are described in one generated skill, `custom-tools`, built in memory and never written to disk. |
+| **Install from a link** | In `agentx`: `/skills install https://github.com/obra/superpowers` (or a folder). The exact commit is downloaded, you are shown what was found and asked before anything is saved. `/skills` lists, `/skills remove <name>` deletes. Skills written for Claude work as they are. |
+| **Safe by default** | Only you can install a skill: the agent has no tool for it and its file tools cannot write to `.agentx` or `~/.agentx`. Downloads are unpacked with path, link and size limits. A project's own skills (`.agentx/skills/`) are marked as untrusted and cannot replace yours. |
+| **Opt in** | `skills=None` (the default) changes nothing for existing code. The terminal app turns skills on. |
+
+See the [Skills guide](guides/skills.md) and [Upgrading](guides/upgrading.md).
+
 ## 3.7 — the `agentx` terminal assistant
 
 `pip install agentx-dev` now also installs `agentx`, a coding assistant for your

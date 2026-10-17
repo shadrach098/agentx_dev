@@ -9,6 +9,34 @@ you can paste and run.
 
 ---
 
+## Next release — skills
+
+An agent can now read short **skills**: guides for a kind of work ("how to explore a project", "how to change
+files safely"). The prompt carries one line per skill; the model opens the full text only when it needs it, by
+calling a `use_skill` tool. That keeps the prompt small and — because the list is built the same way every time —
+identical from one request to the next, which is what lets the provider's prompt cache (Anthropic's explicit cache,
+OpenAI's automatic prefix cache) reuse it. It works the same with GPT and Claude.
+
+```python
+from agentx_dev import AgentRunner, AgentType, Permissions
+
+runner = AgentRunner(model=llm, agent=AgentType.ReAct,
+                     permissions=Permissions.full_access(["./project"]),
+                     skills=True)        # ~/.agentx/skills; the built-in skills are created there on first use
+```
+
+| What | Detail |
+|---|---|
+| **Built in** | Five skills ship with agentx and are created on first use: `exploring-a-project`, `changing-files`, `running-code`, `web-research`, `delegating-work`. Together they cover every default tool. A skill is listed only when the agent has at least one of its tools. Edit one and agentx never overwrites it; delete one and it stays deleted. |
+| **Your own tools** | Tools no skill covers are described in one generated skill, `custom-tools` (built in memory, never written to disk). |
+| **Install from a link** | In the `agentx` terminal app: `/skills install https://github.com/obra/superpowers` (or a folder). It downloads the exact commit, shows what it found and asks before saving. `/skills` lists, `/skills remove <name>` deletes. Skills written for Claude work as they are. |
+| **Only you install** | The agent has no tool to install or remove a skill, and its file tools cannot write to `.agentx` or `~/.agentx`. Downloads are unpacked with path, link and size limits. |
+| **Opt in** | `skills=None` (the default) changes nothing for existing code. The terminal app turns skills on. |
+
+[Skills guide](docs/guides/skills.md) · [in the `agentx` command](docs/guides/cli.md#skills). Nothing breaks when you upgrade.
+
+---
+
 ## What's new in 3.7 — the `agentx` terminal assistant
 
 `pip install agentx-dev` now also installs `agentx`, a coding assistant for your
@@ -494,7 +522,9 @@ a command, or deletes or moves anything. Conversations are saved and can be resu
 and does not stream the answer token by token yet. For big jobs it can hand the work to a team of helpers (with
 your approval, unless you run in auto mode or have allowed it with your own rule), and those helpers can run on
 other models you allow (`teamModels` in the settings, or `/team-models`). It also keeps a work log and a
-model for each folder (in `.agentx/`) and summarises long conversations; see the guide.
+model for each folder (in `.agentx/`) and summarises long conversations; see the guide. It also reads
+[skills](docs/guides/skills.md), short guides it opens when its work matches (`/skills` lists them,
+`/skills install <github link>` adds more).
 
 ```bash
 pip install agentx-dev          # Claude also needs: pip install "agentx-dev[anthropic]"
@@ -927,6 +957,41 @@ The `AGENTX.md` shipped with this repo is a template you can adapt
 
 ---
 
+## Skills
+
+`AGENTX.md` tells the model about your project; **skills** tell it how to do a *kind of work* well, in any
+project. A skill is a folder with a `SKILL.md` (a `name`, a one-sentence `description` saying when to use it, then
+the guide). The model sees one line per skill and reads the rest only when it calls `use_skill`:
+
+```python
+from agentx_dev import AgentRunner, AgentType
+from agentx_dev.Skills import Skills
+
+runner = AgentRunner(model=llm, agent=AgentType.ReAct, tools=my_tools,
+                     skills=Skills("./my-skills"))      # or skills=True for ~/.agentx/skills
+```
+
+```markdown
+---
+name: release-notes
+description: How we write release notes - use when asked to summarise a release.
+---
+1. Group changes under Added / Changed / Fixed.
+2. ...
+```
+
+- The built-in skills (files, searching, commands, web, delegation) are created in the folder the first time a
+  runner uses it. Your edits and deletions are respected.
+- The list and the tool list are fixed when the runner is built, so the prompt stays identical between calls.
+- Keep the skills folder outside the paths your agent's write tools can reach: a skill is instructions the agent
+  follows.
+- In the terminal app, `/skills install <github link or folder>` installs skills after showing what it found.
+  Only you can install; the agent cannot.
+
+Full details, limits and the safety rules: [Skills guide](docs/guides/skills.md).
+
+---
+
 ## Connect an MCP server
 
 MCP (Model Context Protocol) lets you plug in tool servers without
@@ -1293,6 +1358,8 @@ print(f"Spent: ${llm.usage.estimate_cost(0.003, 0.015):.4f}")
     exercising the dynamic-spawn machinery and the persistent-state feature.
 - Project-scoped instruction sheet: [`AGENTX.md`](AGENTX.md) —
   read for the conventions this codebase expects.
+- Skills (guides the agent reads on demand, installable from GitHub):
+  [`docs/guides/skills.md`](docs/guides/skills.md)
 - The full framework docs: see [`docs/README.md`](docs/README.md)
   (every class, every method, every operational lever)
 

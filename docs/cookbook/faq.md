@@ -505,6 +505,34 @@ a pointer to the model's system prompt telling it to read via
 `read_path` before acting. See the shipped `AGENTX.md` at the repo
 root for a template.
 
+## What are skills, and how do I turn them on?
+
+A skill is a short guide for a kind of work (how to explore a project, how to
+change files safely). The prompt lists each by name and one-line description;
+the model reads the full text only when it calls `use_skill`. In your own
+code pass `skills=True` (the folder `~/.agentx/skills`) or
+`skills=Skills("./my-skills")` to `AgentRunner` / `AsyncAgentRunner`; the
+terminal app has them on. The five built-in skills are created in the folder
+the first time. See the [Skills guide](../guides/skills.md).
+
+## How do I install skills from GitHub?
+
+In the `agentx` terminal app: `/skills install https://github.com/<owner>/<repo>`
+(or `.../tree/<branch>/<folder>`, or the path of a folder). You are shown the
+skills it found, the exact commit and any program files, and asked before
+anything is saved. In code, use `open_source`, `discover`, `preview_text` and
+`install` from `agentx_dev.Skills` (see the guide). `/skills remove <name>`
+deletes one; to update a skill, remove it and install it again.
+
+## Can the agent install a skill by itself?
+
+No, on purpose. A skill is instructions the agent will follow, so if the
+model could fetch one from a link it found on a web page, that page could
+plant instructions that outlive the conversation. Only you can install, and
+the agent's file tools can never write to `.agentx` or `~/.agentx` in
+the terminal app. In your own code, keep the skills folder outside the paths
+the write tools can reach.
+
 ## Is this LangChain-compatible?
 
 Not directly, but conceptually familiar:

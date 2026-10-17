@@ -46,6 +46,33 @@ will follow; if the agent could write `~/.agentx/skills/x/SKILL.md` itself, it c
 trusts. The terminal app enforces this (its file tools can never write to `.agentx` or `~/.agentx`); with
 `Permissions.full_access(...)` in your own code, it is up to you not to include the skills folder.
 
+The first runner that uses a folder creates the built-in skills in it (and a small `.state.json` that remembers
+which were created, so one you delete is not recreated). To use a folder as it is, pass `Skills(folder, seed=False)`.
+`Skills(folder, project_dirs=[...])` adds read-only folders that are treated as untrusted, the way the terminal
+app treats a project's `.agentx/skills`.
+
+### Installing from your own code
+
+The terminal app's `/skills install` is built from four functions you can call yourself. Nothing is saved until you
+call `install`, so you decide what to show and what to ask:
+
+```python
+from agentx_dev.Skills import open_source, discover, preview_text, install, remove_skill
+
+with open_source("https://github.com/obra/superpowers") as fetched:     # or the path of a folder
+    found, problems = discover(fetched.root, fetched.subpath)
+    print(preview_text(fetched, found, problems))
+    if input("Install these? [y/N] ").strip().lower() == "y":
+        names = install(found, "./my-skills", fetched)
+
+remove_skill("brainstorming", "./my-skills")       # later, if you change your mind
+```
+
+`open_source` looks up the exact commit the link points to and downloads that commit (the files are removed when
+the `with` block ends). `install` refuses a name that is already taken or is the name of a built-in skill, and in
+that case installs nothing. Failures raise `SkillInstallError` with a sentence you can show. Only
+`github.com` links and local folders are accepted.
+
 `skills=None` (the default) changes nothing. The list of skills and the tool list are fixed when the runner is
 built; to pick up a skill added later, build a new runner.
 

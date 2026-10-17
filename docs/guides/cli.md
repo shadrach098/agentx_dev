@@ -52,7 +52,7 @@ Keys are read from the environment only. With no `--model`, the first key found 
 
 ## What it can do
 
-The main agent gets the ten tools from [`DefaultTools`](../concepts/tools.md) plus `start_team_job`, eleven in all. The ten are limited to the folder you started in (plus any extra folders, see [Extra folders](#extra-folders)). A path outside those folders fails inside the tool.
+The main agent gets the ten tools from [`DefaultTools`](../concepts/tools.md) plus `start_team_job` and `use_skill`, twelve in all. The ten are limited to the folder you started in (plus any extra folders, see [Extra folders](#extra-folders)). A path outside those folders fails inside the tool.
 
 | Kind | Tools | What happens |
 |---|---|---|
@@ -61,6 +61,7 @@ The main agent gets the ten tools from [`DefaultTools`](../concepts/tools.md) pl
 | command | `run_shell`, `run_python` | Asks. |
 | destructive | `delete_path`, `move_file` | Always asks, in every mode. |
 | team | `start_team_job` | Asks, and "don't ask again" is never offered. Refused in `plan` mode. Runs without asking in `auto` mode (or with your own allow rule). See [Team jobs](#team-jobs). |
+| skills | `use_skill` | Runs without asking: it only reads a skill's text (or a file inside the skill's folder). See [Skills](#skills). |
 
 Limits that come from the tools, not from `agentx`: a shell command is stopped after 5 minutes and Python code after 2 minutes (the time spent waiting for your approval does not count), and long output is cut (40,000 bytes for a shell command, 100,000 for Python). A dev server or a watcher will hit the 30-second limit and be killed. `agentx` does not change these and has no setting for them.
 
@@ -243,7 +244,31 @@ They are read when `agentx` starts and again on `/clear` and `/resume`.
 
 `/init` asks the model to look at the project and write an `AGENTX.md` in the current folder (it uses `write_file`, so you see the file as a diff first, and if one exists it tells you instead of overwriting). The new file is used from the next conversation (`/clear`).
 
-The agent also reads **skills**: short guides in `~/.agentx/skills` for kinds of work (exploring a project, changing files safely, running commands). The built-in ones are created the first time you run `agentx`; see [Skills](skills.md).
+## Skills
+
+A skill is a short guide for a kind of work ("how to explore a project", "how to change files safely"). The prompt carries one line per skill, with its name and what it is for; the agent opens the full text only when it needs it, by calling the `use_skill` tool. That keeps the prompt small and, because the list is built the same way every time, the same from one request to the next, which is what lets the provider's prompt cache reuse it. The full story, including how to use skills from your own code, is in the [Skills guide](skills.md); this is what the terminal app does.
+
+**Built-in skills.** The first time you start `agentx`, it creates five skills in `~/.agentx/skills/`: `exploring-a-project`, `changing-files`, `running-code` and `delegating-work` (the terminal app has no web tools, so `web-research` is created but not listed). They cover the tools above. You can edit them: `agentx` never overwrites an edit, and does not bring back one you delete. A copy you did not touch is updated when a newer `agentx` ships a newer version.
+
+**Your own skills.** A folder with a `SKILL.md` in `~/.agentx/skills/<name>/` is a skill. Skills written for Claude work as they are. A project can keep its own in `<project>/.agentx/skills/`; those are shown to the agent in a separate block marked as coming from the project folder (which may be a cloned repository), cannot replace a skill of yours with the same name, and cannot override the approval prompts. A `.agentx` or `.agentx/skills` that is a link leading out of the project is not read.
+
+**Installing from a link.**
+
+```text
+/skills install https://github.com/obra/superpowers
+```
+
+Accepts `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>`) or the path of a folder on your computer. `agentx` looks up the exact commit, downloads that commit, finds every folder with a `SKILL.md`, and shows you the names, the descriptions, the number of files and any program files (`.py`, `.sh`, ...) before it asks `Install 15 skills into ...? [y/N]`. Nothing is saved without a clear yes. Installing does not run anything; a skill's files can only be read by the agent, and anything it then runs goes through the normal approval prompts. A new conversation (`/clear`) uses what you installed. Skills do not update by themselves: to update one, `/skills remove <name>` and install it again.
+
+**What `/skills` does.**
+
+| Command | Does |
+|---|---|
+| `/skills` | Lists every skill found (name, where it came from: `bundled`, `own`, `installed` or `project`, and its description), any that were skipped and why, and the folder they live in. |
+| `/skills install <link or folder>` | As above. |
+| `/skills remove <name>` | Asks, then deletes the skill's folder from `~/.agentx/skills/`. A project skill is not removed by this: it belongs to the project. |
+
+**Only you can install.** The agent has no tool to install or remove a skill, and its file tools can never write to `.agentx` or `~/.agentx` (see [Default protections](#default-protections)). A skill is instructions the agent will follow, so install only skills you trust. A skill from a link or a project is shown to the model with a note that it cannot override the rules or the approval prompts. An archive is unpacked with limits (20 MB, 3,000 files, 1 MB a file, 50 skills), paths that leave the folder and links are refused, and a downloaded skill cannot take the name of a built-in one.
 
 ## Conversations
 
@@ -279,7 +304,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/init` | Ask the model to draft an `AGENTX.md` for this project. Writing it goes through the approval prompt. | `/init` |
 | `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage. | `/team add type hints to every module and run the tests` |
 | `/team-models [name[=use] ...\|describe\|clear] [--folder]` | Show or set the extra models team helpers may run on, with an optional note on what each is for (see [Helper models](#helper-models)). `/team-models <names>` lasts for this session only; with `--folder` it is also saved for this folder. `/team-models describe` asks the chat model to write the missing notes (marked `auto:`). `/team-models clear` empties the list. | `/team-models gpt-6.1-sol="hard coding" claude-sonnet-5-5 --folder` |
-| `/skills [install <link>\|remove <name>]` | List the skills the agent can read, or add one from a `https://github.com/<owner>/<repo>` link or a folder (you are shown what it contains and asked first), or remove one. See [Skills](skills.md). | `/skills install https://github.com/obra/superpowers` |
+| `/skills [install <link>\|remove <name>]` | List the skills the agent can read, or add one from a `https://github.com/<owner>/<repo>` link or a folder (you are shown what it contains and asked first), or remove one. See [Skills](#skills). | `/skills install https://github.com/obra/superpowers` |
 | `/exit` | Save the conversation and leave (Ctrl+D does the same). | `/exit` |
 
 ## Team jobs

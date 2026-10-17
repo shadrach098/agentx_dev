@@ -90,6 +90,27 @@ as cache reads → ~$0.045 instead of $0.45 at Sonnet pricing.
   Don't dynamically interpolate the current time / user id into the
   system prompt if you can avoid it.
 
+## Skills and the cache
+
+Long "how to use these tools" text is the kind of prompt content that grows
+over time and, put in the system prompt, is paid for on every call. With
+`skills=` ([Skills guide](../guides/skills.md)) the system prompt carries one
+short line per skill, and the model reads a skill's full text only when it
+calls `use_skill`; that text arrives as a tool result in the conversation,
+not in the cached prefix.
+
+The prefix stays cacheable because it is built the same way every time:
+skills are listed sorted by name, the list and the tool list are fixed when
+the runner is built (a skill added to the folder later does not change a
+running agent), and nothing in it depends on a time, a random value or the
+order files happen to be listed in. Creating the built-in skills on first use
+rewrites nothing on later runs. Two runners built from the same folder and
+tools therefore send byte-identical system prompts.
+
+Things that do change the prefix, and so cost one cache miss: adding or
+removing a skill or a tool between runs, editing a skill's description, and
+upgrading to an `agentx-dev` that ships different built-in skills.
+
 ## Non-Claude models
 
 Anthropic-specific. `GPT` doesn't wire prompt caching (OpenAI has its

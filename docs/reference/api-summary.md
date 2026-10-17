@@ -142,6 +142,25 @@ CLI: `python -m agentx_dev.Evals run <dir> --config <yaml>`
 | `Session` | class | Serializable conversation state |
 | `Session.stream(user_input, **kw)` *(3.7)* | method | Like `invoke`, but yields the runner's events (`thought`, `tool_call`, `tool_result`, `final`, `completion`) and absorbs the result on the `completion` event. A turn abandoned before then (Ctrl+C, closing the generator) is not recorded |
 
+## Skills *(next release)*
+
+Import from `agentx_dev.Skills`. See the [Skills guide](../guides/skills.md).
+
+| Symbol | Kind | Doc |
+|---|---|---|
+| `Skills(dir=None, *, project_dirs=(), seed=True)` | class | Where an agent finds its skills. `dir` is the folder the built-in skills are created in (when `seed`) and links are installed into; `project_dirs` are read-only and untrusted. `Skills.default(home=None)` is `~/.agentx/skills`. `.store()` lists what is on disk; `.load(tools)` picks the skills that apply. Pass it as `skills=` to `AgentRunner` / `AsyncAgentRunner` (`skills=True` means `Skills.default()`). |
+| `attach_skills(skills, tools, addendum)` | function | What the runners call: returns the tools plus `use_skill` and the addendum with the skill list at the end; unchanged when no skill applies, or when loading fails. |
+| `make_use_skill_tool(skills)` | function | The read-only `use_skill(name, file="")` tool over a dict of skills. |
+| `Skill`, `SkillStore` | classes | One skill (`name`, `description`, `body`, `tools`, `folder`, `source`); the skills found in some folders, with `.all()` and `.problems`. |
+| `open_source(link)` | context manager | Resolve a `https://github.com/<owner>/<repo>[/tree/<ref>/<folder>]` link (to its exact commit, downloaded) or a folder to files on disk; yields `Fetched(root, label, commit, subpath)`. |
+| `discover(root, subpath="")` | function | The installable skills under `root`, and one-line problems for those skipped. |
+| `preview_text(fetched, found, problems=())` | function | What to show the user before installing: names, descriptions, file counts, commit, program files. |
+| `install(found, target, fetched)` | function | Copy skills into `target` (refuses a taken name or a built-in's name; installs nothing then) and record the source and commit. |
+| `remove_skill(name, target)` | function | Delete a skill folder from `target`. |
+| `SkillInstallError` | exception | A problem to tell the user, in a sentence. |
+| `AgentRunner(skills=)`, `AsyncAgentRunner(skills=)` | parameter | `True` or a `Skills`; default `None` changes nothing. |
+| `/skills [install <link>\|remove <name>]` | `agentx` command | List, install and remove skills in the terminal app. |
+
 ## Command line
 
 | Symbol | Kind | Doc |

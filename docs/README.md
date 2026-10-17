@@ -39,6 +39,8 @@ Task guides:
 - [Author your own tools](guides/custom-tools.md)
 - [The `agentx` terminal assistant](guides/cli.md) *(3.7)* — approvals and
   modes, AGENTX.md, sessions, team jobs, helper models, project memory
+- [Skills](guides/skills.md) *(next release)* — short guides the agent reads on
+  demand; built-in skills, your own, and installing from a GitHub link
 - [Upgrading between releases](guides/upgrading.md)
 
 Advanced topics:
@@ -126,6 +128,10 @@ operational lever (memory, caching, budgets, rate limits).
   parameter support (`adapt_params`); new Claude settings; workspace-
   rooted paths and `run_python` starting in the workspace. See
   [media](media/overview.md) and [upgrading](guides/upgrading.md).
+- **Next release** — skills: `AgentRunner(skills=True)` gives an agent a
+  `use_skill` tool and a short skill list; five skills ship for the default
+  tools; `/skills install <github link>` in `agentx`. See the
+  [guide](guides/skills.md) and [upgrading](guides/upgrading.md).
 - **3.7** — the `agentx` terminal assistant: approvals and
   modes, trusted folders, `AGENTX.md`, saved sessions, team jobs with helpers
   on several models, and a work log and model per folder; plus
@@ -148,6 +154,7 @@ Every module in `agentx_dev/` is documented; the mapping is:
 | `Observability.py` | [Observability](concepts/observability.md) |
 | `Memory.py`, `Embeddings.py` | [Memory](advanced/memory.md), [RAG](advanced/rag.md) |
 | `Session.py` | [Sessions](guides/sessions.md) |
+| `Skills/` (`Store.py`, `Defaults.py`, `Attach.py`, `Install.py`), `resources/skills/` | [Skills](guides/skills.md) |
 | `Cache.py` | [Production controls](advanced/production-controls.md#tool-result-cache) |
 | `Supervisor.py` | [Supervisor](advanced/supervisor.md) |
 | `Handoffs.py` | [Handoffs](advanced/handoffs.md) |

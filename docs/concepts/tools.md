@@ -535,6 +535,23 @@ Not registered by `DefaultTools`; import and pass them explicitly.
 - **Prefer `bind_tools_natively=True`** for modern multi-tool-per-turn
   behavior; `batch_concurrent` is the meta-tool fallback route.
 
+#### `use_skill` — auto-added when `skills=` is set
+
+- **Args:** `name: str`, `file: str = ""`
+- **Behavior:** returns the text of the skill called `name` (and lists the
+  files in its folder); with `file=`, returns that file from the skill's
+  folder instead. Read-only: it never runs anything, and a `file` that
+  leaves the skill's folder (`..`, an absolute path, a link) is refused.
+  An unknown name returns an `ERROR:` line listing the skills there are.
+- **Auto-registered** by `AgentRunner(..., skills=True)` /
+  `AsyncAgentRunner(...)` when at least one skill applies to the runner's
+  tools, together with a short list of skills (name and description) at the
+  end of the system addendum. The tool list and that list are fixed when the
+  runner is built. A skill you do not need is not in the prompt: only its
+  one-line description is.
+- See [Skills](../guides/skills.md). Tools that no skill covers (your own)
+  are described by one generated skill, `custom-tools`.
+
 ---
 
 ## 3. Per-tool controls
