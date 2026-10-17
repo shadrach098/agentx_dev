@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from pydantic import BaseModel, Field
 
@@ -52,16 +52,20 @@ class Skills:
     A name in ``dir`` wins over the same name in a project folder."""
 
     def __init__(self, dir: Optional[PathLike] = None, *, project_dirs: Sequence[PathLike] = (),
-                 seed: bool = True) -> None:
+                 seed: bool = True, observer: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> None:
         self.dir = Path(dir).expanduser() if dir is not None else None
         self.project_dirs = [Path(p).expanduser() for p in project_dirs]
         self.seed = bool(seed)
+        # Called as ``observer("use_skill", {"name": ..., "file": ...})`` each time the model opens a skill, so a
+        # caller can show it (the terminal app does for team helpers). A failing observer is ignored.
+        self.observer = observer
 
     @classmethod
-    def default(cls, home: Optional[PathLike] = None, *, project_dirs: Sequence[PathLike] = ()) -> "Skills":
+    def default(cls, home: Optional[PathLike] = None, *, project_dirs: Sequence[PathLike] = (),
+                observer: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> "Skills":
         """The usual place: ``~/.agentx/skills``."""
         return cls(Path(home if home is not None else Path.home()) / ".agentx" / "skills",
-                   project_dirs=project_dirs)
+                   project_dirs=project_dirs, observer=observer)
 
     def roots(self) -> List[Tuple[Path, str]]:
         return ([(self.dir, "user")] if self.dir is not None else []) + [(p, "project") for p in self.project_dirs]
@@ -85,9 +89,15 @@ class Skills:
         return Loaded(chosen, index_block([chosen[n] for n in sorted(chosen)]), list(store.problems))
 
 
-def make_use_skill_tool(skills: Dict[str, Skill]) -> StructuredTool:
-    """The ``use_skill`` tool over ``skills`` (a dict by name). Read-only."""
+def make_use_skill_tool(skills: Dict[str, Skill],
+                        observer: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> StructuredTool:
+    """The ``use_skill`` tool over ``skills`` (a dict by name). Read-only. ``observer`` hears every call first."""
     def use_skill(name: str, file: str = "") -> str:
+        if observer is not None:
+            try:
+                observer(USE_SKILL, {"name": name, **({"file": file} if file else {})})
+            except Exception:                      # showing a call must never change what the tool returns
+                pass
         skill = skills.get(str(name).strip())
         if skill is None:
             return f"ERROR: no skill named {one_line(name, 60)!r}. Skills: {', '.join(sorted(skills))}"
@@ -126,5 +136,5 @@ def attach_skills(skills: Any, tools: Optional[Sequence[Any]], addendum: Optiona
         logger.warning("Skipped a skill: %s", problem)
     if not loaded.skills:
         return tools, addendum
-    tools.append(make_use_skill_tool(loaded.skills))
+    tools.append(make_use_skill_tool(loaded.skills, getattr(skills, "observer", None)))
     return tools, (f"{addendum}\n\n{loaded.index}" if addendum else loaded.index)

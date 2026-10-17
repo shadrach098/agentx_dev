@@ -54,7 +54,9 @@ trusts. The terminal app enforces this (its file tools can never write to `.agen
 The first runner that uses a folder creates the built-in skills in it (and a small `.state.json` that remembers
 which were created, so one you delete is not recreated). To use a folder as it is, pass `Skills(folder, seed=False)`.
 `Skills(folder, project_dirs=[...])` adds read-only folders that are treated as untrusted, the way the terminal
-app treats a project's `.agentx/skills`.
+app treats a project's `.agentx/skills`. `Skills(folder, observer=fn)` calls `fn("use_skill", {"name": ..., "file": ...})`
+each time the model opens a skill, so you can log or show it (the terminal app uses this for team helpers); an
+observer that raises is ignored.
 
 ### Installing from your own code
 

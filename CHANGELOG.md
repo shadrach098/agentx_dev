@@ -17,7 +17,7 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   as they are. See the new [guide](docs/guides/skills.md).
 - **`agentx` terminal app:** skills are on by default; `/skills` lists them, `/skills install <github link or
   folder>` installs after showing what it found (the exact commit is downloaded and recorded; archives are
-  unpacked with path, link and size limits), `/skills remove <name>` deletes one. Every skill the agent has is also a slash command: typing `/` lists the commands and then the skills, and `/<skill> [what you want]` (or `/skills use <name> ...` for a skill named like a command) makes the agent read that skill and do the task. Team helpers get `use_skill` and the skills that fit their role's tools, so a team step can use a skill; `/skill` is a short form of `/skills`. Only the user can install: the
+  unpacked with path, link and size limits), `/skills remove <name>` deletes one. Every skill the agent has is also a slash command: typing `/` lists the commands and then the skills, and `/<skill> [what you want]` (or `/skills use <name> ...` for a skill named like a command) makes the agent read that skill and do the task. Team helpers get `use_skill` and the skills that fit their role's tools, so a team step can use a skill; a helper's skill reads show on screen like its other tool calls (`● [explorer] use_skill brainstorming`); `/skill` is a short form of `/skills`. Only the user can install: the
   agent has no tool for it, and `.agentx/*` and `~/.agentx` stay protected from its file tools.
 
 ## [3.7.0] - 2026-10-15

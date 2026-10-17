@@ -306,12 +306,30 @@ class TestTeamJobUsesASkillEndToEnd:
         model = router(plans=[plan_json(step("s1", "explorer", "Use the exploring-a-project skill, then report"))],
                        synth="The helper read the skill.", agent=explorer)
         tools = build_tools(tmp_path, [], Gate(cwd=tmp_path))
-        events = []
+        events, reads = [], []
         result = run_team_job("Brainstorm this repo with the skill", model=model, tools=tools, addendum="BASE",
                               notify=lambda kind, data: events.append((kind, data)),
-                              skills=Skills(tmp_path / "skills"))
+                              skills=Skills(tmp_path / "skills", observer=lambda name, args: reads.append((name, args))))
         assert "outcome: done" in result and "explorer - done" in result
         assert calls == ["asked"]                                   # one use_skill call, then the answer
         # the skill's text really reached the helper's model as the tool's result
         assert any("Look before you change anything" in str(call[-1]["content"]) for call in model.calls)
         assert [d["agent"] for k, d in events if k == "dispatch"] == ["explorer"]
+        assert reads == [("use_skill", {"name": "exploring-a-project"})]      # and the read was reported for display
+
+
+class TestHelperSkillReadsAreVisible:
+    def test_a_helpers_use_skill_call_is_drawn_like_its_other_tool_calls(self, tmp_path):
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(), width=300)
+        use_skill = next(t for t in runner_of(app).tools if t.name == "use_skill")
+        app._team_helper = "explorer@gpt-6.1-sol"
+        use_skill.func("exploring-a-project")
+        shown = out.getvalue()
+        assert "[explorer@gpt-6.1-sol] use_skill" in shown and "exploring-a-project" in shown
+
+    def test_the_main_chat_is_not_drawn_twice(self, tmp_path):
+        # in the main chat the runner's own events already show the call
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(), width=300)
+        use_skill = next(t for t in runner_of(app).tools if t.name == "use_skill")
+        use_skill.func("exploring-a-project")
+        assert "use_skill" not in out.getvalue()

@@ -362,7 +362,7 @@ Answering `a` ("don't ask again: all edits this session") at a helper's edit pro
 
 ### Skills in a team job
 
-Every helper has the `use_skill` tool and the list of the [skills](#skills) that fit its tools: the explorer sees `exploring-a-project`, the coder adds `changing-files`, the runner adds `running-code`, and any skill you installed that is not tied to tools is offered to all three. So `/team brainstorm this repo with the brainstorming skill` works: the supervisor puts the skill in a step's task and the helper opens it with `use_skill`. Reading a skill is read-only and does not ask. Before this, a helper had no skills, and a step that said "use the X skill" sent it searching the disk with `run_python`.
+Every helper has the `use_skill` tool and the list of the [skills](#skills) that fit its tools: the explorer sees `exploring-a-project`, the coder adds `changing-files`, the runner adds `running-code`, and any skill you installed that is not tied to tools is offered to all three. So `/team brainstorm this repo with the brainstorming skill` works: the supervisor puts the skill in a step's task and the helper opens it with `use_skill`. Reading a skill is read-only and does not ask, and it shows like any other helper call (`● [explorer] use_skill brainstorming`), so you can see which skills a helper opened. Before this, a helper had no skills, and a step that said "use the X skill" sent it searching the disk with `run_python`.
 
 ### What you see
 

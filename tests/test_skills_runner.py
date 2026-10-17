@@ -135,3 +135,27 @@ class TestAsync:
                                   auto_cache=False)
         assert runner.registry.has("use_skill")
         assert runner.system_addendum.startswith("ROLE\n\nSkills:") and "exploring-a-project" in runner.system_addendum
+
+
+class TestObserver:
+    """A caller can be told each time the model opens a skill (the terminal app shows a team helper's reads)."""
+
+    def test_the_observer_hears_each_call_with_its_arguments_and_the_skill_still_comes_back(self, tmp_path):
+        seen = []
+        runner = build(tmp_path, Skills(tmp_path / "skills", observer=lambda name, args: seen.append((name, args))))
+        tool = use_skill_of(runner)
+        assert "list_directory" in tool.func("exploring-a-project")
+        tool.func("exploring-a-project", "missing.md")
+        tool.func("nope")
+        assert seen == [("use_skill", {"name": "exploring-a-project"}),
+                        ("use_skill", {"name": "exploring-a-project", "file": "missing.md"}),
+                        ("use_skill", {"name": "nope"})]
+
+    def test_an_observer_that_fails_never_breaks_the_tool(self, tmp_path):
+        def broken(name, args):
+            raise RuntimeError("screen gone")
+        tool = use_skill_of(build(tmp_path, Skills(tmp_path / "skills", observer=broken)))
+        assert "list_directory" in tool.func("exploring-a-project")
+
+    def test_no_observer_is_the_default(self, tmp_path):
+        assert Skills(tmp_path / "skills").observer is None

@@ -202,7 +202,9 @@ class ChatApp:
         # project and neither .agentx nor .agentx/skills is a link that leads out of it.
         project_skills = ([self.cwd / ".agentx" / "skills"]
                           if self._memory_on and safe_location(self.cwd, "skills") else [])
-        self.skills = Skills.default(self.home, project_dirs=project_skills)
+        # observer: a team helper opening a skill is drawn like its other tool calls (the chat's own are drawn from
+        # the runner's events; ``_observe_tool`` ignores a call made outside a team job).
+        self.skills = Skills.default(self.home, project_dirs=project_skills, observer=self._observe_tool)
         self._runner_skills: Dict[str, str] = {}      # name -> description, for the current runner (_make_runner)
         self._newly_trusted = bool(newly_trusted)    # main: the user said yes to the trust question in this run
         self.project_settings_created: Optional[Path] = None
