@@ -252,6 +252,15 @@ A skill is a short guide for a kind of work ("how to explore a project", "how to
 
 **Your own skills.** A folder with a `SKILL.md` in `~/.agentx/skills/<name>/` is a skill. Skills written for Claude work as they are. A project can keep its own in `<project>/.agentx/skills/`; those are shown to the agent in a separate block marked as coming from the project folder (which may be a cloned repository), cannot replace a skill of yours with the same name, and cannot override the approval prompts. A `.agentx` or `.agentx/skills` that is a link leading out of the project is not read.
 
+**Using a skill yourself.** Every skill the agent has in this conversation is also a slash command. Type `/` and the pop-up lists the commands, then the skills (marked `(skill)`, with their description); pick one with the arrow keys and Enter, add what you want, and send:
+
+```text
+/changing-files rename the helper to util everywhere
+/exploring-a-project
+```
+
+The agent is told to read that skill with `use_skill` first and then do what you wrote. With nothing after the name, it reads the skill and asks what you want to apply it to. This is the same thing the agent does on its own when its work matches a skill; the slash form just makes sure it does. A skill named like a built-in command (`/model`, `/help`, ...) is reached with `/skills use <name> [what you want]`, because the command wins. The pop-up only offers skills this conversation's agent has: one for a tool it does not have, or one you added since the conversation began, appears after `/clear`.
+
 **Installing from a link.**
 
 ```text
@@ -264,7 +273,9 @@ Accepts `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>
 
 | Command | Does |
 |---|---|
-| `/skills` | Lists every skill found (name, where it came from: `bundled`, `own`, `installed` or `project`, and its description), any that were skipped and why, and the folder they live in. |
+| `/skills` | Lists every skill found: the `/name` that runs it, where it came from (`bundled`, `own`, `installed` or `project`), its description, and `[not active in this conversation]` for one this agent does not have (a skill for tools it lacks, or one added since the conversation began). Also lists any that were skipped and why, and the folder they live in. |
+| `/<skill> [what you want]` | Use a skill now: see above. Also in the `/` pop-up. |
+| `/skills use <name> [what you want]` | The same, for a skill whose name is also a command. |
 | `/skills install <link or folder>` | As above. |
 | `/skills remove <name>` | Asks, then deletes the skill's folder from `~/.agentx/skills/`. A project skill is not removed by this: it belongs to the project. |
 
@@ -290,7 +301,7 @@ When a tool raises an error, the framework logs it with a full traceback. `agent
 
 ## Slash commands
 
-A line that starts with `/` followed by a plain name is a command and is never sent to the model. `/tmp/build.log fails` or `/README.md` is a message, not a command. An unknown command prints the list.
+A line that starts with `/` followed by a plain name is a command and is never sent to the model. `/tmp/build.log fails` or `/README.md` is a message, not a command. An unknown command prints the list. A name that is one of the agent's [skills](#skills) is not unknown: `/changing-files rename the helper` asks the agent to use that skill for the task. Typing `/` shows the commands and then the skills.
 
 | Command | Does | Example |
 |---|---|---|
@@ -304,7 +315,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/init` | Ask the model to draft an `AGENTX.md` for this project. Writing it goes through the approval prompt. | `/init` |
 | `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage. | `/team add type hints to every module and run the tests` |
 | `/team-models [name[=use] ...\|describe\|clear] [--folder]` | Show or set the extra models team helpers may run on, with an optional note on what each is for (see [Helper models](#helper-models)). `/team-models <names>` lasts for this session only; with `--folder` it is also saved for this folder. `/team-models describe` asks the chat model to write the missing notes (marked `auto:`). `/team-models clear` empties the list. | `/team-models gpt-6.1-sol="hard coding" claude-sonnet-5-5 --folder` |
-| `/skills [install <link>\|remove <name>]` | List the skills the agent can read, or add one from a `https://github.com/<owner>/<repo>` link or a folder (you are shown what it contains and asked first), or remove one. See [Skills](#skills). | `/skills install https://github.com/obra/superpowers` |
+| `/skills [install <link>\|remove <name>\|use <name> ...]` | List the skills the agent can read (each is also a `/name` command in the pop-up, e.g. `/changing-files rename the helper`), or add one from a `https://github.com/<owner>/<repo>` link or a folder (you are shown what it contains and asked first), or remove one. See [Skills](#skills). | `/skills install https://github.com/obra/superpowers` |
 | `/exit` | Save the conversation and leave (Ctrl+D does the same). | `/exit` |
 
 ## Team jobs

@@ -161,3 +161,69 @@ class TestSkillsCommand:
         text = out.getvalue()
         assert "belongs to this project" in text and "No skill named 'nothing-here'" in text
         assert (cwd / ".agentx" / "skills" / "house" / "SKILL.md").exists()
+
+
+class TestSkillsAsCommands:
+    """Typing ``/`` offers the skills next to the commands; ``/<skill> [what you want]`` makes the agent use one."""
+
+    def app_with_sends(self, tmp_path):
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(), width=400)     # wide: no line wrapping
+        sent = []
+        app.send = lambda text, log_title=None: sent.append((text, log_title))
+        runner_of(app)                                  # the conversation's runner: this decides which skills apply
+        return app, out, cwd, home, sent
+
+    def test_the_popup_entries_are_the_skills_this_conversation_has(self, tmp_path):
+        app, out, cwd, home, sent = self.app_with_sends(tmp_path)
+        entries = app.skill_entries()
+        assert set(entries) == {"/exploring-a-project", "/changing-files", "/running-code", "/delegating-work"}
+        assert entries["/running-code"].startswith("(skill) ")      # web-research has no tools here, so it is not offered
+
+    def test_a_skill_with_a_task_sends_a_message_naming_it_and_the_task(self, tmp_path):
+        app, out, cwd, home, sent = self.app_with_sends(tmp_path)
+        run_command(app, "/changing-files rename helper to util everywhere")
+        text, title = sent[0]
+        assert 'use_skill' in text and '"changing-files"' in text and text.endswith("rename helper to util everywhere")
+        assert title == "/changing-files rename helper to util everywhere"
+
+    def test_a_skill_with_no_task_asks_what_to_apply_it_to(self, tmp_path):
+        app, out, cwd, home, sent = self.app_with_sends(tmp_path)
+        run_command(app, "/running-code")
+        assert 'use_skill' in sent[0][0] and "ask me" in sent[0][0]
+
+    def test_an_unknown_name_sends_nothing_and_says_so(self, tmp_path):
+        app, out, cwd, home, sent = self.app_with_sends(tmp_path)
+        run_command(app, "/web-research find the docs")           # a skill that exists, but not for this conversation
+        run_command(app, "/nope")
+        assert sent == [] and out.getvalue().count("Unknown command") == 2
+
+    def test_a_skill_named_like_a_command_is_reached_with_skills_use(self, tmp_path):
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel())
+        (skills_dir(home) / "model").mkdir(parents=True)
+        (skills_dir(home) / "model" / "SKILL.md").write_text(skill_text("model", "A skill named like a command"),
+                                                              encoding="utf-8")
+        sent = []
+        app.send = lambda text, log_title=None: sent.append((text, log_title))
+        runner_of(app)
+        assert "/model" not in app.skill_entries()                # the popup shows the command, not the skill
+        run_command(app, "/skills use model tidy up")
+        assert '"model"' in sent[0][0] and sent[0][0].endswith("tidy up")
+
+    def test_a_skill_installed_after_the_conversation_began_waits_for_a_new_one(self, tmp_path):
+        app, out, cwd, home, sent = self.app_with_sends(tmp_path)
+        (skills_dir(home) / "late-one").mkdir(parents=True)
+        (skills_dir(home) / "late-one" / "SKILL.md").write_text(skill_text("late-one"), encoding="utf-8")
+        run_command(app, "/late-one")
+        assert sent == [] and "late-one" not in app.skill_entries()
+        run_command(app, "/skills")
+        assert "late-one" in out.getvalue() and "not active in this conversation" in out.getvalue()
+        runner_of(app)                                             # what /clear does
+        assert "/late-one" in app.skill_entries()
+
+    def test_the_list_shows_how_to_use_each_skill(self, tmp_path):
+        app, out, cwd, home, sent = self.app_with_sends(tmp_path)
+        run_command(app, "/skills")
+        text = out.getvalue()
+        assert "/running-code (bundled)" in text and "web-research (bundled)" in text
+        assert "not active in this conversation" in text.split("web-research")[1].split("\n")[0]
+        assert "/<skill> [what you want]" in text

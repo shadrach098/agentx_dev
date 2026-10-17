@@ -504,9 +504,14 @@ def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
     return ask
 
 
-def make_completer(commands: Sequence[str], descriptions: Optional[Mapping[str, str]] = None):
+def make_completer(commands: Sequence[str], descriptions: Optional[Mapping[str, str]] = None,
+                   extra: Optional[Callable[[], Mapping[str, str]]] = None):
     """Completion: ``/commands`` at the start of a line (offered as you type, each with its one-line
-    description), file paths for any other word (only when Tab is pressed, so typing a message stays quiet)."""
+    description), file paths for any other word (only when Tab is pressed, so typing a message stays quiet).
+
+    ``extra`` returns more ``{"/name": description}`` entries (the skills); it is asked each time the list is
+    drawn, so one added meanwhile shows at once. A command is never replaced by an extra of the same name, and
+    an extra that fails is left out. An extra is completed with a space after it: you type what you want next."""
     from prompt_toolkit.completion import Completer, Completion, PathCompleter
     from prompt_toolkit.document import Document
 
@@ -523,6 +528,14 @@ def make_completer(commands: Sequence[str], descriptions: Optional[Mapping[str, 
                     if name.startswith(text):
                         yield Completion(name, start_position=-len(text),
                                          display_meta=plain(notes.get(name, "")) or None)
+                try:
+                    more = dict(extra()) if extra is not None else {}
+                except Exception:
+                    more = {}
+                for name in more:
+                    if name.startswith(text) and name not in commands:
+                        yield Completion(name + " ", start_position=-len(text),
+                                         display_meta=plain(more.get(name, "")) or None)
                 return
             if not complete_event.completion_requested:
                 return
@@ -563,7 +576,8 @@ class PromptInput:
     allows it."""
 
     def __init__(self, *, history_file: Path, commands: Sequence[str], toolbar: Callable[[], str],
-                 cycle_mode: Callable[[], object], descriptions: Optional[Mapping[str, str]] = None) -> None:
+                 cycle_mode: Callable[[], object], descriptions: Optional[Mapping[str, str]] = None,
+                 extra_commands: Optional[Callable[[], Mapping[str, str]]] = None) -> None:
         self._chat = None
         self._short = None
         history_file = Path(history_file)
@@ -577,13 +591,14 @@ class PromptInput:
             return
         try:
             self._chat, self._short = self._sessions(history_file, commands, safe_toolbar(toolbar), cycle_mode,
-                                                     descriptions)
+                                                     descriptions, extra_commands)
         except Exception:
             self._chat = self._short = None
 
     @staticmethod
     def _sessions(history_file: Path, commands: Sequence[str], toolbar: Callable[[], Any],
-                  cycle_mode: Callable[[], object], descriptions: Optional[Mapping[str, str]] = None):
+                  cycle_mode: Callable[[], object], descriptions: Optional[Mapping[str, str]] = None,
+                  extra: Optional[Callable[[], Mapping[str, str]]] = None):
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.key_binding import KeyBindings
@@ -624,7 +639,7 @@ class PromptInput:
                 return PromptSession(**options)
 
         chat = build(history=FileHistory(str(history_file)), multiline=True,
-                     key_bindings=bindings, completer=make_completer(commands, descriptions),
+                     key_bindings=bindings, completer=make_completer(commands, descriptions, extra),
                      bottom_toolbar=toolbar, complete_while_typing=True)
         short = build(multiline=False, bottom_toolbar=toolbar)
         return chat, short

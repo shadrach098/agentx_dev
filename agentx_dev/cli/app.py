@@ -17,7 +17,7 @@ from rich.console import Console
 from agentx_dev import AgentRunner, AgentType, Session
 from agentx_dev.cli.approval import MODES, Gate
 from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
-                                     shown)
+                                     shown, skill_request)
 from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, compact, needs_compaction
 from agentx_dev.cli.context import build_addendum
 from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events, summary_entry_text
@@ -203,6 +203,7 @@ class ChatApp:
         project_skills = ([self.cwd / ".agentx" / "skills"]
                           if self._memory_on and safe_location(self.cwd, "skills") else [])
         self.skills = Skills.default(self.home, project_dirs=project_skills)
+        self._runner_skills: Dict[str, str] = {}      # name -> description, for the current runner (_make_runner)
         self._newly_trusted = bool(newly_trusted)    # main: the user said yes to the trust question in this run
         self.project_settings_created: Optional[Path] = None
         self._log_warned = False
@@ -374,9 +375,14 @@ class ChatApp:
         # auto_cache=False: a cached result must never stand in for a call that needs approval or has side
         # effects. No timeout is set anywhere: an approval prompt waits for the user as long as it takes.
         # One tool call at a time: one approval prompt open, on the main thread, and edits made in order.
-        return AgentRunner(model=model, agent=AgentType.ReAct, tools=self.tools, system_addendum=self.addendum,
-                           max_iterations=50, auto_cache=False, verbose=False, parallel_tool_workers=1,
-                           skills=self.skills)
+        runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=self.tools, system_addendum=self.addendum,
+                             max_iterations=50, auto_cache=False, verbose=False, parallel_tool_workers=1,
+                             skills=self.skills)
+        # The skills THIS conversation's agent can open (what /<skill> and the `/` pop-up offer): taken from the
+        # runner itself, so it is exactly what use_skill can read, and it follows /clear, /resume and a new model.
+        tool = next((t for t in runner.tools if t.name == "use_skill"), None)
+        self._runner_skills = dict(getattr(tool, "skill_descriptions", None) or {})
+        return runner
 
     def _new_conversation_state(self) -> None:
         """A new conversation is a clean slate for "don't ask again": the session-wide command grants are
@@ -917,14 +923,41 @@ class ChatApp:
     # -- skills ---------------------------------------------------------------
 
     def show_skills(self) -> None:
-        """``/skills``: every skill found on disk, and how to add or remove one."""
+        """``/skills``: every skill found on disk (the ones this conversation's agent has first-class, shown as the
+        ``/name`` that runs them), and how to use, add or remove one."""
         store = self.skills.store()
-        lines = [f"  {s.name} ({s.source}) - {self._safe(s.description, 100)}" for s in store.all()]
+        taken = set(command_names())
+
+        def label(skill: Any) -> str:
+            if skill.name not in self._runner_skills:
+                return skill.name
+            return f"/{skill.name}" if f"/{skill.name}" not in taken else f"/skills use {skill.name}"
+
+        lines = [f"  {label(s)} ({s.source}) - {self._safe(s.description, 100)}"
+                 + ("" if s.name in self._runner_skills else "  [not active in this conversation]")
+                 for s in store.all()]
         lines += [f"  Skipped: {self._safe(problem, 160)}" for problem in store.problems[:5]]
         shown = "\n".join(lines) if lines else "  none yet; the built-in ones are created when a conversation starts"
         self.notice(f"Skills (the agent reads one when its work matches):\n{shown}\n"
+                    "Use one with /<skill> [what you want] (type / to pick from the list). "
                     f"They live in {self._safe(self.skills.dir, 300)}. /skills install <github link or folder> adds "
-                    "more; /skills remove <name> deletes one. A new conversation (/clear) picks up changes.")
+                    "more; /skills remove <name> deletes one. A new conversation (/clear) picks up changes, and "
+                    "skills for tools this agent does not have stay inactive.")
+
+    def skill_entries(self) -> Dict[str, str]:
+        """``{"/name": "(skill) description"}`` for the `/` pop-up: the skills this conversation's agent has, except
+        ones named like a built-in command (those are reached with ``/skills use <name>``)."""
+        taken = set(command_names())
+        return {f"/{name}": f"(skill) {self._safe(description, 120)}"
+                for name, description in sorted(self._runner_skills.items()) if f"/{name}" not in taken}
+
+    def run_skill(self, name: str, text: str = "") -> bool:
+        """``/<skill> [what you want]`` and ``/skills use <name> [what you want]``: ask the agent to read the skill
+        and do the task. False (nothing sent) when this conversation's agent has no skill of that name."""
+        if name not in self._runner_skills:
+            return False
+        self.send(skill_request(name, text), log_title=f"/{name} {text}".strip())
+        return True
 
     def install_skills(self, link: str) -> None:
         """``/skills install <link>``. Only the user can start this (no tool does), and nothing is saved until
@@ -1106,6 +1139,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         holder: List[Any] = []
         prompt = PromptInput(history_file=home / ".agentx" / "history", commands=command_names(),
                              descriptions=command_descriptions(),
+                             extra_commands=lambda: holder[0].skill_entries() if holder else {},
                              toolbar=lambda: holder[0].toolbar() if holder else "",
                              cycle_mode=lambda: holder[0].cycle_mode() if holder else None)
         # Nothing in this folder (its settings, its AGENTX.md) is read until the user has said they trust it.

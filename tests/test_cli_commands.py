@@ -83,6 +83,52 @@ def test_resume_passes_the_id_or_none():
     assert ctx.calls == [("resume", None), ("resume", "abc12345")]
 
 
+class SkillCtx(Ctx):
+    def __init__(self, known=("brainstorming",)):
+        super().__init__()
+        self.known = set(known)
+
+    def run_skill(self, name, text):
+        if name not in self.known:
+            return False
+        self.calls.append(("skill", name, text))
+        return True
+
+
+def test_a_slash_name_that_is_a_skill_runs_the_skill():
+    ctx = SkillCtx()
+    assert run_command(ctx, "/brainstorming add a cache layer") is True
+    assert run_command(ctx, "/Brainstorming") is True
+    assert ctx.calls == [("skill", "brainstorming", "add a cache layer"), ("skill", "brainstorming", "")]
+    assert ctx.errors == []
+
+
+def test_a_slash_name_that_is_not_a_skill_is_still_unknown():
+    ctx = SkillCtx()
+    run_command(ctx, "/frobnicate")
+    assert "Unknown command /frobnicate" in ctx.errors[0] and ctx.calls == []
+
+
+def test_a_built_in_command_wins_over_a_skill_of_the_same_name():
+    ctx = SkillCtx(known=("help", "model"))
+    run_command(ctx, "/help")
+    run_command(ctx, "/model gpt-4o")
+    assert ctx.calls == [("model", "gpt-4o")] and not any(c[0] == "skill" for c in ctx.calls)
+
+
+def test_skills_use_runs_a_skill_even_when_a_command_has_its_name():
+    ctx = SkillCtx(known=("model",))
+    run_command(ctx, "/skills use model tidy the imports")
+    assert ctx.calls == [("skill", "model", "tidy the imports")]
+
+
+def test_skills_use_with_an_unknown_name_or_no_name_explains():
+    ctx = SkillCtx()
+    run_command(ctx, "/skills use nope")
+    run_command(ctx, "/skills use")
+    assert "No skill named 'nope'" in ctx.errors[0] and "Usage: /skills" in ctx.errors[1] and ctx.calls == []
+
+
 def test_an_unknown_command_lists_the_known_ones():
     ctx = Ctx()
     assert run_command(ctx, "/frobnicate now") is True

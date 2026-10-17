@@ -527,6 +527,27 @@ class TestCompleter:
         assert self.complete(completer, "/") == ["/help", "/model", "/mode"]
         assert self.complete(completer, "/zzz") == []
 
+    def test_extra_entries_follow_the_commands_and_are_asked_for_each_time(self):
+        live = {"/zeta": "(skill) Z"}
+        completer = make_completer(["/help"], {"/help": "List"}, extra=lambda: dict(live))
+        assert self.complete(completer, "/") == ["/help", "/zeta "]       # a space after a skill: type what you want next
+        live["/alpha"] = "(skill) A"                                      # a skill added since is offered at once
+        assert self.complete(completer, "/al") == ["/alpha "]
+        from prompt_toolkit.completion import CompleteEvent
+        from prompt_toolkit.document import Document
+        found = list(completer.get_completions(Document("/z"), CompleteEvent()))
+        assert [c.display_meta_text for c in found] == ["(skill) Z"]
+
+    def test_a_failing_extra_never_breaks_completion(self):
+        def broken():
+            raise RuntimeError("disk gone")
+        completer = make_completer(["/help"], extra=broken)
+        assert self.complete(completer, "/") == ["/help"]
+
+    def test_an_extra_cannot_replace_a_command(self):
+        completer = make_completer(["/model"], {"/model": "Show the model"}, extra=lambda: {"/model": "(skill) x"})
+        assert self.complete(completer, "/mod") == ["/model"]
+
     def test_paths_complete_after_a_word(self, tmp_path):
         (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
         completer = make_completer(["/help"])

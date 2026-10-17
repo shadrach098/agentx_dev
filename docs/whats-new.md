@@ -23,6 +23,7 @@ runner = AgentRunner(model=llm, agent=AgentType.ReAct,
 | **Built-in skills** | Five ship with agentx and are created on first use: `exploring-a-project`, `changing-files`, `running-code`, `web-research`, `delegating-work`. Together they cover every default tool. A skill is listed only when the agent has at least one of its tools. Your edits are never overwritten and a skill you delete stays deleted. |
 | **Your own tools** | Tools no skill covers are described in one generated skill, `custom-tools`, built in memory and never written to disk. |
 | **Install from a link** | In `agentx`: `/skills install https://github.com/obra/superpowers` (or a folder). The exact commit is downloaded, you are shown what was found and asked before anything is saved. `/skills` lists, `/skills remove <name>` deletes. Skills written for Claude work as they are. |
+| **Use one from the prompt** | In `agentx`, type `/`: the pop-up lists the commands, then the skills (`/changing-files`, `/exploring-a-project`, ...). Pick one, add what you want (`/changing-files rename the helper to util`) and the agent reads the skill first. `/skills` lists them all. |
 | **Safe by default** | Only you can install a skill: the agent has no tool for it and its file tools cannot write to `.agentx` or `~/.agentx`. Downloads are unpacked with path, link and size limits. A project's own skills (`.agentx/skills/`) are marked as untrusted and cannot replace yours. |
 | **Opt in** | `skills=None` (the default) changes nothing for existing code. The terminal app turns skills on. |
 

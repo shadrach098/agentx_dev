@@ -165,7 +165,17 @@ def _team_models(ctx: Any, arg: str) -> None:
     ctx.set_team_models(names, folder=folder)
 
 
-SKILLS_USAGE = "Usage: /skills | /skills install <github link or folder> | /skills remove <name>"
+SKILLS_USAGE = ("Usage: /skills | /skills install <github link or folder> | /skills remove <name> | "
+                "/skills use <name> [what you want]")
+
+
+def skill_request(name: str, text: str = "") -> str:
+    """The message ``/<skill> [text]`` sends the main agent: read the skill first, then do what was asked."""
+    if text:
+        return (f'Use the "{name}" skill for this: call the use_skill tool with name "{name}" first, follow what it '
+                f"says, then do the following.\n\n{text}")
+    return (f'I want to use the "{name}" skill. Call the use_skill tool with name "{name}" and read it, then ask me '
+            "what I want to apply it to (if the conversation already makes that clear, go ahead).")
 
 
 def _skills(ctx: Any, arg: str) -> None:
@@ -177,6 +187,11 @@ def _skills(ctx: Any, arg: str) -> None:
         ctx.install_skills(rest)
     elif word.lower() == "remove" and rest:
         ctx.remove_skill(rest)
+    elif word.lower() == "use" and rest:
+        name, _, what = rest.partition(" ")
+        if not ctx.run_skill(name.strip().lower(), what.strip()):
+            ctx.error(f"No skill named {shown(name, 60)!r} in this conversation. /skills lists them; "
+                      "ones added since it began load after /clear.")
     else:
         ctx.error(SKILLS_USAGE)
 
@@ -237,6 +252,12 @@ def run_command(ctx: Any, line: str) -> bool:
     name, arg = parsed
     command = _BY_NAME.get(name)
     if command is None:
+        try:
+            if getattr(ctx, "run_skill", None) is not None and ctx.run_skill(name, arg):
+                return True               # /<skill> [what you want]: the agent reads the skill and does the task
+        except Exception as e:
+            _report(ctx, f"/{shown(name, 40)} failed ({type(e).__name__}): {shown(e)}")
+            return True
         _report(ctx, f"Unknown command /{shown(name, 40)}. Commands: {', '.join(command_names())}")
         return True
     try:

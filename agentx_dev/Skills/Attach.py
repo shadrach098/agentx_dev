@@ -100,7 +100,10 @@ def make_use_skill_tool(skills: Dict[str, Skill]) -> StructuredTool:
             text += "\n\nFiles in this skill (read one with use_skill(name, file=...)): " + ", ".join(files)
         return caution + text
 
-    return StructuredTool(func=use_skill, args_schema=_UseSkillArgs, name=USE_SKILL, description=TOOL_DESCRIPTION)
+    tool = StructuredTool(func=use_skill, args_schema=_UseSkillArgs, name=USE_SKILL, description=TOOL_DESCRIPTION)
+    # What this tool can open, for a caller that wants to offer those skills (the terminal app's `/` pop-up).
+    tool.skill_descriptions = {name: skill.description for name, skill in skills.items()}
+    return tool
 
 
 def attach_skills(skills: Any, tools: Optional[Sequence[Any]], addendum: Optional[str]) -> Tuple[List[Any], Optional[str]]:

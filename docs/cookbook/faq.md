@@ -515,6 +515,14 @@ code pass `skills=True` (the folder `~/.agentx/skills`) or
 terminal app has them on. The five built-in skills are created in the folder
 the first time. See the [Skills guide](../guides/skills.md).
 
+## How do I make the agent use a particular skill?
+
+In the `agentx` terminal app, type `/`: the pop-up lists the commands and then the skills, each marked `(skill)`.
+Pick one and add what you want, for example `/changing-files rename the helper to util everywhere`. The agent is
+told to read that skill with `use_skill` first. `/skills` lists every skill and marks the ones this conversation
+does not have. A skill named like a command is reached with `/skills use <name> ...`. Without a slash, the agent
+also opens a skill by itself when its work matches the skill's one-line description.
+
 ## How do I install skills from GitHub?
 
 In the `agentx` terminal app: `/skills install https://github.com/<owner>/<repo>`

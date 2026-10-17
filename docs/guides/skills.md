@@ -13,11 +13,16 @@ explicit cache, OpenAI's automatic prefix cache) reuse it.
 
 | Command | What it does |
 |---|---|
-| `/skills` | List the skills found, where they came from (`bundled`, `own`, `installed`, `project`) and the folder they live in. |
+| `/skills` | List the skills found, each with the `/name` that runs it, where it came from (`bundled`, `own`, `installed`, `project`), and the folder they live in. A skill this conversation's agent does not have is marked `[not active in this conversation]`. |
+| `/<skill> [what you want]` | Use a skill now. Typing `/` shows the commands and then the skills in the pop-up; pick one, add your request, send. The agent reads the skill with `use_skill` and then does the task. |
+| `/skills use <name> [what you want]` | The same, for a skill whose name is also a command (`/model`, `/help`, ...). |
 | `/skills install <link>` | Install skills from `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>`) or from a folder on your computer. You are shown what was found and asked before anything is saved. |
 | `/skills remove <name>` | Delete a skill from `~/.agentx/skills/` after a yes. |
 
-A new conversation (`/clear`) picks up added or removed skills.
+A new conversation (`/clear`) picks up added or removed skills. The `/` pop-up and `/<skill>` only offer skills the
+current conversation's agent has, so a skill for tools it does not have (the terminal app has no web tools, so
+`web-research` is created but not offered) and a skill added since the conversation began are not offered until
+`/clear`.
 
 Only you can install a skill: the agent has no tool for it, and it cannot write to `~/.agentx` or to a project's
 `.agentx` (those are always refused). A skill is instructions the agent will follow, so install only skills you

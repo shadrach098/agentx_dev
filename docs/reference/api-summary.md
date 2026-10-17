@@ -159,7 +159,7 @@ Import from `agentx_dev.Skills`. See the [Skills guide](../guides/skills.md).
 | `remove_skill(name, target)` | function | Delete a skill folder from `target`. |
 | `SkillInstallError` | exception | A problem to tell the user, in a sentence. |
 | `AgentRunner(skills=)`, `AsyncAgentRunner(skills=)` | parameter | `True` or a `Skills`; default `None` changes nothing. |
-| `/skills [install <link>\|remove <name>]` | `agentx` command | List, install and remove skills in the terminal app. |
+| `/skills [install <link>\|remove <name>\|use <name> ...]`, `/<skill> [what you want]` | `agentx` commands | List, install, remove and use skills in the terminal app; each skill the conversation's agent has is also offered in the `/` pop-up. |
 
 ## Command line
 
