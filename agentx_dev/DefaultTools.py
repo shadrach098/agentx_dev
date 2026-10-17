@@ -222,6 +222,11 @@ class Permissions:
     shell_timeout_sec: float = 30.0
     shell_max_output_bytes: int = 40_000
     max_file_size_bytes: int = 10 * 1024 * 1024   # 10 MB
+    # When set, ``read_path`` returns at most this many characters at a time. A longer file comes back as a
+    # line-numbered view that ends with how to continue (``offset=``). None (the default) returns whole files.
+    # A big file read whole goes into the conversation and is sent again with every later request, so a cap
+    # keeps one read from costing many times its size.
+    read_max_chars: Optional[int] = None
 
     # When True, ``run_python`` gains a persistent ``state`` dict that
     # survives across calls. Backed by a pickle file inside the workspace
@@ -1134,7 +1139,8 @@ def _build_read_path(perms: Permissions, tracker: _ReadTracker) -> StructuredToo
         # so write_file / edit_file will now permit changes.
         tracker.mark_read(resolved)
 
-        if offset is None and limit is None:
+        cap = perms.read_max_chars
+        if offset is None and limit is None and (not cap or len(text) <= cap):
             return text
 
         # Line-numbered slice — matches Claude Code's Read output shape.
@@ -1145,8 +1151,24 @@ def _build_read_path(perms: Permissions, tracker: _ReadTracker) -> StructuredToo
         selected = lines[start:end]
         if not selected:
             return f"(no lines in range: offset={offset}, limit={limit}, file has {len(lines)} lines)"
-        numbered = "\n".join(f"{i}\t{line}" for i, line in enumerate(selected, start=start + 1))
-        return numbered
+        if not cap:
+            return "\n".join(f"{i}\t{line}" for i, line in enumerate(selected, start=start + 1))
+        rows: List[str] = []
+        used = 0
+        last = start                                  # the last line number shown
+        for number, line in enumerate(selected, start=start + 1):
+            row = f"{number}\t{line}"
+            if len(row) > cap:
+                row = row[:cap] + " ...[line cut]"
+            if rows and used + len(row) + 1 > cap:
+                break
+            rows.append(row)
+            used += len(row) + 1
+            last = number
+        if last < start + len(selected):              # stopped early: say where to go on
+            rows.append(f"[Showing lines {start + 1}-{last} of {len(lines)}; the output is cut at {cap:,} "
+                        f"characters. Continue with read_path(path, offset={last + 1}, limit=...).]")
+        return "\n".join(rows)
     return StructuredTool(
         func=read_path, args_schema=_ReadPathArgs,
         name="read_path",
