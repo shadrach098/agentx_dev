@@ -52,20 +52,25 @@ class Skills:
     A name in ``dir`` wins over the same name in a project folder."""
 
     def __init__(self, dir: Optional[PathLike] = None, *, project_dirs: Sequence[PathLike] = (),
-                 seed: bool = True, observer: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> None:
+                 seed: bool = True, observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+                 remember_reads: bool = False) -> None:
         self.dir = Path(dir).expanduser() if dir is not None else None
         self.project_dirs = [Path(p).expanduser() for p in project_dirs]
         self.seed = bool(seed)
         # Called as ``observer("use_skill", {"name": ..., "file": ...})`` each time the model opens a skill, so a
         # caller can show it (the terminal app does for team helpers). A failing observer is ignored.
         self.observer = observer
+        # True: a skill read once is answered with a short pointer back the next time (see make_use_skill_tool).
+        # Off by default: a runner reused for unrelated histories must not claim a skill was "already read".
+        self.remember_reads = bool(remember_reads)
 
     @classmethod
     def default(cls, home: Optional[PathLike] = None, *, project_dirs: Sequence[PathLike] = (),
-                observer: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> "Skills":
+                observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+                remember_reads: bool = False) -> "Skills":
         """The usual place: ``~/.agentx/skills``."""
         return cls(Path(home if home is not None else Path.home()) / ".agentx" / "skills",
-                   project_dirs=project_dirs, observer=observer)
+                   project_dirs=project_dirs, observer=observer, remember_reads=remember_reads)
 
     def roots(self) -> List[Tuple[Path, str]]:
         return ([(self.dir, "user")] if self.dir is not None else []) + [(p, "project") for p in self.project_dirs]
@@ -90,8 +95,14 @@ class Skills:
 
 
 def make_use_skill_tool(skills: Dict[str, Skill],
-                        observer: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> StructuredTool:
-    """The ``use_skill`` tool over ``skills`` (a dict by name). Read-only. ``observer`` hears every call first."""
+                        observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+                        remember_reads: bool = False) -> StructuredTool:
+    """The ``use_skill`` tool over ``skills`` (a dict by name). Read-only. ``observer`` hears every call first.
+    With ``remember_reads``, a skill whose text was already returned is answered with a short pointer back to it
+    (its text is still in the conversation), so the same few thousand tokens are not added twice; ``tool.forget_reads()``
+    starts over (call it when the conversation is summarised and the text is gone)."""
+    already_read: set = set()
+
     def use_skill(name: str, file: str = "") -> str:
         if observer is not None:
             try:
@@ -104,6 +115,11 @@ def make_use_skill_tool(skills: Dict[str, Skill],
         caution = _CAUTION.format(where=_WHERE[skill.source]) if skill.source in _WHERE else ""
         if file:
             return caution + read_resource(skill, file)
+        if remember_reads:
+            if skill.name in already_read:
+                return (f'The "{skill.name}" skill was already read earlier in this conversation: its text is above. '
+                        'To read it again anyway, call use_skill with file="SKILL.md".')
+            already_read.add(skill.name)
         text = skill.body
         files = skill_files(skill)
         if files:
@@ -113,6 +129,7 @@ def make_use_skill_tool(skills: Dict[str, Skill],
     tool = StructuredTool(func=use_skill, args_schema=_UseSkillArgs, name=USE_SKILL, description=TOOL_DESCRIPTION)
     # What this tool can open, for a caller that wants to offer those skills (the terminal app's `/` pop-up).
     tool.skill_descriptions = {name: skill.description for name, skill in skills.items()}
+    tool.forget_reads = already_read.clear
     return tool
 
 
@@ -136,5 +153,6 @@ def attach_skills(skills: Any, tools: Optional[Sequence[Any]], addendum: Optiona
         logger.warning("Skipped a skill: %s", problem)
     if not loaded.skills:
         return tools, addendum
-    tools.append(make_use_skill_tool(loaded.skills, getattr(skills, "observer", None)))
+    tools.append(make_use_skill_tool(loaded.skills, getattr(skills, "observer", None),
+                                     bool(getattr(skills, "remember_reads", False))))
     return tools, (f"{addendum}\n\n{loaded.index}" if addendum else loaded.index)

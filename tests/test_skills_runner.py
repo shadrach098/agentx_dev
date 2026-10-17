@@ -159,3 +159,53 @@ class TestObserver:
 
     def test_no_observer_is_the_default(self, tmp_path):
         assert Skills(tmp_path / "skills").observer is None
+
+
+class TestRememberReads:
+    """Opt-in: a skill read once in this conversation is not sent again in full, because its text is still in the
+    history. Off by default: a runner reused for unrelated histories must not claim a skill was 'already read'."""
+
+    def tool(self, tmp_path, **kw):
+        return use_skill_of(build(tmp_path, Skills(tmp_path / "skills", **kw)))
+
+    def test_off_by_default_the_full_text_comes_every_time(self, tmp_path):
+        tool = self.tool(tmp_path)
+        assert tool.func("exploring-a-project") == tool.func("exploring-a-project")
+        assert "list_directory" in tool.func("exploring-a-project")
+
+    def test_with_it_on_the_second_read_is_a_short_pointer_back(self, tmp_path):
+        tool = self.tool(tmp_path, remember_reads=True)
+        first = tool.func("exploring-a-project")
+        second = tool.func("exploring-a-project")
+        assert "list_directory" in first and len(first) > 500
+        assert len(second) < 300 and "already read" in second and 'file="SKILL.md"' in second
+        assert "list_directory" not in second
+
+    def test_the_pointer_tells_how_to_get_the_whole_text_again(self, tmp_path):
+        tool = self.tool(tmp_path, remember_reads=True)
+        tool.func("exploring-a-project")
+        again = tool.func("exploring-a-project", "SKILL.md")
+        assert "list_directory" in again and again.startswith("---")        # the file as it is on disk
+
+    def test_each_skill_has_its_own_first_read(self, tmp_path):
+        (tmp_path / "skills" / "mine").mkdir(parents=True)
+        (tmp_path / "skills" / "mine" / "SKILL.md").write_text(
+            "---\nname: mine\ndescription: My own guide\n---\nMY OWN TEXT\n", encoding="utf-8")
+        tool = self.tool(tmp_path, remember_reads=True)
+        tool.func("exploring-a-project")
+        assert "MY OWN TEXT" in tool.func("mine")                      # a different skill is read in full
+        assert "already read" in tool.func("mine")
+
+    def test_an_unknown_name_is_not_remembered_and_forget_starts_over(self, tmp_path):
+        tool = self.tool(tmp_path, remember_reads=True)
+        assert tool.func("nope").startswith("ERROR") and tool.func("nope").startswith("ERROR")
+        tool.func("exploring-a-project")
+        tool.forget_reads()
+        assert "list_directory" in tool.func("exploring-a-project")
+
+    def test_the_observer_still_hears_every_call(self, tmp_path):
+        seen = []
+        tool = self.tool(tmp_path, remember_reads=True, observer=lambda n, a: seen.append(a["name"]))
+        tool.func("exploring-a-project")
+        tool.func("exploring-a-project")
+        assert seen == ["exploring-a-project", "exploring-a-project"]
