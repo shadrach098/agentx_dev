@@ -252,7 +252,7 @@ A skill is a short guide for a kind of work ("how to explore a project", "how to
 
 **Your own skills.** A folder with a `SKILL.md` in `~/.agentx/skills/<name>/` is a skill. Skills written for Claude work as they are. A project can keep its own in `<project>/.agentx/skills/`; those are shown to the agent in a separate block marked as coming from the project folder (which may be a cloned repository), cannot replace a skill of yours with the same name, and cannot override the approval prompts. A `.agentx` or `.agentx/skills` that is a link leading out of the project is not read.
 
-**Using a skill yourself.** Every skill the agent has in this conversation is also a slash command. Type `/` and the pop-up lists the commands, then the skills (marked `(skill)`, with their description); pick one with the arrow keys and Enter, add what you want, and send:
+**Using a skill yourself.** Every skill the agent has in this conversation is also a slash command. Type `/` and the pop-up lists the commands, then the skills (marked `(skill)`, with their description); pick one with the arrow keys and Enter, add what you want, and send (`/skill` works as a short form of `/skills`):
 
 ```text
 /changing-files rename the helper to util everywhere
@@ -359,6 +359,10 @@ Every tool call a helper makes goes through the same gate as the chat: the modes
 ```
 
 Answering `a` ("don't ask again: all edits this session") at a helper's edit prompt does what it does in the chat: it switches the whole session to `accept-edits` until `/clear` or `/resume`, so the rest of the job's edits (and later edits in the chat) run without asking. Answer `y` if you want to approve each one.
+
+### Skills in a team job
+
+Every helper has the `use_skill` tool and the list of the [skills](#skills) that fit its tools: the explorer sees `exploring-a-project`, the coder adds `changing-files`, the runner adds `running-code`, and any skill you installed that is not tied to tools is offered to all three. So `/team brainstorm this repo with the brainstorming skill` works: the supervisor puts the skill in a step's task and the helper opens it with `use_skill`. Reading a skill is read-only and does not ask. Before this, a helper had no skills, and a step that said "use the X skill" sent it searching the disk with `run_python`.
 
 ### What you see
 

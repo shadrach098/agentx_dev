@@ -223,6 +223,7 @@ COMMANDS = (
     Command("exit", "Leave", _exit),
 )
 _BY_NAME = {command.name: command for command in COMMANDS}
+_BY_NAME["skill"] = _BY_NAME["skills"]          # an alias, not listed twice in the pop-up
 
 
 def command_names() -> List[str]:

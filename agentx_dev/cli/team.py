@@ -142,31 +142,34 @@ class _HelperRunner(AgentRunner):
 
 
 def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
-            describe_error: Callable[[BaseException], str]) -> AgentRunner:
+            describe_error: Callable[[BaseException], str], skills: Any = None) -> AgentRunner:
     chosen = [by_name[name] for name in role.tools if name in by_name]
     return _HelperRunner(model=model, agent=AgentType.ReAct, tools=chosen,
                          system_addendum=(addendum or "") + role_prompt(role),
                          max_iterations=HELPER_STEPS, auto_cache=False, verbose=False,
-                         parallel_tool_workers=1, describe_error=describe_error)
+                         parallel_tool_workers=1, describe_error=describe_error, skills=skills)
 
 
 def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
                   describe_error: Callable[[BaseException], str] = str,
-                  extra_models: Sequence[HelperModel] = (), chat_use: str = "") -> Dict[str, Tuple[str, AgentRunner]]:
+                  extra_models: Sequence[HelperModel] = (), chat_use: str = "",
+                  skills: Any = None) -> Dict[str, Tuple[str, AgentRunner]]:
     """One ``AgentRunner`` per role. Without ``extra_models`` they run on ``model`` and are named ``explorer``,
     ``coder``, ``runner`` with the roles' own descriptions. With extra models every copy names its model, the
     chat's own included (``coder@<model>``), and every description says the same thing apart from the model and
     the user's note on what it is for (``chat_use`` for ``model``, ``HelperModel.use`` for the others), so the
     planner is steered to no model in particular. Each helper holds only its slice of ``tools`` (the already gated
     tools, picked by name), so every call goes through the same gate as the main chat. ``addendum`` is the chat's
-    own system addendum; the role text follows it. An error a helper's run raises reaches the Supervisor as
-    ``describe_error(error)`` only."""
+    own system addendum; the role text follows it. ``skills`` (a ``Skills``) gives every helper ``use_skill`` and the
+    list of the skills that fit its role's tools, so a step that says "use the X skill" can be done. An error a
+    helper's run raises reaches the Supervisor as ``describe_error(error)`` only."""
     by_name = {tool.name: tool for tool in tools}
     extras = list(extra_models)
     helpers: Dict[str, Tuple[str, AgentRunner]] = {}
     if not extras:
         for role in ROLES:
-            helpers[role.name] = (role.description, _helper(role, model, by_name, addendum, describe_error))
+            helpers[role.name] = (role.description,
+                                  _helper(role, model, by_name, addendum, describe_error, skills))
         return helpers
     for helper_model in [HelperModel(model_label(model), model, chat_use), *extras]:
         note = MODEL_NOTE.format(model=helper_model.name,
@@ -174,7 +177,8 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
                                  if helper_model.use else "")
         for role in ROLES:
             helpers[f"{role.name}@{helper_model.name}"] = (
-                role.description + note, _helper(role, helper_model.model, by_name, addendum, describe_error))
+                role.description + note,
+                _helper(role, helper_model.model, by_name, addendum, describe_error, skills))
     return helpers
 
 
@@ -221,7 +225,7 @@ def format_result(result: Any) -> str:
 def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, notify: Notify,
                  ask_user: Optional[Callable[[str], Optional[str]]] = None,
                  describe_error: Callable[[BaseException], str] = str,
-                 extra_models: Sequence[HelperModel] = (), chat_use: str = "") -> str:
+                 extra_models: Sequence[HelperModel] = (), chat_use: str = "", skills: Any = None) -> str:
     """Plan ``task``, run the helpers one at a time and return the result text. Progress goes to ``notify``.
     ``extra_models`` adds the roles on other models (see ``build_helpers``); the planner stays on ``model``.
 
@@ -238,7 +242,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
 
     try:
         helpers = build_helpers(model, tools, addendum, describe_error, extra_models=extra_models,
-                                chat_use=chat_use)
+                                chat_use=chat_use, skills=skills)
         supervisor = Supervisor(model=model, agents=helpers, max_subtasks=MAX_SUBTASKS, verbose=False,
                                 max_subtask_retries=0, max_plan_retries=1, ask_user=ask_user,
                                 max_questions=MAX_QUESTIONS, spawn_config=SpawnConfig(enabled=False))

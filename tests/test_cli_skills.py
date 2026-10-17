@@ -227,3 +227,56 @@ class TestSkillsAsCommands:
         assert "/running-code (bundled)" in text and "web-research (bundled)" in text
         assert "not active in this conversation" in text.split("web-research")[1].split("\n")[0]
         assert "/<skill> [what you want]" in text
+
+
+class TestTeamHelpersGetSkills:
+    """A team helper had no use_skill, so a supervisor step 'read the brainstorming skill' sent it hunting through
+    the disk with run_python. Each helper now gets the skills that fit its role's tools."""
+
+    def helpers(self, tmp_path):
+        from agentx_dev.cli.approval import Gate
+        from agentx_dev.cli.team import build_helpers
+        from agentx_dev.cli.tools import build_tools
+        from agentx_dev.Skills import Skills
+        tools = build_tools(tmp_path, [], Gate(cwd=tmp_path))
+        return build_helpers(MockModel(), tools, "BASE", skills=Skills(tmp_path / "skills"))
+
+    def test_every_helper_can_open_the_skills_that_fit_its_tools(self, tmp_path):
+        helpers = {name: runner for name, (desc, runner) in self.helpers(tmp_path).items()}
+        for runner in helpers.values():
+            assert "use_skill" in [t.name for t in runner.tools]
+            assert runner.system_addendum.startswith("BASE") and "Team role:" in runner.system_addendum
+        explorer, coder, run_ner = (helpers[n].system_addendum for n in ("explorer", "coder", "runner"))
+        assert "- exploring-a-project:" in explorer and "changing-files" not in explorer and "running-code" not in explorer
+        assert "- changing-files:" in coder and "running-code" not in coder
+        assert "- running-code:" in run_ner and "changing-files" not in run_ner
+
+    def test_without_skills_nothing_changes(self, tmp_path):
+        from agentx_dev.cli.approval import Gate
+        from agentx_dev.cli.team import build_helpers
+        from agentx_dev.cli.tools import build_tools
+        tools = build_tools(tmp_path, [], Gate(cwd=tmp_path))
+        for desc, runner in build_helpers(MockModel(), tools, "BASE").values():
+            assert "use_skill" not in [t.name for t in runner.tools] and "Skills:" not in runner.system_addendum
+
+    def test_a_team_job_started_in_the_app_passes_the_skills_on(self, tmp_path, monkeypatch):
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel())
+        app.model = MockModel()
+        seen = {}
+
+        def fake_run_team_job(task, **kw):
+            seen.update(kw)
+            return "Team job finished (outcome: done)"
+        monkeypatch.setattr(app_module, "run_team_job", fake_run_team_job)
+        app._start_team_job("do a thing", "")
+        assert seen["skills"] is app.skills
+
+
+class TestSkillAlias:
+    def test_slash_skill_is_the_same_as_slash_skills(self, tmp_path):
+        from agentx_dev.cli.commands import command_names
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(), width=300)
+        runner_of(app)
+        run_command(app, "/skill")
+        assert "Skills (the agent reads one" in out.getvalue()
+        assert "/skill" not in command_names()               # an alias: not listed twice in the pop-up

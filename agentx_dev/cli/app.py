@@ -1023,7 +1023,7 @@ class ChatApp:
             text = run_team_job(task, model=self.model, tools=self.base_tools, addendum=self.addendum,
                                 notify=self._team_notify, ask_user=self._team_question,
                                 describe_error=self._safe, extra_models=extras,
-                                chat_use=self._use_of(self.model_label))
+                                chat_use=self._use_of(self.model_label), skills=self.skills)
         finally:
             self._team_helper = ""
             self.progress.start("Thinking")

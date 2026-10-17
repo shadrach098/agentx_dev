@@ -98,7 +98,7 @@ most 50 skills, searched at most 5 folders deep.
 ## Not in this change
 
 Updating an installed skill (remove and install again); installing from anything but GitHub or a folder;
-skills for team helpers and sub-agents (they keep their own prompts); `allowed-tools` or other front matter
+skills for sub-agents (the terminal app's team helpers do get them; see the CLI guide); `allowed-tools` or other front matter
 keys that change what a skill may do; a skill marketplace; the `delegate` tool joining the `delegating-work`
 skill's visibility (the tool is added after skills are attached, so the library shows that skill only when
 `start_team_job` is also present).
