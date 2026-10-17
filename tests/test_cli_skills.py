@@ -280,3 +280,38 @@ class TestSkillAlias:
         run_command(app, "/skill")
         assert "Skills (the agent reads one" in out.getvalue()
         assert "/skill" not in command_names()               # an alias: not listed twice in the pop-up
+
+
+class TestTeamJobUsesASkillEndToEnd:
+    """The real supervisor and helper loop with a scripted model: the explorer is asked to use a skill, calls
+    use_skill, gets the skill's text back, and reports it. No disk search, no run_python."""
+
+    def test_a_helper_step_that_says_use_the_skill_opens_it(self, tmp_path):
+        from agentx_dev.cli.approval import Gate
+        from agentx_dev.cli.team import run_team_job
+        from agentx_dev.cli.tools import build_tools
+        from agentx_dev.Skills import Skills
+        from tests.conftest import make_react_response
+        from tests.subagent_helpers import plan_json, router, step
+
+        calls = []
+
+        def explorer(messages):
+            text = " ".join(str(m["content"]) for m in messages)
+            if "Look before you change anything" in text:           # the skill's text came back as an observation
+                return make_final("Read the exploring skill: go from wide to narrow.")
+            calls.append("asked")
+            return make_react_response("use_skill", {"name": "exploring-a-project"})
+
+        model = router(plans=[plan_json(step("s1", "explorer", "Use the exploring-a-project skill, then report"))],
+                       synth="The helper read the skill.", agent=explorer)
+        tools = build_tools(tmp_path, [], Gate(cwd=tmp_path))
+        events = []
+        result = run_team_job("Brainstorm this repo with the skill", model=model, tools=tools, addendum="BASE",
+                              notify=lambda kind, data: events.append((kind, data)),
+                              skills=Skills(tmp_path / "skills"))
+        assert "outcome: done" in result and "explorer - done" in result
+        assert calls == ["asked"]                                   # one use_skill call, then the answer
+        # the skill's text really reached the helper's model as the tool's result
+        assert any("Look before you change anything" in str(call[-1]["content"]) for call in model.calls)
+        assert [d["agent"] for k, d in events if k == "dispatch"] == ["explorer"]
