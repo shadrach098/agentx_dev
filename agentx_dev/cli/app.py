@@ -215,6 +215,8 @@ class ChatApp:
         self._compact_wait = 0             # no summarising until the history has this many messages
         self.addendum = build_addendum(self.cwd, self.home)
         self.model: Any = None
+        self._usage_models: List[Tuple[str, str, Any]] = []     # (label, "chat" or "helper", model) used this session
+        self._last_turn_usage: Optional[Tuple[int, int, int]] = None      # (requests, input, output) of the last turn
         self.session: Optional[Session] = None
         self.session_path: Optional[Path] = None
         self._exit = False
@@ -424,6 +426,7 @@ class ChatApp:
         self._show_startup_warnings()
         try:
             self.model = self.model_factory(self.requested_model, self.env)
+            self._track_usage_model(self.model_label, self.model, "chat")
         except ModelError as e:
             self.error(self._safe(e) + self._model_source_note())
             self._create_user_settings(None)
@@ -549,6 +552,7 @@ class ChatApp:
         self._team_stalled = False
         events: List[dict] = []
         finished = False
+        usage_before = self._usage_totals()
         try:
             self._maybe_compact()
             self.progress.start("Thinking")
@@ -571,11 +575,62 @@ class ChatApp:
         finally:
             self.progress.stop()
             self.save()
+            after = self._usage_totals()
+            self._last_turn_usage = tuple(b - a for a, b in zip(usage_before, after))      # type: ignore[assignment]
         if finished:
             try:
                 self._log_turn(text if log_title is None else log_title, events)
             except Exception:                  # the turn itself went well: a log failure must not end the app
                 self._warn_log_failed()
+
+    # -- tokens used ----------------------------------------------------------
+
+    def _track_usage_model(self, label: str, model: Any, role: str) -> None:
+        """Remember a model whose token counters ``/usage`` should add up (once per object)."""
+        if model is not None and not any(model is known for _, _, known in self._usage_models):
+            self._usage_models.append((str(label), role, model))
+
+    @staticmethod
+    def _counters(model: Any) -> Tuple[int, int, int, int]:
+        """``(requests, input tokens, output tokens, cached input tokens)`` a model has recorded; zeros when it
+        keeps none."""
+        usage = getattr(model, "usage", None)
+        try:
+            return (int(getattr(usage, "total_calls", 0) or 0), int(getattr(usage, "total_input_tokens", 0) or 0),
+                    int(getattr(usage, "total_output_tokens", 0) or 0),
+                    int(getattr(usage, "total_cache_read_tokens", 0) or 0))
+        except (TypeError, ValueError):
+            return 0, 0, 0, 0
+
+    def _usage_totals(self) -> Tuple[int, int, int]:
+        """``(requests, input, output)`` summed over every model used so far."""
+        rows = [self._counters(model) for _, _, model in self._usage_models]
+        return tuple(sum(row[i] for row in rows) for i in range(3))              # type: ignore[return-value]
+
+    def show_usage(self) -> None:
+        """``/usage``: the tokens used this session, per model, and what the last turn used. Counts what the
+        provider's replies report; a model that reports nothing shows zeros."""
+        rows: Dict[Tuple[str, str], List[int]] = {}
+        for label, role, model in self._usage_models:
+            row = rows.setdefault((label, role), [0, 0, 0, 0])
+            for i, value in enumerate(self._counters(model)):
+                row[i] += value
+        requests, tokens_in, tokens_out = self._usage_totals()
+        if requests == 0:
+            self.notice("No model calls yet in this session.")
+            return
+        lines = ["Session (all models):", f"  {requests:,} requests, {tokens_in:,} input tokens, {tokens_out:,} output tokens"]
+        if len(rows) > 1 or any(role == "helper" for _, role in rows):
+            for (label, role), (calls, inp, out, cached) in rows.items():
+                if calls:
+                    extra = f", {cached:,} of the input from the provider's cache" if cached else ""
+                    lines.append(f"  {self._safe(label, 60)} ({role}): {calls:,} requests, {inp:,} in, {out:,} out{extra}")
+        if self._last_turn_usage is not None and self._last_turn_usage[0] > 0:
+            calls, inp, out = self._last_turn_usage
+            lines.append(f"Last turn: {calls:,} request{'s' if calls != 1 else ''}, {inp:,} input tokens, {out:,} output tokens")
+        lines.append("Every request re-sends the conversation, so input grows with the number of steps in a turn. "
+                     "Long results are trimmed, big files are read in pieces, and /clear starts fresh.")
+        self.notice("\n".join(lines))
 
     # -- project memory: the work log and summarising ------------------------
 
@@ -657,6 +712,7 @@ class ChatApp:
         before anything changes, so the old model stays."""
         model = self.model_factory(name, self.env)
         self.model = model
+        self._track_usage_model(self.model_label, model, "chat")
         self.requested_model = name
         assert self.session is not None
         self.session.attach(self._make_runner(model))
@@ -1029,6 +1085,8 @@ class ChatApp:
         extras, notes = build_team_models(self.team_models, self.env, chat_label=self.model_label,
                                           factory=self.model_factory,
                                           uses={name: self._use_of(name) for name in self.team_models})
+        for extra in extras:
+            self._track_usage_model(extra.name, extra.model, "helper")
         self.progress.stop()                      # the notices below must not be drawn over the spinner
         for note in notes:
             self.notice(self._safe(note, 300))

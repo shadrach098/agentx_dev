@@ -196,6 +196,10 @@ def _skills(ctx: Any, arg: str) -> None:
         ctx.error(SKILLS_USAGE)
 
 
+def _usage(ctx: Any, arg: str) -> None:
+    ctx.show_usage()
+
+
 def _exit(ctx: Any, arg: str) -> None:
     ctx.request_exit()
 
@@ -220,6 +224,7 @@ COMMANDS = (
     Command("team-models", "Models team helpers may also use: /team-models [name[=use] ...|clear] [--folder]",
             _team_models),
     Command("skills", "List the skills, or add one: /skills [install <link>|remove <name>]", _skills),
+    Command("usage", "Show the tokens used this session, per model, and by the last turn", _usage),
     Command("exit", "Leave", _exit),
 )
 _BY_NAME = {command.name: command for command in COMMANDS}
