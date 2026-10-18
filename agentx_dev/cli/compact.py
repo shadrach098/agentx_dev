@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-THRESHOLD_CHARS = 150_000           # about 40,000 tokens; a rough stand-in
+THRESHOLD_CHARS = 60_000            # about 15,000 tokens; a rough stand-in, measured on what the model is sent
 KEEP_USER_MESSAGES = 6
 TOOL_RESULT_CHARS = 500
 MESSAGE_CHARS = 2000

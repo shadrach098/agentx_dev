@@ -19,6 +19,7 @@ from agentx_dev.cli.approval import MODES, Gate
 from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
                                      shown, skill_request)
 from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, compact, needs_compaction
+from agentx_dev.Runner.Trim import TrimPolicy, trim_tool_results
 from agentx_dev.cli.context import build_addendum
 from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events, summary_entry_text
 from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, describe_prompt, is_auto_note,
@@ -204,7 +205,9 @@ class ChatApp:
                           if self._memory_on and safe_location(self.cwd, "skills") else [])
         # observer: a team helper opening a skill is drawn like its other tool calls (the chat's own are drawn from
         # the runner's events; ``_observe_tool`` ignores a call made outside a team job).
-        self.skills = Skills.default(self.home, project_dirs=project_skills, observer=self._observe_tool)
+        # remember_reads: a skill already read in this conversation is not sent again in full.
+        self.skills = Skills.default(self.home, project_dirs=project_skills, observer=self._observe_tool,
+                                     remember_reads=True)
         self._runner_skills: Dict[str, str] = {}      # name -> description, for the current runner (_make_runner)
         self._newly_trusted = bool(newly_trusted)    # main: the user said yes to the trust question in this run
         self.project_settings_created: Optional[Path] = None
@@ -379,7 +382,7 @@ class ChatApp:
         # One tool call at a time: one approval prompt open, on the main thread, and edits made in order.
         runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=self.tools, system_addendum=self.addendum,
                              max_iterations=50, auto_cache=False, verbose=False, parallel_tool_workers=1,
-                             skills=self.skills)
+                             skills=self.skills, trim_results=True)
         # The skills THIS conversation's agent can open (what /<skill> and the `/` pop-up offer): taken from the
         # runner itself, so it is exactly what use_skill can read, and it follows /clear, /resume and a new model.
         tool = next((t for t in runner.tools if t.name == "use_skill"), None)
@@ -614,7 +617,8 @@ class ChatApp:
         The runner rebuilds its messages from ``session.history`` on every turn, so replacing it is enough."""
         assert self.session is not None
         history = self.session.history
-        if len(history) < self._compact_wait or not needs_compaction(history):
+        # Measured on what the model is actually sent (old big tool results are stubs), not on the saved history.
+        if len(history) < self._compact_wait or not needs_compaction(trim_tool_results(history, TrimPolicy())):
             return
         self.progress.start("Summarising the conversation")
         try:
@@ -623,12 +627,20 @@ class ChatApp:
             self.progress.stop()
         if result.status == "done":
             self.session.history = result.history
+            self._forget_skill_reads()          # the skill texts went into the summary: they may be read again
             self.notice(f"Summarised {result.replaced} earlier messages to keep the conversation short.")
             self._append_log(summary_entry_text(result.summary, datetime.now(), self._hide))
         elif result.status == "failed":
             self._compact_wait = len(history) + RETRY_AFTER_MESSAGES
             self.notice("The conversation is getting long, but it could not be summarised right now; "
                         "it will be tried again later.")
+
+    def _forget_skill_reads(self) -> None:
+        runner = getattr(self.session, "runner", None)
+        for tool in getattr(runner, "tools", None) or []:
+            forget = getattr(tool, "forget_reads", None)
+            if callable(forget):
+                forget()
 
     def save(self) -> None:
         if self.session is None or self.session_path is None or not self.session.history:

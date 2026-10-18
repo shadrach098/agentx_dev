@@ -147,7 +147,8 @@ def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
     return _HelperRunner(model=model, agent=AgentType.ReAct, tools=chosen,
                          system_addendum=(addendum or "") + role_prompt(role),
                          max_iterations=HELPER_STEPS, auto_cache=False, verbose=False,
-                         parallel_tool_workers=1, describe_error=describe_error, skills=skills)
+                         parallel_tool_workers=1, describe_error=describe_error, skills=skills,
+                         trim_results=True)
 
 
 def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
