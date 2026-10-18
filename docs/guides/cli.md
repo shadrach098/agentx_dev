@@ -52,7 +52,7 @@ Keys are read from the environment only. With no `--model`, the first key found 
 
 ## What it can do
 
-The main agent gets the ten tools from [`DefaultTools`](../concepts/tools.md) plus `start_team_job` and `use_skill`, twelve in all. The ten are limited to the folder you started in (plus any extra folders, see [Extra folders](#extra-folders)). A path outside those folders fails inside the tool.
+The main agent gets the ten tools from [`DefaultTools`](../concepts/tools.md) plus `start_team_job`, `use_skill` and `recall`, thirteen in all (`recall` only in a project folder, see [Notes and recall](#notes-and-recall)). The ten are limited to the folder you started in (plus any extra folders, see [Extra folders](#extra-folders)). A path outside those folders fails inside the tool.
 
 | Kind | Tools | What happens |
 |---|---|---|
@@ -62,6 +62,7 @@ The main agent gets the ten tools from [`DefaultTools`](../concepts/tools.md) pl
 | destructive | `delete_path`, `move_file` | Always asks, in every mode. |
 | team | `start_team_job` | Asks, and "don't ask again" is never offered. Refused in `plan` mode. Runs without asking in `auto` mode (or with your own allow rule). See [Team jobs](#team-jobs). |
 | skills | `use_skill` | Runs without asking: it only reads a skill's text (or a file inside the skill's folder). See [Skills](#skills). |
+| memory | `recall` | Runs without asking: it only searches the project's notes. See [Notes and recall](#notes-and-recall). |
 
 Limits that come from the tools, not from `agentx`: a shell command is stopped after 5 minutes and Python code after 2 minutes (the time spent waiting for your approval does not count), and long output is cut (40,000 bytes for a shell command, 100,000 for Python). A dev server or a watcher will hit the 30-second limit and be killed. `agentx` does not change these and has no setting for them.
 
@@ -316,6 +317,8 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage. | `/team add type hints to every module and run the tests` |
 | `/team-models [name[=use] ...\|describe\|clear] [--folder]` | Show or set the extra models team helpers may run on, with an optional note on what each is for (see [Helper models](#helper-models)). `/team-models <names>` lasts for this session only; with `--folder` it is also saved for this folder. `/team-models describe` asks the chat model to write the missing notes (marked `auto:`). `/team-models clear` empties the list. | `/team-models gpt-6.1-sol="hard coding" claude-sonnet-5-5 --folder` |
 | `/skills [install <link>\|remove <name>\|use <name> ...]` | List the skills the agent can read (each is also a `/name` command in the pop-up, e.g. `/changing-files rename the helper`), or add one from a `https://github.com/<owner>/<repo>` link or a folder (you are shown what it contains and asked first), or remove one. See [Skills](#skills). | `/skills install https://github.com/obra/superpowers` |
+| `/memory [words]` | Show the project notes kept for later (how many, how they are searched, the newest), or search them. See [Notes and recall](#notes-and-recall). | `/memory login redirect` |
+| `/usage` | Show the tokens used this session (requests, input and output tokens, per model when a team used others) and by the last turn. | `/usage` |
 | `/exit` | Save the conversation and leave (Ctrl+D does the same). | `/exit` |
 
 ## Team jobs
@@ -504,15 +507,39 @@ Answer: I added docstrings to 6 modules and the tests pass.
 - The model cannot write here: `.agentx/*` is protected (see [Default protections](#default-protections)), and the app writes with Python, not through a tool.
 - If it cannot be written (a read-only folder, a full disk, a refused location) you get one notice per session, `Could not write the work log in .agentx/log.md; carrying on without it.`, and the chat carries on.
 
+### Notes and recall
+
+Besides the log, `agentx` writes a readable note for each turn that changed files, ran commands, ran a team job or gave a real answer: `.agentx/notes/2026-10-17-150309-fix-the-login-redirect.md`, with what you asked, the result, the files changed and the commands run (secrets hidden, as in the log). A short reply like "2" or "thanks" gets no note.
+
+The notes are indexed in `.agentx/memory/` so they can be found by meaning, not only by words:
+
+- With `OPENAI_API_KEY` set, the index uses OpenAI's embeddings (`text-embedding-3-small`): the note's text is sent to OpenAI's embeddings API when the note is written, and your search words when you search. Without a key (or when the API cannot be reached) a local similarity search is used, and if even that fails, keywords. Nothing else changes.
+- The agent has a `recall` tool to search them (`recall("the login redirect")`): it returns the closest notes with their path, and the agent can open a whole note with `read_path`.
+- The first message of a fresh conversation (a new start or `/clear`) also gets up to 3 notes that are close to it, in a marked block of at most 1,500 characters. A resumed conversation does not.
+- `/memory` shows how many notes there are and how they are searched; `/memory <words>` shows what `recall` would find.
+
+Notes are text from earlier sessions: they can be out of date and may quote files and tool output. They reach the model marked as data, not instructions. The notes are the source of truth: delete a note file and it is dropped from the index the next time the notes are searched, and switching between the OpenAI index and the local one rebuilds the index from the notes. None of this is kept for your home folder or a drive root.
+
 ### Starting from the log
 
 A fresh conversation (a start without `--continue` or `--resume`, a `--continue` or a bare `--resume` that finds no saved conversation and so starts a new one, and `/clear`; `--resume <id>` with no match is an error and starts nothing) reads the newest entries of the log, up to 6,000 characters and starting on an entry heading, and adds them to the model's instructions under "Recent work in this folder". The block is marked as written by earlier sessions, possibly from a cloned repository, possibly out of date, and unable to override the base rules or the approval prompts; tags inside the text are defused and the block is always closed. So "what did we do here?" works after a restart.
 
 When `--continue`, `--resume` or `/resume` load a saved conversation, it comes back as it was and the log is **not** added: project text such as the log, which may have been written by someone else, is never put into a conversation that already exists. A team's helpers get the same instructions as the chat, so in a conversation that started fresh they see the recent-work block too. A missing, binary or unreadable log is skipped without a message.
 
+### Keeping requests small
+
+Every request sends the whole conversation again, so a file read at step 2 is paid for again at every later step of the turn, and a long turn costs many times what it read. `agentx` keeps that down in four ways:
+
+- **Old tool results are trimmed.** The model is sent the newest 4 tool results in full; each older result of 800 characters or more is replaced by a one-line note (`[Earlier read_path result (6,012 characters) removed to save tokens. Run the tool again if you need it.]`). Long arguments of old calls (the content a `write_file` carried) are shortened the same way. Skill texts are never trimmed. The saved conversation keeps everything; only what is sent shrinks. Team helpers do the same.
+- **Big files are read in pieces** (30,000 characters at a time, see the limits below).
+- **A skill is read once per conversation.** Asking for it again returns a one-line pointer back to it (`use_skill` with `file="SKILL.md"` reads it again anyway). After a summary the skill texts may be read again.
+- **Summarising starts sooner**, at about 15,000 tokens of what is sent (below).
+
+On a measured turn that read 15 files of 6 KB each, the input sent went from about 231,000 tokens to about 136,000, and the last request from about 25,600 to about 9,700. `/usage` shows what your own sessions use.
+
 ### Summarising a long conversation
 
-Every turn sends the whole history again, so a long conversation costs more with each message and in the end overflows the model's limit. Before a turn, when the saved history is over about 150,000 characters (roughly 40,000 tokens), `agentx` replaces the older part with a summary:
+Every turn sends the whole history again, so a long conversation costs more with each message and in the end overflows the model's limit. Before a turn, when what the model would be sent is over about 60,000 characters (roughly 15,000 tokens), `agentx` replaces the older part with a summary. It is measured on what is sent, so old tool results that are already [trimmed](#keeping-requests-small) do not count:
 
 - Your last 6 messages, and everything the agent did after the first of them, stay word for word. The cut always falls on one of your messages, so a tool call is never separated from its result. Nothing is summarised unless there is something older than that.
 - One call to the model in use (no tools, a spinner reading "Summarising the conversation") writes the summary, in at most 500 words: what you wanted, what was decided, the files changed, the commands that mattered and what is open. It is shown the older messages as text, with each tool result cut to 500 characters and the whole input capped at 60,000. It works the same for models that call tools natively and for plain-text ones.
@@ -524,7 +551,7 @@ Every turn sends the whole history again, so a long conversation costs more with
 ### Limits
 
 - None of this is kept for your home folder or a drive root: no folder settings file, no log, nothing loaded.
-- The 150,000-character threshold counts characters, which is only a rough stand-in for tokens; a conversation heavy in code or non-English text can reach the model's limit earlier. The thresholds are fixed in this version.
+- The 60,000-character threshold counts characters, which is only a rough stand-in for tokens; a conversation heavy in code or non-English text can reach the model's limit earlier. The thresholds are fixed in this version.
 - Once your last 6 messages and what followed them are over the threshold on their own, every further turn makes one small summary call first (the earlier summary plus the one turn that has just dropped out of the last 6).
 - The log is not searched by meaning: only the newest entries are loaded, and `log-older.md` never is.
 - A team job is one log line (see above), and the log holds what the app saw, not everything that happened.
@@ -554,7 +581,7 @@ The status bar shows the model, the mode, the folder, the short session id and t
 - **No mode that never asks.** `auto` still asks before delete and move and for tools the gate does not know. The protected files (`.git`, `.agentx`, git and shell config) are refused in every mode.
 - **Teams mode is limited:** helpers run one at a time and the roster is fixed, though each role can run on extra models you allow (see [Team jobs](#team-jobs)).
 - You cannot type while the agent is working.
-- **No size cap on `read_path`.** A very large file the model reads goes into the history whole, and every later turn sends it again, so a single huge read can exceed the model's context window before [summarising](#summarising-a-long-conversation) can help (it works on the history before a turn, not on one oversized result), and later turns then fail until you start over with `/clear`. Ask for the part of a file you need, or use `grep`.
+- **`read_path` returns at most 30,000 characters at a time.** A longer file comes back as numbered lines with a note on how to read the next part (`offset=`). Very long single lines (minified files) are cut.
 - **Project memory is approximate.** The work log is a short text record, not a search index, and summarising is triggered by a character count (see [Project memory](#project-memory)).
 - `run_shell` and `run_python` run with a scrubbed environment, and `run_python` uses `agentx`'s own interpreter (see [What it can do](#what-it-can-do)).
 

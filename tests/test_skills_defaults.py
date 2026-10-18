@@ -12,7 +12,7 @@ from agentx_dev.Skills.Defaults import (
 )
 from agentx_dev.Skills.Store import NAME_RE, SIDECAR, SkillStore, parse_skill_md
 
-SHIPPED_TOOLS = set(DefaultTools.names()) | {"web_search", "web_fetch", "start_team_job", "delegate"}
+SHIPPED_TOOLS = set(DefaultTools.names()) | {"web_search", "web_fetch", "start_team_job", "delegate", "recall"}
 
 
 def sample(name="demo", version=1, text="Do it well."):

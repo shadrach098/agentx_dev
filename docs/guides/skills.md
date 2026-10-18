@@ -56,7 +56,9 @@ which were created, so one you delete is not recreated). To use a folder as it i
 `Skills(folder, project_dirs=[...])` adds read-only folders that are treated as untrusted, the way the terminal
 app treats a project's `.agentx/skills`. `Skills(folder, observer=fn)` calls `fn("use_skill", {"name": ..., "file": ...})`
 each time the model opens a skill, so you can log or show it (the terminal app uses this for team helpers); an
-observer that raises is ignored.
+observer that raises is ignored. `Skills(folder, remember_reads=True)` answers a second read of the same skill with a
+one-line pointer back to it (its text is still in the conversation); leave it off for a runner you reuse for unrelated
+conversations, and call `tool.forget_reads()` on the `use_skill` tool after you summarise a conversation.
 
 ### Installing from your own code
 

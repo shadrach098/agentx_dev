@@ -1367,7 +1367,7 @@ It is plain markdown you can read, edit or delete. Keys are hidden before anythi
 
 Loading a saved conversation (`--continue`, `--resume`, `/resume`) brings it back as it was and does not add the log.
 
-**Long conversations.** Every turn sends the whole history again. Over about 150,000 characters, `agentx` replaces the older part with one summary written by the model in use, keeping your last 6 messages and everything after them word for word, and prints `Summarised N earlier messages to keep the conversation short.` There is no `/compact`; it happens by itself.
+**Long conversations.** Every turn sends the whole history again. Over about 60,000 characters of what is sent, `agentx` replaces the older part with one summary written by the model in use, keeping your last 6 messages and everything after them word for word, and prints `Summarised N earlier messages to keep the conversation short.` There is no `/compact`; it happens by itself.
 
 Things to know:
 

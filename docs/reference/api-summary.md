@@ -159,6 +159,10 @@ Import from `agentx_dev.Skills`. See the [Skills guide](../guides/skills.md).
 | `remove_skill(name, target)` | function | Delete a skill folder from `target`. |
 | `SkillInstallError` | exception | A problem to tell the user, in a sentence. |
 | `AgentRunner(skills=)`, `AsyncAgentRunner(skills=)` | parameter | `True` or a `Skills`; default `None` changes nothing. |
+| `Skills(..., observer=fn, remember_reads=False)` | parameters | `observer("use_skill", {"name", "file"})` hears each read; `remember_reads` answers a second read of a skill with a pointer back (`tool.forget_reads()` starts over). |
+| `AgentRunner(trim_results=)`, `AsyncAgentRunner(trim_results=)` | parameter | `True` or a `TrimPolicy(keep_last=4, min_chars=800, exempt=("use_skill",))` from `agentx_dev.Runner.Trim`: old big tool results are sent as a stub; the history is unchanged. Default `None`. |
+| `trim_tool_results(messages, policy)` | function | The trimming itself, on a copy of a message list. |
+| `Permissions.read_max_chars` | field | `read_path` returns at most this many characters at a time, with a note on how to continue. Default `None` (whole files). |
 | `/skills [install <link>\|remove <name>\|use <name> ...]`, `/<skill> [what you want]` | `agentx` commands | List, install, remove and use skills in the terminal app; each skill the conversation's agent has is also offered in the `/` pop-up. |
 
 ## Command line

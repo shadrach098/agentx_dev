@@ -22,6 +22,7 @@ from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, compact, needs_compacti
 from agentx_dev.Runner.Trim import TrimPolicy, trim_tool_results
 from agentx_dev.cli.context import build_addendum
 from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events, summary_entry_text
+from agentx_dev.cli.recall import ProjectMemory, auto_block, choose_embeddings, make_recall_tool, worth_a_note
 from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, describe_prompt, is_auto_note,
                                    parse_descriptions, parse_team_models, team_models_line, usable_team_models)
 from agentx_dev.cli.models import model_label as label_of
@@ -209,6 +210,14 @@ class ChatApp:
         self.skills = Skills.default(self.home, project_dirs=project_skills, observer=self._observe_tool,
                                      remember_reads=True)
         self._runner_skills: Dict[str, str] = {}      # name -> description, for the current runner (_make_runner)
+        # Project memory: a note per worthwhile turn in .agentx/notes, an index over them, the recall tool, and the
+        # relevant notes added to the first message of a fresh conversation. Not for the home folder or a drive root.
+        self.project_memory: Optional[ProjectMemory] = None
+        if self._memory_on:
+            embeddings, embedder_id = choose_embeddings(self.env)
+            self.project_memory = ProjectMemory(self.cwd, embeddings, embedder_id)
+            self.tools.append(make_recall_tool(self.project_memory))
+        self._recall_next = False                     # the next message is the first of a fresh conversation
         self._newly_trusted = bool(newly_trusted)    # main: the user said yes to the trust question in this run
         self.project_settings_created: Optional[Path] = None
         self._log_warned = False
@@ -419,6 +428,7 @@ class ChatApp:
             return False
         self._new_conversation_state()
         self.session, self.session_path = session, info.path
+        self._recall_next = False                     # a resumed conversation already has its context
         return True
 
     def start(self, resume: Optional[str] = None) -> int:
@@ -556,7 +566,12 @@ class ChatApp:
         try:
             self._maybe_compact()
             self.progress.start("Thinking")
-            for event in self.session.stream(text):
+            sent = text
+            if self._recall_next:                      # the first message of a fresh conversation: add close notes
+                self._recall_next = False
+                if self.project_memory is not None:
+                    sent = text + auto_block(self.project_memory, text)
+            for event in self.session.stream(sent):
                 self.progress.stop()                       # erase the spinner, then print
                 self.screen.show_event(event)
                 kind = event.get("type") if isinstance(event, dict) else None
@@ -582,6 +597,37 @@ class ChatApp:
                 self._log_turn(text if log_title is None else log_title, events)
             except Exception:                  # the turn itself went well: a log failure must not end the app
                 self._warn_log_failed()
+
+    # -- /memory ----------------------------------------------------------------
+
+    def show_memory(self, query: str = "") -> None:
+        """``/memory``: what is kept and how it is searched, and the newest notes. ``/memory <words>``: the notes
+        the recall tool would find for those words."""
+        if self.project_memory is None:
+            self.notice("Project memory is off here: no notes are kept for your home folder or a drive root.")
+            return
+        memory = self.project_memory
+        query = query.strip()
+        if query:
+            hits = memory.search(query)
+            if not hits:
+                self.notice("No notes match that.")
+                return
+            lines = [f"Notes for {self._safe(query, 80)!r}:"]
+            for hit in hits:
+                lines.append(f"  {self._safe(hit.when, 20)}  {self._safe(hit.title, 80)}  ({self._safe(hit.path, 120)})")
+            self.notice("\n".join(lines))
+            return
+        lines = [memory.describe()]
+        newest = memory.notes()[-5:]
+        if newest:
+            lines.append("Newest notes:")
+            for path in reversed(newest):
+                lines.append(f"  {self._safe(path.name, 120)}")
+        lines.append("A note is written after each turn that changes files, runs commands or gives a real answer. "
+                     "The agent searches them with its recall tool, and a fresh conversation starts with the "
+                     "closest ones. /memory <words> shows what it would find.")
+        self.notice("\n".join(lines))
 
     # -- tokens used ----------------------------------------------------------
 
@@ -642,7 +688,10 @@ class ChatApp:
     def _log_turn(self, title: str, events: List[dict]) -> None:
         if not self._memory_on:
             return
-        self._append_log(entry_text(record_from_events(title, events), datetime.now(), self._hide))
+        record, now = record_from_events(title, events), datetime.now()
+        self._append_log(entry_text(record, now, self._hide))
+        if self.project_memory is not None and worth_a_note(record):
+            self.project_memory.write(record, now, self._hide)        # never raises; a failure is logged
 
     def _append_log(self, text: str) -> None:
         """Add ``text`` to ``.agentx/log.md``. A failure is noticed once per session and never stops the chat."""
@@ -885,6 +934,7 @@ class ChatApp:
         """A new conversation (startup without --continue/--resume, or /clear): it starts from the work log."""
         self._refresh_instructions(with_log=True)
         self._fresh(self._make_runner(self.model))
+        self._recall_next = True
 
     def new_conversation(self) -> None:
         self.save()

@@ -1182,7 +1182,7 @@ def test_a_protected_folder_cannot_be_moved_into_place_by_naming_its_parent_as_t
     app, out, cwd, _ = make_app(tmp_path, lines, model)
     app.start()
     assert (cwd / "stuff" / ".agentx" / "settings.json").exists()
-    assert [p.name for p in (cwd / ".agentx").iterdir()] == ["log.md"]       # only the app's own work log
+    assert {p.name for p in (cwd / ".agentx").iterdir()} <= {"log.md", "notes", "memory"}   # only the app's own files
     assert lines.prompts.count("Allow? [y/n] ") + lines.prompts.count("Allow? [y/a/n] ") == 1     # only the write asked
     assert "deny rule" in all_seen_by(model)
 

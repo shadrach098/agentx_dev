@@ -226,7 +226,7 @@ def test_the_team_tool_is_in_the_main_tool_list_but_not_in_any_helper(tmp_path):
     model = team_model([step("s1", "explorer", "look around")])
     app, _, _, _ = make_app(tmp_path, Lines("/exit"), model)
     names = [tool.name for tool in app.tools]
-    assert names.count("start_team_job") == 1 and len(names) == len(app.base_tools) + 1
+    assert names.count("start_team_job") == 1 and "recall" in names and len(names) == len(app.base_tools) + 2
     assert "start_team_job" not in [tool.name for tool in app.base_tools]
     for name, (_, runner) in build_helpers(model, app.base_tools, app.addendum).items():
         assert "start_team_job" not in [tool.name for tool in runner.tools], name

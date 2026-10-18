@@ -1,8 +1,8 @@
 ---
 name: exploring-a-project
 description: How to find your way around a project before changing it - list, find, grep, read.
-tools: [list_directory, find_files, grep, read_path]
-version: 1
+tools: [list_directory, find_files, grep, read_path, recall]
+version: 2
 ---
 # Exploring a project
 
@@ -15,7 +15,9 @@ Look before you change anything. Work from wide to narrow:
 3. `grep` when you know a word that is in the code (a function name, an error message). It matches the text
    literally; pass `regex=True` for a pattern. Narrow it with `path` and `glob` instead of searching everything.
 4. `read_path` once you know the file. Read a small file whole. For a big one pass `offset` and `limit` to read
-   a slice.
+   a slice; a very long file comes back in parts with a note on where to continue.
+5. `recall`, when you have it, searches notes of earlier sessions in this project (what was asked, decided,
+   changed). Use it when the user refers to earlier work, before searching the code for it again.
 
 Habits that save time:
 
