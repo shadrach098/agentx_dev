@@ -85,6 +85,10 @@ that case installs nothing. Failures raise `SkillInstallError` with a sentence y
 `skills=None` (the default) changes nothing. The list of skills and the tool list are fixed when the runner is
 built; to pick up a skill added later, build a new runner.
 
+The list tells the model to check it before choosing its tools and to prefer a skill the user installed when one
+fits, and it puts the user's own skills (installed or written) first, ahead of the built-in ones. It also says to
+read only the skills that fit, so checking costs nothing until a skill is opened.
+
 ## The built-in skills
 
 | Skill | About |

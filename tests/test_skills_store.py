@@ -6,7 +6,7 @@ import os
 import pytest
 
 from agentx_dev.Skills.Store import (
-    INDEX_HEADER, MAX_BODY_CHARS, MAX_DESCRIPTION_CHARS, MAX_INDEX_CHARS, SIDECAR, Skill, SkillFormatError,
+    BUILT_IN_GROUP, INDEX_HEADER, MAX_BODY_CHARS, USER_GROUP, MAX_DESCRIPTION_CHARS, MAX_INDEX_CHARS, SIDECAR, Skill, SkillFormatError,
     SkillStore, index_block, load_skill, parse_skill_md, read_resource, skill_files,
 )
 
@@ -211,3 +211,29 @@ class TestFiles:
             pytest.skip("this system cannot make symbolic links")
         assert read_resource(skill, "link.txt").startswith("ERROR")
         assert "link.txt" not in skill_files(skill)
+
+
+class TestSkillsFirst:
+    """The index asks the model to check the skills before choosing tools, and lists the user's own skills (installed
+    or written) before the built-in ones, so a better installed skill is seen first."""
+
+    def test_the_header_says_check_skills_before_choosing_tools(self):
+        text = index_block([Skill("a", "A", "x")])
+        assert "before" in INDEX_HEADER and "tools" in INDEX_HEADER and "installed" in INDEX_HEADER
+        assert text.startswith(INDEX_HEADER)
+
+    def test_the_users_skills_come_before_the_built_in_ones(self):
+        skills = [Skill("aaa-builtin", "B", "x", source="bundled"), Skill("zzz-mine", "M", "x", source="installed"),
+                  Skill("mmm-own", "O", "x", source="own"), Skill("custom-tools", "C", "x", source="generated")]
+        text = index_block(skills)
+        assert text.index("- mmm-own:") < text.index("- zzz-mine:") < text.index("- aaa-builtin:") < text.index("- custom-tools:")
+        assert text.index(USER_GROUP) < text.index("- mmm-own:") and text.index(BUILT_IN_GROUP) < text.index("- aaa-builtin:")
+
+    def test_one_kind_only_needs_no_group_headings(self):
+        text = index_block([Skill("a", "A", "x", source="bundled"), Skill("b", "B", "x", source="bundled")])
+        assert USER_GROUP not in text and BUILT_IN_GROUP not in text
+
+    def test_the_project_block_still_comes_last(self):
+        text = index_block([Skill("p", "P", "x", source="project"), Skill("mine", "M", "x", source="installed"),
+                            Skill("b", "B", "x", source="bundled")])
+        assert text.index("- mine:") < text.index("- b:") < text.index("<project-skills>") < text.index("- p:")

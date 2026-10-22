@@ -9,14 +9,18 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 ### Added
 
 - **Smaller requests.** `AgentRunner(..., trim_results=True)` (and `AsyncAgentRunner`, or a `TrimPolicy` from
-  `agentx_dev.Runner.Trim`) sends the model a one-line stub in place of each big tool result except the newest 4,
-  and shortens long arguments of old calls; the saved history is unchanged and `use_skill` results are never
+  `agentx_dev.Runner.Trim`) sends the model a one-line stub in place of each big tool result outside a window of the newest
+  ones (up to 40,000 characters, at least 4), stubs an older word-for-word copy of a later result, and shortens long
+  arguments of old calls; the saved history is unchanged and `use_skill` results are never
   trimmed. `Permissions.read_max_chars` makes `read_path` return a long file in numbered parts with a note on how
   to continue. `Skills(remember_reads=True)` answers a second read of a skill with a pointer back.
 - **`agentx`:** all of the above are on (reads in parts of 30,000 characters); summarising starts at 60,000
   characters (was 150,000) and is measured on what the model is sent. On a measured 15-file turn the input sent
   fell from about 231,000 tokens to about 136,000. `/usage` shows the tokens used this session, per model, and by
   the last turn.
+- **Skills first.** The skill list tells the model to check it before choosing tools and to prefer a skill the user
+  installed when it fits; the user's own skills are listed ahead of the built-in ones, and the terminal app's base
+  prompt says the same.
 - **`agentx` project notes and recall:** a readable note per worthwhile turn in `.agentx/notes/` (asked, result,
   files changed, commands), indexed in `.agentx/memory/` with OpenAI embeddings when `OPENAI_API_KEY` is set
   (local similarity search otherwise, keywords if both fail). The agent gets a `recall` tool, a fresh
