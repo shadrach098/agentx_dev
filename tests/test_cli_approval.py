@@ -51,7 +51,8 @@ class TestKindsAndSubjects:
             ["read", "edit", "command", "destructive"]
         assert kind_of("some_mcp_tool") == "command"
 
-    def test_subjects(self):
+    def test_subjects(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)          # "b" must not name a folder here (a stray one made this fail)
         assert subject_of("run_shell", {"command": "rm   -rf   x"}) == "rm -rf x"
         assert subject_of("run_python", {"code": "import os\nprint(1)"}) == "import os"
         assert subject_of("move_file", {"source": "a", "destination": "b"}) == "a -> b"

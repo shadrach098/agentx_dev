@@ -318,6 +318,64 @@ class TestTeamJobUsesASkillEndToEnd:
         assert reads == [("use_skill", {"name": "exploring-a-project"})]      # and the read was reported for display
 
 
+class TestSkillFirstExplorationEndToEnd:
+    def test_trimming_question_reads_exploring_skill_before_searching(self, tmp_path, monkeypatch):
+        """Exercise CLI context, skill dispatch, observations and real file tools, without an API.
+
+        Removing the skill-first context or breaking use_skill/result delivery must fail this test.
+        This checks the offline execution contract, not a live model's ability to follow instructions.
+        """
+        from tests.conftest import make_react_response
+
+        replies = iter([
+            ("use_skill", {"name": "exploring-a-project"}),
+            ("list_directory", {"path": "."}),
+            ("find_files", {"glob": "**/Trim.py", "path": "."}),
+            ("grep", {"pattern": "trim_tool_results", "path": ".", "glob": "**/*.py"}),
+            ("read_path", {"path": "agentx_dev/Runner/Trim.py"}),
+        ])
+
+        def scripted_model(messages):
+            text = "\n".join(str(m["content"]) for m in messages)
+            assert "where is the trimming code?" in text
+            # The real CLI and runner must supply both the rule and the skill menu.
+            assert "check it before you choose your tools" in text
+            assert "exploring-a-project" in text
+            action, args = next(replies, ("Final_Answer", "Trimming is in agentx_dev/Runner/Trim.py."))
+            if action not in ("use_skill",):
+                assert "Look before you change anything" in text  # actual skill observation
+            if action == "Final_Answer":
+                assert "return history" in text  # actual file contents, not just a scripted answer
+            return make_react_response(action, args)
+
+        model = MockModel(script=scripted_model)
+        app, out, cwd, home = make_app(
+            tmp_path, Lines("where is the trimming code?", "/exit"), model,
+        )
+        source = cwd / "agentx_dev" / "Runner" / "Trim.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("def trim_tool_results(history):\n    return history\n", encoding="utf-8")
+        events = []
+        show_event = app.screen.show_event
+
+        def record_event(event):
+            events.append(event)
+            show_event(event)
+
+        monkeypatch.setattr(app.screen, "show_event", record_event)
+        assert app.start() == 0
+        calls = [event for event in events if event.get("type") == "tool_call"]
+        names = [event["name"] for event in calls]
+        assert names == ["use_skill", "list_directory", "find_files", "grep", "read_path"]
+        assert calls[0]["args"]["name"] == "exploring-a-project"
+        skill_index = names.index("use_skill")
+        for index, name in enumerate(names):
+            if name in {"grep", "find_files", "read_path"}:
+                assert skill_index < index, f"{name} ran before exploring-a-project"
+        assert len(model.calls) == 6  # all tool observations reached the model, then final answer
+        assert "Trimming is in agentx_dev/Runner/Trim.py." in out.getvalue()
+
+
 class TestHelperSkillReadsAreVisible:
     def test_a_helpers_use_skill_call_is_drawn_like_its_other_tool_calls(self, tmp_path):
         app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(), width=300)
