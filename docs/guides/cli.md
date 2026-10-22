@@ -302,7 +302,7 @@ When a tool raises an error, the framework logs it with a full traceback. `agent
 
 ## Slash commands
 
-A line that starts with `/` followed by a plain name is a command and is never sent to the model. `/tmp/build.log fails` or `/README.md` is a message, not a command. An unknown command prints the list. A name that is one of the agent's [skills](#skills) is not unknown: `/changing-files rename the helper` asks the agent to use that skill for the task. Typing `/` shows the commands and then the skills.
+A line that starts with `/` followed by a plain name is a command and is never sent to the model. `/tmp/build.log fails` or `/README.md` is a message, not a command. An unknown command prints the list. A name that is one of the agent's [skills](#skills) is not unknown: `/changing-files rename the helper` asks the agent to use that skill for the task. Typing `/` shows the commands and then the skills; the selected row of that list is highlighted in cyan. As you type, the `/name` at the start of the line is coloured: cyan for a command, magenta for a skill, red for a name that is neither (it would print "Unknown command"), and plain cyan while it is still the start of one. The rest of the line, and any line that is a message (`/tmp/build.log fails`), stays plain.
 
 | Command | Does | Example |
 |---|---|---|

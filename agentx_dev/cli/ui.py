@@ -11,10 +11,11 @@ printed with backslash escapes, and any failure to read an answer is a "no"."""
 
 from __future__ import annotations
 
+import re
 import sys
 import unicodedata
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -504,6 +505,88 @@ def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
     return ask
 
 
+_SLASH_START = re.compile(r"(\s*)/([A-Za-z0-9_-]*)")
+_STYLE_CLASS = {"command": "class:command", "skill": "class:skill", "unknown": "class:unknown-command",
+                "partial": "class:partial-command"}
+
+
+def classify_command(line: str, commands: Sequence[str],
+                     skills: Optional[Mapping[str, str]] = None) -> Optional[Tuple[str, int]]:
+    """``(kind, end)`` for a line that starts with a slash command, where ``end`` is where the ``/name`` ends;
+    None for anything else (a message, ``/tmp/build.log``, ``/README.md``, ``/ is the root``). ``kind`` is
+    ``"command"``, ``"skill"``, ``"partial"`` (the start of a command or skill, still being typed) or ``"unknown"``.
+    The same reading as ``parse_slash``: a plain name right after the slash, then a space or the end."""
+    match = _SLASH_START.match(line or "")
+    if match is None:
+        return None
+    end = match.end()
+    rest = line[end:]
+    if rest and not rest[0].isspace():
+        return None                                   # "/tmp/build.log", "/README.md": a message
+    name = match.group(2)
+    if not name:
+        return ("partial", end) if not rest else None
+    slash = "/" + name.lower()
+    known = {command.lower() for command in commands}
+    offered = {skill.lower() for skill in (skills or {})}
+    if slash in known:
+        return "command", end
+    if slash in offered:
+        return "skill", end
+    if not rest and any(item.startswith(slash) for item in known | offered):
+        return "partial", end
+    return "unknown", end
+
+
+def make_lexer(commands: Sequence[str], extra: Optional[Callable[[], Mapping[str, str]]] = None):
+    """Colours for the input line: the ``/name`` at the start gets the class of ``classify_command`` (a known
+    command, a skill, an unknown name, a name still being typed); everything else is plain. ``extra`` returns the
+    skills (``{"/name": description}``) and is asked each time, like the completer's."""
+    from prompt_toolkit.lexers import Lexer
+
+    class _Lexer(Lexer):
+        def lex_document(self, document):
+            lines = document.lines
+            try:
+                skills = dict(extra()) if extra is not None else {}
+            except Exception:
+                skills = {}
+            first = classify_command(lines[0] if lines else "", commands, skills)
+
+            def get_line(number: int):
+                text = lines[number] if number < len(lines) else ""
+                if number != 0 or first is None:
+                    return [("", text)]
+                kind, end = first
+                start = len(text) - len(text.lstrip())
+                parts = [("", text[:start])] if start else []
+                parts.append((_STYLE_CLASS[kind], text[start:end]))
+                if end < len(text):
+                    parts.append(("", text[end:]))
+                return parts
+
+            return get_line
+
+    return _Lexer()
+
+
+def input_style():
+    """The input line's colours: a command in cyan, a skill in magenta, an unknown name in red, a name still being
+    typed in plain cyan; and a pop-up whose selected row stands out."""
+    from prompt_toolkit.styles import Style
+    return Style.from_dict({
+        "command": "ansicyan bold",
+        "skill": "ansimagenta bold",
+        "unknown-command": "ansired",
+        "partial-command": "ansicyan",
+        "completion-menu": "bg:#262626 #d0d0d0",
+        "completion-menu.completion": "bg:#262626 #d0d0d0",
+        "completion-menu.completion.current": "bg:ansicyan #000000 bold",
+        "completion-menu.meta.completion": "bg:#303030 #9a9a9a",
+        "completion-menu.meta.completion.current": "bg:ansicyan #000000",
+    })
+
+
 def make_completer(commands: Sequence[str], descriptions: Optional[Mapping[str, str]] = None,
                    extra: Optional[Callable[[], Mapping[str, str]]] = None):
     """Completion: ``/commands`` at the start of a line (offered as you type, each with its one-line
@@ -640,7 +723,8 @@ class PromptInput:
 
         chat = build(history=FileHistory(str(history_file)), multiline=True,
                      key_bindings=bindings, completer=make_completer(commands, descriptions, extra),
-                     bottom_toolbar=toolbar, complete_while_typing=True)
+                     bottom_toolbar=toolbar, complete_while_typing=True,
+                     lexer=make_lexer(commands, extra), style=input_style())
         short = build(multiline=False, bottom_toolbar=toolbar)
         return chat, short
 

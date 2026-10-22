@@ -18,6 +18,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   characters (was 150,000) and is measured on what the model is sent. On a measured 15-file turn the input sent
   fell from about 231,000 tokens to about 136,000. `/usage` shows the tokens used this session, per model, and by
   the last turn.
+- **`agentx` input colours:** the `/name` at the start of the input line is coloured as you type (command cyan, skill
+  magenta, unknown red) and the selected row of the `/` pop-up is highlighted.
 - **Skills first.** The skill list tells the model to check it before choosing tools and to prefer a skill the user
   installed when it fits; the user's own skills are listed ahead of the built-in ones, and the terminal app's base
   prompt says the same.
