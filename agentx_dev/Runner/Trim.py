@@ -34,12 +34,19 @@ class TrimPolicy:
     of ``keep_chars``). The whole results then come to between ``keep_chars - step_chars`` and ``keep_chars``.
     Jumping in steps rather than stubbing one more result at every request keeps the start of the request the
     same from one request to the next, which is what lets a provider's prompt cache (OpenAI's automatic one,
-    Anthropic's) bill it at its cheaper cached rate. ``step_chars=0`` slides the window at every request."""
+    Anthropic's) bill it at its cheaper cached rate. ``step_chars=0`` slides the window at every request.
+
+    ``shrink_exempt_at``: once the conversation (all of it, before trimming) passes this many characters, the
+    results of ``exempt`` tools are stubbed too, all but the newest big one: an agent that has read five skills
+    otherwise sends all five again at every step. The stub says the skill still applies and how to open it again.
+    Measured on the whole conversation, which only grows during a turn, so a stubbed skill stays stubbed (no
+    flipping back and forth, which would also spoil the cache). ``0`` never stubs them."""
     keep_last: int = 1
     min_chars: int = 800
     exempt: Tuple[str, ...] = ("use_skill",)
     keep_chars: int = 40_000
     step_chars: Optional[int] = None
+    shrink_exempt_at: int = 60_000
 
     def step(self) -> int:
         return max(0, self.keep_chars // 2 if self.step_chars is None else self.step_chars)
@@ -149,6 +156,66 @@ def _shorten_arguments(message: Dict[str, Any], policy: TrimPolicy) -> Dict[str,
     return {**message, "tool_calls": new_calls} if changed else message
 
 
+def _conversation_chars(messages: Sequence[Dict[str, Any]]) -> int:
+    """Characters of every message's text and every call's arguments."""
+    total = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            total += len(content)
+        calls = message.get("tool_calls")
+        if isinstance(calls, list):
+            for call in calls:
+                function = call.get("function") if isinstance(call, dict) else None
+                raw = function.get("arguments") if isinstance(function, dict) else None
+                if isinstance(raw, str):
+                    total += len(raw)
+    return total
+
+
+def _call_args(messages: Sequence[Dict[str, Any]], names: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+    """``tool_call_id -> arguments`` for every call to one of ``names`` whose arguments are a JSON object."""
+    found: Dict[str, Dict[str, Any]] = {}
+    for message in messages:
+        calls = message.get("tool_calls") if message.get("role") == "assistant" else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            function = call.get("function") if isinstance(call, dict) else None
+            if not isinstance(function, dict) or function.get("name") not in names or not isinstance(call.get("id"), str):
+                continue
+            try:
+                args = json.loads(function.get("arguments") or "{}")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(args, dict):
+                found[call["id"]] = args
+    return found
+
+
+def _exempt_stub(tool: Optional[str], chars: int, args: Optional[Dict[str, Any]]) -> str:
+    skill = args.get("name") if args else None
+    if tool == "use_skill" and isinstance(skill, str) and skill.strip():
+        file = args.get("file") if isinstance(args.get("file"), str) and args.get("file") else "SKILL.md"
+        skill, file = _clean_path(skill.strip()), _clean_path(file)
+        return (f"[The {skill} skill ({file}, {chars:,} characters) was read earlier in this conversation and still "
+                f"applies; its text is left out of this request to save tokens. To see it again, call "
+                f'use_skill(name="{skill}", file="{file}").]')
+    what = f"{tool} result" if tool else "result"
+    return f"[Earlier {what} ({chars:,} characters) left out of this request to save tokens; call it again if you need it.]"
+
+
+def _stub_older_exempt(out: List[Dict[str, Any]], policy: TrimPolicy) -> None:
+    """Stub every big result of an ``exempt`` tool except the newest one, in place."""
+    big = [index for index, message in enumerate(out)
+           if (info := _result_info(message)) is not None and info[0] in policy.exempt
+           and len(info[1]) >= policy.min_chars]
+    args = _call_args(out, policy.exempt)
+    for index in big[:-1]:
+        tool, text = _result_info(out[index])                # type: ignore[misc]
+        out[index] = {**out[index], "content": _exempt_stub(tool, len(text), args.get(out[index].get("tool_call_id")))}
+
+
 def trim_tool_results(messages: Sequence[Dict[str, Any]], policy: TrimPolicy) -> List[Dict[str, Any]]:
     """A copy of ``messages`` with old big tool results (and old big call arguments) stubbed. See ``TrimPolicy``.
     The window of newest results is left whole, except an older copy of a result that comes again word for word.
@@ -159,6 +226,8 @@ def trim_tool_results(messages: Sequence[Dict[str, Any]], policy: TrimPolicy) ->
         info = _result_info(message)
         if info is not None and info[0] not in policy.exempt:
             candidates.append(index)
+    if policy.shrink_exempt_at > 0 and _conversation_chars(messages) > policy.shrink_exempt_at:
+        _stub_older_exempt(out, policy)
     if not candidates:
         return out
     # The window. Each result has a fixed start: the characters of all the results before it. A result that starts

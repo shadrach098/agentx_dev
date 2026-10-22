@@ -18,6 +18,7 @@ GATE_FAILED = "Refused: the approval check failed, so nothing was run."
 PYTHON_TIMEOUT_SEC = 120.0
 SHELL_TIMEOUT_SEC = 300.0
 READ_MAX_CHARS = 30_000             # about 7,500 tokens: a longer file comes back in pieces (see Permissions.read_max_chars)
+OUTPUT_MAX_CHARS = 30_000           # run_python / run_shell output is cut here too (the library allows 100,000 / 40,000)
 # The arguments that name a place on disk; ``cwd`` is run_shell's working folder.
 PATH_ARGUMENTS = ("path", "source", "destination", "cwd")
 
@@ -139,6 +140,7 @@ def build_tools(cwd: Path, add_dirs: Sequence[Path], gate: Gate,
         workspace=str(cwd), allowed_paths=[str(cwd), *[str(d) for d in add_dirs]],
         auto_create_paths=False,         # a mistyped --add-dir must not create a folder
         python_timeout_sec=PYTHON_TIMEOUT_SEC, shell_timeout_sec=SHELL_TIMEOUT_SEC, read_max_chars=READ_MAX_CHARS,
+        python_max_output_bytes=OUTPUT_MAX_CHARS, shell_max_output_bytes=OUTPUT_MAX_CHARS,
     )
     return [gate_tool(tool, gate, permissions=permissions, observer=observer)
             for tool in DefaultTools.build(permissions)]

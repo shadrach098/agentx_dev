@@ -1119,6 +1119,11 @@ def _iter_files_for_search(root: Path, glob: str):
                 yield fp
 
 
+# Said when run_python / run_shell output is cut, so the next call prints less instead of trying again.
+_PRINT_LESS = (" Print only what you need: a filter, a count, or a few lines (read_path with offset and limit "
+               "reads part of a file).")
+
+
 # --- Tool implementations (closures over Permissions) ------------------------
 
 def _build_read_path(perms: Permissions, tracker: _ReadTracker) -> StructuredTool:
@@ -1715,7 +1720,7 @@ def _build_run_python(perms: Permissions) -> StructuredTool:
         # Cap output so a chatty script can't bloat agent history.
         cap = perms.python_max_output_bytes
         if len(stdout.encode("utf-8")) > cap:
-            stdout = stdout[:cap] + f"\n... (truncated at {cap} bytes)"
+            stdout = stdout[:cap] + f"\n... (truncated at {cap} bytes.{_PRINT_LESS})"
         if len(stderr.encode("utf-8")) > cap:
             stderr = stderr[:cap] + f"\n... (truncated at {cap} bytes)"
 
@@ -2050,7 +2055,7 @@ def _build_run_shell(perms: Permissions) -> StructuredTool:
         stderr = proc.stderr or ""
         cap = perms.shell_max_output_bytes
         if len(stdout.encode("utf-8")) > cap:
-            stdout = stdout[:cap] + f"\n... (stdout truncated at {cap} bytes)"
+            stdout = stdout[:cap] + f"\n... (stdout truncated at {cap} bytes.{_PRINT_LESS})"
         if len(stderr.encode("utf-8")) > cap:
             stderr = stderr[:cap] + f"\n... (stderr truncated at {cap} bytes)"
 

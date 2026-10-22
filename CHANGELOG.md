@@ -25,6 +25,11 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   stubbed in one go down to `keep_chars - step_chars` (default half), so the start of the request stays the same,
   and cacheable, until the next step; `keep_last` is now 1. Team helpers keep 12,000-24,000 characters. On a replayed
   40-step team brainstorm the input cost fell by about 28-41%, depending on the cached price.
+- **Older skill texts are stubbed in a long conversation.** `TrimPolicy(shrink_exempt_at=60_000)`: past that many
+  characters of conversation, every `use_skill` result but the newest is sent as a note that the skill still applies
+  and how to reopen it. In `agentx`, `run_python` and `run_shell` output is cut at 30,000 characters (was 100,000 and
+  40,000), with a note to print less. Replaying a 21-step message that read five skills, the input sent fell by
+  about 15%.
 - **OpenAI cached tokens are counted** (`TokenUsage.total_cache_read_tokens`, from either API), and `/usage` shows how
   much of the input came from the provider's cache.
 - **A token limit per message in `agentx`.** Past 200,000 tokens (`/limit`, `"tokenLimit"` in settings; a project
