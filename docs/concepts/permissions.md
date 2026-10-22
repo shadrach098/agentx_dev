@@ -254,5 +254,5 @@ The framework never inlines the file's contents (that would burn tokens
 on every call). The model reads on demand.
 
 Think of it as CLAUDE.md-style project instructions written for the
-model, not for humans. See the `AGENTX.md` at the repo root for a
-template.
+model, not for humans. Keep it short: the terminal app sends it with every request. The
+[agent guide](../reference/agent-guide.md) has sections to copy from.

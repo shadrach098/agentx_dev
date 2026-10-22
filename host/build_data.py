@@ -69,6 +69,7 @@ NAV = [
     ]),
     ("Reference", [
         ("reference/api-summary", DOCS_DIR / "reference" / "api-summary.md", None),
+        ("reference/agent-guide", DOCS_DIR / "reference" / "agent-guide.md", None),
     ]),
     ("Cookbook", [
         ("cookbook/patterns", DOCS_DIR / "cookbook" / "patterns.md", None),

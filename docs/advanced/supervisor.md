@@ -409,7 +409,7 @@ replans once with the warnings fed back (`max_plan_retries`).
 - **Deeply nested planning** — Supervisor is one level deep. For
   hierarchical decomposition, run supervisors within supervisor sub-tasks.
 
-## Rules (from AGENTX.md §7)
+## Rules (from the [agent guide](../reference/agent-guide.md) §7)
 
 - **Minimum viable plan** — every step is a full LLM call. Merge
   adjacent steps that would go to the same specialist. If the task

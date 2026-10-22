@@ -25,6 +25,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   stubbed in one go down to `keep_chars - step_chars` (default half), so the start of the request stays the same,
   and cacheable, until the next step; `keep_last` is now 1. Team helpers keep 12,000-24,000 characters. On a replayed
   40-step team brainstorm the input cost fell by about 28-41%, depending on the cached price.
+- **A short `AGENTX.md`.** This repo's `AGENTX.md` is now about 1,800 characters (was 13,300), since `agentx` sends
+  it with every request; the full guide moved to `docs/reference/agent-guide.md`.
 - **Older skill texts are stubbed in a long conversation.** `TrimPolicy(shrink_exempt_at=60_000)`: past that many
   characters of conversation, every `use_skill` result but the newest is sent as a note that the skill still applies
   and how to reopen it. In `agentx`, `run_python` and `run_shell` output is cut at 30,000 characters (was 100,000 and

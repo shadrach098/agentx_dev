@@ -502,8 +502,8 @@ The template MUST contain `{tools}`, `{tool_names}`, `{user_input}`.
 
 Repo root or workspace root. The framework auto-discovers it and adds
 a pointer to the model's system prompt telling it to read via
-`read_path` before acting. See the shipped `AGENTX.md` at the repo
-root for a template.
+`read_path` before acting. Keep it short (the terminal app sends it with every request); the
+[agent guide](../reference/agent-guide.md) has sections to copy from.
 
 ## What are skills, and how do I turn them on?
 
