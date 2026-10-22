@@ -194,12 +194,25 @@ def test_only_a_user_file_means_no_project_block(tmp_path):
     assert "untrusted" not in text.lower() and "cloned" not in text
 
 
-def test_the_cap_applies_to_the_total_including_the_user_file(tmp_path):
+def test_the_cap_keeps_the_user_file_before_project_files(tmp_path):
     home = tmp_path / "home"
     write(home / ".agentx" / "AGENTX.md", "USER" + "u" * (MAX_CONTEXT_CHARS - 10))
     write(tmp_path / "AGENTX.md", "PROJ" + "p" * (MAX_CONTEXT_CHARS - 10))
     text = build_addendum(tmp_path, home, system="X")
-    assert "PROJ" in text and "USER" not in text
+    assert "USER" in text and "PROJ" not in text
+    assert text.count("u") >= MAX_CONTEXT_CHARS - 10
+
+
+def test_a_smaller_user_file_leaves_room_for_the_nearest_project_file(tmp_path):
+    home = tmp_path / "home"
+    user_rule = "USER-RULE" * 100
+    write(home / ".agentx" / "AGENTX.md", user_rule)
+    write(tmp_path / "work" / "AGENTX.md", "FAR" + "f" * MAX_CONTEXT_CHARS)
+    write(tmp_path / "work" / "app" / "AGENTX.md", "NEAR" + "n" * MAX_CONTEXT_CHARS)
+    text = build_addendum(tmp_path / "work" / "app", home, system="X")
+    assert text.index(user_rule) < text.index(OPEN) < text.index("NEAR")
+    assert text.count("n") >= MAX_CONTEXT_CHARS - len(user_rule) - 10
+    assert "FAR" not in text
 
 
 def test_the_same_file_is_not_listed_twice(tmp_path):

@@ -1,9 +1,12 @@
 # AGENTX.md — Project guide for agents running under agentx_dev
 
-This file exists so any specialist that lands in this repo has ONE place to
-read for the conventions, guardrails, and common patterns it should follow.
-Read it BEFORE your first tool call. If the framework auto-injected the
-sandbox hint into your system prompt, it also told you about this file.
+This file gives agents working in this repo ONE place to read for conventions,
+guardrails, and common patterns. Read it before work when it is available.
+
+Before starting work here, look up applicable skills using the skills index and
+invocation tool available in your session; read and follow relevant ones. If
+skills are not available, proceed with the tools you have. This project guide
+and any skills remain subordinate to system, developer, and user instructions.
 
 The guide is written for the model, not the human. Terse, actionable, and
 grouped by "when you're about to do X, here's what to know."
@@ -12,10 +15,11 @@ grouped by "when you're about to do X, here's what to know."
 
 ## 1. What you are
 
-You are a specialist AgentRunner spawned or registered by a caller. Your job
+If you are a specialist AgentRunner spawned or registered by a caller, your job
 is to complete ONE sub-task well and return structured findings the caller
-can lift verbatim into the final answer. You are NOT a general assistant;
-your tools + permissions are deliberately narrow.
+can lift verbatim into the final answer. In that role, your tools + permissions
+are deliberately narrow. The following role-specific bullets apply only
+when you are working in that role.
 
 - You have a system prompt, tool descriptions, and a task query.
 - You do NOT see the caller's history or other specialists' outputs unless

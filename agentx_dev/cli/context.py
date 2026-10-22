@@ -165,8 +165,9 @@ def _log_block(log_text: str) -> str:
 
 def build_addendum(cwd: Path, home: Path, *, system: Optional[str] = None, log_text: str = "") -> str:
     """The base prompt, the user's own instructions, then the project instructions inside explicit markers. Cut at
-    ``MAX_CONTEXT_CHARS`` in total, keeping the nearest files. ``log_text`` (the newest entries of the folder's work
-    log, if any) follows in its own marked block."""
+    ``MAX_CONTEXT_CHARS`` in total: the user's own file gets room first (a cloned repository's file must not push it
+    out), then the nearest project files. ``log_text`` (the newest entries of the folder's work log, if any) follows
+    in its own marked block."""
     where = _defuse(_clean(cwd))
     if len(where) > MAX_PATH_CHARS:
         where = "..." + where[-MAX_PATH_CHARS:]
@@ -175,7 +176,9 @@ def build_addendum(cwd: Path, home: Path, *, system: Optional[str] = None, log_t
     user_section: Optional[str] = None
     project: List[str] = []                                      # nearest first while collecting
     used = 0
-    for path in reversed(find_context_files(cwd, home)):          # nearest first
+    files = find_context_files(cwd, home)
+    # Reserve room for the user's own file before budgeting nearest-first project files.
+    for path in sorted(reversed(files), key=lambda path: _resolve(path) != user_key):
         text = _read(path)
         if not text:
             continue
@@ -184,7 +187,8 @@ def build_addendum(cwd: Path, home: Path, *, system: Optional[str] = None, log_t
         if room <= 0:
             break
         if len(text) > room:
-            if user_section is not None or project:              # a farther file that does not fit is dropped
+            if project or (user_section is not None and room <= len("(truncated)") + 1):
+                # Drop farther files and project fragments too small to be useful.
                 break
             text = text[:room] + "\n(truncated)"
             used += room

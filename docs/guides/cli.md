@@ -239,7 +239,7 @@ A repository you just cloned can contain `.agentx/settings.json`. So:
 1. `~/.agentx/AGENTX.md` (yours, applies everywhere), then
 2. `AGENTX.md` in the current folder and each of its parents, from the top down, so the nearest file comes last and wins. The climb stops at the first of: the folder that holds a `.git` entry (that folder's own file is read), your home folder, or the filesystem root. A file in a folder the project merely sits inside is not taken for the project's.
 
-Together with the working folder and the operating system they are passed to the model as its instructions, cut at 20,000 characters in total (the nearest files are kept; a farther file that does not fit is dropped). Project files are marked as coming from the project and cannot override the base rules or the approval prompts. Binary files are skipped, and a link that leads out of its folder is left out.
+Together with the working folder and the operating system they are passed to the model as its instructions, cut at 20,000 characters in total. Your own `~/.agentx/AGENTX.md` gets room first, so a cloned repository with a huge `AGENTX.md` cannot push your instructions out; then the nearest project files are kept, and a farther file that does not fit is dropped. Project files are marked as coming from the project and cannot override the base rules or the approval prompts. Binary files are skipped, and a link that leads out of its folder is left out.
 
 They are read when `agentx` starts and again on `/clear` and `/resume`.
 
