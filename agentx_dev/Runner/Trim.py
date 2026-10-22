@@ -22,15 +22,27 @@ OBSERVATION_PREFIX = "Observation: "          # how a text-mode (no native tool 
 class TrimPolicy:
     """Which results stay whole: the newest ones, as long as together they are within ``keep_chars`` characters,
     and never fewer than ``keep_last`` (``keep_chars=0`` keeps exactly ``keep_last``). A budget rather than a
-    count, because keeping only the newest few made agents re-read the same files again and again.
+    count, because keeping only the newest few made agents re-read the same files again and again. ``keep_last``
+    is 1 (the result the model has just asked for): a larger floor holds big file reads past the budget and moves
+    the window's start at every request, which stops the provider's cache from reusing it.
     ``min_chars``: a result shorter than this is never stubbed (a stub is about 150 characters, so there is
     nothing to win). ``exempt``: tools whose results are never stubbed and do not count towards the window (a
     skill's text is instructions for the task, not data to look at once). Inside the window too, an older copy
-    of a result that comes again, word for word, later on is stubbed: the newer copy is right there."""
-    keep_last: int = 4
+    of a result that comes again, word for word, later on is stubbed: the newer copy is right there.
+
+    ``step_chars``: how far the window's start jumps when the whole results pass ``keep_chars`` (default: half
+    of ``keep_chars``). The whole results then come to between ``keep_chars - step_chars`` and ``keep_chars``.
+    Jumping in steps rather than stubbing one more result at every request keeps the start of the request the
+    same from one request to the next, which is what lets a provider's prompt cache (OpenAI's automatic one,
+    Anthropic's) bill it at its cheaper cached rate. ``step_chars=0`` slides the window at every request."""
+    keep_last: int = 1
     min_chars: int = 800
     exempt: Tuple[str, ...] = ("use_skill",)
     keep_chars: int = 40_000
+    step_chars: Optional[int] = None
+
+    def step(self) -> int:
+        return max(0, self.keep_chars // 2 if self.step_chars is None else self.step_chars)
 
 
 FILE_READERS = ("read_path",)                 # tools whose stub names the file and says how to look again cheaply
@@ -149,20 +161,28 @@ def trim_tool_results(messages: Sequence[Dict[str, Any]], policy: TrimPolicy) ->
             candidates.append(index)
     if not candidates:
         return out
-    # The window: the newest results within the size budget, and at least keep_last of them.
-    kept = 0
-    used = 0
-    boundary = len(out)
-    for index in reversed(candidates):
-        size = len(_result_info(out[index])[1])             # type: ignore[index]
-        if kept < policy.keep_last or used + size <= policy.keep_chars:
-            kept += 1
-            used += size
-            boundary = index
-        else:
+    # The window. Each result has a fixed start: the characters of all the results before it. A result that starts
+    # before ``level`` is outside the window. ``level`` only moves in whole steps, so the stubbed results (and
+    # with them the start of the request) stay the same until the whole results grow by another step.
+    sizes = [len(_result_info(out[index])[1]) for index in candidates]       # type: ignore[index]
+    total = sum(sizes)
+    if policy.keep_chars <= 0:
+        level = total
+    elif total <= policy.keep_chars:
+        level = 0
+    else:
+        step = policy.step()
+        over = total - policy.keep_chars
+        level = -(-over // step) * step if step > 0 else over               # ``over`` rounded up to a step
+    outside = 0                                             # how many of the oldest results are stubbed
+    start = 0
+    for size in sizes:
+        if start >= level:
             break
-    if policy.keep_last <= 0 and policy.keep_chars <= 0:
-        boundary = len(out)
+        outside += 1
+        start += size
+    outside = min(outside, max(0, len(candidates) - policy.keep_last))      # never fewer than keep_last whole
+    boundary = candidates[outside] if outside < len(candidates) else len(out)
     seen = set()                                            # texts of newer results (newest first)
     paths = _read_paths(out)
     for index in reversed(candidates):

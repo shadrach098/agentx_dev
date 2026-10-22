@@ -180,7 +180,7 @@ def test_settings_field_order_ends_with_problems_then_project_allow():
     from agentx_dev.cli.settings import Settings
     names = [f.name for f in dataclasses.fields(Settings)]
     assert names == ["model", "mode", "add_dirs", "allow", "deny", "problems", "project_allow", "model_source",
-                     "team_models", "team_models_source", "team_model_uses"]
+                     "team_models", "team_models_source", "team_model_uses", "token_limit"]
     assert Settings(None, None, [], [], [], ["p"]).project_allow == []
 
 

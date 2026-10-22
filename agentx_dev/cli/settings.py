@@ -14,6 +14,7 @@ from agentx_dev.cli.safepaths import FOLDER, replace_file, safe_location
 
 SETTINGS_NAME = "settings.json"
 PLACEHOLDER_MODEL = "(no model)"           # what the status bar shows before a model is built; never a setting
+DEFAULT_TOKEN_LIMIT = 200_000              # tokens one message may use before agentx stops and asks; 0 is off
 
 
 @dataclass
@@ -29,6 +30,7 @@ class Settings:
     team_models: Optional[List[str]] = None                # "teamModels": None when no file sets it
     team_models_source: Optional[Path] = None              # the file the list was read from
     team_model_uses: Dict[str, str] = field(default_factory=dict)   # notes on what a listed model is for
+    token_limit: int = DEFAULT_TOKEN_LIMIT                 # "tokenLimit": tokens a message may use; 0 is off
 
 
 def user_settings_path(home: Path) -> Path:
@@ -86,8 +88,18 @@ def _write_project_key(cwd: Path, key: str, value: Any, what: str) -> Tuple[Opti
     Returns ``(path, message)``; ``path`` is None when nothing was written (``.agentx`` or the file is a link or
     leads outside the folder, the file is not valid JSON or not an object, or it could not be written), and the
     message says why. ``what`` names the change in the message. Never raises."""
-    path = project_settings_path(cwd)
-    if not safe_location(cwd, SETTINGS_NAME):
+    return _write_key(Path(cwd), key, value, what)
+
+
+def write_user_token_limit(home: Path, limit: int) -> Tuple[Optional[Path], str]:
+    """Save ``limit`` as ``tokenLimit`` in ``~/.agentx/settings.json`` (``/limit``). See ``_write_project_key``."""
+    what = f"tokenLimit {limit}" if limit else "tokenLimit 0 (no limit)"
+    return _write_key(Path(home), "tokenLimit", int(limit), what)
+
+
+def _write_key(folder: Path, key: str, value: Any, what: str) -> Tuple[Optional[Path], str]:
+    path = folder / FOLDER / SETTINGS_NAME
+    if not safe_location(folder, SETTINGS_NAME):
         return None, f"{path} is a link or points outside the folder, so it was left unchanged."
     try:
         data: dict = {}
@@ -203,6 +215,20 @@ def _absolute(entry: str, base: Path, home: Path) -> Path:
     return _resolve(target)
 
 
+def _read_token_limit(value: Any, path: Path, is_project: bool, settings: Settings) -> None:
+    """``"tokenLimit"``: a whole number of tokens (0 turns the limit off). A project's file may only lower it: a
+    cloned repository must not let a message spend more of the user's money."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        settings.problems.append(f"settings file {path}: 'tokenLimit' must be a whole number of tokens (0 for no "
+                                 "limit); ignored")
+        return
+    if is_project and (value == 0 or (settings.token_limit and value > settings.token_limit)):
+        settings.problems.append(f"project settings asked for a higher token limit ({value:,}); ignored (set it in "
+                                 "your own settings or with /limit)")
+        return
+    settings.token_limit = value
+
+
 def load_settings(cwd: Path, home: Path) -> Settings:
     """User settings first, then the project's: scalars from the project win, lists are concatenated."""
     settings = Settings()
@@ -230,6 +256,8 @@ def load_settings(cwd: Path, home: Path) -> Settings:
                 settings.team_models = names               # the folder's list, read second, replaces the user's
                 settings.team_model_uses = uses
                 settings.team_models_source = path
+        if "tokenLimit" in data:
+            _read_token_limit(data.get("tokenLimit"), path, is_project, settings)
         mode = data.get("mode")
         if mode is not None:
             if is_project and mode in ("accept-edits", "auto"):

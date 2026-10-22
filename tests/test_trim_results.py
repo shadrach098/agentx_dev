@@ -158,7 +158,7 @@ class TestBudgetAndDuplicates:
 
     def test_the_window_holds_results_up_to_the_size_budget(self):
         msgs = conversation(10)                                 # results of about 3,000 characters
-        out = trim_tool_results(msgs, TrimPolicy(keep_last=2, keep_chars=10_000))
+        out = trim_tool_results(msgs, TrimPolicy(keep_last=2, keep_chars=10_000, step_chars=0))
         whole = [len(m["content"]) > 1000 for m in out if m["role"] == "tool"]
         assert whole == [False] * 7 + [True] * 3                # 3 x 3,010 fits in 10,000, a 4th would not
 
@@ -167,7 +167,7 @@ class TestBudgetAndDuplicates:
         assert [len(m["content"]) > 1000 for m in out if m["role"] == "tool"] == [False] * 4 + [True] * 2
 
     def test_the_default_budget(self):
-        assert TrimPolicy().keep_chars == 40_000 and TrimPolicy().keep_last == 4
+        assert TrimPolicy().keep_chars == 40_000 and TrimPolicy().keep_last == 1 and TrimPolicy().step() == 20_000
 
     def test_an_older_identical_copy_is_stubbed_even_inside_the_window(self):
         msgs = conversation(3)
@@ -233,3 +233,48 @@ class TestFileReadStubs:
         msgs = conversation(8)
         once = trim_tool_results(msgs, TrimPolicy(keep_last=2, keep_chars=0))
         assert trim_tool_results(once, TrimPolicy(keep_last=2, keep_chars=0)) == once
+
+
+class TestSteppedWindow:
+    """The window's start jumps in steps, so the stubbed part of the request stays the same between jumps and a
+    provider's prompt cache can reuse it."""
+
+    @staticmethod
+    def stubbed(msgs, policy):
+        return [m["content"].startswith("[") for m in trim_tool_results(msgs, policy) if m["role"] == "tool"]
+
+    def test_the_whole_results_stay_between_keep_minus_step_and_keep(self):
+        policy = TrimPolicy(keep_last=1, keep_chars=12_000, step_chars=6_000)
+        for n in range(1, 30):
+            msgs = conversation(n)                              # each result is 3,010 characters
+            whole = sum(len(m["content"]) for m in trim_tool_results(msgs, policy)
+                        if m["role"] == "tool" and not m["content"].startswith("["))
+            assert whole <= 12_000
+            if n * 3010 > 12_000:
+                assert whole > 6_000 - 3010                     # less only by the result that straddles the cut
+
+    def test_the_stubbed_part_changes_only_when_a_step_is_crossed(self):
+        policy = TrimPolicy(keep_last=1, keep_chars=12_000, step_chars=9_000)   # three results a step
+        changes = 0
+        before = None
+        for n in range(1, 31):
+            now = self.stubbed(conversation(n), policy)
+            if before is not None and now[:len(before)] != before:
+                changes += 1
+            before = now
+        sliding = 0
+        before = None
+        for n in range(1, 31):
+            now = self.stubbed(conversation(n), TrimPolicy(keep_last=1, keep_chars=12_000, step_chars=0))
+            if before is not None and now[:len(before)] != before:
+                sliding += 1
+            before = now
+        assert sliding >= 25 and changes <= sliding // 3 + 1     # most requests keep the same start
+
+    def test_the_default_step_is_half_the_window(self):
+        assert TrimPolicy().step() == 20_000
+        assert TrimPolicy(keep_chars=24_000, step_chars=8_000).step() == 8_000
+        assert TrimPolicy(step_chars=0).step() == 0
+
+    def test_a_window_that_is_not_full_stubs_nothing(self):
+        assert not any(self.stubbed(conversation(3), TrimPolicy(keep_last=1, keep_chars=12_000)))

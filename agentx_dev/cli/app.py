@@ -8,6 +8,7 @@ import logging.handlers
 import os
 import re
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -28,9 +29,9 @@ from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, 
 from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.safepaths import safe_location
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
-from agentx_dev.cli.settings import (PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
+from agentx_dev.cli.settings import (DEFAULT_TOKEN_LIMIT, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
-                                     write_project_model, write_project_team_models)
+                                     write_project_model, write_project_team_models, write_user_token_limit)
 from agentx_dev.cli.team import MAX_TEAM_JOBS_PER_MESSAGE, make_team_tool, run_team_job, team_request
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
@@ -51,6 +52,18 @@ TEAM_STALLED = ("Refused: no step of the last team job finished, so another job 
                 "Report to the user what happened and what remains, and let them decide.")
 
 NOT_A_TERMINAL = "agentx needs an interactive terminal (headless mode is not available yet)."
+
+
+class TokenLimitReached(KeyboardInterrupt):
+    """Raised from a model's ``on_usage`` hook when the user declines to go past the token limit of a message. A
+    ``KeyboardInterrupt`` so that every layer (tool dispatch, team helpers, the Supervisor) lets it through the
+    way it lets Ctrl+C through, and the turn ends the same way."""
+
+    def __init__(self, used: int, limit: int) -> None:
+        super().__init__(f"token limit: {used} of {limit}")
+        self.used = used
+        self.limit = limit
+
 MAX_RULES_SHOWN = 20
 MAX_RULE_CHARS = 200
 MAX_ERROR_CHARS = 300
@@ -157,7 +170,8 @@ class ChatApp:
                  select: Optional[Callable[..., Optional[int]]] = None, newly_trusted: bool = False,
                  model_source: Optional[Path] = None, team_models: Optional[Sequence[str]] = None,
                  team_models_source: Optional[Path] = None,
-                 team_model_uses: Optional[Mapping[str, str]] = None) -> None:
+                 team_model_uses: Optional[Mapping[str, str]] = None,
+                 token_limit: int = DEFAULT_TOKEN_LIMIT) -> None:
         self.cwd = Path(cwd).resolve()
         self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
@@ -225,7 +239,13 @@ class ChatApp:
         self.addendum = build_addendum(self.cwd, self.home)
         self.model: Any = None
         self._usage_models: List[Tuple[str, str, Any]] = []     # (label, "chat" or "helper", model) used this session
-        self._last_turn_usage: Optional[Tuple[int, int, int]] = None      # (requests, input, output) of the last turn
+        # (requests, input, output, cached input) of the last turn
+        self._last_turn_usage: Optional[Tuple[int, int, int, int]] = None
+        self.token_limit = max(0, int(token_limit or 0))   # tokens one message may use before asking; 0 is off
+        self._limit_lock = threading.Lock()
+        self._turn_start: Optional[int] = None    # tokens used before the running turn; None outside a turn
+        self._turn_allowed = 0                    # tokens the running turn may use before the next question
+        self._turn_stopped = False                # the user said no: every later reply in this turn stops too
         self.session: Optional[Session] = None
         self.session_path: Optional[Path] = None
         self._exit = False
@@ -563,6 +583,10 @@ class ChatApp:
         events: List[dict] = []
         finished = False
         usage_before = self._usage_totals()
+        with self._limit_lock:
+            self._turn_start = usage_before[1] + usage_before[2]
+            self._turn_allowed = self.token_limit
+            self._turn_stopped = False
         try:
             self._maybe_compact()
             self.progress.start("Thinking")
@@ -582,12 +606,18 @@ class ChatApp:
                 elif kind not in ("final", "completion"):
                     self.progress.start("Thinking")
             finished = True
+        except TokenLimitReached as stop:
+            self.notice(f"Stopped: this message used {stop.used:,} tokens, past your limit of {stop.limit:,} a "
+                        "message. Your earlier turns are kept; this one was not recorded. Changes already made in "
+                        "it remain on disk. /limit shows or changes the limit.")
         except KeyboardInterrupt:
             self.notice("Turn interrupted (Ctrl+C). Your earlier turns are kept; this one was not recorded. "
                         "Changes already made in that turn remain on disk.")
         except Exception as e:
             self.error(self._failure(e))
         finally:
+            with self._limit_lock:
+                self._turn_start = None
             self.progress.stop()
             self.save()
             after = self._usage_totals()
@@ -635,6 +665,48 @@ class ChatApp:
         """Remember a model whose token counters ``/usage`` should add up (once per object)."""
         if model is not None and not any(model is known for _, _, known in self._usage_models):
             self._usage_models.append((str(label), role, model))
+            try:
+                model.on_usage = self._check_token_limit
+            except (AttributeError, TypeError):          # an object that takes no attributes keeps no usage either
+                pass
+
+    def _check_token_limit(self, _model: Any = None) -> None:
+        """A tracked model's ``on_usage`` hook. Once the running message has used ``token_limit`` tokens (input
+        and output, every model), ask whether to go on for another ``token_limit``; a no (or no answer) raises
+        ``TokenLimitReached``, which ends the turn like Ctrl+C. Helpers running at the same time wait for the
+        answer, and after a no each of their next replies stops too. Outside a turn, or with no limit, nothing."""
+        with self._limit_lock:
+            if self._turn_start is None or not self.token_limit:
+                return
+            _, tokens_in, tokens_out, _ = self._usage_totals()
+            used = tokens_in + tokens_out - self._turn_start
+            if self._turn_stopped:
+                raise TokenLimitReached(used, self.token_limit)
+            if used < self._turn_allowed:
+                return
+            with self.progress.paused():
+                go_on = self._yes(f"This message has used {used:,} tokens; your limit is {self.token_limit:,} a "
+                                  f"message (/limit changes it). Keep going for up to {self.token_limit:,} more? "
+                                  "[y/N] ")
+            if go_on:
+                self._turn_allowed = used + self.token_limit
+                return
+            self._turn_stopped = True
+            raise TokenLimitReached(used, self.token_limit)
+
+    def set_token_limit(self, limit: int) -> None:
+        """``/limit <tokens>``: use ``limit`` from now on (0 is no limit) and save it in ~/.agentx/settings.json."""
+        self.token_limit = max(0, int(limit))
+        _, message = write_user_token_limit(self.home, self.token_limit)
+        shown = f"{self.token_limit:,} tokens a message" if self.token_limit else "off"
+        self.notice(f"Token limit: {shown}. {self._safe(message, 300)}")
+
+    def show_token_limit(self) -> None:
+        if self.token_limit:
+            self.notice(f"Token limit: {self.token_limit:,} tokens a message. When a message gets there, agentx asks "
+                        "before it goes on. /limit <tokens> changes it (300k, 1m, and 0 for no limit also work).")
+        else:
+            self.notice("Token limit: off. /limit <tokens> sets one (for example /limit 200k).")
 
     @staticmethod
     def _counters(model: Any) -> Tuple[int, int, int, int]:
@@ -648,10 +720,16 @@ class ChatApp:
         except (TypeError, ValueError):
             return 0, 0, 0, 0
 
-    def _usage_totals(self) -> Tuple[int, int, int]:
-        """``(requests, input, output)`` summed over every model used so far."""
+    def _usage_totals(self) -> Tuple[int, int, int, int]:
+        """``(requests, input, output, cached input)`` summed over every model used so far."""
         rows = [self._counters(model) for _, _, model in self._usage_models]
-        return tuple(sum(row[i] for row in rows) for i in range(3))              # type: ignore[return-value]
+        return tuple(sum(row[i] for row in rows) for i in range(4))              # type: ignore[return-value]
+
+    @staticmethod
+    def _cached_note(cached: int, tokens_in: int) -> str:
+        if not cached or not tokens_in:
+            return ""
+        return f" ({cached:,} of the input, {cached * 100 // tokens_in}%, from the provider's cache)"
 
     def show_usage(self) -> None:
         """``/usage``: the tokens used this session, per model, and what the last turn used. Counts what the
@@ -661,21 +739,27 @@ class ChatApp:
             row = rows.setdefault((label, role), [0, 0, 0, 0])
             for i, value in enumerate(self._counters(model)):
                 row[i] += value
-        requests, tokens_in, tokens_out = self._usage_totals()
+        requests, tokens_in, tokens_out, cached_in = self._usage_totals()
         if requests == 0:
             self.notice("No model calls yet in this session.")
             return
-        lines = ["Session (all models):", f"  {requests:,} requests, {tokens_in:,} input tokens, {tokens_out:,} output tokens"]
+        lines = ["Session (all models):",
+                 f"  {requests:,} requests, {tokens_in:,} input tokens, {tokens_out:,} output tokens"
+                 + self._cached_note(cached_in, tokens_in)]
         if len(rows) > 1 or any(role == "helper" for _, role in rows):
             for (label, role), (calls, inp, out, cached) in rows.items():
                 if calls:
                     extra = f", {cached:,} of the input from the provider's cache" if cached else ""
                     lines.append(f"  {self._safe(label, 60)} ({role}): {calls:,} requests, {inp:,} in, {out:,} out{extra}")
         if self._last_turn_usage is not None and self._last_turn_usage[0] > 0:
-            calls, inp, out = self._last_turn_usage
-            lines.append(f"Last turn: {calls:,} request{'s' if calls != 1 else ''}, {inp:,} input tokens, {out:,} output tokens")
+            calls, inp, out, cached = self._last_turn_usage
+            lines.append(f"Last turn: {calls:,} request{'s' if calls != 1 else ''}, {inp:,} input tokens, "
+                         f"{out:,} output tokens" + self._cached_note(cached, inp))
+        limit = f"{self.token_limit:,} tokens a message" if self.token_limit else "off"
+        lines.append(f"Token limit: {limit} (/limit).")
         lines.append("Every request re-sends the conversation, so input grows with the number of steps in a turn. "
-                     "Long results are trimmed, big files are read in pieces, and /clear starts fresh.")
+                     "Long results are trimmed, big files are read in pieces, and /clear starts fresh. Input the "
+                     "provider served from its cache is billed at its cheaper cached rate.")
         self.notice("\n".join(lines))
 
     # -- project memory: the work log and summarising ------------------------
@@ -1283,7 +1367,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                       project_allow=settings.project_allow, newly_trusted=not was_trusted,
                       model_source=None if args.model else settings.model_source,
                       team_models=settings.team_models, team_models_source=settings.team_models_source,
-                      team_model_uses=settings.team_model_uses)
+                      team_model_uses=settings.team_model_uses, token_limit=settings.token_limit)
         holder.append(app)
         # ~/.agentx/settings.json is written by ChatApp.start once the model is built, so it holds its real name.
     except KeyboardInterrupt:

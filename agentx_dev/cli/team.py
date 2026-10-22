@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from agentx_dev import AgentRunner, AgentType, SpawnConfig, Supervisor
 from agentx_dev.cli.memory import CHANGING_TOOLS, REFUSAL_STARTS
 from agentx_dev.cli.models import HelperModel, model_label, without_auto_prefix
+from agentx_dev.Runner.Trim import TrimPolicy
 from agentx_dev.Supervisor import _result_failed
 from agentx_dev.Tools import StructuredTool
 
@@ -24,6 +25,9 @@ MAX_TASK_CHARS = 4000
 MAX_WHY_CHARS = 500
 MAX_RESULT_CHARS = 6000
 HELPER_STEPS = 100                   # a coder on a real change needs room (50 ran out mid-change)
+# A helper sends its recent tool results again on every step: keep 12,000-24,000 characters of them whole
+# (the chat keeps 20,000-40,000), moving the cut in steps of 12,000 so the provider's cache can reuse the rest.
+HELPER_TRIM = TrimPolicy(keep_last=1, keep_chars=24_000, step_chars=12_000)
 OUT_OF_STEPS_NOTE = ("(This helper ran out of steps before finishing, so this is partial work: check what it "
                      "changed before relying on it.)\n")
 MAX_SUBTASKS = 6
@@ -148,7 +152,7 @@ def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
                          system_addendum=(addendum or "") + role_prompt(role),
                          max_iterations=HELPER_STEPS, auto_cache=False, verbose=False,
                          parallel_tool_workers=1, describe_error=describe_error, skills=skills,
-                         trim_results=True)
+                         trim_results=HELPER_TRIM)
 
 
 def build_helpers(model: Any, tools: Sequence[Any], addendum: str,

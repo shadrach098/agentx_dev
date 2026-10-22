@@ -1622,8 +1622,10 @@ class AgentRunner(PersistenceMixin):
                 whole conversation, so a big tool result is paid for
                 again at every later step. With this set, the model is
                 sent a one-line stub in place of each big tool result
-                outside a window of the newest ones (default: up to
-                40,000 characters, at least the newest 4; results under
+                outside a window of the newest ones (default: 20,000
+                to 40,000 characters, moved in steps so the provider's
+                prompt cache can reuse the start of the request, and
+                always the newest result; results under
                 800 characters and ``use_skill`` results are never
                 stubbed; an older word-for-word copy of a later result
                 is stubbed too). The saved history is not

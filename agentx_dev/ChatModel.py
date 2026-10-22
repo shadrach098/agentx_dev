@@ -89,6 +89,19 @@ class CostBudgetExceeded(Exception):
         super().__init__(msg)
 
 
+def _openai_cached_tokens(usage: Any) -> int:
+    """The input tokens OpenAI served from its prompt cache (billed at the cheaper cached rate), from a usage block
+    of either API: ``prompt_tokens_details.cached_tokens`` (chat completions) or
+    ``input_tokens_details.cached_tokens`` (responses). 0 when the block has no such count. Only a real integer
+    counts, so a stand-in object (a test double) adds nothing."""
+    for name in ("prompt_tokens_details", "input_tokens_details"):
+        details = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+        value = details.get("cached_tokens") if isinstance(details, dict) else getattr(details, "cached_tokens", None)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return 0
+
+
 class TokenBucket:
     """Simple thread-safe token-bucket rate limiter.
 
@@ -149,7 +162,8 @@ class TokenUsage:
         self.total_calls = 0
         self.last_input_tokens = 0
         self.last_output_tokens = 0
-        # Anthropic prompt-cache counters. Providers that don't cache leave
+        # Prompt-cache counters (Anthropic's explicit cache, OpenAI's automatic
+        # one; OpenAI reports only reads). Providers that don't cache leave
         # these at zero. cache_read = tokens billed at the discounted read
         # rate; cache_creation = tokens billed at the (slightly premium)
         # write rate. total_input_tokens above already INCLUDES both, so
@@ -1015,7 +1029,7 @@ class BaseChatModel(ABC):
         non-streaming, streaming, and tool-calling paths.
 
         ``cache_read_tokens`` / ``cache_creation_tokens`` are optional
-        Anthropic prompt-cache counters. Providers that don't cache pass
+        prompt-cache counters (Anthropic and OpenAI). Providers that don't cache pass
         0 (the default) and the cache-ratio metric on TokenUsage stays 0.
         """
         self.usage.record(
@@ -1025,6 +1039,12 @@ class BaseChatModel(ABC):
             cache_creation_tokens=cache_creation_tokens,
         )
         self._check_cost_budget()
+        hook = getattr(self, "on_usage", None)
+        if hook is not None:
+            # ``model.on_usage = fn``: ``fn(model)`` after every recorded reply, e.g. to stop a run that has
+            # used too many tokens. Whatever it raises propagates (the terminal app raises a KeyboardInterrupt
+            # subclass, so the run stops the way Ctrl+C stops it).
+            hook(self)
 
     def _consume_retry_budget(self) -> None:
         if self._retry_budget is None:
@@ -1461,6 +1481,7 @@ class GPT(BaseChatModel):
             self._record_usage_counts(
                 input_tokens=getattr(u, "input_tokens", 0) or 0,
                 output_tokens=getattr(u, "output_tokens", 0) or 0,
+                cache_read_tokens=_openai_cached_tokens(u),
             )
 
     def _call_with_tools_responses(self, messages, tools, force_tool):
@@ -1566,6 +1587,7 @@ class GPT(BaseChatModel):
                 self._record_usage_counts(
                     input_tokens=getattr(u, "prompt_tokens", 0),
                     output_tokens=getattr(u, "completion_tokens", 0),
+                    cache_read_tokens=_openai_cached_tokens(u),
                 )
             return self.extract_content(completion)
 
@@ -1634,6 +1656,7 @@ class GPT(BaseChatModel):
             self._record_usage_counts(
                 input_tokens=getattr(u, "prompt_tokens", 0),
                 output_tokens=getattr(u, "completion_tokens", 0),
+                cache_read_tokens=_openai_cached_tokens(u),
             )
 
         msg = response.choices[0].message
@@ -1696,6 +1719,7 @@ class GPT(BaseChatModel):
                 self._record_usage_counts(
                     input_tokens=getattr(u, "prompt_tokens", 0),
                     output_tokens=getattr(u, "completion_tokens", 0),
+                    cache_read_tokens=_openai_cached_tokens(u),
                 )
             if not chunk.choices:
                 continue
@@ -1726,6 +1750,7 @@ class GPT(BaseChatModel):
                 self._record_usage_counts(
                     input_tokens=getattr(u, "prompt_tokens", 0),
                     output_tokens=getattr(u, "completion_tokens", 0),
+                    cache_read_tokens=_openai_cached_tokens(u),
                 )
             if not chunk.choices:
                 continue

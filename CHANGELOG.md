@@ -10,7 +10,7 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 - **Smaller requests.** `AgentRunner(..., trim_results=True)` (and `AsyncAgentRunner`, or a `TrimPolicy` from
   `agentx_dev.Runner.Trim`) sends the model a one-line stub in place of each big tool result outside a window of the newest
-  ones (up to 40,000 characters, at least 4), stubs an older word-for-word copy of a later result, and shortens long
+  ones (20,000 to 40,000 characters, moved in steps, at least the newest one), stubs an older word-for-word copy of a later result, and shortens long
   arguments of old calls; the saved history is unchanged and `use_skill` results are never
   trimmed. `Permissions.read_max_chars` makes `read_path` return a long file in numbered parts with a note on how
   to continue. `Skills(remember_reads=True)` answers a second read of a skill with a pointer back.
@@ -21,6 +21,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **Fewer whole-file re-reads.** A trimmed `read_path` result now names the file and its line count (or the line
   range of a slice) and says to grep it or read only the lines needed; `agentx`'s base prompt and the
   `exploring-a-project` skill (version 3) tell agents to write down the facts they will need as they read.
+- **Cache-friendly trimming.** `TrimPolicy(step_chars=)`: once the whole results pass `keep_chars`, the oldest are
+  stubbed in one go down to `keep_chars - step_chars` (default half), so the start of the request stays the same,
+  and cacheable, until the next step; `keep_last` is now 1. Team helpers keep 12,000-24,000 characters. On a replayed
+  40-step team brainstorm the input cost fell by about 28-41%, depending on the cached price.
+- **OpenAI cached tokens are counted** (`TokenUsage.total_cache_read_tokens`, from either API), and `/usage` shows how
+  much of the input came from the provider's cache.
+- **A token limit per message in `agentx`.** Past 200,000 tokens (`/limit`, `"tokenLimit"` in settings; a project
+  may only lower it) agentx asks before it goes on, and a no ends the turn like Ctrl+C. `BaseChatModel.on_usage`, a
+  hook called after every recorded reply, is what it uses.
 - **`agentx` input colours:** the `/name` at the start of the input line is coloured as you type (command cyan, skill
   magenta, unknown red) and the selected row of the `/` pop-up is highlighted.
 - **Skills first.** The skill list tells the model to check it before choosing tools and to prefer a skill the user

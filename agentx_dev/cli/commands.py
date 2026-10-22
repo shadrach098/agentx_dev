@@ -204,6 +204,39 @@ def _usage(ctx: Any, arg: str) -> None:
     ctx.show_usage()
 
 
+LIMIT_USAGE = "Usage: /limit [tokens] - for example /limit 200000, /limit 300k, /limit 1m, or /limit 0 for no limit"
+
+
+def parse_token_count(text: str) -> Optional[int]:
+    """``"200000"``, ``"200,000"``, ``"300k"``, ``"1.5m"``, ``"0"``, ``"off"`` as a whole number of tokens (off is
+    0); None for anything else."""
+    word = text.strip().lower().replace(",", "").replace("_", "")
+    if word in ("off", "none", "no"):
+        return 0
+    scale = 1
+    if word[-1:] in ("k", "m"):
+        scale = 1_000 if word[-1] == "k" else 1_000_000
+        word = word[:-1]
+    try:
+        value = float(word) if scale > 1 else int(word)
+    except ValueError:
+        return None
+    if value < 0 or value != value or value > 10**12:
+        return None
+    return int(value * scale)
+
+
+def _limit(ctx: Any, arg: str) -> None:
+    if not arg.strip():
+        ctx.show_token_limit()
+        return
+    tokens = parse_token_count(arg)
+    if tokens is None:
+        ctx.error(LIMIT_USAGE)
+        return
+    ctx.set_token_limit(tokens)
+
+
 def _exit(ctx: Any, arg: str) -> None:
     ctx.request_exit()
 
@@ -229,7 +262,8 @@ COMMANDS = (
             _team_models),
     Command("skills", "List the skills, or add one: /skills [install <link>|remove <name>]", _skills),
     Command("memory", "Show the project notes kept for later, or search them: /memory [words]", _memory),
-    Command("usage","Show the tokens used this session, per model, and by the last turn", _usage),
+    Command("usage", "Show the tokens used this session, per model, and by the last turn", _usage),
+    Command("limit", "Show or set how many tokens one message may use before agentx asks: /limit [tokens]", _limit),
     Command("exit", "Leave", _exit),
 )
 _BY_NAME = {command.name: command for command in COMMANDS}
