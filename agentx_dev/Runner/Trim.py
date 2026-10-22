@@ -11,6 +11,7 @@ Nothing here changes which messages exist or how they pair up: a stubbed ``tool`
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -32,15 +33,61 @@ class TrimPolicy:
     keep_chars: int = 40_000
 
 
-def _stub(name: Optional[str], chars: int) -> str:
+FILE_READERS = ("read_path",)                 # tools whose stub names the file and says how to look again cheaply
+_NUMBERED_ROW = re.compile(r"(\d+)\t")
+
+
+def _clean_path(path: str) -> str:
+    """A model-written path made safe to quote in a stub: one line, at most 200 characters."""
+    flat = "".join(c if c.isprintable() else "?" for c in path)
+    return flat if len(flat) <= 200 else flat[:197] + "..."
+
+
+def _extent(text: str) -> str:
+    """'240 lines', or 'lines 120-180' for a line-numbered slice."""
+    rows = text.split("\n")
+    first = _NUMBERED_ROW.match(rows[0])
+    if first:
+        last = next((m for m in (_NUMBERED_ROW.match(row) for row in reversed(rows)) if m), first)
+        return f"lines {int(first.group(1)):,}-{int(last.group(1)):,}"
+    return f"{len(rows):,} lines"
+
+
+def _stub(name: Optional[str], chars: int, path: Optional[str] = None, text: str = "") -> str:
+    if path is not None:
+        return (f"[Earlier {name} result for {path} ({chars:,} characters, {_extent(text)}) left out of this request "
+                "to save tokens. Use what you noted from it; to check a detail, grep that file or read only the "
+                "lines you need (offset and limit) instead of reading it all again.]")
     what = f"{name} result" if name else "result"
-    return (f"[Earlier {what} ({chars:,} characters) left out of this request to save tokens. You already used it; "
-            "read it again only if you need its exact text now.]")
+    return (f"[Earlier {what} ({chars:,} characters) left out of this request to save tokens. Use what you noted "
+            "from it; run it again only if you need its exact text now.]")
 
 
-def _duplicate_stub(name: Optional[str], chars: int) -> str:
+def _duplicate_stub(name: Optional[str], chars: int, path: Optional[str] = None) -> str:
     what = f"{name} result" if name else "Result"
+    if path is not None:
+        what += f" for {path}"
     return f"[{what} ({chars:,} characters): the same text comes again later in this conversation.]"
+
+
+def _read_paths(messages: Sequence[Dict[str, Any]]) -> Dict[str, str]:
+    """``tool_call_id -> path`` for every call to a file-reading tool that names a path."""
+    paths: Dict[str, str] = {}
+    for message in messages:
+        calls = message.get("tool_calls") if message.get("role") == "assistant" else None
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            function = call.get("function") if isinstance(call, dict) else None
+            if not isinstance(function, dict) or function.get("name") not in FILE_READERS:
+                continue
+            try:
+                args = json.loads(function.get("arguments") or "{}")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(args, dict) and isinstance(args.get("path"), str) and isinstance(call.get("id"), str):
+                paths[call["id"]] = _clean_path(args["path"])
+    return paths
 
 
 def _result_info(message: Dict[str, Any]) -> Optional[Tuple[Optional[str], str]]:
@@ -117,14 +164,16 @@ def trim_tool_results(messages: Sequence[Dict[str, Any]], policy: TrimPolicy) ->
     if policy.keep_last <= 0 and policy.keep_chars <= 0:
         boundary = len(out)
     seen = set()                                            # texts of newer results (newest first)
+    paths = _read_paths(out)
     for index in reversed(candidates):
         name, text = _result_info(out[index])               # type: ignore[misc]
         if len(text) < policy.min_chars:
             continue
+        path = paths.get(out[index].get("tool_call_id")) if name in FILE_READERS else None
         if text in seen:
-            stub = _duplicate_stub(name, len(text))
+            stub = _duplicate_stub(name, len(text), path)
         elif index < boundary:
-            stub = _stub(name, len(text))
+            stub = _stub(name, len(text), path, text)
         else:
             seen.add(text)
             continue

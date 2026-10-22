@@ -38,6 +38,7 @@ Operating system: {system}
 How to work:
 - Use your tools to look at the project before you change it: list directories, find files, grep, and read a file before you edit it.
 - When your instructions end with a Skills list, check it before you choose your tools: if a skill fits the task, read it with use_skill and follow it. An installed skill can know a better way than the default tools, so prefer it when it fits; read only the skills that fit.
+- Older tool results are left out of later requests to save tokens. As you read, write down in your message the facts you will need later, with file names and line numbers; to check one again, grep or read just those lines rather than the whole file.
 - Make the smallest change that does what was asked, and keep the existing style.
 - Edits and commands are shown to the user for approval; if a request is declined, do not retry the same thing, adjust or ask what they want.
 - After changing code, run the project's tests or a quick check when you can, and say what you ran and what it showed.

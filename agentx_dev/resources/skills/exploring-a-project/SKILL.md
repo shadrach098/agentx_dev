@@ -2,7 +2,7 @@
 name: exploring-a-project
 description: How to find your way around a project before changing it - list, find, grep, read.
 tools: [list_directory, find_files, grep, read_path, recall]
-version: 2
+version: 3
 ---
 # Exploring a project
 
@@ -25,3 +25,6 @@ Habits that save time:
 - Read a file before you edit it: the edit tools refuse to change a file you have not read in this conversation.
 - If a search finds nothing, try a shorter or different word before deciding something does not exist.
 - Say what you found with file names and line numbers, so the user can check it.
+- Older results are left out of later requests to save tokens. When you read something you will need later,
+  write the facts and line numbers down in your message. To check one again, grep the file or read just those
+  lines with `offset` and `limit`; do not read the whole file again.

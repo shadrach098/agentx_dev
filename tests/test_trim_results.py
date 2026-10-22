@@ -38,8 +38,8 @@ class TestTrimToolResults:
         out = trim_tool_results(msgs, TrimPolicy(keep_last=3, keep_chars=0))
         results = [m for m in out if m["role"] == "tool"]
         assert [len(m["content"]) > 1000 for m in results] == [False] * 5 + [True] * 3
-        assert "read_path result" in results[0]["content"] and "3,0" in results[0]["content"]   # name and size
-        assert "only if you need its exact text" in results[0]["content"]
+        assert "read_path result for f0.py" in results[0]["content"] and "3,0" in results[0]["content"]
+        assert "grep that file or read only the lines you need" in results[0]["content"]
         assert "Run the tool again" not in results[0]["content"]           # it must not invite a re-read
 
     def test_the_input_is_not_changed_and_pairing_survives(self):
@@ -182,3 +182,54 @@ class TestBudgetAndDuplicates:
         msgs = conversation(2)
         msgs[3]["content"] = msgs[5]["content"] = "ok"
         assert trim_tool_results(msgs, TrimPolicy()) == msgs
+
+
+class TestFileReadStubs:
+    """A trimmed file read names the file and its size, so a check needs a grep or a few lines, not a re-read."""
+
+    def test_the_stub_names_the_path_and_line_count(self):
+        msgs = conversation(6)
+        msgs[3]["content"] = "line\n" * 900                    # 900 lines + an empty last one
+        out = trim_tool_results(msgs, TrimPolicy(keep_last=1, keep_chars=0))
+        assert out[3]["content"].startswith("[Earlier read_path result for f0.py (4,500 characters, 901 lines)")
+        assert "offset and limit" in out[3]["content"]
+
+    def test_a_slice_stub_gives_the_line_range(self):
+        msgs = conversation(6)
+        msgs[3]["content"] = "\n".join(f"{n}\tcode line {n} " + "y" * 20 for n in range(120, 181)) + \
+            "\n[Showing lines 120-180 of 900; the output is cut at 30,000 characters.]"
+        out = trim_tool_results(msgs, TrimPolicy(keep_last=1, keep_chars=0))
+        assert "lines 120-180)" in out[3]["content"]
+
+    def test_other_tools_keep_the_plain_stub(self):
+        msgs = conversation(6, name="grep")
+        out = trim_tool_results(msgs, TrimPolicy(keep_last=1, keep_chars=0))
+        assert out[3]["content"].startswith("[Earlier grep result (3,")
+        assert " for f0.py" not in out[3]["content"] and "only if you need its exact text" in out[3]["content"]
+
+    def test_a_duplicate_names_the_path_too(self):
+        msgs = conversation(3)
+        msgs[-1]["content"] = msgs[3]["content"]                 # f0.py's text again, as the newest result
+        out = trim_tool_results(msgs, TrimPolicy(keep_last=5, keep_chars=0))
+        assert out[3]["content"].startswith("[read_path result for f0.py (")
+        assert "same text comes again later" in out[3]["content"]
+
+    def test_an_odd_path_is_quoted_safely(self):
+        msgs = conversation(4)
+        msgs[2] = assistant_call("c0", "read_path", {"path": "a\nb]" + "z" * 400})
+        out = trim_tool_results(msgs, TrimPolicy(keep_last=1, keep_chars=0))
+        stub = out[3]["content"]
+        assert "\n" not in stub and "a?b]" in stub and "..." in stub and len(stub) < 600
+
+    def test_a_call_without_a_path_or_with_bad_arguments_falls_back(self):
+        msgs = conversation(4)
+        msgs[2]["tool_calls"][0]["function"]["arguments"] = "{not json"
+        msgs[4]["tool_calls"][0]["function"]["arguments"] = json.dumps({"file": "x.py"})
+        out = trim_tool_results(msgs, TrimPolicy(keep_last=1, keep_chars=0))
+        assert out[3]["content"].startswith("[Earlier read_path result (3,")
+        assert out[5]["content"].startswith("[Earlier read_path result (3,")
+
+    def test_trimming_its_own_output_changes_nothing(self):
+        msgs = conversation(8)
+        once = trim_tool_results(msgs, TrimPolicy(keep_last=2, keep_chars=0))
+        assert trim_tool_results(once, TrimPolicy(keep_last=2, keep_chars=0)) == once

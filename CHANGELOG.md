@@ -18,6 +18,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   characters (was 150,000) and is measured on what the model is sent. On a measured 15-file turn the input sent
   fell from about 231,000 tokens to about 136,000. `/usage` shows the tokens used this session, per model, and by
   the last turn.
+- **Fewer whole-file re-reads.** A trimmed `read_path` result now names the file and its line count (or the line
+  range of a slice) and says to grep it or read only the lines needed; `agentx`'s base prompt and the
+  `exploring-a-project` skill (version 3) tell agents to write down the facts they will need as they read.
 - **`agentx` input colours:** the `/name` at the start of the input line is coloured as you type (command cyan, skill
   magenta, unknown red) and the selected row of the `/` pop-up is highlighted.
 - **Skills first.** The skill list tells the model to check it before choosing tools and to prefer a skill the user
