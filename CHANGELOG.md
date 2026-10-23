@@ -48,6 +48,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **Web tools in `agentx`.** `web_search` and `web_fetch` (readable text, at most 30,000 characters, marked as data
   from the internet); the gate asks before each in `default` and `plan` mode (`a`: the rest of the session). The
   `web-research` skill is listed, and the team's explorer gets them.
+- **MCP servers in `agentx`.** `/mcp add <name> <url>` (`--sse`), `/mcp add <name> -- <command> [args]`, `/mcp remove`,
+  `/mcp login`, `/mcp logout`; kept in `~/.agentx/mcp.json`, `${VAR}` for keys. A browser sign-in (OAuth) runs only on
+  `/mcp login`; tokens go to the system's credential store (`keyring`, split across entries when long) and renew
+  by themselves. Tools appear as `<server>__<tool>` for the chat and every team helper, ask before running even in
+  auto mode, and their results are marked as outside data and cut at 30,000 characters. The `mcp` extra now needs
+  `mcp>=1.10` and `keyring>=24`.
 - **Model requests in `agentx` wait up to 5 minutes and are retried visibly.** `model.on_retry(attempt, error,
   delay)` is called before each retry; `agentx` prints a line.
 - **`agentx` input colours:** the `/name` at the start of the input line is coloured as you type (command cyan, skill

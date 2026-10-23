@@ -150,6 +150,8 @@ class _HelperRunner(AgentRunner):
 def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
             describe_error: Callable[[BaseException], str], skills: Any = None) -> AgentRunner:
     chosen = [by_name[name] for name in role.tools if name in by_name]
+    # The user's MCP tools go to every helper: what they do is up to the server, and each asks before it runs.
+    chosen += [tool for tool in by_name.values() if getattr(tool, "mcp_server", None) and tool not in chosen]
     return _HelperRunner(model=model, agent=AgentType.ReAct, tools=chosen,
                          system_addendum=(addendum or "") + role_prompt(role),
                          max_iterations=HELPER_STEPS, auto_cache=False, verbose=False,

@@ -4,7 +4,7 @@
 
 It is a front end over `AgentRunner`, `DefaultTools` and `Session`: the chat loop, the approval prompts, the settings file and the slash commands are new; the engine and the tools are the ones you already have.
 
-Version 3.7.0. Not in this version: token-by-token output, a headless mode (`agentx -p "task"`), MCP configuration, custom commands, hooks and a mode that never asks about anything (see [Limits in this version](#limits-in-this-version)).
+Version 3.7.0. Not in this version: token-by-token output, a headless mode (`agentx -p "task"`), custom commands, hooks and a mode that never asks about anything (see [Limits in this version](#limits-in-this-version)).
 
 ## Quick start
 
@@ -283,6 +283,48 @@ Accepts `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>
 
 **Only you can install.** The agent has no tool to install or remove a skill, and its file tools can never write to `.agentx` or `~/.agentx` (see [Default protections](#default-protections)). A skill is instructions the agent will follow, so install only skills you trust. A skill from a link or a project is shown to the model with a note that it cannot override the rules or the approval prompts. An archive is unpacked with limits (20 MB, 3,000 files, 1 MB a file, 50 skills), paths that leave the folder and links are refused, and a downloaded skill cannot take the name of a built-in one.
 
+## MCP servers
+
+An MCP server gives the agent more tools: a flight search, a database, a company wiki. You add a server; the agent
+uses its tools. The agent cannot add, remove or sign in to a server itself (there is no tool for it, and its file
+tools cannot write `~/.agentx`), because a server runs tools for the agent and a web page or a file must not be able
+to plant one.
+
+```text
+/mcp add flightclaw https://mcp.flightclaw.com/mcp        # a server on the web (add --sse for an older SSE server)
+/mcp add files -- npx -y @modelcontextprotocol/server-filesystem C:\work   # a program run on your computer
+/mcp                                                       # the servers, their state and their tools
+/mcp login flightclaw                                      # sign in in the browser
+/mcp logout flightclaw                                     # delete the saved sign-in
+/mcp remove flightclaw                                     # delete the server (asks first)
+```
+
+Servers are kept in `~/.agentx/mcp.json` and connected when `agentx` starts; one that does not answer within 20
+seconds is reported and skipped. A server run on your computer is asked about when you add it (it runs each time
+`agentx` starts); its own messages go to `~/.agentx/mcp-logs/<name>.log`, not over the chat.
+
+**Signing in.** A server that wants a sign-in is never opened by itself at startup: it is listed as
+`needs sign-in: /mcp login <name>`. `/mcp login` (or a yes when you add it) opens the sign-in page in your browser,
+which sends you back to `http://localhost:33418/callback`. The tokens are kept in your system's credential store
+(Windows Credential Manager, the macOS keychain, the Secret Service on Linux), not in a file, and renewed by
+themselves until `/mcp logout`. A server that takes a key instead is set up in `mcp.json` with the key's
+environment variable, so the key itself is never written down:
+
+```json
+{"servers": {
+  "search": {"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ${SEARCH_KEY}"}},
+  "files":  {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\work"],
+             "env": {"TOKEN": "${FILES_TOKEN}"}}
+}}
+```
+
+**The tools.** Each tool appears as `<server>__<tool>` (`flightclaw__search_flights`), described as coming from that
+server, in the chat and for every team helper. They ask before running in every mode, `auto` included; to let one
+server's tools run without asking, add `"allow": ["flightclaw__*"]` to your settings. A deny rule such as
+`"flightclaw__book*"` refuses some of them. What a tool returns is marked as data from an outside server, cut at
+30,000 characters. `/mcp add`, `/mcp remove`, `/mcp login` and `/mcp logout` change the tools of the conversation
+you are in, without losing it. MCP needs `pip install "agentx-dev[mcp]"`.
+
 ## Conversations
 
 Each conversation is saved as it goes, to `~/.agentx/sessions/<project>/<UTC timestamp>-<id>.json`, where `<project>` is the absolute folder with separators and colons replaced by `-`, followed by `-` and a short hash of the full path (so `C:\a-b` and `C:\a\b` keep separate conversations). It is saved after every turn and when you leave. An empty conversation leaves no file.
@@ -320,6 +362,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/skills [install <link>\|remove <name>\|use <name> ...]` | List the skills the agent can read (each is also a `/name` command in the pop-up, e.g. `/changing-files rename the helper`), or add one from a `https://github.com/<owner>/<repo>` link or a folder (you are shown what it contains and asked first), or remove one. See [Skills](#skills). | `/skills install https://github.com/obra/superpowers` |
 | `/memory [words]` | Show the project notes kept for later (how many, how they are searched, the newest), or search them. See [Notes and recall](#notes-and-recall). | `/memory login redirect` |
 | `/usage` | Show the tokens used this session (requests, input and output tokens, how much of the input came from the provider's cache, per model when a team used others) and by the last turn, and the token limit. | `/usage` |
+| `/mcp` | List your MCP servers and their state; `/mcp add <name> <url>`, `/mcp add <name> -- <command> [args]`, `/mcp remove`, `/mcp login`, `/mcp logout <name>`. See [MCP servers](#mcp-servers). | `/mcp add flightclaw https://mcp.flightclaw.com/mcp` |
 | `/limit [tokens]` | Show or set how many tokens one message may use before agentx asks whether to go on (`0` for no limit). See [The token limit](#the-token-limit). | `/limit 300k` |
 | `/exit` | Save the conversation and leave (Ctrl+D does the same). | `/exit` |
 
@@ -592,7 +635,7 @@ The status bar shows the model, the mode, the folder, the short session id and t
 
 - **No token streaming.** Each step shows as it happens, but the answer appears when the turn ends. The framework streams tokens only in text-tool mode, not with native function calling, which newer models need.
 - **No headless mode.** There is no `agentx -p "task"`; a non-terminal exits with code 1.
-- **No MCP configuration, custom commands or hooks.**
+- **No custom commands or hooks.**
 - **No mode that never asks.** `auto` still asks before delete and move and for tools the gate does not know. The protected files (`.git`, `.agentx`, git and shell config) are refused in every mode.
 - **Teams mode is limited:** helpers run one at a time and the roster is fixed, though each role can run on extra models you allow (see [Team jobs](#team-jobs)).
 - You cannot type while the agent is working.

@@ -394,6 +394,14 @@ built-in `web-research` skill explains how to use them, and in a team job the ex
 `a` to allow them for the session. `accept-edits` and `auto` do not ask. Page text is marked as data from the
 internet, so instructions written on a page cannot steer the agent. `"deny": ["web_fetch:*example.com*"]` blocks a site.
 
+## Can `agentx` use MCP servers? *(next release)*
+
+Yes. `/mcp add <name> <url>` (or `/mcp add <name> -- <command> [args]` for a program on your computer) adds one;
+its tools appear as `<name>__<tool>` for the agent and the team helpers and ask before they run. A server that
+needs a sign-in: `/mcp login <name>` opens the browser, and the sign-in is kept in your system's credential store
+and renewed by itself. The agent cannot add a server or sign in on its own. Servers added with `claude mcp add`
+belong to Claude Code, not to `agentx`. See [MCP servers](../guides/cli.md#mcp-servers).
+
 ## Why is `agentx` taking so long? *(next release)*
 
 A reasoning model can take minutes on a big request; `agentx` waits up to 5 minutes for each answer. When a request

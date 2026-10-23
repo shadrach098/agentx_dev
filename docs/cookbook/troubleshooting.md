@@ -321,6 +321,21 @@ the agent and any team helpers report what they have; the turn is kept.
 Even wrapping up went past its allowance (50,000 tokens, or half the limit). The turn was not recorded, so the agent
 does not remember it; files it changed stay changed. Ask again with a smaller request, or raise the limit first.
 
+**`MCP <name>: needs sign-in: /mcp login <name>`**
+The server wants you to sign in. Run `/mcp login <name>`; the browser opens. It is never opened by itself when
+`agentx` starts.
+
+**`MCP <name>: not connected: ${KEY} is not set in the environment`**
+`~/.agentx/mcp.json` names an environment variable for a key or a header that is not set. Set it and start
+`agentx` again.
+
+**`/mcp login` says the address is in use (port 33418)**
+Another program, or another `agentx` signing in, is using the port the sign-in page sends the browser back to.
+Close it and try again.
+
+**`MCP needs the mcp package: pip install "agentx-dev[mcp]"`**
+MCP support is an optional install; run that command.
+
 **`A model request got no answer in time; trying again (attempt 2).`**
 The model took more than 5 minutes to answer (a reasoning model on a big request), or the connection failed. It is
 tried once more; a second timeout ends the turn with an error. A smaller request, or `/clear` for a fresh

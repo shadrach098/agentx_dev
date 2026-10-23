@@ -30,8 +30,9 @@ dependencies = [
 [project.optional-dependencies]
 # `pip install agentx-dev[anthropic]` — enables agentx_dev.Claude
 anthropic = ["anthropic>=0.36"]     # 3.1 needs Batch API + prompt cache
-# `pip install agentx-dev[mcp]` — enables MCPClient (stdio / sse / http)
-mcp = ["mcp>=0.1"]
+# `pip install agentx-dev[mcp]` — enables MCPClient (stdio / sse / http) and /mcp in agentx; keyring keeps
+# an MCP server's sign-in in the system's credential store
+mcp = ["mcp>=1.10", "keyring>=24"]
 # `pip install agentx-dev[otel]` — enables the OTelHook observability adapter
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 # `pip install agentx-dev[chroma]` — ChromaVectorStore adapter. Since 3.6.2 the
@@ -57,7 +58,8 @@ dev = [
 # `pip install agentx-dev[all]` — the works
 all = [
     "anthropic>=0.36",
-    "mcp>=0.1",
+    "mcp>=1.10",
+    "keyring>=24",
     "opentelemetry-api>=1.20",
     "opentelemetry-sdk>=1.20",
     "chromadb>=0.4",

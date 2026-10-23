@@ -237,6 +237,50 @@ def _limit(ctx: Any, arg: str) -> None:
     ctx.set_token_limit(tokens)
 
 
+MCP_USAGE = ("Usage: /mcp | /mcp add <name> <url> [--sse] | /mcp add <name> -- <command> [args...] | "
+             "/mcp remove <name> | /mcp login <name> | /mcp logout <name>")
+
+
+def _words(arg: str) -> List[str]:
+    """Split like a shell, but keep backslashes (Windows paths); quotes group words."""
+    lexer = shlex.shlex(arg, posix=True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def _mcp(ctx: Any, arg: str) -> None:
+    from agentx_dev.cli.mcp import ServerConfig
+    try:
+        words = _words(arg)
+    except ValueError:
+        ctx.error(MCP_USAGE)
+        return
+    if not words or words == ["list"]:
+        ctx.show_mcp()
+        return
+    sub, rest = words[0], words[1:]
+    if sub == "add" and len(rest) >= 2:
+        name = rest[0]
+        if rest[1] == "--":
+            if len(rest) < 3:
+                ctx.error(MCP_USAGE)
+                return
+            ctx.mcp_add(name, ServerConfig(name, "stdio", command=rest[2], args=rest[3:]))
+            return
+        url, flags = rest[1], rest[2:]
+        if flags not in ([], ["--sse"]) or not url.startswith(("https://", "http://")):
+            ctx.error(MCP_USAGE)
+            return
+        ctx.mcp_add(name, ServerConfig(name, "sse" if flags else "http", url=url))
+        return
+    if sub in ("remove", "login", "logout") and len(rest) == 1:
+        getattr(ctx, f"mcp_{sub}")(rest[0])
+        return
+    ctx.error(MCP_USAGE)
+
+
 def _exit(ctx: Any, arg: str) -> None:
     ctx.request_exit()
 
@@ -263,6 +307,7 @@ COMMANDS = (
     Command("skills", "List the skills, or add one: /skills [install <link>|remove <name>]", _skills),
     Command("memory", "Show the project notes kept for later, or search them: /memory [words]", _memory),
     Command("usage", "Show the tokens used this session, per model, and by the last turn", _usage),
+    Command("mcp", "MCP servers: list, or /mcp add <name> <url>, remove, login, logout <name>", _mcp),
     Command("limit", "Show or set how many tokens one message may use before agentx asks: /limit [tokens]", _limit),
     Command("exit", "Leave", _exit),
 )

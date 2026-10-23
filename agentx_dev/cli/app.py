@@ -23,6 +23,7 @@ from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_
 from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, compact, needs_compaction
 from agentx_dev.Runner.Trim import TrimPolicy, trim_tool_results
 from agentx_dev.cli.context import build_addendum
+from agentx_dev.cli.mcp import INSTALL_HINT, MCPManager, ServerConfig, config_path, valid_name
 from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events, summary_entry_text
 from agentx_dev.cli.recall import ProjectMemory, auto_block, choose_embeddings, make_recall_tool, worth_a_note
 from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, describe_prompt, is_auto_note,
@@ -256,6 +257,8 @@ class ChatApp:
         self._turn_allowed = 0                    # tokens the running turn may use before the next question
         self._turn_stopped = False                # past even the wrap-up allowance: every later reply stops
         self._wrapping_up = False                 # the user said no: tools refuse, the agent answers with what it has
+        self.mcp: Optional[MCPManager] = None     # the user's MCP servers (``/mcp``), connected at startup
+        self._mcp_tools: List[Any] = []           # their tools, gated, also in ``self.tools``
         self.session: Optional[Session] = None
         self.session_path: Optional[Path] = None
         self._exit = False
@@ -481,6 +484,7 @@ class ChatApp:
         self._create_user_settings(self.model_label)
         if self._newly_trusted and self._memory_on:         # never overwrites a file that is already there
             self.project_settings_created = ensure_project_settings(self.cwd, self.home, self.model_label)
+        self._connect_mcp()                      # before the first runner, so it has the servers' tools
         if resume is None:
             self._start_fresh()
         else:
@@ -506,7 +510,11 @@ class ChatApp:
         if self.project_settings_created is not None:
             self.notice(f"Created {self._safe(self.project_settings_created, 400)} with this folder's model. "
                         "/model <name> --folder changes it.")
-        return self.loop()
+        try:
+            return self.loop()
+        finally:
+            if self.mcp is not None:
+                self.mcp.close()
 
     def _create_user_settings(self, model: Optional[str]) -> None:
         """Write ``~/.agentx/settings.json`` if there is none yet (``model`` only when it is a real name)."""
@@ -641,6 +649,140 @@ class ChatApp:
                 self._log_turn(text if log_title is None else log_title, events)
             except Exception:                  # the turn itself went well: a log failure must not end the app
                 self._warn_log_failed()
+
+    # -- /mcp -------------------------------------------------------------------
+
+    def _mcp_manager(self) -> MCPManager:
+        if self.mcp is None:
+            self.mcp = MCPManager(self.home, self.env, show=self._mcp_show)
+        return self.mcp
+
+    def _mcp_show(self, text: str) -> None:
+        with self.progress.paused():
+            for line in str(text).splitlines():
+                self.notice(self._safe(line, 2000))
+
+    def _connect_mcp(self) -> None:
+        """At startup: connect the servers in ~/.agentx/mcp.json (never opening a browser) and add their tools."""
+        try:
+            manager = self._mcp_manager()
+        except Exception as error:                 # a broken file must not stop the app
+            self.error(f"MCP servers were not loaded ({type(error).__name__}).")
+            return
+        for problem in manager.problems:
+            self.error(self._safe(problem, 300))
+        if not manager.servers:
+            return
+        self.progress.start("Connecting to MCP servers")
+        try:
+            statuses = manager.connect_all()
+        finally:
+            self.progress.stop()
+        for name, status in statuses.items():
+            if not status.startswith("connected"):
+                self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
+        self._refresh_mcp_tools(attach=False)
+
+    def _refresh_mcp_tools(self, attach: bool = True) -> None:
+        """Put the connected servers' tools (gated) in ``self.tools``; with ``attach``, give the conversation a
+        runner that has them, keeping its history."""
+        old = {id(tool) for tool in self._mcp_tools}
+        self.tools = [tool for tool in self.tools if id(tool) not in old]
+        fresh = []
+        for tool in (self.mcp.tools() if self.mcp is not None else []):
+            wrapped = gate_tool(tool, self.gate, observer=self._observe_tool)
+            wrapped.mcp_server = tool.name.split("__", 1)[0]
+            fresh.append(wrapped)
+        self._mcp_tools = fresh
+        self.tools.extend(fresh)
+        if attach and self.session is not None and self.model is not None:
+            self.session.attach(self._make_runner(self.model))
+
+    def show_mcp(self) -> None:
+        manager = self._mcp_manager()
+        path = self._safe(config_path(self.home), 300)
+        if not manager.servers:
+            self.notice(f"No MCP servers yet. Add one with /mcp add <name> <url> (or /mcp add <name> -- <command> "
+                        f"[args]). They are kept in {path}.")
+            return
+        lines = ["MCP servers:"]
+        for name, config in manager.servers.items():
+            status = manager.status.get(name, "not connected")
+            lines.append(f"  {self._safe(name, 40)}  {self._safe(config.describe(), 200)}  - {self._safe(status, 200)}")
+        if self._mcp_tools:
+            names = ", ".join(tool.name for tool in self._mcp_tools[:12])
+            more = f" and {len(self._mcp_tools) - 12} more" if len(self._mcp_tools) > 12 else ""
+            lines.append(f"Tools: {self._safe(names, 800)}{more}.")
+        lines.append(f"Kept in {path}. Their tools ask before running, even in auto mode; to let one server's run "
+                     "without asking, add \"allow\": [\"<name>__*\"] to your settings. /mcp login <name> signs in, "
+                     "/mcp logout <name> signs out, /mcp remove <name> deletes.")
+        self.notice("\n".join(lines))
+
+    def mcp_add(self, name: str, config: ServerConfig) -> None:
+        manager = self._mcp_manager()
+        if not valid_name(name):
+            self.error("An MCP server name is lower-case letters, digits, - and _ (at most 40), starting with a "
+                       "letter or digit.")
+            return
+        if name in manager.servers:
+            self.error(f"There is already an MCP server called {self._safe(name, 40)}. /mcp remove {name} first.")
+            return
+        try:
+            import mcp  # noqa: F401
+        except ImportError:
+            self.error(INSTALL_HINT)
+            return
+        if config.transport == "stdio" and not self._yes(
+                f"This runs `{self._safe(config.describe(), 300)}` on your computer each time agentx starts, and "
+                "its tools act for the agent. Add it? [y/N] "):
+            self.notice("Nothing was added.")
+            return
+        try:
+            path = manager.add(config)
+        except (OSError, ValueError) as error:
+            self.error(f"Could not save the server ({type(error).__name__}).")
+            return
+        self.notice(f"Added {self._safe(name, 40)} to {self._safe(path, 300)}. Connecting...")
+        status = manager.connect(name)
+        if status.startswith("needs sign-in") and self._yes(
+                f"{name} wants you to sign in. Open the sign-in page in your browser now? [y/N] "):
+            status = manager.login(name)
+        self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
+        self._refresh_mcp_tools()
+
+    def _known_server(self, name: str) -> bool:
+        if name in self._mcp_manager().servers:
+            return True
+        self.error(f"No MCP server called {self._safe(name, 40)}. /mcp lists them.")
+        return False
+
+    def mcp_remove(self, name: str) -> None:
+        if not self._known_server(name):
+            return
+        if not self._yes(f"Remove the MCP server {name} and its saved sign-in? [y/N] "):
+            self.notice("Nothing was removed.")
+            return
+        self._mcp_manager().remove(name)
+        self._refresh_mcp_tools()
+        self.notice(f"Removed {self._safe(name, 40)}.")
+
+    def mcp_login(self, name: str) -> None:
+        if not self._known_server(name):
+            return
+        manager = self._mcp_manager()
+        if manager.servers[name].transport == "stdio":
+            self.notice(f"{name} runs on your computer; there is nothing to sign in to. Reconnecting.")
+        status = manager.login(name)
+        self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
+        self._refresh_mcp_tools()
+
+    def mcp_logout(self, name: str) -> None:
+        if not self._known_server(name):
+            return
+        self._mcp_manager().logout(name)
+        self._refresh_mcp_tools()
+        self.notice(f"Signed out of {self._safe(name, 40)}: its saved sign-in was deleted. /mcp login {name} signs "
+                    "in again.")
 
     # -- /memory ----------------------------------------------------------------
 
@@ -1259,7 +1401,8 @@ class ChatApp:
             self.notice(self._safe(note, 300))
         self.progress.start("Planning the team job")
         try:
-            text = run_team_job(task, model=self.model, tools=self.base_tools, addendum=self.addendum,
+            text = run_team_job(task, model=self.model, tools=[*self.base_tools, *self._mcp_tools],
+                                addendum=self.addendum,
                                 notify=self._team_notify, ask_user=self._team_question,
                                 describe_error=self._safe, extra_models=extras,
                                 chat_use=self._use_of(self.model_label), skills=self.skills)
