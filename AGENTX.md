@@ -24,4 +24,5 @@ Skills list before choosing tools and follow the skills that fit. This file is s
 - For code structure (functions, classes, counts) use Python's `ast`, not string matching.
 - If a tool warns about a repeated call, change approach instead of repeating it.
 - Your final reply is what the user sees: give the facts found, with file names and line numbers.
+- Always commit your changes after modifying files or adding new ones. Run the relevant checks first; commit only your own changes.
 - Commits: no `Co-Authored-By` lines.
