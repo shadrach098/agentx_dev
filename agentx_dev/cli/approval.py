@@ -22,7 +22,9 @@ TOOL_KINDS = {
     "run_shell": "command", "run_python": "command",
     "delete_path": "destructive", "move_file": "destructive",
     "start_team_job": "team",
+    "web_search": "web", "web_fetch": "web",
 }
+WEB_GRANT = "all web searches and page fetches this session"
 _TWO_WORD_COMMANDS = frozenset({"git", "npm", "pnpm", "yarn", "pip", "cargo", "go", "docker", "make"})
 # Characters that chain, pipe, redirect, substitute or group. Any character outside printable ASCII
 # (control characters, NBSP, Unicode spaces and line breaks) counts as one too; see ``_is_marked``.
@@ -83,7 +85,7 @@ class Answer:
 
 
 def kind_of(tool: str) -> str:
-    """read / edit / command / destructive / team. A tool the gate does not know counts as a command."""
+    """read / edit / command / destructive / team / web. A tool the gate does not know counts as a command."""
     return TOOL_KINDS.get(tool, "command")
 
 
@@ -220,6 +222,10 @@ def subject_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Path
                 f"{normalize_path(final[0] if final else destination, cwd)}")
     if tool in _PATH_TOOLS and "path" in args:
         return normalize_path(args["path"], cwd)
+    if tool == "web_fetch":
+        return _squash(args.get("url", ""))
+    if tool == "web_search":
+        return _squash(args.get("query", ""))
     return subjects_of(tool, args, cwd)[0]
 
 
@@ -409,6 +415,10 @@ class Gate:
                 cwd = None
         self.cwd = cwd
         self.grants: set = set()
+        self.web_allowed = False            # "a" at a web prompt: no more web questions this session
+        # Set while a turn is wrapping up (the user said no at the token limit): every gated tool call returns
+        # this text instead of running, so the agent answers with what it has.
+        self.closed: Optional[str] = None
         self._mode = "default"
         self.set_mode(mode)
 
@@ -443,9 +453,12 @@ class Gate:
         for rule in self.deny:                                  # a deny rule refuses if ANY form matches
             if any(rule_matches(rule, tool, text, cwd=self.cwd) for text in subjects):
                 return f"Refused: the settings deny rule '{rule}' blocks this."
-        if self._mode == "plan" and kind != "read":
+        if self._mode == "plan" and kind not in ("read", "web"):
             return PLAN_REFUSAL
         if kind == "read":
+            return None
+        # Web lookups read, but a URL or a query can carry text out of the project, so the careful modes ask.
+        if kind == "web" and (self._mode in ("auto", "accept-edits") or self.web_allowed):
             return None
         if self._mode == "auto" and tool in TOOL_KINDS and kind in ("edit", "command", "team"):
             return None             # auto: only delete / move and tools the gate does not know still ask
@@ -490,6 +503,8 @@ class Gate:
         (which approves only that one call)."""
         if kind == "edit":
             return "all edits this session"
+        if kind == "web":
+            return WEB_GRANT
         if tool == "run_shell" and not compound:
             return _grantable_prefix(subject)
         return None
@@ -497,5 +512,7 @@ class Gate:
     def _remember(self, kind: str, grant: str) -> None:
         if kind == "edit":
             self._mode = "accept-edits"
+        elif kind == "web":
+            self.web_allowed = True
         else:
             self.grants.add(grant)

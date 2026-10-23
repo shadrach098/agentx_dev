@@ -37,9 +37,8 @@ class TestWhatTheAgentIsGiven:
         runner = runner_of(app)
         names = [t.name for t in runner.tools]
         assert "use_skill" in names
-        for skill in ("exploring-a-project", "changing-files", "running-code", "delegating-work"):
-            assert f"- {skill}:" in runner.system_addendum
-        assert "web-research" not in runner.system_addendum          # the terminal app has no web tools
+        for skill in ("exploring-a-project", "changing-files", "running-code", "delegating-work", "web-research"):
+            assert f"- {skill}:" in runner.system_addendum           # web-research: the app has web tools now
         assert (skills_dir(home) / "running-code" / "SKILL.md").is_file()    # created on first use
 
     def test_project_skills_are_listed_in_their_own_block_after_the_users(self, tmp_path):
@@ -168,6 +167,11 @@ class TestSkillsAsCommands:
 
     def app_with_sends(self, tmp_path):
         app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(), width=400)     # wide: no line wrapping
+        # A skill for a tool the terminal app does not have, so it exists but is not offered here.
+        (skills_dir(home) / "gui-testing").mkdir(parents=True)
+        (skills_dir(home) / "gui-testing" / "SKILL.md").write_text(
+            "---\nname: gui-testing\ndescription: Click through an app\ntools: [click_button]\n---\nBody\n",
+            encoding="utf-8")
         sent = []
         app.send = lambda text, log_title=None: sent.append((text, log_title))
         runner_of(app)                                  # the conversation's runner: this decides which skills apply
@@ -176,8 +180,9 @@ class TestSkillsAsCommands:
     def test_the_popup_entries_are_the_skills_this_conversation_has(self, tmp_path):
         app, out, cwd, home, sent = self.app_with_sends(tmp_path)
         entries = app.skill_entries()
-        assert set(entries) == {"/exploring-a-project", "/changing-files", "/running-code", "/delegating-work"}
-        assert entries["/running-code"].startswith("(skill) ")      # web-research has no tools here, so it is not offered
+        assert set(entries) == {"/exploring-a-project", "/changing-files", "/running-code", "/delegating-work",
+                                "/web-research"}
+        assert entries["/running-code"].startswith("(skill) ")      # gui-testing has no tools here, so it is not offered
 
     def test_a_skill_with_a_task_sends_a_message_naming_it_and_the_task(self, tmp_path):
         app, out, cwd, home, sent = self.app_with_sends(tmp_path)
@@ -193,7 +198,7 @@ class TestSkillsAsCommands:
 
     def test_an_unknown_name_sends_nothing_and_says_so(self, tmp_path):
         app, out, cwd, home, sent = self.app_with_sends(tmp_path)
-        run_command(app, "/web-research find the docs")           # a skill that exists, but not for this conversation
+        run_command(app, "/gui-testing click the button")          # a skill that exists, but not for this conversation
         run_command(app, "/nope")
         assert sent == [] and out.getvalue().count("Unknown command") == 2
 
@@ -224,8 +229,8 @@ class TestSkillsAsCommands:
         app, out, cwd, home, sent = self.app_with_sends(tmp_path)
         run_command(app, "/skills")
         text = out.getvalue()
-        assert "/running-code (bundled)" in text and "web-research (bundled)" in text
-        assert "not active in this conversation" in text.split("web-research")[1].split("\n")[0]
+        assert "/running-code (bundled)" in text and "/web-research (bundled)" in text
+        assert "not active in this conversation" in text.split("gui-testing")[1].split("\n")[0]
         assert "/<skill> [what you want]" in text
 
 

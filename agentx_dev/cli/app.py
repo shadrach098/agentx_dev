@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 from rich.console import Console
 
 from agentx_dev import AgentRunner, AgentType, Session
+from agentx_dev.ChatModel import _is_timeout
 from agentx_dev.cli.approval import MODES, Gate
 from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
                                      shown, skill_request)
@@ -52,6 +53,14 @@ TEAM_STALLED = ("Refused: no step of the last team job finished, so another job 
                 "Report to the user what happened and what remains, and let them decide.")
 
 NOT_A_TERMINAL = "agentx needs an interactive terminal (headless mode is not available yet)."
+
+
+# What every tool call returns once the user has said no at the token limit question, so the agent (and any team
+# helper) answers with what it has instead of starting more work.
+WRAP_UP = ("Refused: the user's token limit for this message was reached and they asked you to stop. Do not call "
+           "any more tools. Give your final answer now, using only what you have already found, and say what is "
+           "unfinished.")
+WRAP_UP_TOKENS = 50_000      # tokens a wrapping-up turn may still use (at least; half the limit when that is more)
 
 
 class TokenLimitReached(KeyboardInterrupt):
@@ -245,7 +254,8 @@ class ChatApp:
         self._limit_lock = threading.Lock()
         self._turn_start: Optional[int] = None    # tokens used before the running turn; None outside a turn
         self._turn_allowed = 0                    # tokens the running turn may use before the next question
-        self._turn_stopped = False                # the user said no: every later reply in this turn stops too
+        self._turn_stopped = False                # past even the wrap-up allowance: every later reply stops
+        self._wrapping_up = False                 # the user said no: tools refuse, the agent answers with what it has
         self.session: Optional[Session] = None
         self.session_path: Optional[Path] = None
         self._exit = False
@@ -587,6 +597,8 @@ class ChatApp:
             self._turn_start = usage_before[1] + usage_before[2]
             self._turn_allowed = self.token_limit
             self._turn_stopped = False
+            self._wrapping_up = False
+            self.gate.closed = None
         try:
             self._maybe_compact()
             self.progress.start("Thinking")
@@ -608,8 +620,8 @@ class ChatApp:
             finished = True
         except TokenLimitReached as stop:
             self.notice(f"Stopped: this message used {stop.used:,} tokens, past your limit of {stop.limit:,} a "
-                        "message. Your earlier turns are kept; this one was not recorded. Changes already made in "
-                        "it remain on disk. /limit shows or changes the limit.")
+                        "message, and wrapping up took more. Your earlier turns are kept; this one was not recorded. "
+                        "Changes already made in it remain on disk. /limit shows or changes the limit.")
         except KeyboardInterrupt:
             self.notice("Turn interrupted (Ctrl+C). Your earlier turns are kept; this one was not recorded. "
                         "Changes already made in that turn remain on disk.")
@@ -618,6 +630,8 @@ class ChatApp:
         finally:
             with self._limit_lock:
                 self._turn_start = None
+                self._wrapping_up = False
+                self.gate.closed = None
             self.progress.stop()
             self.save()
             after = self._usage_totals()
@@ -667,14 +681,26 @@ class ChatApp:
             self._usage_models.append((str(label), role, model))
             try:
                 model.on_usage = self._check_token_limit
+                model.on_retry = self._show_retry
             except (AttributeError, TypeError):          # an object that takes no attributes keeps no usage either
                 pass
 
+    def _show_retry(self, attempt: int, error: BaseException, delay: float) -> None:
+        """A tracked model's ``on_retry`` hook: say that a model request failed and is being sent again, so a long
+        wait does not look like a hang."""
+        what = "got no answer in time" if _is_timeout(error) else f"failed ({type(error).__name__})"
+        helper = self._team_helper
+        who = f" ({self._safe(helper, 60)})" if helper else ""
+        with self.progress.paused():
+            self.notice(f"A model request{who} {what}; trying again (attempt {attempt + 1}).")
+
     def _check_token_limit(self, _model: Any = None) -> None:
         """A tracked model's ``on_usage`` hook. Once the running message has used ``token_limit`` tokens (input
-        and output, every model), ask whether to go on for another ``token_limit``; a no (or no answer) raises
-        ``TokenLimitReached``, which ends the turn like Ctrl+C. Helpers running at the same time wait for the
-        answer, and after a no each of their next replies stops too. Outside a turn, or with no limit, nothing."""
+        and output, every model), ask whether to go on for another ``token_limit``. A no (or no answer) wraps the
+        turn up: every tool call is refused with ``WRAP_UP`` from then on, so the agent and any team helpers answer
+        with what they have, and the turn ends normally and is kept. Should wrapping up itself use more than its
+        allowance (``WRAP_UP_TOKENS``, or half the limit), ``TokenLimitReached`` ends the turn like Ctrl+C. Helpers
+        running at the same time wait for the answer. Outside a turn, or with no limit, nothing."""
         with self._limit_lock:
             if self._turn_start is None or not self.token_limit:
                 return
@@ -684,15 +710,22 @@ class ChatApp:
                 raise TokenLimitReached(used, self.token_limit)
             if used < self._turn_allowed:
                 return
+            if self._wrapping_up:
+                self._turn_stopped = True
+                raise TokenLimitReached(used, self.token_limit)
             with self.progress.paused():
                 go_on = self._yes(f"This message has used {used:,} tokens; your limit is {self.token_limit:,} a "
                                   f"message (/limit changes it). Keep going for up to {self.token_limit:,} more? "
-                                  "[y/N] ")
+                                  "No wraps up with what was found so far. [y/N] ")
             if go_on:
                 self._turn_allowed = used + self.token_limit
                 return
-            self._turn_stopped = True
-            raise TokenLimitReached(used, self.token_limit)
+            self._wrapping_up = True
+            self.gate.closed = WRAP_UP
+            self._turn_allowed = used + max(WRAP_UP_TOKENS, self.token_limit // 2)
+            with self.progress.paused():
+                self.notice("Wrapping up: no more tool calls in this message; the agent answers with what it has "
+                            "found so far.")
 
     def set_token_limit(self, limit: int) -> None:
         """``/limit <tokens>``: use ``limit`` from now on (0 is no limit) and save it in ~/.agentx/settings.json."""

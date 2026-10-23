@@ -313,9 +313,18 @@ The token limit. `y` goes on for another 200,000; `n` or Enter stops the turn li
 for long jobs, `/limit 0` turns it off. If it comes up often, see "How do I make `agentx` cost less?" in the
 [FAQ](faq.md).
 
-**`Stopped: this message used N tokens, past your limit of M a message.`**
-You answered no (or nothing) at the question above. The turn was not recorded, so the agent does not remember it;
-files it changed stay changed. Ask again with a smaller request, or raise the limit first.
+**`Wrapping up: no more tool calls in this message; the agent answers with what it has found so far.`**
+You answered no (or nothing) at the question above. Tool calls now return a refusal telling the agent to answer, so
+the agent and any team helpers report what they have; the turn is kept.
+
+**`Stopped: this message used N tokens, past your limit of M a message, and wrapping up took more.`**
+Even wrapping up went past its allowance (50,000 tokens, or half the limit). The turn was not recorded, so the agent
+does not remember it; files it changed stay changed. Ask again with a smaller request, or raise the limit first.
+
+**`A model request got no answer in time; trying again (attempt 2).`**
+The model took more than 5 minutes to answer (a reasoning model on a big request), or the connection failed. It is
+tried once more; a second timeout ends the turn with an error. A smaller request, or `/clear` for a fresh
+conversation, makes each request faster.
 
 **`... (truncated at 30000 bytes. Print only what you need ...)` in a `run_python` or `run_shell` result**
 The output passed 30,000 characters and was cut. The agent is told to print less (a filter, a count, a few lines)

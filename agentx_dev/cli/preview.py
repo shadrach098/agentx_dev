@@ -281,6 +281,12 @@ def _build(tool: str, args: Mapping[str, Any], cwd: Path, helper_models: str = "
         return _move_file(args, cwd)
     if tool == "start_team_job":
         return _team_job(args, helper_models)
+    if tool == "web_fetch":
+        body, truncated = _whole(str(args.get("url", "")))
+        return Preview("Fetch a web page", body, "text", truncated, COMMAND_TOO_LONG if truncated else "")
+    if tool == "web_search":
+        body, truncated = _whole(str(args.get("query", "")))
+        return Preview("Search the web", body, "text", truncated, COMMAND_TOO_LONG if truncated else "")
     return _generic(tool, args)
 
 

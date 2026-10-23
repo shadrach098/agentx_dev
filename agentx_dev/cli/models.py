@@ -43,6 +43,13 @@ def _key(env: Mapping[str, str], variable: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+# A reasoning model can take minutes on a big request, so wait up to 5 minutes for an answer. The client itself
+# does not retry (a hidden retry made one stuck call wait 4 minutes per attempt); BaseChatModel retries instead,
+# a timeout once at most, and the app shows each retry (``on_retry``).
+MODEL_TIMEOUT_SEC = 300.0
+CLIENT_RETRIES = 0
+
+
 def choose_model(name: Optional[str], env: Mapping[str, str]) -> Any:
     """Build the chat model. With ``name`` the provider follows the name; without it the first key found
     (Anthropic, then OpenAI) decides and the class's own default model is used."""
@@ -56,13 +63,14 @@ def choose_model(name: Optional[str], env: Mapping[str, str]) -> Any:
             key = _key(env, ANTHROPIC_KEY if provider == "claude" else OPENAI_KEY)
             if not key:
                 raise _no_key(provider)
-            return (Claude if provider == "claude" else GPT)(model=name, api_key=key)
+            return (Claude if provider == "claude" else GPT)(model=name, api_key=key, timeout=MODEL_TIMEOUT_SEC,
+                                                             max_retries=CLIENT_RETRIES)
         anthropic_key = _key(env, ANTHROPIC_KEY)
         if anthropic_key:
-            return Claude(api_key=anthropic_key)
+            return Claude(api_key=anthropic_key, timeout=MODEL_TIMEOUT_SEC, max_retries=CLIENT_RETRIES)
         openai_key = _key(env, OPENAI_KEY)
         if openai_key:
-            return GPT(api_key=openai_key)
+            return GPT(api_key=openai_key, timeout=MODEL_TIMEOUT_SEC, max_retries=CLIENT_RETRIES)
     except ModelError:
         raise
     except ImportError as e:

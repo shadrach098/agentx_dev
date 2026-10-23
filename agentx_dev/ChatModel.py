@@ -102,6 +102,22 @@ def _openai_cached_tokens(usage: Any) -> int:
     return 0
 
 
+def _is_timeout(error: BaseException) -> bool:
+    """A request that got no answer in time: the SDKs' ``APITimeoutError``, httpx's timeouts, ``TimeoutError``."""
+    if isinstance(error, TimeoutError):
+        return True
+    return any("Timeout" in cls.__name__ for cls in type(error).__mro__)
+
+
+def _retry_after(error: BaseException, default: float) -> float:
+    """Seconds a 429 asks us to wait (its ``Retry-After`` header), else ``default``; at most 60."""
+    try:
+        value = float(error.response.headers.get("retry-after"))         # type: ignore[attr-defined]
+    except Exception:
+        value = default
+    return max(0.0, min(value, 60.0))
+
+
 class TokenBucket:
     """Simple thread-safe token-bucket rate limiter.
 
@@ -1262,9 +1278,22 @@ class BaseChatModel(ABC):
         422 unprocessable). Those aren't transient — retrying just
         wastes wall-clock + tokens + retry budget. 408 and 429 remain
         retryable (transient by definition).
+
+        A timed-out request is tried again once at most: the provider's
+        client has usually retried it already, a reasoning model that is
+        slow on a big request stays slow, and a timed-out request may
+        still be processed (and billed) on the provider's side. A rate
+        limit (429) waits as long as its Retry-After header says (or a few
+        seconds), not a fraction of a second.
+
+        ``model.on_retry = fn`` is called as ``fn(attempt, error, delay)``
+        before each retry (``attempt`` is the one that failed, from 1), so
+        an app can say why a call is taking long; an error in it is
+        ignored.
         """
         import time
         last_exc = None
+        timeouts = 0
         for attempt in range(max_retries):
             if self._rate_limiter is not None:
                 self._rate_limiter.acquire()
@@ -1287,11 +1316,24 @@ class BaseChatModel(ABC):
                         "Skipping retries."
                     )
                     raise
+                if _is_timeout(e):
+                    timeouts += 1
+                    if timeouts > 1:
+                        logger.warning(f"LLM call timed out again ({e}); not retrying")
+                        raise
                 if attempt < max_retries - 1:
                     # Count this against the budget; raises if exhausted.
                     self._consume_retry_budget()
                     delay = base_delay * (2 ** attempt)
+                    if getattr(e, "status_code", None) == 429:
+                        delay = max(delay, _retry_after(e, default=5.0 * (attempt + 1)))
                     logger.warning(f"LLM call attempt {attempt + 1} failed ({e}), retrying in {delay:.2f}s")
+                    hook = getattr(self, "on_retry", None)
+                    if hook is not None:
+                        try:
+                            hook(attempt + 1, e, delay)
+                        except Exception:            # showing a retry must never change it
+                            pass
                     time.sleep(delay)
         raise last_exc
 

@@ -25,11 +25,11 @@ class Asker:
         return self.answers.pop(0) if self.answers else Answer("y")
 
 
-def test_all_ten_tools_are_built_and_never_cached(tmp_path):
+def test_all_twelve_tools_are_built_and_never_cached(tmp_path):
     tools = build_tools(tmp_path, [], Gate())
     assert sorted(t.name for t in tools) == sorted([
         "read_path", "list_directory", "find_files", "grep", "write_file", "edit_file",
-        "delete_path", "move_file", "run_python", "run_shell"])
+        "delete_path", "move_file", "run_python", "run_shell", "web_search", "web_fetch"])
     assert all(t.cacheable is False for t in tools)
     assert all(t.args_schema is not None and t.description for t in tools)
 
@@ -137,7 +137,8 @@ def test_every_real_tool_keeps_its_schema_description_and_name(tmp_path):
     permissions = Permissions(read_files=True, list_directories=True, write_files=True, edit_files=True,
                               delete_files=True, move_files=True, execute_python=True, execute_shell=True,
                               workspace=str(tmp_path), allowed_paths=[str(tmp_path)])
-    originals = tools_by_name(DefaultTools.build(permissions))
+    from agentx_dev.cli.tools import web_tools
+    originals = tools_by_name([*DefaultTools.build(permissions), *web_tools()])
     wrapped = tools_by_name(build_tools(tmp_path, [], Gate()))
     assert set(originals) == set(wrapped)
     for name, tool in wrapped.items():

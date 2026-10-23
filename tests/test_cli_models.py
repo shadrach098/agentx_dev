@@ -32,12 +32,12 @@ def test_provider_for(name, provider):
 
 def test_a_named_claude_model(fakes):
     m = choose_model("claude-sonnet-5-5", {**ANT, **OAI})
-    assert type(m).__name__ == "Claude" and m.kw == {"model": "claude-sonnet-5-5", "api_key": "ak"}
+    assert type(m).__name__ == "Claude" and m.kw == {"model": "claude-sonnet-5-5", "api_key": "ak", "timeout": 300.0, "max_retries": 0}
 
 
 def test_a_named_gpt_model(fakes):
     m = choose_model("gpt-4o", OAI)
-    assert type(m).__name__ == "GPT" and m.kw == {"model": "gpt-4o", "api_key": "ok"}
+    assert type(m).__name__ == "GPT" and m.kw == {"model": "gpt-4o", "api_key": "ok", "timeout": 300.0, "max_retries": 0}
 
 
 def test_a_name_whose_provider_has_no_key():
@@ -52,9 +52,9 @@ def test_an_unknown_provider_name():
 
 def test_no_name_prefers_anthropic_then_openai_and_uses_the_class_default():
     both = choose_model(None, {**ANT, **OAI})
-    assert type(both).__name__ == "Claude" and both.kw == {"api_key": "ak"}
+    assert type(both).__name__ == "Claude" and both.kw == {"api_key": "ak", "timeout": 300.0, "max_retries": 0}
     only_oai = choose_model(None, OAI)
-    assert type(only_oai).__name__ == "GPT" and only_oai.kw == {"api_key": "ok"}
+    assert type(only_oai).__name__ == "GPT" and only_oai.kw == {"api_key": "ok", "timeout": 300.0, "max_retries": 0}
 
 
 def test_no_key_at_all_says_what_to_set():
@@ -121,8 +121,8 @@ def test_a_very_long_name_is_capped():
 
 
 @pytest.mark.parametrize("env,expected", [
-    ({"ANTHROPIC_API_KEY": "  ", "OPENAI_API_KEY": " ok "}, ("GPT", {"api_key": "ok"})),
-    ({"ANTHROPIC_API_KEY": "\t\n", "OPENAI_API_KEY": "ok"}, ("GPT", {"api_key": "ok"})),
+    ({"ANTHROPIC_API_KEY": "  ", "OPENAI_API_KEY": " ok "}, ("GPT", {"api_key": "ok", "timeout": 300.0, "max_retries": 0})),
+    ({"ANTHROPIC_API_KEY": "\t\n", "OPENAI_API_KEY": "ok"}, ("GPT", {"api_key": "ok", "timeout": 300.0, "max_retries": 0})),
 ])
 def test_a_blank_key_counts_as_missing(env, expected):
     m = choose_model(None, env)

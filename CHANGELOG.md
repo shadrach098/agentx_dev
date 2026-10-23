@@ -8,6 +8,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **One stuck request no longer waits about 12 minutes.** A timed-out request is retried once at most (the client
+  has usually retried it already; a timed-out request may still be billed), and a 429 waits for its `Retry-After`.
 - **A spent budget is not retried.** `CostBudgetExceeded` (and anything `model.on_usage` raises) is raised once; on
   the plain chat path the call used to be retried up to three times after the budget was spent, paying each time.
 
@@ -40,8 +42,14 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **OpenAI cached tokens are counted** (`TokenUsage.total_cache_read_tokens`, from either API), and `/usage` shows how
   much of the input came from the provider's cache.
 - **A token limit per message in `agentx`.** Past 200,000 tokens (`/limit`, `"tokenLimit"` in settings; a project
-  may only lower it) agentx asks before it goes on, and a no ends the turn like Ctrl+C. `BaseChatModel.on_usage`, a
-  hook called after every recorded reply, is what it uses.
+  may only lower it) agentx asks before it goes on; a no wraps up (tool calls are refused, the agent answers with
+  what it has, the turn is kept), and only a wrap-up that runs long too ends the turn like Ctrl+C.
+  `BaseChatModel.on_usage`, a hook called after every recorded reply, is what it uses.
+- **Web tools in `agentx`.** `web_search` and `web_fetch` (readable text, at most 30,000 characters, marked as data
+  from the internet); the gate asks before each in `default` and `plan` mode (`a`: the rest of the session). The
+  `web-research` skill is listed, and the team's explorer gets them.
+- **Model requests in `agentx` wait up to 5 minutes and are retried visibly.** `model.on_retry(attempt, error,
+  delay)` is called before each retry; `agentx` prints a line.
 - **`agentx` input colours:** the `/name` at the start of the input line is coloured as you type (command cyan, skill
   magenta, unknown red) and the selected row of the `/` pop-up is highlighted.
 - **Skills first.** The skill list tells the model to check it before choosing tools and to prefer a skill the user

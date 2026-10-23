@@ -20,8 +20,8 @@ explicit cache, OpenAI's automatic prefix cache) reuse it.
 | `/skills remove <name>` | Delete a skill from `~/.agentx/skills/` after a yes. |
 
 A new conversation (`/clear`) picks up added or removed skills. The `/` pop-up and `/<skill>` only offer skills the
-current conversation's agent has, so a skill for tools it does not have (the terminal app has no web tools, so
-`web-research` is created but not offered) and a skill added since the conversation began are not offered until
+current conversation's agent has, so a skill for tools it does not have and a skill added since the conversation
+began are not offered until
 `/clear`.
 
 Only you can install a skill: the agent has no tool for it, and it cannot write to `~/.agentx` or to a project's

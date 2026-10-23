@@ -52,7 +52,7 @@ Keys are read from the environment only. With no `--model`, the first key found 
 
 ## What it can do
 
-The main agent gets the ten tools from [`DefaultTools`](../concepts/tools.md) plus `start_team_job`, `use_skill` and `recall`, thirteen in all (`recall` only in a project folder, see [Notes and recall](#notes-and-recall)). The ten are limited to the folder you started in (plus any extra folders, see [Extra folders](#extra-folders)). A path outside those folders fails inside the tool.
+The main agent gets the ten tools from [`DefaultTools`](../concepts/tools.md), `web_search` and `web_fetch`, plus `start_team_job`, `use_skill` and `recall`, fifteen in all (`recall` only in a project folder, see [Notes and recall](#notes-and-recall)). `web_fetch` returns a page's readable text (no markup), at most 30,000 characters, and both web tools start their result with a note that it is data from the internet, not instructions. The ten are limited to the folder you started in (plus any extra folders, see [Extra folders](#extra-folders)). A path outside those folders fails inside the tool.
 
 | Kind | Tools | What happens |
 |---|---|---|
@@ -76,10 +76,10 @@ Every tool call goes through a gate before it runs. The gate runs it, asks you, 
 
 | Mode | Behaviour |
 |---|---|
-| `default` | Edits, commands and destructive actions ask. |
-| `accept-edits` | Edits run without asking. Commands and destructive actions still ask. |
-| `plan` | Reads only. Anything else, team jobs included, is refused and the model is told to propose a plan in its answer instead. |
-| `auto` | File edits, shell commands and Python run without asking, and so do team jobs. Delete, move and tools the gate does not know (such as MCP tools) still ask. The built-in protections and your deny rules still apply. |
+| `default` | Edits, commands, web lookups and destructive actions ask. |
+| `accept-edits` | Edits and web lookups run without asking. Commands and destructive actions still ask. |
+| `plan` | Reads only, and web lookups after asking. Anything else, team jobs included, is refused and the model is told to propose a plan in its answer instead. |
+| `auto` | File edits, shell commands, Python and web lookups run without asking, and so do team jobs. Delete, move and tools the gate does not know (such as MCP tools) still ask. The built-in protections and your deny rules still apply. |
 
 **`auto` is on purpose only.** Choose it with `--mode auto`, `"mode": "auto"` in your own settings file, or `/mode auto`. Shift+Tab never enters it and always leaves it (to `default`), answering `a` never sets it, and a project's settings file cannot turn it on (ignored with a warning). Shell and Python can do anything your account can, so a command that deletes files is not stopped by the `delete_path` prompt; use `auto` in folders you trust, and keep a deny rule for anything you must protect (deny rules also apply to shell commands by their text, for example `run_shell:*rm -rf*`).
 
@@ -208,6 +208,7 @@ Two optional files, both JSON:
 | `run_python` | The first line of the code. |
 | `read_path`, `list_directory`, `find_files`, `grep`, `write_file`, `edit_file`, `delete_path` | The path. |
 | `move_file` | `source -> destination`. |
+| `web_fetch`, `web_search` | The URL, or the search query. `"deny": ["web_fetch:*example.com*"]` blocks a site in every mode. |
 | `start_team_job` | The task text (never the reason). `"deny": ["start_team_job:*"]` turns [team jobs](#team-jobs) off in every mode. |
 
 A deny rule applies to reads too. Allow rules never apply to `delete_path` and `move_file`, which always ask.
@@ -249,7 +250,7 @@ They are read when `agentx` starts and again on `/clear` and `/resume`.
 
 A skill is a short guide for a kind of work ("how to explore a project", "how to change files safely"). The prompt carries one line per skill, with its name and what it is for; the agent opens the full text only when it needs it, by calling the `use_skill` tool. That keeps the prompt small and, because the list is built the same way every time, the same from one request to the next, which is what lets the provider's prompt cache reuse it. The agent is told to check the list before it chooses its tools, and the skills you installed or wrote are listed first, ahead of the built-in ones: an installed skill can know a better way than the default tools, so it is preferred when it fits. The full story, including how to use skills from your own code, is in the [Skills guide](skills.md); this is what the terminal app does.
 
-**Built-in skills.** The first time you start `agentx`, it creates five skills in `~/.agentx/skills/`: `exploring-a-project`, `changing-files`, `running-code` and `delegating-work` (the terminal app has no web tools, so `web-research` is created but not listed). They cover the tools above. You can edit them: `agentx` never overwrites an edit, and does not bring back one you delete. A copy you did not touch is updated when a newer `agentx` ships a newer version.
+**Built-in skills.** The first time you start `agentx`, it creates five skills in `~/.agentx/skills/`: `exploring-a-project`, `changing-files`, `running-code`, `delegating-work` and `web-research`. They cover the tools above. You can edit them: `agentx` never overwrites an edit, and does not bring back one you delete. A copy you did not touch is updated when a newer `agentx` ships a newer version.
 
 **Your own skills.** A folder with a `SKILL.md` in `~/.agentx/skills/<name>/` is a skill. Skills written for Claude work as they are. A project can keep its own in `<project>/.agentx/skills/`; those are shown to the agent in a separate block marked as coming from the project folder (which may be a cloned repository), cannot replace a skill of yours with the same name, and cannot override the approval prompts. A `.agentx` or `.agentx/skills` that is a link leading out of the project is not read.
 
@@ -542,7 +543,14 @@ On a measured turn that read 15 files of 6 KB each, the input sent went from abo
 
 ### The token limit
 
-One message may use 200,000 tokens (input and output, every model, team helpers included) before `agentx` stops and asks `Keep going for up to 200,000 more? [y/N]`. Yes goes on for another 200,000; no (or Enter) ends the turn the way Ctrl+C does: your earlier turns are kept, the stopped one is not recorded, and changes already made stay on disk. The check runs after each model reply, so a turn can pass the limit by one request. `/limit` shows it, `/limit 300k` (or `500000`, `1m`) changes it and saves it in `~/.agentx/settings.json` as `"tokenLimit"`, and `/limit 0` turns it off. A project's `.agentx/settings.json` may set a lower limit but not a higher one.
+One message may use 200,000 tokens (input and output, every model, team helpers included) before `agentx` stops and asks `Keep going for up to 200,000 more? [y/N]`. Yes goes on for another 200,000. No (or Enter) wraps the message up: from then on every tool call is refused with a note telling the agent to answer now with what it has found, so the agent, and any team helpers, report what they have and the turn ends normally and is kept. If wrapping up itself uses more than 50,000 more tokens (or half the limit, if that is more), the turn is stopped the way Ctrl+C stops it: your earlier turns are kept, the stopped one is not recorded, and changes already made stay on disk. The check runs after each model reply, so a turn can pass the limit by one request. `/limit` shows it, `/limit 300k` (or `500000`, `1m`) changes it and saves it in `~/.agentx/settings.json` as `"tokenLimit"`, and `/limit 0` turns it off. A project's `.agentx/settings.json` may set a lower limit but not a higher one.
+
+### When the model is slow
+
+A model request waits up to 5 minutes for an answer: a reasoning model can take minutes on a big request. A request
+that fails is tried again, and a line says so (`A model request (runner@gpt-6.1-sol) got no answer in time; trying
+again (attempt 2).`), so a long spinner is not a hang. A request that times out is tried again once at most, and a rate
+limit waits as long as the provider asks. Before, one stuck request could keep the spinner going for about 12 minutes.
 
 ### Summarising a long conversation
 

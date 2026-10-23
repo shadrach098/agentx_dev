@@ -367,8 +367,9 @@ catch an ordinary exception and carry on; to stop everything the way Ctrl+C does
 ## Why did `agentx` ask "Keep going for up to 200,000 more?" *(next release)*
 
 The message had used 200,000 tokens (input and output, every model, team helpers included). Every step of a turn
-sends the conversation again, so a long turn adds up fast. `y` goes on for another 200,000; `n` or Enter ends the turn
-the way Ctrl+C does: earlier turns are kept, the stopped one is not recorded, and changes already made stay on disk.
+sends the conversation again, so a long turn adds up fast. `y` goes on for another 200,000. `n` or Enter wraps up: tool
+calls are refused from then on, so the agent (and any team helpers) answer with what they have found, and the turn
+is kept. Only if wrapping up runs long too is the turn stopped like Ctrl+C.
 `/limit` shows the limit, `/limit 400k` raises it, `/limit 0` turns it off. See
 [The token limit](../guides/cli.md#the-token-limit).
 
@@ -384,6 +385,20 @@ the way Ctrl+C does: earlier turns are kept, the stopped one is not recorded, an
   every conversation; `/skills remove <name>`.
 - **Use `/clear` between unrelated tasks** and ask for small, specific changes: input grows with every step of a turn.
 - **Keep the token limit on** so a runaway message asks before it spends more.
+
+## Can `agentx` search the web? *(next release)*
+
+Yes: `web_search` (DuckDuckGo) and `web_fetch`, which returns a page's readable text, at most 30,000 characters. The
+built-in `web-research` skill explains how to use them, and in a team job the explorer does the web research. In
+`default` and `plan` mode each lookup asks first, because a URL or a search can carry text out of your project; answer
+`a` to allow them for the session. `accept-edits` and `auto` do not ask. Page text is marked as data from the
+internet, so instructions written on a page cannot steer the agent. `"deny": ["web_fetch:*example.com*"]` blocks a site.
+
+## Why is `agentx` taking so long? *(next release)*
+
+A reasoning model can take minutes on a big request; `agentx` waits up to 5 minutes for each answer. When a request
+fails or times out you see `A model request ... trying again (attempt 2).`; a timeout is retried once at most. Ctrl+C
+stops the turn at any time.
 
 ## Why does a tool result say "left out of this request to save tokens"? *(next release)*
 

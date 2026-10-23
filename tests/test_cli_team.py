@@ -29,10 +29,10 @@ def run(tmp_path, tools, model, notify=None, **kw):
 
 def test_the_roster_is_three_helpers_with_the_right_tools():
     assert [role.name for role in ROLES] == ["explorer", "coder", "runner"]
-    explorer = role_tools("explorer")
-    assert explorer == {"read_path", "list_directory", "find_files", "grep"}
-    assert role_tools("coder") == explorer | {"write_file", "edit_file"}
-    assert role_tools("runner") == explorer | {"run_shell", "run_python"}
+    reading = {"read_path", "list_directory", "find_files", "grep"}
+    assert role_tools("explorer") == reading | {"web_search", "web_fetch"}     # web research is the explorer's
+    assert role_tools("coder") == reading | {"write_file", "edit_file"}
+    assert role_tools("runner") == reading | {"run_shell", "run_python"}
     for role in ROLES:
         assert not set(role.tools) & {"delete_path", "move_file", TEAM_TOOL_NAME}
 

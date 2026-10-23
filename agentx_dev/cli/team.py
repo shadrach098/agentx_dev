@@ -41,6 +41,7 @@ MODEL_NOTE = (" Runs on {model}.{use} There is one copy of each role per model: 
 USE_NOTE = " Good for: {use}."
 MAY_HAVE_CHANGED = "Some steps may already have changed files."
 READ_TOOLS = ("read_path", "list_directory", "find_files", "grep")
+WEB_TOOLS = ("web_search", "web_fetch")
 
 Notify = Callable[[str, Dict[str, Any]], None]
 
@@ -55,11 +56,11 @@ class Role:
 
 ROLES: Tuple[Role, ...] = (
     Role("explorer",
-         "Reads and searches the project and cannot change anything. Use it to look things up, find code "
-         "and summarise what exists.",
-         READ_TOOLS,
-         "You can only read: list, find, grep and read files. You cannot change anything, so report what you "
-         "found, with file paths."),
+         "Reads and searches the project and the web (web_search, web_fetch) and cannot change anything. Use it "
+         "to look things up, research online, find code and summarise what exists.",
+         READ_TOOLS + WEB_TOOLS,
+         "You can only read: list, find, grep and read files, and search the web and fetch pages. You cannot "
+         "change anything, so report what you found, with file paths or page links."),
     Role("coder",
          "Edits files (and can read and search). Use it to write or change code and documents. It cannot "
          "run commands.",
@@ -71,7 +72,8 @@ ROLES: Tuple[Role, ...] = (
          "and report the output. It does not edit files.",
          READ_TOOLS + ("run_shell", "run_python"),
          "You run commands and code and report exactly what they printed, including failures. Do not edit "
-         "project files; report what needs changing instead."),
+         "project files; report what needs changing instead. Do not scrape web pages with Python or the shell: "
+         "web research is the explorer's step."),
 )
 
 

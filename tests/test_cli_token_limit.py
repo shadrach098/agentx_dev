@@ -32,14 +32,26 @@ def run(tmp_path, *lines, limit, script):
 
 
 class TestTheLimit:
-    def test_past_the_limit_it_asks_and_a_no_ends_the_turn(self, tmp_path):
+    def test_past_the_limit_it_asks_and_a_no_wraps_up_with_what_was_found(self, tmp_path):
+        from agentx_dev.cli.app import WRAP_UP
         app, out, model, answers = run(tmp_path, "look around", "n", limit=20,
-                                       script=[looking(), looking(), looking(), make_final("done")])
+                                       script=[looking(), looking(), make_final("Here is what I found so far.")])
         text = out.getvalue()
-        assert any("This message has used 30 tokens" in p and "Keep going" in p for p in answers.prompts)
-        assert "Stopped: this message used 30 tokens, past your limit of 20" in text
-        assert len(model.calls) == 2                    # nothing was sent after the no
-        assert "done" not in text
+        assert any("This message has used 30 tokens" in p and "No wraps up" in p for p in answers.prompts)
+        assert "Wrapping up" in text and "Here is what I found so far." in text
+        assert WRAP_UP.split(".")[0] in str(model.calls[-1])          # the refused tool told the model to stop
+        assert app.gate.closed is None                                 # the next message starts open
+        history = app.session.history if hasattr(app.session, "history") else None
+        assert "Stopped:" not in text and (history is None or "look around" in str(history))   # the turn is kept
+
+    def test_wrapping_up_that_runs_past_its_allowance_is_stopped(self, tmp_path, monkeypatch):
+        from agentx_dev.cli import app as app_module
+        monkeypatch.setattr(app_module, "WRAP_UP_TOKENS", 10)
+        app, out, model, answers = run(tmp_path, "look around", "n", limit=20,
+                                       script=[looking(), looking(), looking(), looking(), make_final("never")])
+        text = out.getvalue()
+        assert "Stopped: this message used 45 tokens" in text and "never" not in text
+        assert len(model.calls) == 3 and app.gate.closed is None
 
     def test_a_yes_goes_on_for_another_limit(self, tmp_path):
         app, out, model, answers = run(tmp_path, "look around", "y", limit=20,
@@ -218,3 +230,46 @@ class TestAStopIsNeverRetried:
                 raise ConnectionError("blip")
             return "ok"
         assert model._with_retry(flaky, max_retries=3, base_delay=0) == "ok" and len(calls) == 3
+
+
+class TestRetriesAreShownAndTimeoutsRetriedOnce:
+    def test_a_timeout_is_retried_once_and_each_retry_is_reported(self):
+        model = MockModel()
+        seen, calls = [], []
+        model.on_retry = lambda attempt, error, delay: seen.append((attempt, type(error).__name__))
+
+        def slow():
+            calls.append(1)
+            raise TimeoutError("no answer")
+        with pytest.raises(TimeoutError):
+            model._with_retry(slow, max_retries=3, base_delay=0)
+        assert len(calls) == 2 and seen == [(1, "TimeoutError")]
+
+    def test_a_rate_limit_waits_as_asked(self, monkeypatch):
+        import time
+        model = MockModel()
+        waits = []
+        monkeypatch.setattr(time, "sleep", lambda s: waits.append(s))
+
+        class RateLimited(Exception):
+            status_code = 429
+            response = SimpleNamespace(headers={"retry-after": "7"})
+        calls = []
+
+        def busy():
+            calls.append(1)
+            if len(calls) < 2:
+                raise RateLimited()
+            return "ok"
+        assert model._with_retry(busy, max_retries=3, base_delay=0.1) == "ok" and waits == [7.0]
+
+    def test_the_app_prints_a_line_for_a_retry(self, tmp_path):
+        model = MockModel()
+        app, out, cwd, home = make_app(tmp_path, Lines(), model, width=300)
+        app._track_usage_model("m", model, "chat")
+        model.on_retry(1, TimeoutError("x"), 0.1)
+        assert "A model request got no answer in time; trying again (attempt 2)." in out.getvalue()
+
+    def test_agentx_waits_five_minutes_and_its_client_does_not_retry_by_itself(self):
+        from agentx_dev.cli.models import CLIENT_RETRIES, MODEL_TIMEOUT_SEC
+        assert MODEL_TIMEOUT_SEC == 300.0 and CLIENT_RETRIES == 0
