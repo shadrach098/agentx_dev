@@ -1038,13 +1038,22 @@ class BaseChatModel(ABC):
             cache_read_tokens=cache_read_tokens,
             cache_creation_tokens=cache_creation_tokens,
         )
-        self._check_cost_budget()
-        hook = getattr(self, "on_usage", None)
-        if hook is not None:
-            # ``model.on_usage = fn``: ``fn(model)`` after every recorded reply, e.g. to stop a run that has
-            # used too many tokens. Whatever it raises propagates (the terminal app raises a KeyboardInterrupt
-            # subclass, so the run stops the way Ctrl+C stops it).
-            hook(self)
+        try:
+            self._check_cost_budget()
+            hook = getattr(self, "on_usage", None)
+            if hook is not None:
+                # ``model.on_usage = fn``: ``fn(model)`` after every recorded reply, e.g. to stop a run that has
+                # used too many tokens. Whatever it raises propagates (the terminal app raises a KeyboardInterrupt
+                # subclass, so the run stops the way Ctrl+C stops it).
+                hook(self)
+        except Exception as error:
+            # The reply arrived and was paid for: retrying the call would only pay again. ``_with_retry`` sees
+            # this mark and re-raises at once.
+            try:
+                error._agentx_no_retry = True               # type: ignore[attr-defined]
+            except Exception:
+                pass
+            raise
 
     def _consume_retry_budget(self) -> None:
         if self._retry_budget is None:
@@ -1263,6 +1272,8 @@ class BaseChatModel(ABC):
                 return fn()
             except Exception as e:
                 last_exc = e
+                if getattr(e, "_agentx_no_retry", False) or isinstance(e, (CostBudgetExceeded, RetryBudgetExceeded)):
+                    raise                                    # a spent budget or the usage hook: retrying pays again
                 if self._is_non_retryable(e):
                     # DEBUG, not WARNING: the caller either recovers (a
                     # parameter fix or the Responses API switch, each with

@@ -173,3 +173,48 @@ class TestCachedInput:
         run_command(app, "/usage")
         text = out.getvalue()
         assert "600 of the input, 60%, from the provider's cache" in text and "Token limit: 200,000" in text
+
+
+class TestAStopIsNeverRetried:
+    """An error raised while recording usage comes after the reply was paid for: retrying would pay again."""
+
+    def test_an_ordinary_exception_from_the_hook_is_raised_once(self):
+        model = MockModel()
+        calls = []
+
+        def paid_call():
+            calls.append(1)
+            model._record_usage_counts(input_tokens=10, output_tokens=5)
+            return "reply"
+
+        def stop(_model):
+            raise ValueError("too many tokens")
+        model.on_usage = stop
+        with pytest.raises(ValueError):
+            model._with_retry(paid_call, max_retries=3, base_delay=0)
+        assert len(calls) == 1
+
+    def test_the_cost_cap_is_raised_once(self):
+        from agentx_dev.ChatModel import CostBudgetExceeded
+        model = MockModel()
+        model.configure_limits(budget_usd=0.0001, input_price_per_1k=1.0, output_price_per_1k=1.0)
+        calls = []
+
+        def paid_call():
+            calls.append(1)
+            model._record_usage_counts(input_tokens=1000, output_tokens=5)
+            return "reply"
+        with pytest.raises(CostBudgetExceeded):
+            model._with_retry(paid_call, max_retries=3, base_delay=0)
+        assert len(calls) == 1
+
+    def test_other_errors_are_still_retried(self):
+        model = MockModel()
+        calls = []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) < 3:
+                raise ConnectionError("blip")
+            return "ok"
+        assert model._with_retry(flaky, max_retries=3, base_delay=0) == "ok" and len(calls) == 3

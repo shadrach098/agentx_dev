@@ -6,6 +6,11 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+### Fixed
+
+- **A spent budget is not retried.** `CostBudgetExceeded` (and anything `model.on_usage` raises) is raised once; on
+  the plain chat path the call used to be retried up to three times after the budget was spent, paying each time.
+
 ### Added
 
 - **Smaller requests.** `AgentRunner(..., trim_results=True)` (and `AsyncAgentRunner`, or a `TrimPolicy` from

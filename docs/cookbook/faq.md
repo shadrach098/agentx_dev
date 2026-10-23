@@ -341,7 +341,57 @@ llm = Claude().configure_limits(
 )
 ```
 
-Halts with `CostBudgetExceeded` when spend crosses.
+Halts with `CostBudgetExceeded` when spend crosses. The call that crossed it is not retried.
+
+## How do I stop a run that has used too many tokens? *(next release)*
+
+Prices change too often to bake in, so count tokens instead. `model.on_usage` is called with the model after every
+reply that reports usage; raise to stop:
+
+```python
+class TooManyTokens(Exception):
+    pass
+
+def guard(model):
+    used = model.usage.total_input_tokens + model.usage.total_output_tokens
+    if used > 300_000:
+        raise TooManyTokens(f"{used:,} tokens")
+
+llm.on_usage = guard
+```
+
+An exception raised there is never retried (the reply was already paid for). A tool call or a Supervisor may still
+catch an ordinary exception and carry on; to stop everything the way Ctrl+C does, raise a subclass of
+`KeyboardInterrupt` instead, which is what the `agentx` token limit does.
+
+## Why did `agentx` ask "Keep going for up to 200,000 more?" *(next release)*
+
+The message had used 200,000 tokens (input and output, every model, team helpers included). Every step of a turn
+sends the conversation again, so a long turn adds up fast. `y` goes on for another 200,000; `n` or Enter ends the turn
+the way Ctrl+C does: earlier turns are kept, the stopped one is not recorded, and changes already made stay on disk.
+`/limit` shows the limit, `/limit 400k` raises it, `/limit 0` turns it off. See
+[The token limit](../guides/cli.md#the-token-limit).
+
+## How do I make `agentx` cost less? *(next release)*
+
+`/usage` shows where the tokens went, per model, with the share served from the provider's cache. Then:
+
+- **Pick a cheaper chat model.** The chat model also plans every team job and writes its summary.
+- **Give team helpers a cheap model** for reading and searching: `/team-models <model>="fast reading and searching"`.
+  The planner then sends exploring steps there.
+- **Keep `AGENTX.md` short.** It is sent with every request; a few hundred words is plenty.
+- **Remove skills you do not need.** A skill that tells the agent to load skills before every reply costs a read in
+  every conversation; `/skills remove <name>`.
+- **Use `/clear` between unrelated tasks** and ask for small, specific changes: input grows with every step of a turn.
+- **Keep the token limit on** so a runaway message asks before it spends more.
+
+## Why does a tool result say "left out of this request to save tokens"? *(next release)*
+
+Older tool results are replaced by a one-line note in what the model is sent (the saved conversation keeps them). A
+file's note names the file and says to grep it or read only the lines needed rather than read it all again. A skill's
+note says the skill still applies and how to open it again, `use_skill(name="...", file="SKILL.md")`. The agent is
+also told to write down, as it reads, the facts it will need later. See
+[Keeping requests small](../guides/cli.md#keeping-requests-small).
 
 ## How do I persist a conversation?
 

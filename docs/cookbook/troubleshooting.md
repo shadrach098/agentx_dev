@@ -305,8 +305,25 @@ folder or remove the link.
 
 **`The conversation is getting long, but it could not be summarised right now; it will be tried again later.`**
 The summary call failed, so nothing was removed. It is tried again after 10 more messages, or in
-a new conversation (`/clear`). If one huge file read is the cause (there is no size cap on
-`read_path`), summarising cannot help: `/clear` and ask for the part of the file you need.
+a new conversation (`/clear`). If one huge result is the cause, summarising cannot help: `/clear` and ask for the
+part you need (`read_path` returns at most 30,000 characters at a time, and command output is cut at 30,000).
+
+**`This message has used 204,152 tokens; your limit is 200,000 a message (/limit changes it). Keep going for up to 200,000 more? [y/N]`**
+The token limit. `y` goes on for another 200,000; `n` or Enter stops the turn like Ctrl+C. `/limit 400k` raises it
+for long jobs, `/limit 0` turns it off. If it comes up often, see "How do I make `agentx` cost less?" in the
+[FAQ](faq.md).
+
+**`Stopped: this message used N tokens, past your limit of M a message.`**
+You answered no (or nothing) at the question above. The turn was not recorded, so the agent does not remember it;
+files it changed stay changed. Ask again with a smaller request, or raise the limit first.
+
+**`... (truncated at 30000 bytes. Print only what you need ...)` in a `run_python` or `run_shell` result**
+The output passed 30,000 characters and was cut. The agent is told to print less (a filter, a count, a few lines)
+and to read part of a file with `read_path` and `offset`/`limit`.
+
+**`project settings asked for a higher token limit (...); ignored`**
+A project's `.agentx/settings.json` may lower `"tokenLimit"` but not raise it or turn it off: a cloned repository
+must not spend more of your money. Set it in `~/.agentx/settings.json` or with `/limit`.
 
 ## Tool errors
 
@@ -502,7 +519,12 @@ coercion raises, the sub-task takes the error path and is retried per
 
 **`CostBudgetExceeded: spent $X, limit $Y`**
 Increase `budget_usd` or reduce the task. The agent halted the moment
-cumulative spend crossed the cap.
+cumulative spend crossed the cap. The call that crossed it is not retried.
+
+**`/usage` shows no cached input on OpenAI**
+OpenAI caches a request's start automatically once it is over about 1,024 tokens and the same start was sent
+recently. A short prompt, a long pause between requests, or a changed start (a new `AGENTX.md`, a different
+skill list) means nothing was served from the cache. `/usage` shows what the provider reported.
 
 **`RetryBudgetExceeded`**
 The upstream keeps returning transient errors. Investigate rate

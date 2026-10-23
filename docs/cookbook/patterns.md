@@ -1377,3 +1377,51 @@ Things to know:
 - **Summaries are model output.** If a summary call fails nothing is removed; you see a notice and it is tried again later.
 - **Team jobs are one log line** (`Team job: <task> (<outcome>)`); the files the helpers changed are not listed.
 - See [Project memory](../guides/cli.md#project-memory).
+
+## 38. Keep a long agent run cheap *(next release)*
+
+Every step sends the conversation again, so cost grows with the steps of a run. Trim what is sent, keep the start of
+each request the same so the provider's cache can bill it at its cheaper rate, and stop a run that goes too far:
+
+```python
+from agentx_dev import AgentRunner, AgentType, GPT, Permissions
+from agentx_dev.Runner.Trim import TrimPolicy
+
+llm = GPT(model="gpt-5.5")
+
+
+class TooManyTokens(KeyboardInterrupt):          # a KeyboardInterrupt passes through tool calls and helpers
+    pass
+
+
+def stop_at(limit):
+    start = llm.usage.total_input_tokens + llm.usage.total_output_tokens
+
+    def guard(model):
+        if model.usage.total_input_tokens + model.usage.total_output_tokens - start > limit:
+            raise TooManyTokens()
+    return guard
+
+
+runner = AgentRunner(
+    model=llm, agent=AgentType.ReAct,
+    permissions=Permissions(read_files=True, list_directories=True, workspace="./project",
+                            allowed_paths=["./project"], read_max_chars=30_000,
+                            python_max_output_bytes=30_000, shell_max_output_bytes=30_000),
+    skills=True,
+    trim_results=TrimPolicy(keep_chars=24_000, step_chars=12_000),   # 12,000-24,000 characters of results whole
+)
+
+llm.on_usage = stop_at(200_000)
+try:
+    result = runner.invoke("Where is the retry logic, and what does it retry?")
+finally:
+    llm.on_usage = None
+print(result.content, llm.usage.total_cache_read_tokens, "input tokens came from the cache")
+```
+
+- A trimmed file result names the file and says to grep it or read a few lines, so the agent rarely reads it again.
+- `shrink_exempt_at` (60,000 characters by default) turns older skill texts into a note once the conversation is
+  long; the newest stays whole.
+- Keep the system prompt the same from run to run (no timestamps in it): a changed start cannot come from the cache.
+- See [Keeping requests small](../guides/cli.md#keeping-requests-small) for how the terminal app sets this up.

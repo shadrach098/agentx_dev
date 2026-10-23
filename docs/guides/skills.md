@@ -132,5 +132,8 @@ same name, and cannot override the approval prompts.
 ## Limits
 
 Skill text is cut at 20,000 characters, descriptions at 300 (200 in the prompt), and the list in the prompt at
-6,000 characters in all (the last line says how many were left out). A download may be at most 20 MB, 3,000 files
+6,000 characters in all (the last line says how many were left out). With trimming on (`trim_results=True`, and
+always in the terminal app), once a conversation passes about 60,000 characters every skill text except the
+newest is sent as a note that the skill still applies and how to open it again
+(`use_skill(name="...", file="SKILL.md")`); `TrimPolicy(shrink_exempt_at=0)` keeps them all. A download may be at most 20 MB, 3,000 files
 and 50 skills.
