@@ -8,6 +8,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **An MCP sign-in survives a restart.** The SDK loaded a saved token as never expiring, sent it after it had run
+  out, and asked for a new sign-in instead of renewing it. agentx now keeps when the token runs out and tells the SDK,
+  so it renews with the saved renewal token; a token saved before this counts as run out and is renewed.
 - **MCP sign-in to servers that issue a client secret (Supabase).** A secret given without a method is now sent
   in the token request; the sign-in failed with "Required parameter: client_secret".
 - **One stuck request no longer waits about 12 minutes.** A timed-out request is retried once at most (the client

@@ -265,3 +265,57 @@ class TestClientSecret:
         assert _secret_sent(self.info(token_endpoint_auth_method="none")).token_endpoint_auth_method == "none"
         assert _secret_sent(self.info(client_secret="s", token_endpoint_auth_method="client_secret_basic")) \
             .token_endpoint_auth_method == "client_secret_basic"
+
+
+@needs_mcp
+class TestAnExpiredSignInIsRenewed:
+    """A saved token only says how long it lasted from when it was issued, and the SDK loaded it as valid forever: an
+    expired token was sent, the server said 401 and agentx reported 'needs sign-in' although a renewal token was
+    saved. The moment it runs out is now kept, and the SDK is told, so it renews instead."""
+
+    def token(self, expires_in=3600):
+        from mcp.shared.auth import OAuthToken
+        return OAuthToken(access_token="a", token_type="Bearer", expires_in=expires_in, refresh_token="r")
+
+    def test_saving_records_when_it_runs_out(self, monkeypatch):
+        import asyncio
+        import time
+        monkeypatch.setattr(mcp_module, "_keyring", lambda: FakeKeyring())
+        storage = KeyringStorage("svc")
+        asyncio.run(storage.set_tokens(self.token(3600)))
+        assert 3500 < storage.expires_at() - time.time() < 3600              # a minute early
+
+    def test_a_token_saved_before_the_fix_counts_as_run_out(self, monkeypatch):
+        fake = FakeKeyring()
+        monkeypatch.setattr(mcp_module, "_keyring", lambda: fake)
+        fake.set_password("agentx-mcp", "svc:tokens", self.token().model_dump_json())
+        assert KeyringStorage("svc").expires_at() == 1.0
+
+    def test_a_token_that_never_runs_out_has_no_time(self, monkeypatch):
+        import asyncio
+        monkeypatch.setattr(mcp_module, "_keyring", lambda: FakeKeyring())
+        storage = KeyringStorage("svc")
+        asyncio.run(storage.set_tokens(self.token(None)))
+        assert storage.expires_at() is None
+
+    def test_the_sdk_is_told_so_it_renews_instead_of_asking_for_a_sign_in(self, monkeypatch):
+        import asyncio
+        fake = FakeKeyring()
+        monkeypatch.setattr(mcp_module, "_keyring", lambda: fake)
+        storage = KeyringStorage("svc")
+        fake.set_password("agentx-mcp", "svc:tokens", self.token().model_dump_json())   # old: no expiry kept
+        provider = mcp_module.oauth_provider(ServerConfig("svc", url="https://a.example/mcp"), storage, False)
+        provider.context.client_info = None
+        asyncio.run(provider._initialize())
+        assert provider.context.token_expiry_time == 1.0
+        assert not provider.context.is_token_valid()                    # so with client info and a renewal token,
+        provider.context.client_info = object()                         # the SDK refreshes before sending
+        assert provider.context.can_refresh_token()
+
+    def test_clear_forgets_the_time_too(self, monkeypatch):
+        import asyncio
+        fake = FakeKeyring()
+        monkeypatch.setattr(mcp_module, "_keyring", lambda: fake)
+        asyncio.run(KeyringStorage("svc").set_tokens(self.token()))
+        KeyringStorage("svc").clear()
+        assert fake.data == {}

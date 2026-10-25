@@ -268,12 +268,33 @@ class KeyringStorage:
     def has_tokens(self) -> bool:
         return bool(self._get("tokens"))
 
+    def expires_at(self) -> Optional[float]:
+        """When the stored access token runs out (seconds since the epoch, a minute early), or None when it
+        does not run out. A token saved without that time counts as run out, so it is renewed rather than sent."""
+        text = self._get("tokens")
+        if not text:
+            return None
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return 1.0
+        if not data.get("expires_in"):
+            return None
+        saved = self._get("expires_at")
+        try:
+            return float(saved) if saved else 1.0
+        except ValueError:
+            return 1.0
+
     async def get_tokens(self) -> Any:
         from mcp.shared.auth import OAuthToken
         text = self._get("tokens")
         return OAuthToken.model_validate_json(text) if text else None
 
     async def set_tokens(self, tokens: Any) -> None:
+        # The token only says how long it lasts from when it was issued; keep the moment it runs out as well.
+        if getattr(tokens, "expires_in", None):
+            self._set("expires_at", str(time.time() + float(tokens.expires_in) - 60))
         self._set("tokens", tokens.model_dump_json())
 
     async def get_client_info(self) -> Any:
@@ -286,7 +307,7 @@ class KeyringStorage:
 
     def clear(self) -> None:
         self._memory.clear()
-        for what in ("tokens", "client"):
+        for what in ("tokens", "client", "expires_at"):
             _kr_delete(f"{self.server}:{what}")
 
 
@@ -361,9 +382,18 @@ def oauth_provider(config: ServerConfig, storage: KeyringStorage, interactive: b
             raise NeedsLogin(config.name)
         return await asyncio.to_thread(_wait_for_callback, listening["server"], LOGIN_TIMEOUT_SEC)
 
-    return OAuthClientProvider(server_url=config.url, client_metadata=metadata, storage=storage,
-                               redirect_handler=redirect_handler, callback_handler=callback_handler,
-                               timeout=LOGIN_TIMEOUT_SEC)
+    class Provider(OAuthClientProvider):
+        """The SDK loads saved tokens without knowing when they run out, so it sent an expired token, got a 401
+        and asked for a new sign-in instead of renewing. Telling it when the token runs out makes it renew."""
+
+        async def _initialize(self) -> None:
+            await super()._initialize()
+            if self.context.current_tokens is not None:
+                self.context.token_expiry_time = storage.expires_at()
+
+    return Provider(server_url=config.url, client_metadata=metadata, storage=storage,
+                    redirect_handler=redirect_handler, callback_handler=callback_handler,
+                    timeout=LOGIN_TIMEOUT_SEC)
 
 
 # -- tools ------------------------------------------------------------------------------------------------------

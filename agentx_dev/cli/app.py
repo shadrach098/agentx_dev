@@ -725,7 +725,9 @@ class ChatApp:
                        "letter or digit.")
             return
         if name in manager.servers:
-            self.error(f"There is already an MCP server called {self._safe(name, 40)}. /mcp remove {name} first.")
+            status = manager.status.get(name, "not connected")
+            self.error(f"There is already an MCP server called {self._safe(name, 40)} ({self._safe(status, 120)}). "
+                       f"/mcp login {name} signs in again; /mcp remove {name} deletes it.")
             return
         try:
             import mcp  # noqa: F401
