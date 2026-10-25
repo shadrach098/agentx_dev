@@ -403,6 +403,27 @@ needs a sign-in: `/mcp login <name>` opens the browser, and the sign-in is kept 
 and renewed by itself. The agent cannot add a server or sign in on its own. Servers added with `claude mcp add`
 belong to Claude Code, not to `agentx`. See [MCP servers](../guides/cli.md#mcp-servers).
 
+## How do I add the GitHub MCP server to `agentx`? *(next release)*
+
+GitHub's server does not support the browser sign-in `agentx` uses (`/mcp add` fails with `Registration failed: 404`),
+so give it a token. Create a fine-grained personal access token limited to the repositories and permissions you want,
+run `setx GITHUB_MCP_TOKEN "<token>"` in PowerShell, open a new terminal, and add to `~/.agentx/mcp.json`:
+
+```json
+"github": {"url": "https://api.githubcopilot.com/mcp/",
+           "headers": {"Authorization": "Bearer ${GITHUB_MCP_TOKEN}"}}
+```
+
+`agentx` reads the token from the environment when it connects; `mcp.json` holds only the variable's name.
+`/mcp tools github` then lists its tools: the ones GitHub marks read-only run without asking, the rest ask.
+
+## Which MCP tools run without asking? *(next release)*
+
+The ones the server marks read-only, decided the first time `agentx` sees each tool and saved in `mcp.json`. Tools
+that change, delete or cancel things ask first, in every mode. `/mcp tools <server>` shows the list,
+`/mcp allow <server> <tool>` and `/mcp ask <server> <tool>` change it. An allow rule like `"<server>__*"` in your
+settings lets every tool of that server through, including ones that delete, so prefer the per-tool list.
+
 ## Why is `agentx` taking so long? *(next release)*
 
 A reasoning model can take minutes on a big request; `agentx` waits up to 5 minutes for each answer. When a request

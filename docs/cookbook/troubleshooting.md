@@ -333,6 +333,18 @@ The server wants you to sign in. Run `/mcp login <name>`; the browser opens. It 
 Another program, or another `agentx` signing in, is using the port the sign-in page sends the browser back to.
 Close it and try again.
 
+**`MCP <name>: not connected (OAuthRegistrationError: Registration failed: 404 ...)`**
+The server does not let apps register themselves for a browser sign-in (GitHub's does not). Use a token in a
+header instead; see "How do I add the GitHub MCP server?" in the [FAQ](faq.md).
+
+**`MCP <name>: not connected (OAuthTokenError: Token exchange failed (422): ... client_secret)`**
+Fixed: `agentx` now sends a client secret the server issued without saying how. Upgrade and run
+`/mcp login <name>` again.
+
+**A server asks you to sign in again after a restart**
+Fixed: `agentx` keeps when the sign-in runs out and where to renew it, and renews it itself. A sign-in made with an
+older build is used until it runs out; sign in once more then, and it renews from that point on.
+
 **`MCP needs the mcp package: pip install "agentx-dev[mcp]"`**
 MCP support is an optional install; run that command.
 

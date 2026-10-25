@@ -318,6 +318,21 @@ environment variable, so the key itself is never written down:
 }}
 ```
 
+**Servers that take a token instead (GitHub).** A browser sign-in needs the server to let `agentx` register itself as
+an app. Some do not: GitHub's server (`https://api.githubcopilot.com/mcp/`) answers `/mcp add` with
+`OAuthRegistrationError: Registration failed: 404`. Give such a server a token in a header instead. For GitHub, create
+a fine-grained personal access token (github.com, Settings, Developer settings, Personal access tokens) limited to
+the repositories and permissions you want, keep it in an environment variable (`setx GITHUB_MCP_TOKEN "<token>"` in
+PowerShell, then open a new terminal), and write the server into `~/.agentx/mcp.json` with the variable's name:
+
+```json
+"github": {"url": "https://api.githubcopilot.com/mcp/",
+           "headers": {"Authorization": "Bearer ${GITHUB_MCP_TOKEN}"}}
+```
+
+A server with an `Authorization` header is never sent through the browser sign-in. If the variable is not set,
+`agentx` says so at startup and carries on without that server.
+
 **The tools.** Each tool appears as `<server>__<tool>` (`flightclaw__search_flights`), described as coming from that
 server, in the chat and for every team helper.
 
@@ -339,7 +354,8 @@ the server's own word, so add only servers you trust. Your settings still apply 
 `"flightclaw__cancel_order"` refuses a tool in every case, and an allow rule such as `"flightclaw__*"` lets all of a
 server's tools run without asking. What a tool returns is marked as data from an outside server, cut at
 30,000 characters. `/mcp add`, `/mcp remove`, `/mcp login` and `/mcp logout` change the tools of the conversation
-you are in, without losing it. MCP needs `pip install "agentx-dev[mcp]"`.
+you are in, without losing it. MCP needs `pip install "agentx-dev[mcp]"` (the `mcp` package 1.10 or later, below
+2.0: the 2.x line changed its client interface and is not supported yet).
 
 ## Conversations
 

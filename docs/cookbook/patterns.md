@@ -1425,3 +1425,22 @@ print(result.content, llm.usage.total_cache_read_tokens, "input tokens came from
   long; the newest stays whole.
 - Keep the system prompt the same from run to run (no timestamps in it): a changed start cannot come from the cache.
 - See [Keeping requests small](../guides/cli.md#keeping-requests-small) for how the terminal app sets this up.
+
+## 39. Give `agentx` an MCP server *(next release)*
+
+Add the server once; `agentx` connects it at every start and its tools reach the chat and the team helpers.
+
+```text
+/mcp add flightclaw https://mcp.flightclaw.com/mcp     # signs in through the browser when the server asks
+/mcp tools flightclaw                                  # what each tool does, and which ask first
+/mcp ask flightclaw create_checkout                    # make one ask even though the server says it is safe
+/mcp add files -- npx -y @modelcontextprotocol/server-filesystem C:\work   # a program on your computer
+```
+
+- **Sign-ins** stay in the system's credential store and renew by themselves; `/mcp logout <name>` deletes one.
+- **Tokens** for servers that will not do a browser sign-in (GitHub) go in an environment variable named in
+  `~/.agentx/mcp.json` (`"headers": {"Authorization": "Bearer ${GITHUB_MCP_TOKEN}"}`), never in the file itself.
+- **Approvals:** read-only tools run without asking; anything that writes, deletes or cancels asks, `auto` mode
+  included. Keep it that way for servers that can spend money or change data.
+- **Only you** add servers: the agent has no tool for it, so a page or a file cannot plant one.
+- See [MCP servers](../guides/cli.md#mcp-servers).
