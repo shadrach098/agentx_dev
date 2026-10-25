@@ -452,7 +452,7 @@ def short_tokens(count: int) -> str:
 
 
 def short_time(seconds: float) -> str:
-    seconds = max(0, int(seconds or 0))
+    seconds = max(0, int(round(seconds or 0)))     # 89.9999 is 1m 30s, not 1m 29s
     return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"
 
 

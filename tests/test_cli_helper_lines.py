@@ -162,7 +162,7 @@ def test_the_log_lists_every_call_with_its_result():
 
 def test_short_numbers():
     assert [short_tokens(n) for n in (0, 999, 4_200, 38_400, 2_500_000)] == ["0", "999", "4.2k", "38k", "2.5m"]
-    assert [short_time(n) for n in (0, 59, 90, 3600)] == ["0s", "59s", "1m 30s", "60m 00s"]
+    assert [short_time(n) for n in (0, 59, 90, 3600, 89.99999)] == ["0s", "59s", "1m 30s", "60m 00s", "1m 30s"]
 
 
 def test_a_step_is_named_by_its_id_or_its_task():
