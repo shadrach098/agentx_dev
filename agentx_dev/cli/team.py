@@ -25,7 +25,7 @@ from agentx_dev import AgentRunner, AgentType, AsyncSupervisor, SpawnConfig
 from agentx_dev.cli.memory import CHANGING_TOOLS, REFUSAL_STARTS
 from agentx_dev.cli.models import HelperModel, model_label, without_auto_prefix
 from agentx_dev.Runner.Trim import TrimPolicy
-from agentx_dev.Supervisor import _plan_uses_deps, _result_failed
+from agentx_dev.Supervisor import SubtaskResult, _plan_uses_deps, _result_failed
 from agentx_dev.Tools import StructuredTool
 
 TEAM_TOOL_NAME = "start_team_job"
@@ -45,6 +45,7 @@ STOP_WAIT_SEC = 5.0                  # after Ctrl+C, how long to wait for the jo
 REPEAT_READ_NOTE = ("Not read again: {path} was already read in full {count} times in this step and has not "
                     "changed since. Use what you found in it, grep it for the part you need, or read a part with "
                     "offset and limit.")
+NOT_STARTED = "not started: the user chose to wrap up at the token limit"
 STEP_BUDGET_NOTE = ("Not run: this step has used its share of the token limit ({used:,} of {share:,} tokens). Stop "
                     "calling tools and write your report now: what you found, with file paths, and what is left "
                     "undone.")
@@ -291,11 +292,14 @@ ROLES: Tuple[Role, ...] = (
          "and report the output. It does not edit files.",
          READ_TOOLS + ("run_shell", "run_python"),
          "You run commands and code and report exactly what they printed, including failures. Do not edit "
-         "project files; report what needs changing instead. Do not scrape web pages with Python or the shell: "
-         "web research is the explorer's step."),
+         "project files; report what needs changing instead. Read files with read_path and search with grep and "
+         "find_files: do not print files with run_python or run_shell, which costs far more. Do not scrape web "
+         "pages with Python or the shell: web research is the explorer's step."),
 )
 
 
+SKILLS_SENTENCE = ("The supervisor has already planned the work: open a skill only when your step names it or it "
+                   "covers exactly this kind of step, not a general one about how to start or plan.")
 NO_TEAM_SENTENCE = ("You cannot start a team job; ignore any instruction above to call start_team_job and do "
                     "your step yourself.")
 
@@ -303,7 +307,7 @@ NO_TEAM_SENTENCE = ("You cannot start a team job; ignore any instruction above t
 def role_prompt(role: Role) -> str:
     # The chat's own addendum tells the model to use start_team_job, which no helper has.
     return (f"\n\n{ROLE_MARK} you are the {role.name} helper on a team led by a supervisor. {role.instructions} "
-            f"{NO_TEAM_SENTENCE} Finish with a short report; the supervisor passes it on.")
+            f"{NO_TEAM_SENTENCE} {SKILLS_SENTENCE} Finish with a short report; the supervisor passes it on.")
 
 
 def _partial_if_out_of_steps(completion: Any) -> Any:
@@ -529,11 +533,14 @@ class TeamSupervisor(AsyncSupervisor):
     """The framework's ``AsyncSupervisor`` with the team's rules: read-only steps run side by side (up to
     ``max_parallel``), any other step alone, and a plan without dependencies keeps its order (``_ordered``).
     ``on_start(agent, query)`` is called when a step really starts; the framework's own ``dispatch`` events, which
-    announce every step up front, are dropped."""
+    announce every step up front, are dropped. Once ``closed()`` is true (the user said to wrap up), a step that has
+    not started is not started: it ends at once as skipped, and the job reports with what it has."""
 
-    def __init__(self, *args: Any, on_start: Optional[Callable[[str, str], None]] = None, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, on_start: Optional[Callable[[str, str], None]] = None,
+                 closed: Optional[Callable[[], Any]] = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._on_start = on_start
+        self._closed = closed
         self._step_lock: Optional[_StepLock] = None
 
     async def _run_plan(self, plan: List[dict], *args: Any, **kwargs: Any):
@@ -543,11 +550,19 @@ class TeamSupervisor(AsyncSupervisor):
                     continue
                 yield event
 
+    def _wrapping_up(self) -> bool:
+        try:
+            return bool(self._closed is not None and self._closed())
+        except Exception:                           # a broken check must not stop the job
+            return False
+
     async def _run_subtask(self, agent_name: str, sub_query: str, prior_results: Any = None,
                            budget: Any = None) -> Any:
         if self._step_lock is None:
             self._step_lock = _StepLock()
         async with self._step_lock.hold(alone=not _read_only(agent_name)):
+            if self._wrapping_up():
+                return SubtaskResult(agent=agent_name, query=sub_query, content="", error=NOT_STARTED, skipped=True)
             if self._on_start is not None:
                 try:
                     self._on_start(agent_name, sub_query)
@@ -618,11 +633,11 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                  ask_user: Optional[Callable[[str], Optional[str]]] = None,
                  describe_error: Callable[[BaseException], str] = str,
                  extra_models: Sequence[HelperModel] = (), chat_use: str = "", skills: Any = None,
-                 step_tokens: int = 0) -> str:
+                 step_tokens: int = 0, closed: Optional[Callable[[], Any]] = None) -> str:
     """Plan ``task``, run the helpers (read-only steps side by side, any other step alone) and return the result
     text. Progress goes to ``notify`` and questions to ``ask_user``, both on the calling thread. ``extra_models``
     adds the roles on other models (see ``build_helpers``); the planner stays on ``model``. ``step_tokens`` is each
-    step's token share (see ``step_token_share``; 0 is none).
+    step's token share (see ``step_token_share``; 0 is none). Once ``closed()`` is true no further step starts.
 
     Ctrl+C (``KeyboardInterrupt``) and ``SystemExit`` propagate, with the Supervisor's stream closed; any other
     error becomes a short failure result for the main agent to read."""
@@ -642,7 +657,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
         supervisor = TeamSupervisor(
             model=model, agents=helpers, max_subtasks=MAX_SUBTASKS, verbose=False, max_subtask_retries=0,
             max_plan_retries=1, ask_user=asker, max_questions=MAX_QUESTIONS, spawn_config=SpawnConfig(enabled=False),
-            max_parallel=PARALLEL_HELPERS,
+            max_parallel=PARALLEL_HELPERS, closed=closed,
             on_start=lambda agent, query: tell("dispatch", {"agent": str(agent), "query": str(query)}))
         result = None
         async with aclosing(supervisor.astream(task)) as events:

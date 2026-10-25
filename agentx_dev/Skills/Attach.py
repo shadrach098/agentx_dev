@@ -53,7 +53,7 @@ class Skills:
 
     def __init__(self, dir: Optional[PathLike] = None, *, project_dirs: Sequence[PathLike] = (),
                  seed: bool = True, observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
-                 remember_reads: bool = False) -> None:
+                 remember_reads: bool = False, guard: Optional[Callable[[], Optional[str]]] = None) -> None:
         self.dir = Path(dir).expanduser() if dir is not None else None
         self.project_dirs = [Path(p).expanduser() for p in project_dirs]
         self.seed = bool(seed)
@@ -63,14 +63,17 @@ class Skills:
         # True: a skill read once is answered with a short pointer back the next time (see make_use_skill_tool).
         # Off by default: a runner reused for unrelated histories must not claim a skill was "already read".
         self.remember_reads = bool(remember_reads)
+        # Called before each read: a text it returns is the tool's answer instead of the skill (the terminal app
+        # refuses skill reads, like every other tool, once the user has said to wrap up). A failing guard is ignored.
+        self.guard = guard
 
     @classmethod
     def default(cls, home: Optional[PathLike] = None, *, project_dirs: Sequence[PathLike] = (),
                 observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
-                remember_reads: bool = False) -> "Skills":
+                remember_reads: bool = False, guard: Optional[Callable[[], Optional[str]]] = None) -> "Skills":
         """The usual place: ``~/.agentx/skills``."""
         return cls(Path(home if home is not None else Path.home()) / ".agentx" / "skills",
-                   project_dirs=project_dirs, observer=observer, remember_reads=remember_reads)
+                   project_dirs=project_dirs, observer=observer, remember_reads=remember_reads, guard=guard)
 
     def roots(self) -> List[Tuple[Path, str]]:
         return ([(self.dir, "user")] if self.dir is not None else []) + [(p, "project") for p in self.project_dirs]
@@ -96,14 +99,23 @@ class Skills:
 
 def make_use_skill_tool(skills: Dict[str, Skill],
                         observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
-                        remember_reads: bool = False) -> StructuredTool:
+                        remember_reads: bool = False,
+                        guard: Optional[Callable[[], Optional[str]]] = None) -> StructuredTool:
     """The ``use_skill`` tool over ``skills`` (a dict by name). Read-only. ``observer`` hears every call first.
     With ``remember_reads``, a skill whose text was already returned is answered with a short pointer back to it
     (its text is still in the conversation), so the same few thousand tokens are not added twice; ``tool.forget_reads()``
-    starts over (call it when the conversation is summarised and the text is gone)."""
+    starts over (call it when the conversation is summarised and the text is gone). ``guard()``, when given, is asked
+    first: a text it returns is the answer instead (nothing is read or shown)."""
     already_read: set = set()
 
     def use_skill(name: str, file: str = "") -> str:
+        if guard is not None:
+            try:
+                refusal = guard()
+            except Exception:                      # a failing guard must not stop the agent
+                refusal = None
+            if refusal:
+                return str(refusal)
         if observer is not None:
             try:
                 observer(USE_SKILL, {"name": name, **({"file": file} if file else {})})
@@ -154,5 +166,5 @@ def attach_skills(skills: Any, tools: Optional[Sequence[Any]], addendum: Optiona
     if not loaded.skills:
         return tools, addendum
     tools.append(make_use_skill_tool(loaded.skills, getattr(skills, "observer", None),
-                                     bool(getattr(skills, "remember_reads", False))))
+                                     bool(getattr(skills, "remember_reads", False)), getattr(skills, "guard", None)))
     return tools, (f"{addendum}\n\n{loaded.index}" if addendum else loaded.index)

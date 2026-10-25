@@ -8,6 +8,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **`agentx`: a no at the token-limit question now ends a team job cleanly.** New steps still started after the no
+  (three explorers at once, in one audit), and skill reads were not refused, so wrapping up ran past its allowance and
+  the whole turn was thrown away. Now no step starts after a no (it is listed as `not started`), `use_skill` is refused
+  like every other tool, and the team reports with what it has.
+- **`agentx`: files are read with the file tools.** The base prompt and the runner helper say to read files with
+  `read_path` and search with `grep`/`find_files`, not print them with `run_python` or `run_shell` (one audit's runner
+  spent its whole token share printing files with Python). Helpers open a skill only when their step names it or it
+  covers exactly that step.
+
 - **`agentx` team helpers no longer read the same files over and over.** Helpers kept 12,000 to 24,000 characters of
   tool results whole, lost the files they had read and read them again (eight to ten times each on one audit, about
   2.5 million tokens and twelve limit questions). They now keep 20,000 to 40,000 like the chat, and a third whole read
@@ -32,6 +41,7 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **`Skills(guard=fn)`**: `fn()` is asked before each `use_skill` read; a text it returns is the answer instead.
 - **`agentx`: reading steps of a team job run side by side.** Explorer steps that do not depend on each other run
   up to 3 at once (`AsyncSupervisor` with `max_parallel=3` and a lock: a coder or runner step runs alone). A plan
   without `depends_on` keeps its order, with neighbouring explorer steps grouped. Helpers run in worker threads; every

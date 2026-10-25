@@ -243,7 +243,7 @@ class ChatApp:
         # the runner's events; ``_observe_tool`` ignores a call made outside a team job).
         # remember_reads: a skill already read in this conversation is not sent again in full.
         self.skills = Skills.default(self.home, project_dirs=project_skills, observer=self._observe_tool,
-                                     remember_reads=True)
+                                     remember_reads=True, guard=lambda: self.gate.closed)    # wrapping up: no reads
         self._runner_skills: Dict[str, str] = {}      # name -> description, for the current runner (_make_runner)
         # Project memory: a note per worthwhile turn in .agentx/notes, an index over them, the recall tool, and the
         # relevant notes added to the first message of a fresh conversation. Not for the home folder or a drive root.
@@ -1604,7 +1604,7 @@ class ChatApp:
                                 notify=self._team_notify, ask_user=self._team_question,
                                 describe_error=self._safe, extra_models=extras,
                                 chat_use=self._use_of(self.model_label), skills=self.skills,
-                                step_tokens=step_token_share(self.token_limit))
+                                step_tokens=step_token_share(self.token_limit), closed=lambda: self.gate.closed)
         finally:
             self._team_running = []
             self.progress.stop()

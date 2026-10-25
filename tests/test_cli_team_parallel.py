@@ -251,3 +251,49 @@ class TestTheAppShowsHelpersLikeTheChat:
         text = out.getvalue()
         assert "[explorer] Read 1 file" in text and "Searched 1 pattern" in text
         assert "read_path" not in text.split("done (explorer)")[0].split("-> explorer")[-1]
+
+
+class TestWrappingUp:
+    """After a no at the token-limit question, no new team step starts and no skill is read: the job reports with
+    what it has, so the turn ends normally instead of running past the wrap-up allowance."""
+
+    def test_no_step_starts_once_the_user_said_to_wrap_up(self, tmp_path):
+        state = {"closed": False, "helper_calls": 0}
+
+        def work(messages):
+            state["helper_calls"] += 1
+            state["closed"] = True                      # the user answers no while the first step runs
+            return make_final("first findings")
+
+        def notify(kind, data):
+            pass
+
+        model = router(plans=[plan_json(step("a", "runner", "check"), step("b", "explorer", "look", deps=["a"]),
+                                        step("c", "explorer", "look more"))], synth="Partial report.", agent=work)
+        result = run_team_job("the job", model=model, tools=build_tools(tmp_path, [], Gate(cwd=tmp_path)),
+                              addendum="", notify=notify, closed=lambda: state["closed"])
+        assert state["helper_calls"] == 1 and "Partial report." in result
+        assert "skipped" in result and result.count(" - done: ") == 1
+
+    def test_a_skill_is_not_read_while_wrapping_up(self, tmp_path):
+        from agentx_dev.Skills import Skills
+        from agentx_dev.Skills.Attach import attach_skills
+        seen = []
+        closed = {"text": None}
+        skills = Skills(tmp_path / "skills", observer=lambda name, args: seen.append(args["name"]),
+                        guard=lambda: closed["text"])
+        tools, _ = attach_skills(skills, build_tools(tmp_path, [], Gate(cwd=tmp_path)), "")
+        use_skill = next(t for t in tools if t.name == "use_skill")
+        assert "list_directory" in use_skill.func("exploring-a-project")
+        closed["text"] = "Not run: wrap up now."
+        assert use_skill.func("exploring-a-project") == "Not run: wrap up now." and seen == ["exploring-a-project"]
+
+    def test_a_no_during_a_team_job_ends_the_turn_normally(self, tmp_path):
+        model = team_model([step("s1", "runner", "check"), step("s2", "explorer", "look", deps=["s1"])])
+        app, out, _, _ = make_app(tmp_path, Lines("do the big job", "n", "/exit"), model, mode="auto", width=300,
+                                  token_limit=20)
+        assert app.start() == 0
+        text = out.getvalue()
+        assert "Wrapping up" in text and "Stopped:" not in text
+        assert model.state["helper_calls"] == 0                   # neither step started
+        assert "not started" in text and "The team finished; here is the summary." in text
