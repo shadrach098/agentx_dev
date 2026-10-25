@@ -8,6 +8,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **The wheel installs only `agentx_dev`.** `examples` and `host` (the docs site) were installed as top-level
+  packages too; they stay in the source download. The license is now an SPDX expression (`MIT`, with
+  `license-files`), which needs setuptools 77 or later to build.
 - **MCP tools sorted by what they do.** The first time agentx sees a server's tools, the ones the server marks
   read-only run without asking (saved per server in `mcp.json` as `allow`/`seen`); the rest ask. `/mcp tools <name>`
   lists them, `/mcp allow|ask <name> <tool...|read-only|all>` changes them; allowing a destructive tool asks first.
