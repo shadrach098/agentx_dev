@@ -701,7 +701,7 @@ The line under the input shows the mode, the Shift+Tab hint, the model and the f
 session ids). A tool call prints as one line (`● edit_file src/app.py`). Skill reads never show their text: while the agent reads
 them the spinner line grows in place (`Skills: using-superpowers → brainstorming`), and when it moves on one line
 stays (`● Skills  using-superpowers → brainstorming → yt-script (+ score.py)`), followed by the notes it wrote
-meanwhile; a failed read is shown in full. For other tools, the result is collapsed to the first three lines plus "... N more lines", the model's thoughts are dim, and the final answer is rendered as Markdown. When the output stream is not UTF-8 (a redirected cp1252 or ASCII stream, say) the line starts with `*` instead of the dot; a Windows console reports UTF-8 and prints the dot.
+meanwhile; a failed read is shown in full. For other tools the result is one line under the call: `⎿ Read 51 lines`, `⎿ Found 2 files`, `⎿ 3 matches in 12 files searched`, `⎿ Found 1 note`, `⎿ Fetched 8,412 characters`, the first line of a command's output with how many more (`⎿ 42  (+3 more lines)`), or `⎿ Exit code 1: ZeroDivisionError: ...` in red when it failed. A refusal or an error is shown in full, in red; the model's thoughts are dim, and the final answer is rendered as Markdown. When the output stream is not UTF-8 (a redirected cp1252 or ASCII stream, say) the line starts with `*` instead of the dot; a Windows console reports UTF-8 and prints the dot.
 
 ## Limits in this version
 

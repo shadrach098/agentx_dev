@@ -97,6 +97,101 @@ def bullet(console: Console) -> str:
     return "●" if "utf" in (console.encoding or "").lower() else "*"
 
 
+def elbow(console: Console) -> str:
+    """The marker in front of a tool's result; a plain one on a console that cannot print it."""
+    return "⎿" if "utf" in (console.encoding or "").lower() else "->"
+
+
+_COUNT = re.compile(r"(\d+) match\(es\)")
+_SCANNED = re.compile(r"across (\d+) scanned file")
+_NUMBERED = re.compile(r"(\d+)\t")
+_OF_TOTAL = re.compile(r"\[Showing lines (\d+)-(\d+) of (\d+)")
+_EXIT = re.compile(r"^\(exit code (-?\d+)\)$")
+_CAUTIONS = ("[Web content:", "[MCP result from", "These notes were written by agentx", "[This skill came from")
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count:,} {word}{'' if count == 1 else 's'}"
+
+
+def _first_and_more(lines: List[str]) -> str:
+    """The first line, cut to fit, and how many follow."""
+    if not lines:
+        return "No output"
+    more = len(lines) - 1
+    return _short(lines[0], 120) + (f"  (+{more:,} more line{'' if more == 1 else 's'})" if more else "")
+
+
+def _command_output(lines: List[str]) -> Tuple[List[str], Optional[int]]:
+    """``(output lines, exit code)`` of a run_shell / run_python result: its ``$ ...`` header and the
+    ``--- stdout ---`` / ``--- stderr ---`` markers left out."""
+    code: Optional[int] = None
+    out: List[str] = []
+    for index, line in enumerate(lines):
+        if index == 0 and line.startswith("$ ("):
+            continue
+        if line in ("--- stdout ---", "--- stderr ---"):
+            continue
+        found = _EXIT.match(line.strip())
+        if found:
+            code = int(found.group(1))
+            continue
+        out.append(line)
+    return out, code
+
+
+def summarize_result(name: str, text: str) -> Tuple[str, bool]:
+    """``(one line about what a tool returned, whether it failed)``. Read: how much; search: how many; a
+    command: its first line of output and how many more, or the exit code and the last line when it failed;
+    anything else: its first line and how many more."""
+    every = text.replace("\r\n", "\n").split("\n")       # only real line breaks; \x0b, \x85 and the like stay in
+    raw = [line for line in every if line.strip()]
+    while raw and raw[0].lstrip().startswith(_CAUTIONS):          # the notes put before outside data
+        raw = raw[1:]
+    if not raw:
+        return "No output", False
+    first = raw[0].strip()
+    if name == "read_path":
+        shown = _OF_TOTAL.search(text)
+        if shown:
+            return f"Read lines {int(shown.group(1)):,}-{int(shown.group(2)):,} of {int(shown.group(3)):,}", False
+        numbered = [m for m in (_NUMBERED.match(line) for line in raw) if m]
+        if numbered and len(numbered) == len(raw):
+            return f"Read lines {int(numbered[0].group(1)):,}-{int(numbered[-1].group(1)):,}", False
+        return f"Read {_plural(len(every) - (1 if every and every[-1] == '' else 0), 'line')}", False
+    if name == "list_directory":
+        entries = [line for line in raw if line.lstrip().startswith(("[FILE]", "[DIR]"))]
+        return (f"Listed {_plural(len(entries), 'entry').replace('entrys', 'entries')}" if entries
+                else _short(first, 120)), False
+    if name in ("find_files", "grep"):
+        count = _COUNT.search(first)
+        if count is None:
+            return ("No matches" if first.startswith("(no matches") else _short(first, 120)), False
+        found = int(count.group(1))
+        cut = "+" if "truncated" in first else ""
+        if name == "find_files":
+            return f"Found {found:,}{cut} file{'' if found == 1 else 's'}", False
+        files = _SCANNED.search(first)
+        where = f" in {_plural(int(files.group(1)), 'file')} searched" if files else ""
+        return f"{found:,}{cut} match{'' if found == 1 else 'es'}{where}", False
+    if name in ("run_shell", "run_python"):
+        out, code = _command_output(raw)
+        if code not in (None, 0):
+            last = _short(out[-1], 120) if out else ""
+            return f"Exit code {code}" + (f": {last}" if last else ""), True
+        return _first_and_more(out), False
+    if name == "recall":
+        notes = [line for line in raw if line.lstrip().startswith("- ")]
+        return (f"Found {_plural(len(notes), 'note')}" if notes else _short(first, 120)), False
+    if name == "web_search":
+        hits = [line for line in raw if re.match(r"\s*\d+\. ", line)]
+        return (f"Found {_plural(len(hits), 'result')}" if hits else _short(first, 120)), False
+    if name == "web_fetch":
+        body = "\n".join(raw)
+        return f"Fetched {len(body):,} characters", False
+    return _first_and_more([line.strip() for line in raw]), False
+
+
 def _short(text: Any, limit: int = MAX_SUMMARY_CHARS) -> str:
     flat = " ".join(plain(text).split())
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
@@ -363,14 +458,26 @@ class Screen:
                 line.append(f"  {summary}", style="dim")
             _print(self.console, line)
         elif kind == "tool_result":
-            self._result(event.get("result"), bool(event.get("is_error")))
+            self._result(event.get("result"), bool(event.get("is_error")), str(event.get("name") or ""))
         elif kind == "final":
             content = plain(_nothing_if_none(event.get("content")), keep_newlines=True)
             _print(self.console, Markdown(content, hyperlinks=False))
 
-    def _result(self, result: Any, is_error: bool) -> None:
-        style = "red" if is_error else "dim"
-        lines = _lines(plain(_nothing_if_none(result), keep_newlines=True))
+    def _result(self, result: Any, is_error: bool, name: str = "") -> None:
+        """One line under the call (``⎿ Read 51 lines``); a failure shows its first lines in red instead."""
+        try:
+            raw = str(_nothing_if_none(result))
+        except Exception:                            # an object that cannot be shown must not stop the screen
+            raw = ""
+        text = plain(raw, keep_newlines=True)
+        failed = is_error or text.lstrip().startswith(("ERROR", "Refused", "The user declined"))
+        if not failed:
+            summary, failed_command = summarize_result(name, raw)        # counted on the raw text, shown escaped
+            line = Text(f"  {elbow(self.console)} {plain(summary)}", style="red" if failed_command else "dim")
+            _print(self.console, line)
+            return
+        style = "red"
+        lines = _lines(text)
         for line in lines[:MAX_RESULT_LINES]:
             _print(self.console, Text("  " + _short(line, 160), style=style))
         if len(lines) > MAX_RESULT_LINES:

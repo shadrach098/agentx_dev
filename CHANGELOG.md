@@ -68,6 +68,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   lists them, `/mcp allow|ask <name> <tool...|read-only|all>` changes them; allowing a destructive tool asks first.
 - **Model requests in `agentx` wait up to 5 minutes and are retried visibly.** `model.on_retry(attempt, error,
   delay)` is called before each retry; `agentx` prints a line.
+- **Tool results are one line in `agentx`.** Under each call: `⎿ Read 51 lines`, `⎿ Found 2 files`, `⎿ 3 matches in
+  12 files searched`, `⎿ Found 1 note`, a command's first line of output and how many more, or its exit code and
+  last line in red when it failed. Refusals and errors are still shown in full.
 - **Skill reads are one line in `agentx`.** Their text is never printed; a run of them shows on the spinner as it
   grows and then stays as `● Skills  a → b → c (+ file)`, with the notes written meanwhile after it. A failed read
   is still shown.

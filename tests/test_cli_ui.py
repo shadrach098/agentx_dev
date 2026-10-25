@@ -30,12 +30,11 @@ class TestScreen:
         Screen(c).show_event({"type": "tool_call", "name": "edit_file", "args": {"path": "src/app.py"}})
         assert out.getvalue().strip().endswith("edit_file  src/app.py") and "●" in out.getvalue()
 
-    def test_a_result_is_collapsed_after_three_lines(self):
+    def test_a_result_is_one_line_under_the_call(self):
         c, out = console()
         Screen(c).show_event({"type": "tool_result", "name": "read_path", "is_error": False,
                               "result": "\n".join(f"line{i}" for i in range(10))})
-        text = out.getvalue()
-        assert "line0" in text and "line2" in text and "line3" not in text and "... 7 more lines" in text
+        assert out.getvalue().strip().endswith("Read 10 lines") and "line0" not in out.getvalue()
 
     def test_square_brackets_in_output_are_not_markup(self):
         c, out = console()
@@ -117,7 +116,8 @@ class TestNothingModelSuppliedCanStyleOrSpoofTheScreen:
     def test_crlf_is_one_break(self):
         c, out = console()
         Screen(c).show_event({"type": "tool_result", "name": "x", "is_error": False, "result": "a\r\nb\r\n"})
-        assert [l.strip() for l in out.getvalue().splitlines()] == ["a", "b"]
+        lines = [l.strip() for l in out.getvalue().splitlines()]
+        assert len(lines) == 1 and lines[0].endswith("a  (+1 more line)")          # CRLF is one break
 
     def test_an_odd_event_or_result_cannot_raise(self):
         class Bad:
