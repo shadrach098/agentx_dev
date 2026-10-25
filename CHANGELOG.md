@@ -68,6 +68,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   lists them, `/mcp allow|ask <name> <tool...|read-only|all>` changes them; allowing a destructive tool asks first.
 - **Model requests in `agentx` wait up to 5 minutes and are retried visibly.** `model.on_retry(attempt, error,
   delay)` is called before each retry; `agentx` prints a line.
+- **A new `agentx` start screen.** A box with the agentx mark, the model and folder, tips for this folder and
+  what's new; MCP sign-in problems as one warning line; notes with a bar down the left; a rule above the input
+  and the mode under it (`⏵⏵ auto mode on (shift+tab to cycle) · model · folder`).
 - **`agentx` input colours:** the `/name` at the start of the input line is coloured as you type (command cyan, skill
   magenta, unknown red) and the selected row of the `/` pop-up is highlighted.
 - **Skills first.** The skill list tells the model to check it before choosing tools and to prefer a skill the user

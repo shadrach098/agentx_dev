@@ -12,14 +12,20 @@ printed with backslash escapes, and any failure to read an answer is a "no"."""
 from __future__ import annotations
 
 import re
+import shutil
 import sys
 import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from rich.console import Console
+from rich import box
+from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.rule import Rule
+from rich.segment import Segment
+from rich.style import Style
+from rich.table import Table
 from rich.text import Text
 
 from agentx_dev.cli.approval import Answer, Request, subject_of
@@ -188,6 +194,98 @@ class Progress:
         return block()
 
 
+# -- the look: the agentx mark (a prompt chevron and a cursor bar) in the brand's lime ---------------------------
+
+ACCENT = "#b8ff3e"
+LOGO = ("█▄      ██",
+        " ▀█▄    ██",
+        " ▄█▀    ██",
+        "█▀      ██")
+MODE_LINES = {                      # mode -> (marker, words, style) for the line under the input
+    "default": ("", "default mode: edits and commands ask first", "ansiwhite"),
+    "accept-edits": ("⏵⏵ ", "accept edits on", "ansimagenta bold"),
+    "plan": ("⏸ ", "plan mode on", "ansicyan bold"),
+    "auto": ("⏵⏵ ", "auto mode on", f"{ACCENT} bold"),
+}
+
+
+def welcome_panel(*, version: str, greeting: str, model: str, folder: str, tips: Sequence[str],
+                  news: Sequence[str], width: int, extra: Sequence[str] = ()) -> Panel:
+    """The box drawn when agentx starts: the greeting, the mark, the model and the folder on the left; tips and
+    what is new on the right (below the left part on a narrow screen). Every text is plain: nothing in it is
+    read as markup."""
+    left = Table.grid()
+    left.add_column(justify="center", no_wrap=True, overflow="ellipsis")
+    left.add_row(Text(plain(greeting), style="bold"))
+    left.add_row("")
+    for row in LOGO:
+        left.add_row(Text(row, style=ACCENT))
+    left.add_row("")
+    left.add_row(Text(plain(model), style="dim"))
+    left.add_row(Text(plain(folder), style="dim"))
+    for line in extra:
+        left.add_row(Text(plain(line), style="dim"))
+    right = Table.grid()
+    right.add_column(no_wrap=True, overflow="ellipsis")
+    right.add_row(Text("Tips for getting started", style=f"bold {ACCENT}"))
+    for tip in tips:
+        right.add_row(Text(plain(tip)))
+    right.add_row(Rule(style="dim"))
+    right.add_row(Text("What's new", style=f"bold {ACCENT}"))
+    for item in news:
+        right.add_row(Text(plain(item)))
+    right.add_row(Text("/help lists the commands", style="dim italic"))
+    if width < 90:
+        body: Any = Group(left, Rule(style="dim"), right)
+    else:
+        height = max(len(left.rows), len(right.rows))
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column(width=max(30, min(44, width // 3)), justify="center")
+        grid.add_column(width=1, style="dim")
+        grid.add_column(ratio=1)
+        grid.add_row(left, Text("\n".join("│" * height)), right)
+        body = grid
+    return Panel(body, title=Text(f" agentx v{plain(version)} ", style=ACCENT), title_align="left",
+                 border_style=ACCENT, box=box.ROUNDED, padding=(0, 1))
+
+
+class Callout:
+    """A note with a bar down its left side: the title in bold, the rest dim, each wrapped line barred."""
+
+    def __init__(self, title: str, body: str = "", bar_style: str = ACCENT) -> None:
+        text = Text(plain(title), style="bold")
+        if body:
+            text.append("\n" + plain(body, keep_newlines=True), style="dim")
+        self.text = text
+        self.bar_style = bar_style
+
+    def __rich_console__(self, console: Console, options: Any):
+        lines = console.render_lines(self.text, options.update(width=max(1, options.max_width - 2)), pad=False)
+        bar = Segment("▎ ", Style.parse(self.bar_style))
+        for line in lines:
+            yield bar
+            yield from line
+            yield Segment.line()
+
+
+def status_line(mode: str, model: str, folder: str, width: Optional[int] = None) -> List[Tuple[str, str]]:
+    """The two lines under the input, as prompt_toolkit text: a rule, then the mode (and how to change it), the
+    model and the folder's name."""
+    if width is None:
+        width = shutil.get_terminal_size((100, 24)).columns
+    marker, words, style = MODE_LINES.get(mode, MODE_LINES["default"])
+    return [("class:rule", "─" * max(1, width - 1) + "\n"),
+            (style, f" {marker}{words}"), ("class:status", " (shift+tab to cycle)"),
+            ("class:status", f" · {plain(model)} · {plain(folder)}")]
+
+
+def prompt_message(width: Optional[int] = None) -> List[Tuple[str, str]]:
+    """What stands before the input: a rule across the screen, then the prompt mark."""
+    if width is None:
+        width = shutil.get_terminal_size((100, 24)).columns
+    return [("class:rule", "─" * max(1, width - 1) + "\n"), ("class:prompt", "❯ ")]
+
+
 class Screen:
     """Draws what the agent does. Everything is printed as ``Text``, so square brackets in tool output are
     never read as rich markup."""
@@ -230,6 +328,19 @@ class Screen:
 
     def notice(self, text: str) -> None:
         _print(self.console, Text(plain(text, keep_newlines=True), style="cyan"))
+
+    def callout(self, title: str, body: str = "") -> None:
+        _print(self.console, Callout(title, body))
+
+    def warning(self, text: str, hint: str = "") -> None:
+        line = Text("⚠ ", style="bold yellow")
+        line.append(plain(text), style="bold yellow")
+        if hint:
+            line.append(" · " + plain(hint), style="dim")
+        _print(self.console, line)
+
+    def welcome(self, **parts: Any) -> None:
+        _print(self.console, welcome_panel(width=self.console.width, **parts))
 
     def error(self, text: str) -> None:
         _print(self.console, Text(plain(text, keep_newlines=True), style="bold red"))
@@ -582,6 +693,11 @@ def input_style():
         "completion-menu": "bg:#262626 #d0d0d0",
         "completion-menu.completion": "bg:#262626 #d0d0d0",
         "completion-menu.completion.current": "bg:ansicyan #000000 bold",
+        "bottom-toolbar": "noreverse",
+        "bottom-toolbar.text": "noreverse",
+        "rule": "#5a5a62",
+        "status": "#8b8b93",
+        "prompt": f"{ACCENT} bold",
         "completion-menu.meta.completion": "bg:#303030 #9a9a9a",
         "completion-menu.meta.completion.current": "bg:ansicyan #000000",
     })
@@ -725,13 +841,13 @@ class PromptInput:
                      key_bindings=bindings, completer=make_completer(commands, descriptions, extra),
                      bottom_toolbar=toolbar, complete_while_typing=True,
                      lexer=make_lexer(commands, extra), style=input_style())
-        short = build(multiline=False, bottom_toolbar=toolbar)
+        short = build(multiline=False, bottom_toolbar=toolbar, style=input_style())
         return chat, short
 
     def read(self, prompt: str = "> ") -> str:
         if self._chat is None:
             return input(prompt)
-        return self._chat.prompt([("ansicyan bold", prompt)])        # a coloured prompt: your turn
+        return self._chat.prompt(prompt_message)        # a rule across the screen, then the mark: your turn
 
     def read_short(self, prompt: str = "") -> str:
         if self._short is None:

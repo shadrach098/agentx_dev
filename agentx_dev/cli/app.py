@@ -29,6 +29,7 @@ from agentx_dev.cli.recall import ProjectMemory, auto_block, choose_embeddings, 
 from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, describe_prompt, is_auto_note,
                                    parse_descriptions, parse_team_models, team_models_line, usable_team_models)
 from agentx_dev.cli.models import model_label as label_of
+from agentx_dev.cli.models import provider_for
 from agentx_dev.cli.safepaths import safe_location
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
 from agentx_dev.cli.settings import (DEFAULT_TOKEN_LIMIT, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
@@ -37,7 +38,7 @@ from agentx_dev.cli.settings import (DEFAULT_TOKEN_LIMIT, PLACEHOLDER_MODEL, ens
 from agentx_dev.cli.team import MAX_TEAM_JOBS_PER_MESSAGE, make_team_tool, run_team_job, team_request
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
-from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker
+from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker, status_line
 from agentx_dev.Skills import (SkillInstallError, Skills, discover, install, open_source, preview_text,
                                remove_skill)
 
@@ -54,6 +55,12 @@ TEAM_STALLED = ("Refused: no step of the last team job finished, so another job 
                 "Report to the user what happened and what remains, and let them decide.")
 
 NOT_A_TERMINAL = "agentx needs an interactive terminal (headless mode is not available yet)."
+# The "What's new" lines of the start screen: the newest changes a user would notice, kept to three.
+WHATS_NEW = (
+    "MCP servers: /mcp add; read-only tools run without asking",
+    "Web search and page fetch; slow answers retried visibly",
+    "A token limit per message: /limit",
+)
 
 
 # What every tool call returns once the user has said no at the token limit question, so the agent (and any team
@@ -484,6 +491,7 @@ class ChatApp:
         self._create_user_settings(self.model_label)
         if self._newly_trusted and self._memory_on:         # never overwrites a file that is already there
             self.project_settings_created = ensure_project_settings(self.cwd, self.home, self.model_label)
+        self._show_welcome()
         self._connect_mcp()                      # before the first runner, so it has the servers' tools
         if resume is None:
             self._start_fresh()
@@ -498,14 +506,9 @@ class ChatApp:
                 self._start_fresh()
             else:
                 self._load(info, self._make_runner(self.model))
-        extra = f"\nextra folders: {', '.join(str(d) for d in self.add_dirs)}" if self.add_dirs else ""
-        self.notice(f"agentx {_version()} - {self.model_label} - {self.cwd}{extra}\n"
-                    f"mode: {self.gate.mode}.\n"
-                    "Ask about this project, or tell me what to change. I ask before I edit files or run commands.\n"
-                    "Type / to see the commands. Enter sends, Alt+Enter adds a line, Tab completes, "
-                    "Shift+Tab changes the mode, Ctrl+D leaves.")
         if self.gate.mode == "auto":
-            self.notice(AUTO_NOTICE)
+            title, _, rest = AUTO_NOTICE.partition(": ")
+            self.screen.callout(f"{title} is on.", rest[:1].upper() + rest[1:])
         self._show_settings_created()
         if self.project_settings_created is not None:
             self.notice(f"Created {self._safe(self.project_settings_created, 400)} with this folder's model. "
@@ -662,6 +665,44 @@ class ChatApp:
             for line in str(text).splitlines():
                 self.notice(self._safe(line, 2000))
 
+    def _show_welcome(self) -> None:
+        """The box at the top: who, the mark, the model and folder; tips for this folder; what is new."""
+        import getpass
+        try:
+            who = getpass.getuser()
+        except Exception:
+            who = ""
+        greeting = "Welcome to agentx!" if self.settings_created is not None else (
+            f"Welcome back {who}!" if who else "Welcome back!")
+        provider = provider_for(self.model_label) or ""
+        model = " · ".join(part for part in (self.model_label, {"gpt": "OpenAI", "claude": "Anthropic"}.get(
+            provider, ""), f"{self.gate.mode} mode") if part)
+        tips = []
+        if self._memory_on and not (self.cwd / "AGENTX.md").exists():
+            tips.append("Run /init to create an AGENTX.md with notes about this project")
+        if _resolved(self.cwd) == _resolved(self.home):
+            tips.append("Note: this is your home folder; start agentx in a project folder")
+        tips.append("Type / to see the commands and skills; Alt+Enter adds a line")
+        tips.append("Edits and commands ask first; Shift+Tab changes the mode")
+        self.screen.welcome(version=_version(), greeting=self._safe(greeting, 60),
+                            model=self._safe(model, 80), folder=self._safe(self._short_folder(), 200), tips=tips[:4],
+                            news=WHATS_NEW)
+        if self.add_dirs:                        # in full, under the box: a cut path would hide where it points
+            self.notice(f"extra folders: {', '.join(self._safe(folder, 300) for folder in self.add_dirs)}")
+
+    def _short_folder(self, limit: int = 42) -> str:
+        """The working folder for the start screen: ``~`` for the home folder, cut at the front when long."""
+        text = str(self.cwd)
+        try:
+            text = str(Path("~") / _resolved(self.cwd).relative_to(_resolved(self.home)))
+        except ValueError:
+            pass
+        return text if len(text) <= limit else "…" + text[-(limit - 1):]
+
+    def status_bar(self) -> Any:
+        """The lines under the input: the mode and how to change it, the model and the folder's name."""
+        return status_line(self.gate.mode, self.model_label, self.cwd.name or str(self.cwd))
+
     def _connect_mcp(self) -> None:
         """At startup: connect the servers in ~/.agentx/mcp.json (never opening a browser) and add their tools."""
         try:
@@ -678,10 +719,18 @@ class ChatApp:
             statuses = manager.connect_all()
         finally:
             self.progress.stop()
+        signin = [name for name, status in statuses.items() if status.startswith("needs sign-in")]
+        down = [name for name, status in statuses.items()
+                if not status.startswith("connected") and name not in signin]
+        if signin:
+            many = len(signin) != 1
+            self.screen.warning(f"{len(signin)} MCP server{'s' if many else ''} need{'' if many else 's'} sign-in: "
+                                f"{self._safe(', '.join(signin), 200)}",
+                                f"run /mcp login {signin[0]}" if not many else "run /mcp login <name>")
+        for name in down:
+            self.screen.warning(f"MCP {self._safe(name, 40)}: {self._safe(statuses[name], 300)}", "run /mcp")
         for name, status in statuses.items():
-            if not status.startswith("connected"):
-                self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
-            else:
+            if status.startswith("connected"):
                 self._note_new_mcp_tools(name, quiet_if_none=True)
         self._refresh_mcp_tools(attach=False)
 
@@ -1612,7 +1661,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         prompt = PromptInput(history_file=home / ".agentx" / "history", commands=command_names(),
                              descriptions=command_descriptions(),
                              extra_commands=lambda: holder[0].skill_entries() if holder else {},
-                             toolbar=lambda: holder[0].toolbar() if holder else "",
+                             toolbar=lambda: holder[0].status_bar() if holder else "",
                              cycle_mode=lambda: holder[0].cycle_mode() if holder else None)
         # Nothing in this folder (its settings, its AGENTX.md) is read until the user has said they trust it.
         # A folder trusted for the first time in this run gets its own settings file (``ChatApp.start``).
