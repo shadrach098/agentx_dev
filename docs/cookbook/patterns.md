@@ -1193,6 +1193,10 @@ agentx
 
 The first start in a folder asks whether you trust it (`1. Yes, I trust this folder` / `2. No, exit`). Nothing from the folder is read until you say yes, and the answer is kept in `~/.agentx/trusted.json`.
 
+Then it shows its start screen: a box with the model, the folder, tips for this folder and what's new, any warnings
+(an MCP server that needs a sign-in, say), and the input with the mode under it
+(`⏵⏵ auto mode on (shift+tab to cycle) · model · folder`).
+
 Then type requests. Reads run on their own; an edit, a command or a delete shows a box with a diff or the full command and asks:
 
 ```text

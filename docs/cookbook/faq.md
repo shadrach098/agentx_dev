@@ -205,6 +205,13 @@ A job is also at most 6 plan steps. A failed step is not retried and the
 steps that depend on it are skipped. See [pattern 35](patterns.md) and
 [Team jobs](../guides/cli.md#team-jobs).
 
+## What is on the `agentx` start screen? *(next release)*
+
+A box with the version, the model and its provider, the mode and the folder on the left, and tips for this folder and
+what's new on the right; then warnings (MCP servers that need a sign-in), then notes such as the auto-mode reminder.
+The line under the input shows the mode, how to change it (Shift+Tab), the model and the folder. The tips change with
+the folder: "Run /init" only shows when it has no `AGENTX.md`. See [the quick start](../guides/cli.md#quick-start).
+
 ## Where does `agentx` keep its memory, and does it go into git? *(3.7)*
 
 In the folder, under `.agentx/`: `settings.json` (the folder's model),

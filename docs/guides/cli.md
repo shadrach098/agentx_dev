@@ -33,6 +33,42 @@ Quick safety check: is this a project you created or one you trust? ...
 
 Nothing in the folder (its `AGENTX.md`, its `.agentx/settings.json`) is read until you say yes. The answer is kept in `~/.agentx/trusted.json`, and subfolders of a trusted project are trusted too. Your home folder and a drive root cover only themselves, and the question warns you when you start there.
 
+Then the start screen, and the input line:
+
+```text
+╭─ agentx v3.8.0 ──────────────────────────────────────────────────────────────────────────╮
+│        Welcome back you!        │ Tips for getting started                               │
+│                                 │ Run /init to create an AGENTX.md with notes about ...  │
+│           █▄      ██            │ Type / to see the commands and skills; Alt+Enter ...   │
+│            ▀█▄    ██            │ Edits and commands ask first; Shift+Tab changes the... │
+│            ▄█▀    ██            │                                                        │
+│           █▀      ██            │ What's new                                             │
+│                                 │ MCP servers: /mcp add; read-only tools run without ... │
+│ gpt-6.1-sol · OpenAI · auto mode│ ...                                                    │
+│     ~\projects\site             │ /help lists the commands                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────╯
+
+⚠ 1 MCP server needs sign-in: github · run /mcp login github
+
+▎ Auto mode is on.
+▎ File edits, shell commands and Python run without asking. Delete and move still ask, ...
+
+────────────────────────────────────────────────────────────────────────────────────────────
+❯ what does this project do?
+────────────────────────────────────────────────────────────────────────────────────────────
+ ⏵⏵ auto mode on (shift+tab to cycle) · gpt-6.1-sol · site
+```
+
+- **The box** names the version, greets you, and shows the agentx mark, the model, its provider and the mode, and
+  the folder (`~` for your home folder, shortened from the front when long). On the right: tips for this folder
+  ("Run /init" only when it has no `AGENTX.md`, a note when you start in your home folder) and what is new. On a
+  terminal narrower than 90 columns the two halves stack. Extra folders (`--add-dir`) are listed in full under it.
+- **Warnings** follow: MCP servers that need a sign-in or did not connect, one line each, with what to run.
+- **Notes** such as the auto-mode reminder have a bar down their left side.
+- **Above the input** is a line across the screen, then `❯`. **Under it** is the mode (`default mode: edits and
+  commands ask first`, `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on`), how to change it, the model and
+  the folder's name. Shift+Tab updates it.
+
 Keys are read from the environment only. With no `--model`, the first key found decides: `ANTHROPIC_API_KEY` (Claude), then `OPENAI_API_KEY` (GPT), each with its class's own default model. A name that starts with `claude` builds `Claude`; one that starts with `gpt`, or with `o` and a digit (`o3`), builds `GPT`. With no key, `agentx` prints a short message naming the two variables and exits with code 1.
 
 ### Flags
@@ -658,10 +694,11 @@ While `agentx` waits for you the prompt is coloured and the cursor blinks; while
 | Alt+Enter | New line in the message. |
 | Tab | Complete a `/command`, or a file path for the word you are typing. |
 | Up / Down | Earlier messages, kept between runs (when no menu is open). |
-| Shift+Tab | Cycle the mode; the status bar updates. |
+| Shift+Tab | Cycle the mode; the line under the input updates. |
 | Ctrl+D | Leave. |
 
-The status bar shows the model, the mode, the folder, the short session id and the Shift+Tab hint. A tool call prints as one line (`● edit_file src/app.py`), its result is collapsed to the first three lines plus "... N more lines", the model's thoughts are dim, and the final answer is rendered as Markdown. When the output stream is not UTF-8 (a redirected cp1252 or ASCII stream, say) the line starts with `*` instead of the dot; a Windows console reports UTF-8 and prints the dot.
+The line under the input shows the mode, the Shift+Tab hint, the model and the folder's name (`/sessions` shows the
+session ids). A tool call prints as one line (`● edit_file src/app.py`), its result is collapsed to the first three lines plus "... N more lines", the model's thoughts are dim, and the final answer is rendered as Markdown. When the output stream is not UTF-8 (a redirected cp1252 or ASCII stream, say) the line starts with `*` instead of the dot; a Windows console reports UTF-8 and prints the dot.
 
 ## Limits in this version
 
@@ -682,8 +719,10 @@ A checklist for the maintainer to run once on a real terminal before release. Te
 1. Type a message, quit with `/exit`, start `agentx` again, press Up: the message is back.
 2. Alt+Enter makes a new line instead of sending.
 3. Type `/mo` and press Tab: it completes. Type a partial file name and press Tab: it completes the path.
-4. The status bar shows the model, the mode and the folder.
-5. Shift+Tab cycles the mode and the bar updates.
+4. The start screen: the lime box with the mark, the model and folder on the left, tips and what's new on the right;
+   narrow the window under 90 columns and start again: the halves stack. Under the input: the mode, the model and
+   the folder, with no reversed bar.
+5. Shift+Tab cycles the mode and the line under the input updates.
 6. Ask for a change to a file: the approval box shows an `Action:` line (and a `Subject:` line where it differs), a coloured diff, and `y` writes the file.
 7. Answer `n` with a reason: the model adjusts instead of repeating the edit.
 8. Answer `a` on an edit, make a second edit (it runs without asking), then type `/clear` and ask for another edit: it asks again.

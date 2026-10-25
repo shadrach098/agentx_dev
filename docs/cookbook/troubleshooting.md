@@ -214,6 +214,15 @@ It gave up or crashed; the message after the colon says how, and
 
 ## The `agentx` command *(3.7)*
 
+**The start box, the mark or the `⏵⏵` line show as question marks or empty boxes**
+The terminal's font has no box-drawing or block characters, or the console is not UTF-8. Use Windows Terminal (or
+any terminal with a font such as Cascadia Mono, Consolas or JetBrains Mono); in the old Windows console run
+`chcp 65001` first. What `agentx` does is not affected.
+
+**The start box is cut or stacked**
+Under 90 columns the two halves of the box stack on purpose; widen the window and start `agentx` again to see them
+side by side. Long folder paths and tips are shortened with `…` rather than wrapped.
+
 **`agentx needs an interactive terminal (headless mode is not available yet).`**
 Standard input or output is not a terminal (a pipe, a CI job, a redirect). There is no
 `agentx -p "task"` in this version; run it in a real terminal. The exit code is 1.
