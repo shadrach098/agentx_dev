@@ -29,10 +29,10 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
 
-      - name: Install package + dev extras + Anthropic (for prompt-cache tests)
+      - name: Install package + dev extras + Anthropic (for prompt-cache tests) + MCP (for /mcp tests)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,anthropic]"
+          pip install -e ".[dev,anthropic,mcp]"
 
       - name: Show installed versions
         run: |

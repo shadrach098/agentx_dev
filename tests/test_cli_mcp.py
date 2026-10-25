@@ -218,10 +218,14 @@ class TestTheAgentCannotAddServers:
 
     def test_the_settings_file_is_protected_from_the_agents_file_tools(self, tmp_path):
         app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(), mode="auto")
+        import os
         write = next(t for t in app.tools if t.name == "write_file")
-        target = str(home / ".agentx" / "mcp.json")
-        result = write.func(path=target, content="{}", if_exists="overwrite")
-        assert result.startswith("Refused") and not Path(target).exists()
+        target = home / ".agentx" / "mcp.json"
+        # Written as an absolute path (refused on Windows; on Linux a rooted path outside the project is read as
+        # one inside it) and as a relative path that climbs out of the project (refused): never the real file.
+        for path in (str(target), os.path.relpath(target, cwd)):
+            write.func(path=path, content="{}", if_exists="overwrite")
+        assert not target.exists()
 
 
 class TestCommandWords:
