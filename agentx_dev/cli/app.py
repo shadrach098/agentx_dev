@@ -35,8 +35,8 @@ from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, l
 from agentx_dev.cli.settings import (DEFAULT_TOKEN_LIMIT, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
                                      write_project_model, write_project_team_models, write_user_token_limit)
-from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, current_helper, make_team_tool, note_usage, on_main,
-                                 run_team_job, step_token_share, team_request)
+from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, current_helper, current_status, make_team_tool,
+                                 note_usage, on_main, run_team_job, step_token_share, team_request)
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker, status_line
@@ -217,7 +217,11 @@ class ChatApp:
         self._mode_before_grant: Optional[str] = None
         self._watch_mode_changes()
         self.progress = Progress(console)
+        self.progress.board = self._team_board
         self._team_running: List[str] = []   # the helpers whose steps are running (several when they only read)
+        self._team_rows: Dict[int, Any] = {}  # slot -> StepStatus of each running step, drawn above the spinner
+        self._team_steps = (0, 0)             # (steps ended, steps planned) in the running job
+        self._team_log: List[Any] = []        # every step of the last team job, for /team log
         self._team_jobs = 0                # team jobs started for the current message
         self._team_stalled = False         # the last job in this message finished no step
         asker = make_asker(console, self.read_short, self.gate.cwd, select=select,
@@ -1446,12 +1450,23 @@ class ChatApp:
         return wrapped
 
     def _observe_tool(self, name: str, args: dict) -> None:
-        """Called by the tool wrappers before the gate check, on the thread that runs the tool. During a team job it
-        shows the helper's call, on the main thread."""
-        helper = current_helper()
-        if not helper:
+        """Called by the tool wrappers before the gate check, on the thread that runs the tool. A team helper's calls
+        are not printed: they are counted on its step's line above the spinner (the step's own wrapper counts the
+        other tools; the skills it opens are counted here) and listed by /team log."""
+        status = current_status()
+        if status is not None and name == "use_skill" and isinstance(args, dict):
+            status.note_skill(str(args.get("name") or "?"))
+
+    def _team_board(self) -> Any:
+        rows = list(self._team_rows.values())
+        return self.screen.team_board(rows, *self._team_steps) if rows else None
+
+    def show_team_log(self) -> None:
+        """``/team log``: every call of every step of the last team job in this session."""
+        if not self._team_log:
+            self.notice("No team job has run in this session yet.")
             return
-        on_main(self._show_helper_call, helper, name, args, wait=False)
+        self.screen.team_log(self._team_log)
 
     def _show_helper_call(self, helper: str, name: str, args: dict) -> None:
         self.progress.stop()
@@ -1473,19 +1488,32 @@ class ChatApp:
     def _team_notify(self, kind: str, data: dict) -> None:
         self.progress.stop()
         if kind == "plan":
-            self.screen.team_plan(data.get("steps"))
+            steps = data.get("steps") or []
+            self._team_steps = (0, len(steps))
+            self.screen.team_plan(steps)
             self.progress.start("Starting the team")
         elif kind == "dispatch":
             self._team_running.append(str(data.get("agent", "")))
-            self.screen.team_dispatch(data.get("agent"), data.get("query"))
-            self.progress.start(self._team_label())
+            status = data.get("status")
+            if status is not None:
+                self._team_rows[status.slot] = status
+                self._team_log.append(status)
+            else:                                   # no status to draw: say that the step started
+                self.screen.team_dispatch(data.get("agent"), data.get("query"))
+            self.progress.start("Team is working")
         elif kind == "result":
             agent = str(data.get("agent", ""))
             if agent in self._team_running:
                 self._team_running.remove(agent)
-            self.screen.team_result(data.get("agent"), bool(data.get("ok")), data.get("text"),
-                                    partial=bool(data.get("partial")))
-            self.progress.start(self._team_label())
+            status = data.get("status")
+            if status is not None:
+                self._team_rows.pop(status.slot, None)
+            ended, planned = self._team_steps
+            self._team_steps = (ended + 1, planned)
+            self.screen.team_done(agent, data.get("label") or agent, bool(data.get("ok")), data.get("text"),
+                                  partial=bool(data.get("partial")), skipped=bool(data.get("skipped")),
+                                  status=status)
+            self.progress.start("Team is working")
 
     def _team_question(self, question: str) -> Optional[str]:
         """The planner or a helper needs a fact: ask in the terminal. Enter, Ctrl+D and Ctrl+C skip it."""
@@ -1597,6 +1625,7 @@ class ChatApp:
         self.progress.stop()                      # the notices below must not be drawn over the spinner
         for note in notes:
             self.notice(self._safe(note, 300))
+        self._team_rows, self._team_log, self._team_steps = {}, [], (0, 0)
         self.progress.start("Planning the team job")
         try:
             text = run_team_job(task, model=self.model, tools=[*self.base_tools, *self._mcp_tools],
@@ -1607,6 +1636,7 @@ class ChatApp:
                                 step_tokens=step_token_share(self.token_limit), closed=lambda: self.gate.closed)
         finally:
             self._team_running = []
+            self._team_rows = {}
             self.progress.stop()
             self.screen.flush_helpers()                # what a helper did before an error or Ctrl+C
             self.progress.start("Thinking")

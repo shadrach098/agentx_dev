@@ -134,7 +134,11 @@ def _init(ctx: Any, arg: str) -> None:
 def _team(ctx: Any, arg: str) -> None:
     if not arg:
         ctx.notice("Usage: /team <task>. Hands a big job to a team of helpers (explorer, coder, runner). "
-                   "You are asked before it starts. Small jobs are better done in the normal chat.")
+                   "You are asked before it starts. Small jobs are better done in the normal chat. "
+                   "/team log lists every call the last team job made.")
+        return
+    if arg.strip().lower() == "log":
+        ctx.show_team_log()
         return
     ctx.run_team_command(arg)
 
@@ -308,7 +312,7 @@ COMMANDS = (
     Command("resume", "Load a saved conversation: /resume [id]", _resume),
     Command("sessions", "List this folder's saved conversations", _sessions),
     Command("init", "Draft an AGENTX.md for this project", _init),
-    Command("team", "Hand a big job to a team of helpers: /team <task>", _team),
+    Command("team", "Hand a big job to a team of helpers: /team <task>, or /team log", _team),
     Command("team-models", "Models team helpers may also use: /team-models [name[=use] ...|clear] [--folder]",
             _team_models),
     Command("skills", "List the skills, or add one: /skills [install <link>|remove <name>]", _skills),

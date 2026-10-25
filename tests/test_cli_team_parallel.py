@@ -249,8 +249,13 @@ class TestTheAppShowsHelpersLikeTheChat:
         app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto", width=300)
         assert app.start() == 0
         text = out.getvalue()
-        assert "[explorer] Read 1 file" in text and "Searched 1 pattern" in text
-        assert "read_path" not in text.split("done (explorer)")[0].split("-> explorer")[-1]
+        assert "✓ explorer · look around  Done (3 tool uses · " in text
+        assert "read_path" not in text and "grep" not in text                 # the calls are not printed one by one
+        before = len(out.getvalue())
+        app.show_team_log()
+        log = out.getvalue()[before:]
+        assert "explorer · look around  (3 tool uses · " in log and "read_path  a.txt" in log
+        assert log.count("read_path") == 2 and log.count("grep") == 1 and log.count("⎿") == 3
 
 
 class TestWrappingUp:

@@ -1248,17 +1248,18 @@ You get an approval prompt with the task, the reason, the helpers and a warning 
 
 ```text
 Team plan:
-  1. explorer: list the modules
-  2. coder: add the docstrings
-  3. runner: run pytest
--> explorer: list the modules
-done (explorer): ...
--> coder: add the docstrings
-● [coder] edit_file src/app.py        <- each edit still asks, with "Helper: coder" in the box
-done (coder): ...
+  1. explorer · list modules: list the modules
+  2. coder · add docstrings: add the docstrings
+  3. runner · run tests: run pytest
+✓ explorer · list modules  Done (6 tool uses · 12k tokens · 21s)
+  ⎿ 9 modules in src/ ...
+● Team · 1 running · 1 of 3 done        <- redrawn in place while a step runs
+  └ coder · add docstrings  Read 9 files · Made 9 edits  48s · 30k tokens
+✓ coder · add docstrings  Done (19 tool uses · 41k tokens · 1m 05s)
+  ⎿ Added a docstring to each module ...
 ```
 
-(Illustrative: the steps are whatever the supervisor plans for your task.) Every helper call goes through the same gate as the chat: the modes, your deny rules, the protected files, the previews.
+(Illustrative: the steps are whatever the supervisor plans for your task.) The helpers' own calls are not printed; `/team log` lists them afterwards. Every helper call goes through the same gate as the chat: the modes, your deny rules, the protected files, the previews, and each edit still asks in `default` mode, with "Helper: coder" in the box.
 
 A big task often does not fit in one job. A helper may take up to 100 model steps per plan step; one that runs out does not fail its step but hands on its partial work (`partial (ran out of steps)`, with every file it changed listed), and the steps after it still run. When a job ends partial and the task is not finished, the agent starts the next batch itself, up to **5 team jobs per message**. In `default` and `accept-edits` mode each job is still asked about; in `auto` mode they just run. A sixth is refused (`Refused: 5 team jobs already ran for this message`) and the agent reports what is done and what remains; your next message can start more. If a batch finished no step at all, the agent stops there instead of repeating it.
 
@@ -1307,7 +1308,7 @@ or put it in a settings file yourself (a folder's list replaces yours, it is not
 }
 ```
 
-Now the approval box has a `Helper models:` line (`claude-sonnet-5-5 (chat), claude-opus-5-5, gpt-5.5`), and every helper names its model: `-> coder@claude-opus-5-5: ...`, `[runner@claude-sonnet-5-5]`, `done (coder@claude-opus-5-5)`. The chat's own model is one of the choices, listed alike, so none is favoured.
+Now the approval box has a `Helper models:` line (`claude-sonnet-5-5 (chat), claude-opus-5-5, gpt-5.5`), and every helper names its model: `├ coder@claude-opus-5-5 · ...` while it runs, `✓ coder@claude-opus-5-5 · ... Done (...)` when it ends. The chat's own model is one of the choices, listed alike, so none is favoured.
 
 You do not have to write notes. With none, `agentx` asks the chat model once what each model is good for and keeps the answers as `auto:` notes:
 

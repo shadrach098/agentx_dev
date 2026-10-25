@@ -233,6 +233,8 @@ class Progress:
         self._label = "Thinking"
         self._since = 0.0
         self._spinner = None
+        # ``board()``, when set, returns lines drawn above the spinner (the team's running helpers), or None
+        self.board: Optional[Callable[[], Any]] = None
 
     @property
     def enabled(self) -> bool:
@@ -245,7 +247,13 @@ class Progress:
         import time
         if self._spinner is not None:
             self._spinner.update(text=Text(f"{self._label}... {int(time.monotonic() - self._since)}s", style="dim"))
-        return self._spinner
+        extra = None
+        if self.board is not None:
+            try:
+                extra = self.board()
+            except Exception:                        # the block is a help: a drawing error must not stop the spinner
+                extra = None
+        return Group(extra, self._spinner) if extra is not None and self._spinner is not None else self._spinner
 
     def start(self, label: str = "Thinking") -> None:
         self.stop()
@@ -385,6 +393,8 @@ SKILL_TOOL = "use_skill"
 # A team helper's calls that only look: counted into one line per helper instead of a line each.
 HELPER_LOOKS = {"read_path": "read", "list_directory": "list", "find_files": "search", "grep": "search",
                 "web_search": "web", "web_fetch": "fetch", "recall": "recall", SKILL_TOOL: "skill"}
+STEP_KINDS = {**HELPER_LOOKS, "run_shell": "command", "run_python": "command", "write_file": "write",
+              "edit_file": "edit"}
 
 
 def _times(count: int) -> str:
@@ -406,9 +416,50 @@ def helper_activity(counts: Mapping[str, Any], sep: str = " · ") -> str:
         parts.append(f"Fetched {_plural(counts['fetch'], 'page')}")
     if counts.get("recall"):
         parts.append(f"Looked up notes {_times(counts['recall'])}")
+    if counts.get("command"):
+        parts.append(f"Ran {_plural(counts['command'], 'command')}")
+    if counts.get("edit"):
+        parts.append(f"Made {_plural(counts['edit'], 'edit')}")
+    if counts.get("write"):
+        parts.append(f"Wrote {_plural(counts['write'], 'file')}")
+    if counts.get("other"):
+        parts.append(f"Used other tools {_times(counts['other'])}")
     if counts.get("skill"):
         parts.append("Skills " + ", ".join(counts["skill"]))
     return sep.join(parts)
+
+
+def step_counts(snapshot: Mapping[str, Any]) -> Dict[str, Any]:
+    """``helper_activity``'s counts from a ``StepStatus.snapshot()``."""
+    counts: Dict[str, Any] = {"read": dict(snapshot.get("files") or {}),
+                              "skill": {name: None for name in snapshot.get("skills") or []}}
+    for name, number in (snapshot.get("calls") or {}).items():
+        kind = STEP_KINDS.get(str(name), "other")
+        if kind != "read":
+            counts[kind] = counts.get(kind, 0) + int(number)
+    return counts
+
+
+def short_tokens(count: int) -> str:
+    count = max(0, int(count or 0))
+    if count < 1000:
+        return f"{count}"
+    if count < 10_000:
+        return f"{count / 1000:.1f}k"
+    if count < 1_000_000:
+        return f"{count // 1000}k"
+    return f"{count / 1_000_000:.1f}m"
+
+
+def short_time(seconds: float) -> str:
+    seconds = max(0, int(seconds or 0))
+    return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"
+
+
+def step_stats(snapshot: Mapping[str, Any]) -> str:
+    uses = int(snapshot.get("tool_uses") or 0)
+    return (f"{_plural(uses, 'tool use')} · {short_tokens(snapshot.get('tokens') or 0)} tokens · "
+            f"{short_time(snapshot.get('seconds') or 0)}")
 
 
 class Screen:
@@ -462,6 +513,86 @@ class Screen:
     def flush_helpers(self) -> None:
         for helper in list(self._helpers):
             self.flush_helper(helper)
+
+    def _utf(self) -> bool:
+        return "utf" in (self.console.encoding or "").lower()
+
+    def team_board(self, rows: Sequence[Any], done: int = 0, total: int = 0) -> Optional[Group]:
+        """The block above the spinner while a team job runs: one line per running step (helper · label, what it
+        has done so far, time and tokens), updated in place. None when no step runs."""
+        rows = list(rows)
+        if not rows:
+            return None
+        sep = self._sep() if self._utf() else ", "
+        head = Text(f"{bullet(self.console)} Team", style=f"bold {ACCENT}")
+        head.append(f" · {len(rows)} running" + (f" · {done} of {total} done" if total else ""), style="dim")
+        lines: List[Any] = [head]
+        for number, row in enumerate(rows):
+            try:
+                snapshot = row.snapshot()
+            except Exception:
+                continue
+            last = number == len(rows) - 1
+            branch = ("└ " if last else "├ ") if self._utf() else ("`- " if last else "|- ")
+            line = Text(f"  {branch}", style="dim", no_wrap=True, overflow="ellipsis")
+            line.append(f"{_short(row.helper, MAX_HELPER_CHARS)} · {_short(row.label, 40)}", style="bold")
+            activity = helper_activity(step_counts(snapshot), sep)
+            line.append(f"  {activity or 'starting'}", style="dim")
+            line.append(f"  {short_time(snapshot['seconds'])} · {short_tokens(snapshot['tokens'])} tokens",
+                        style="dim")
+            lines.append(line)
+        return Group(*lines)
+
+    def team_done(self, agent: Any, label: Any, ok: bool, text: Any, *, partial: bool = False,
+                  skipped: bool = False, status: Any = None) -> None:
+        """A step's permanent line when it ends: ``✓ explorer · security audit  Done (20 tool uses · 41k tokens ·
+        1m 30s)``, then the start of its report (or why it failed) under it."""
+        self.flush_helper(agent)
+        utf = self._utf()
+        if skipped:
+            mark, word, style = ("–" if utf else "-"), "Skipped", "dim"
+        elif not ok:
+            mark, word, style = ("✗" if utf else "x"), "Failed", "red"
+        elif partial:
+            mark, word, style = ("◐" if utf else "~"), "Partial (ran out of steps)", "yellow"
+        else:
+            mark, word, style = ("✓" if utf else "+"), "Done", "green"
+        line = Text(f"{mark} ", style=f"bold {style}")
+        line.append(f"{_short(agent, MAX_HELPER_CHARS)} · {_short(label or agent, 40)}", style="bold")
+        stats = ""
+        if status is not None:
+            try:
+                stats = f" ({step_stats(status.snapshot())})"
+            except Exception:
+                stats = ""
+        line.append(f"  {word}{stats}", style=style if style != "green" else "dim")
+        _print(self.console, line)
+        report = _short(" ".join(str(_nothing_if_none(text)).split()), 160) or "(no report)"
+        _print(self.console, Text(f"  {elbow(self.console)} {report}", style="red" if not ok and not skipped else "dim"))
+
+    def team_log(self, statuses: Sequence[Any]) -> None:
+        """``/team log``: every call each step of the last team job made, with a one-line result."""
+        for status in statuses:
+            try:
+                snapshot = status.snapshot()
+            except Exception:
+                continue
+            head = Text(f"{bullet(self.console)} {_short(status.helper, MAX_HELPER_CHARS)} · {_short(status.label, 40)}",
+                        style="bold")
+            head.append(f"  ({step_stats(snapshot)})", style="dim")
+            _print(self.console, head)
+            for name, args, summary, failed in snapshot["log"]:
+                try:
+                    subject = _short(self._relative(subject_of(str(name), args if isinstance(args, dict) else {})))
+                except Exception:
+                    subject = ""
+                line = Text(f"    {_short(name, 40)}", style="bold")
+                if subject:
+                    line.append(f"  {subject}", style="dim")
+                _print(self.console, line)
+                if summary:
+                    _print(self.console, Text(f"      {elbow(self.console)} {_short(summary, 140)}",
+                                              style="red" if failed else "dim"))
 
     def skills_line(self) -> str:
         parts = []
@@ -573,8 +704,9 @@ class Screen:
         for number, step in enumerate(steps if isinstance(steps, (list, tuple)) else [], 1):
             if not isinstance(step, dict):
                 continue
-            _print(self.console, Text(f"  {number}. {_short(step.get('agent'), MAX_HELPER_CHARS)}: "
-                                      f"{_short(step.get('query'), 200)}", style="dim"))
+            label = f" · {_short(step.get('label'), 40)}" if step.get("label") else ""
+            _print(self.console, Text(f"  {number}. {_short(step.get('agent'), MAX_HELPER_CHARS)}{label}: "
+                                      f"{_short(step.get('query'), 160)}", style="dim"))
 
     def team_dispatch(self, agent: Any, query: Any) -> None:
         _print(self.console, Text(f"-> {_short(agent, MAX_HELPER_CHARS)}: {_short(query, 200)}",

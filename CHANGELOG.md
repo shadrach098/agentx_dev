@@ -50,9 +50,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **`agentx`: each team step has a token share,** one token limit's worth (at least 100,000); past it the step's
   tools tell the helper to report what it has.
 - **`agentx`: `a` at the token-limit question** goes on and does not ask again in this message.
-- **`agentx`: helper lines like the chat.** A helper's reads, searches, listings, web calls and skills are one line
-  per helper (`● [explorer] Read 12 files · Searched 3 patterns`), shown on the spinner while it works and printed
-  when its step ends; edits and commands keep a line each, with project-relative paths.
+- **`agentx`: team helpers work in the background.** Their tool calls are no longer printed. A block above the
+  spinner, redrawn in place, shows one line per running step (helper · step name, what it has done, time, tokens);
+  a finished step leaves one line (`✓ explorer · security audit  Done (20 tool uses · 41k tokens · 1m 30s)`) and the
+  start of its report. `/team log` lists every call of the last team job. Steps are named by their plan id.
 - **The `auditing-a-project` skill** (bundled): map, run the project's own checks, read by area with explorers side
   by side, verify, and report Fix first / Medium / Low / Done well / Checks / Test gaps. `delegating-work` (version
   2) says which steps run side by side.

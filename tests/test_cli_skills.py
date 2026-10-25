@@ -387,14 +387,14 @@ class TestHelperSkillReadsAreVisible:
         app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(), width=300)
         from agentx_dev.cli import team
         use_skill = next(t for t in runner_of(app).tools if t.name == "use_skill")
-        team._local.step = team._Step("explorer@gpt-6.1-sol", team._Job())     # as inside a helper's step
+        step = team._Step("explorer@gpt-6.1-sol", team._Job())
+        team._local.step = step                          # as inside a helper's step
         try:
             use_skill.func("exploring-a-project")
         finally:
             team._local.step = None
-        app.screen.flush_helpers()                      # the helper's looking calls are one line, printed at its end
-        shown = out.getvalue()
-        assert "[explorer@gpt-6.1-sol] Skills exploring-a-project" in shown
+        assert step.status.snapshot()["skills"] == ["exploring-a-project"]    # counted on the step's line
+        assert "use_skill" not in out.getvalue()                              # not printed one by one
 
     def test_the_main_chat_is_not_drawn_twice(self, tmp_path):
         # in the main chat the runner's own events already show the call

@@ -54,8 +54,9 @@ def test_a_job_plans_dispatches_and_returns_the_result(tmp_path, tools):
     assert result.startswith("Team job finished (outcome: done).")
     assert "1. explorer" in result and "All done." in result
     assert [kind for kind, _ in seen] == ["plan", "dispatch", "result"]
-    assert seen[0][1]["steps"] == [{"agent": "explorer", "query": "look around"}]
-    assert seen[1][1] == {"agent": "explorer", "query": "look around"}
+    assert seen[0][1]["steps"] == [{"agent": "explorer", "query": "look around", "label": "look around"}]
+    assert (seen[1][1]["agent"], seen[1][1]["query"], seen[1][1]["label"]) == ("explorer", "look around", "look around")
+    assert seen[1][1]["status"] is seen[2][1]["status"]                  # the step's live status, start to end
     assert seen[2][1]["agent"] == "explorer" and seen[2][1]["ok"] is True and "found things" in seen[2][1]["text"]
 
 
@@ -343,7 +344,8 @@ def test_the_planner_picks_a_model_and_that_step_runs_on_it(tmp_path, tools):
     opus = labelled("claude-opus-5-5")
     result, seen = run(tmp_path, tools, chat, extra_models=[HelperModel("claude-opus-5-5", opus)])
     assert opus.calls and not chat_helper_calls                 # the step ran on opus, not on the chat's model
-    assert ("dispatch", {"agent": "coder@claude-opus-5-5", "query": "make the change"}) in seen
+    assert any(kind == "dispatch" and (data["agent"], data["query"]) == ("coder@claude-opus-5-5", "make the change")
+               for kind, data in seen)
     assert "1. coder@claude-opus-5-5 - done" in result
 
 

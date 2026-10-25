@@ -196,7 +196,7 @@ Four things end a job early:
   what remains, and your next message ("continue") can start more.
 - **The last job finished no step** (`Refused: no step of the last team
   job finished`): another batch would likely fail the same way, so the
-  agent stops and reports. Look at the `failed (...)` lines, fix the cause
+  agent stops and reports. Look at the `✗ ... Failed` lines (and `/team log`), fix the cause
   (a missing key, a deny rule, a command that cannot run) and ask again.
 - **You declined the hand-off** or pressed Ctrl+C (which stops the job and
   keeps the changes already made).

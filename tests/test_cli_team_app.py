@@ -55,7 +55,7 @@ def test_the_main_agent_hands_a_big_job_to_the_team_and_the_result_is_in_the_con
     app, out, _, home = make_app(tmp_path, Lines("do the big job", "/exit"), model, read_short=Lines("y"))
     assert app.start() == 0
     text = out.getvalue()
-    assert "Team plan" in text and "-> explorer: look around" in text and "done (explorer)" in text
+    assert "Team plan" in text and "✓ explorer · look around  Done (" in text and "⎿ helper report" in text
     assert "The team finished; here is the summary." in text
     assert "Team job finished (outcome: done)" in history_text(app)          # the tool result is in the chat
     saved = list_sessions(home, app.cwd)
@@ -126,8 +126,8 @@ def test_a_helper_edit_still_asks_in_default_mode_and_the_prompt_names_the_helpe
     assert app.start() == 0
     assert (cwd / "team.txt").read_text(encoding="utf-8") == "hi"
     text = out.getvalue()
-    assert "Helper: coder" in text and "[coder] write_file" in text
-    assert text.index("[coder] write_file") < text.index("Helper: coder")      # the call shows before its prompt
+    assert "Helper: coder" in text and "✓ coder · write team.txt  Done (1 tool use" in text
+    assert text.index("Helper: coder") < text.index("✓ coder")            # the prompt names the helper
 
 
 def test_a_helper_cannot_write_where_the_default_denies_even_in_auto_mode(tmp_path):
@@ -300,7 +300,7 @@ def test_a_helper_error_with_the_api_key_in_a_url_never_reaches_the_screen_the_c
     assert app.start() == 0
     assert model.state["helper_calls"] >= 1
     everything = out.getvalue() + history_text(app) + " ".join(str(call) for call in model.calls)
-    assert secret not in everything and "failed (explorer)" in out.getvalue()
+    assert secret not in everything and "✗ explorer · look around  Failed" in out.getvalue()
     saved = list_sessions(home, app.cwd)
     assert saved and secret not in saved[0].path.read_text(encoding="utf-8")
 
@@ -359,7 +359,7 @@ def test_a_step_runs_on_the_model_the_planner_picked(tmp_path):
     assert app.start() == 0
     text = out.getvalue()
     assert "Helper models: claude-sonnet-5-5 (chat), claude-opus-5-5" in text        # in the approval panel
-    assert "-> coder@claude-opus-5-5: make the change" in text
+    assert "✓ coder@claude-opus-5-5 · make the change" in text
     assert opus.calls and chat.state["helper_calls"] == 0
     assert "coder@claude-opus-5-5 - done" in history_text(app)
 
@@ -372,7 +372,7 @@ def test_a_model_without_a_key_is_not_used_and_the_job_still_runs(tmp_path):
                               team_models=["gpt-5.5"])
     assert app.start() == 0
     text = out.getvalue()
-    assert "Not used: gpt-5.5 (no OPENAI_API_KEY)" in text and "done (explorer)" in text
+    assert "Not used: gpt-5.5 (no OPENAI_API_KEY)" in text and "✓ explorer" in text
 
 
 def test_a_model_that_cannot_be_built_shows_only_the_error_type(tmp_path):
@@ -405,7 +405,7 @@ def test_a_model_error_while_building_shows_its_message_and_no_key(tmp_path):
     assert app.start() == 0
     text = out.getvalue()
     assert "Not used: claude-opus-5-5 (No module named 'anthropic' - install agentx-dev[anthropic])" in text
-    assert "done (explorer)" in text
+    assert "✓ explorer" in text
 
 
 def test_a_model_error_that_carries_a_key_is_still_hidden_by_the_app(tmp_path):
@@ -584,7 +584,7 @@ def test_with_a_list_even_the_chat_model_helpers_name_their_model(tmp_path):
                               model_factory=factory_for(chat, **{"claude-opus-5-5": opus}),
                               team_models=["claude-opus-5-5"])
     assert app.start() == 0
-    assert "-> runner@claude-sonnet-5-5: check it" in out.getvalue() and not opus.calls
+    assert "runner@claude-sonnet-5-5 · check it" in out.getvalue() and not opus.calls
 
 
 def test_notes_reach_the_planner_and_show_in_team_models(tmp_path):
@@ -810,9 +810,10 @@ def test_a_helper_that_runs_out_of_steps_hands_over_partial_work_and_the_next_st
     app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto")
     assert app.start() == 0
     text = out.getvalue()
-    assert "skipped" not in text and "done (runner)" in text
+    assert "Skipped" not in text and "✓ runner · check it  Done" in text
     assert "coder - partial (ran out of steps)" in history_text(app)
-    assert "partial (coder): (This helper ran out of steps" in text                # the live line says partial
+    assert "◐ coder · change it  Partial (ran out of steps)" in text                # the live line says partial
+    assert "⎿ (This helper ran out of steps" in text
     assert any("ran out of steps" in seen for seen in seen_by_runner)              # the runner is told
 
 

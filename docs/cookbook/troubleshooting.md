@@ -286,7 +286,7 @@ next message ("continue with the rest") starts a fresh count.
 
 **`Refused: no step of the last team job finished, so another job would likely fail the same way`**
 The last batch got nowhere (every step failed or was skipped), so the agent stops instead of
-spending more. Read the `failed (...)` lines for the cause: a deny rule, a declined edit, a
+spending more. Read the `✗ ... Failed` lines (and `/team log`) for the cause: a deny rule, a declined edit, a
 command that cannot run, a missing model key. Fix it and ask again.
 
 **A team job is refused with no prompt**

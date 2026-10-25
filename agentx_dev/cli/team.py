@@ -11,9 +11,12 @@ helper tool goes through, is the boundary."""
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import itertools
 import os
 import queue
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
@@ -24,6 +27,7 @@ from pydantic import BaseModel, Field
 from agentx_dev import AgentRunner, AgentType, AsyncSupervisor, SpawnConfig
 from agentx_dev.cli.memory import CHANGING_TOOLS, REFUSAL_STARTS
 from agentx_dev.cli.models import HelperModel, model_label, without_auto_prefix
+from agentx_dev.cli.ui import summarize_result
 from agentx_dev.Runner.Trim import TrimPolicy
 from agentx_dev.Supervisor import SubtaskResult, _plan_uses_deps, _result_failed
 from agentx_dev.Tools import StructuredTool
@@ -82,14 +86,72 @@ class _Job:
         self.step_tokens = max(0, int(step_tokens or 0))
 
 
-class _Step:
-    """One helper step: whose it is, the tokens its model replies used, and the files it read whole."""
+class StepStatus:
+    """What the screen shows of one team step while it runs and after: the helper, a short label, when it started
+    and ended, the tokens its model replies used, its tool calls by name, the files it read, the skills it opened,
+    and a log of every call (``(tool, args, one-line summary, failed)``) for ``/team log``. The helper's threads update
+    it; ``snapshot`` reads it safely from another thread."""
 
-    def __init__(self, helper: str, job: _Job) -> None:
+    def __init__(self, slot: int, helper: str, label: str = "", query: str = "") -> None:
+        self.slot = slot
+        self.helper = helper
+        self.label = label or helper
+        self.query = query
+        self.started = time.monotonic()
+        self.ended: Optional[float] = None
+        self.tokens = 0
+        self.tool_uses = 0
+        self.calls: Dict[str, int] = {}
+        self.files: Dict[str, None] = {}
+        self.skills: Dict[str, None] = {}
+        self.log: List[Tuple[str, Dict[str, Any], str, bool]] = []
+        self._lock = threading.Lock()
+
+    def note_call(self, name: str, args: Dict[str, Any], result: Any) -> None:
+        try:
+            summary, failed = summarize_result(name, str(result if result is not None else ""))
+        except Exception:                           # a result that cannot be summarised is still counted
+            summary, failed = "", False
+        text = str(result if result is not None else "").lstrip()
+        failed = failed or text.startswith(REFUSAL_STARTS) or text.startswith(("Not read again", "Not run"))
+        with self._lock:
+            self.tool_uses += 1
+            self.calls[name] = self.calls.get(name, 0) + 1
+            if name == "read_path" and isinstance(args.get("path"), str):
+                self.files[args["path"]] = None
+            self.log.append((name, dict(args), text.splitlines()[0][:200] if failed and text else summary, failed))
+
+    def note_skill(self, name: str) -> None:
+        with self._lock:
+            self.tool_uses += 1
+            self.skills[str(name)] = None
+            self.log.append(("use_skill", {"name": str(name)}, "", False))
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            return {"calls": dict(self.calls), "files": dict(self.files), "skills": list(self.skills),
+                    "tokens": self.tokens, "tool_uses": self.tool_uses, "seconds": self.seconds(),
+                    "log": list(self.log)}
+
+    def seconds(self) -> float:
+        return (self.ended if self.ended is not None else time.monotonic()) - self.started
+
+
+# the StepStatus of the step a task (and, through asyncio.to_thread, its worker thread) is running
+_running_status: "contextvars.ContextVar[Optional[StepStatus]]" = contextvars.ContextVar("agentx_team_step",
+                                                                                         default=None)
+
+
+class _Step:
+    """One helper step: whose it is, the tokens its model replies used, the files it read whole, and what the
+    screen shows of it (``status``)."""
+
+    def __init__(self, helper: str, job: _Job, status: Optional[StepStatus] = None) -> None:
         self.helper = helper
         self.job = job
         self.tokens = 0
         self.reads: Dict[str, int] = {}
+        self.status = status if status is not None else StepStatus(0, helper)
 
 
 _local = threading.local()           # .step: the _Step this thread works for (None outside a team job)
@@ -99,6 +161,12 @@ def current_helper() -> str:
     """The helper whose step this thread is running ("" outside one); inside ``on_main`` too."""
     step = getattr(_local, "step", None)
     return step.helper if step is not None else ""
+
+
+def current_status() -> Optional[StepStatus]:
+    """The ``StepStatus`` of the step this thread is running (None outside one); inside ``on_main`` too."""
+    step = getattr(_local, "step", None)
+    return step.status if step is not None else None
 
 
 def note_usage(model: Any) -> None:
@@ -111,10 +179,11 @@ def note_usage(model: Any) -> None:
         raise JobStopped()
     usage = getattr(model, "usage", None)
     try:
-        step.tokens += (int(getattr(usage, "last_input_tokens", 0) or 0)
-                        + int(getattr(usage, "last_output_tokens", 0) or 0))
+        used = int(getattr(usage, "last_input_tokens", 0) or 0) + int(getattr(usage, "last_output_tokens", 0) or 0)
     except (TypeError, ValueError):
-        pass
+        return
+    step.tokens += used
+    step.status.tokens += used
 
 
 def step_token_share(token_limit: int) -> int:
@@ -169,16 +238,21 @@ def _step_tool(tool: Any, step: _Step) -> StructuredTool:
             raise JobStopped()
         share = step.job.step_tokens
         if share and step.tokens >= share:
-            return STEP_BUDGET_NOTE.format(used=step.tokens, share=share)
+            answer = STEP_BUDGET_NOTE.format(used=step.tokens, share=share)
+            step.status.note_call(name, kwargs, answer)
+            return answer
         whole = _full_read(name, kwargs)
         if whole and step.reads.get(whole, 0) >= FULL_READS_PER_FILE:
-            return REPEAT_READ_NOTE.format(path=str(kwargs.get("path"))[:200], count=step.reads[whole])
+            answer = REPEAT_READ_NOTE.format(path=str(kwargs.get("path"))[:200], count=step.reads[whole])
+            step.status.note_call(name, kwargs, answer)
+            return answer
         previous, _local.step = getattr(_local, "step", None), step
         try:
             result = inner(**kwargs)
         finally:
             _local.step = previous
         _note_call(step, name, kwargs, whole, result)
+        step.status.note_call(name, kwargs, result)
         return result
 
     run.__name__, run.__qualname__, run.__module__ = name, f"team_step.{name}", __name__
@@ -367,7 +441,8 @@ class _HelperRunner(AgentRunner):
         self.job: Optional[_Job] = None
 
     def Initialize(self, *args: Any, **kwargs: Any) -> Any:
-        step = _Step(self.helper_name, self.job or _Job())
+        status = _running_status.get()
+        step = _Step(self.helper_name, self.job or _Job(), status)
         settings_args, settings = self._settings
         previous, _local.step = getattr(_local, "step", None), step
         try:
@@ -470,6 +545,17 @@ def format_result(result: Any) -> str:
     return text
 
 
+def step_label(step: Dict[str, Any]) -> str:
+    """A short name for a plan step: its id in words ("security_audit" -> "security audit"), or the first words of
+    its task when the id says nothing ("step_3", "s1")."""
+    raw = str(step.get("id") or "").strip()
+    words = raw.replace("_", " ").replace("-", " ").strip()
+    if words and not (len(words) <= 3 or words.split()[0] in ("step", "s") and words.split()[-1].isdigit()):
+        return words[:40]
+    query = " ".join(str(step.get("query") or "").split()[:5])
+    return (query[:40] + "…") if len(query) > 40 else (query or raw or "step")
+
+
 def _read_only(agent: Any) -> bool:
     return str(agent or "").split("@", 1)[0] in READ_ONLY_ROLES
 
@@ -536,14 +622,26 @@ class TeamSupervisor(AsyncSupervisor):
     announce every step up front, are dropped. Once ``closed()`` is true (the user said to wrap up), a step that has
     not started is not started: it ends at once as skipped, and the job reports with what it has."""
 
-    def __init__(self, *args: Any, on_start: Optional[Callable[[str, str], None]] = None,
+    def __init__(self, *args: Any, on_start: Optional[Callable[[str, str, StepStatus], None]] = None,
                  closed: Optional[Callable[[], Any]] = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._on_start = on_start
         self._closed = closed
         self._step_lock: Optional[_StepLock] = None
+        self._labels: Dict[Tuple[str, str], str] = {}
+        self._slots = itertools.count(1)
+        self._statuses: Dict[int, StepStatus] = {}        # id(SubtaskResult) -> the status of the step that made it
+
+    def label_of(self, agent: Any, query: Any) -> str:
+        return self._labels.get((str(agent), str(query))) or step_label({"query": query})
+
+    def status_of(self, result: Any) -> Optional[StepStatus]:
+        return self._statuses.get(id(result))
 
     async def _run_plan(self, plan: List[dict], *args: Any, **kwargs: Any):
+        for item in plan:
+            if isinstance(item, dict):
+                self._labels[(str(item.get("agent", "")), str(item.get("query", "")))] = step_label(item)
         async with aclosing(super()._run_plan(_ordered(plan), *args, **kwargs)) as events:
             async for event in events:
                 if isinstance(event, dict) and event.get("type") == "dispatch":
@@ -563,12 +661,20 @@ class TeamSupervisor(AsyncSupervisor):
         async with self._step_lock.hold(alone=not _read_only(agent_name)):
             if self._wrapping_up():
                 return SubtaskResult(agent=agent_name, query=sub_query, content="", error=NOT_STARTED, skipped=True)
+            status = StepStatus(next(self._slots), agent_name, self.label_of(agent_name, sub_query), sub_query)
+            _running_status.set(status)             # this task's context: asyncio.to_thread hands it to the helper
             if self._on_start is not None:
                 try:
-                    self._on_start(agent_name, sub_query)
+                    self._on_start(agent_name, sub_query, status)
                 except Exception:                   # a display error must never stop the step
                     pass
-            return await super()._run_subtask(agent_name, sub_query, prior_results=prior_results, budget=budget)
+            try:
+                result = await super()._run_subtask(agent_name, sub_query, prior_results=prior_results,
+                                                    budget=budget)
+            finally:
+                status.ended = time.monotonic()
+            self._statuses[id(result)] = status
+            return result
 
 
 def _run_on_loop(make: Callable[[], Any], job: _Job, pump: _Pump) -> Any:
@@ -658,7 +764,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             model=model, agents=helpers, max_subtasks=MAX_SUBTASKS, verbose=False, max_subtask_retries=0,
             max_plan_retries=1, ask_user=asker, max_questions=MAX_QUESTIONS, spawn_config=SpawnConfig(enabled=False),
             max_parallel=PARALLEL_HELPERS, closed=closed,
-            on_start=lambda agent, query: tell("dispatch", {"agent": str(agent), "query": str(query)}))
+            on_start=lambda agent, query, status: tell("dispatch", {"agent": str(agent), "query": str(query),
+                                                                    "label": status.label, "status": status}))
         result = None
         async with aclosing(supervisor.astream(task)) as events:
             async for event in events:
@@ -666,7 +773,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                     continue
                 kind = event.get("type")
                 if kind == "plan":
-                    steps = [{"agent": str(step.get("agent", "")), "query": str(step.get("query", ""))}
+                    steps = [{"agent": str(step.get("agent", "")), "query": str(step.get("query", "")),
+                              "label": step_label(step)}
                              for step in (event.get("plan") or []) if isinstance(step, dict)]
                     tell("plan", {"steps": steps})
                 elif kind == "subtask_result":
@@ -675,7 +783,10 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                         failed = bool(getattr(sub, "skipped", False)) or _result_failed(sub)
                         text = getattr(sub, "error", "") or getattr(sub, "content", "")
                         tell("result", {"agent": str(sub.agent), "ok": not failed, "text": _first_line(text),
-                                        "partial": not failed and _ran_out_of_steps(sub)})
+                                        "partial": not failed and _ran_out_of_steps(sub),
+                                        "skipped": bool(getattr(sub, "skipped", False)),
+                                        "label": supervisor.label_of(sub.agent, sub.query),
+                                        "status": supervisor.status_of(sub)})
                 elif kind == "completion":
                     result = event.get("result")
         return result

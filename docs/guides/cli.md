@@ -425,7 +425,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/resume [id]` | Load a saved conversation: with no id, a list to pick from; with an id, or its first characters, that one. | `/resume 3f9a2c1b` |
 | `/sessions` | List this folder's saved conversations, newest first: date, first message and id. | `/sessions` |
 | `/init` | Ask the model to draft an `AGENTX.md` for this project. Writing it goes through the approval prompt. | `/init` |
-| `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage. | `/team add type hints to every module and run the tests` |
+| `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage; `/team log` lists every call the last team job made. | `/team add type hints to every module and run the tests` |
 | `/team-models [name[=use] ...\|describe\|clear] [--folder]` | Show or set the extra models team helpers may run on, with an optional note on what each is for (see [Helper models](#helper-models)). `/team-models <names>` lasts for this session only; with `--folder` it is also saved for this folder. `/team-models describe` asks the chat model to write the missing notes (marked `auto:`). `/team-models clear` empties the list. | `/team-models gpt-6.1-sol="hard coding" claude-sonnet-5-5 --folder` |
 | `/skills [install <link>\|remove <name>\|use <name> ...]` | List the skills the agent can read (each is also a `/name` command in the pop-up, e.g. `/changing-files rename the helper`), or add one from a `https://github.com/<owner>/<repo>` link or a folder (you are shown what it contains and asked first), or remove one. See [Skills](#skills). | `/skills install https://github.com/obra/superpowers` |
 | `/memory [words]` | Show the project notes kept for later (how many, how they are searched, the newest), or search them. See [Notes and recall](#notes-and-recall). | `/memory login redirect` |
@@ -490,14 +490,26 @@ Each helper works in a thread of its own, but every approval, team question and 
 
 ### Skills in a team job
 
-Every helper has the `use_skill` tool and the list of the [skills](#skills) that fit its tools: the explorer sees `exploring-a-project`, the coder adds `changing-files`, the runner adds `running-code`, and any skill you installed that is not tied to tools is offered to all three. So `/team brainstorm this repo with the brainstorming skill` works: the supervisor puts the skill in a step's task and the helper opens it with `use_skill`. Reading a skill is read-only and does not ask, and it is named in the helper's line (`● [explorer] Read 3 files · Skills brainstorming`), so you can see which skills a helper opened. Before this, a helper had no skills, and a step that said "use the X skill" sent it searching the disk with `run_python`.
+Every helper has the `use_skill` tool and the list of the [skills](#skills) that fit its tools: the explorer sees `exploring-a-project`, the coder adds `changing-files`, the runner adds `running-code`, and any skill you installed that is not tied to tools is offered to all three. So `/team brainstorm this repo with the brainstorming skill` works: the supervisor puts the skill in a step's task and the helper opens it with `use_skill`. Reading a skill is read-only and does not ask, and it is named on the step's line (`Read 3 files · Skills brainstorming`) and in `/team log`, so you can see which skills a helper opened. Before this, a helper had no skills, and a step that said "use the X skill" sent it searching the disk with `run_python`.
 
 ### What you see
 
-- The plan: `Team plan:` and a numbered list of the steps, each with the helper it is for.
-- `-> coder: <what it was asked>` when a step starts. The spinner shows what the running helpers are doing (`explorer: Read 4 files · Searched 2 patterns`), or `Running coder` / `Running 3 helpers` before they have done anything ("Planning the team job" before the plan, "Team is working" between steps).
-- A helper's reads, searches, listings, web searches, fetched pages and skills as **one line per helper**, printed when its step ends or it does something else: `● [explorer] Read 12 files · Searched 3 patterns · Fetched 2 pages`. Edits and commands keep a line each, printed before their prompt: `● [coder] write_file src/app.py`. Paths inside the project are shown relative to it.
-- `done (coder): <the start of its report>` or `failed (coder): <why>` when a step ends. The text is the start of the report or error (up to 160 characters, newlines flattened); an empty report shows `(no report)`. A skipped step (for example one whose dependency failed) shows as `failed (coder): skipped: ...` here and as "skipped" in the result.
+The helpers work in the background, the way Claude Code's agents do: their individual tool calls are not printed.
+
+- The plan: `Team plan:` and a numbered list of the steps, each with the helper it is for and a short name (the step's id in words, such as `security audit`, or the first words of its task).
+- While steps run, a block above the spinner, redrawn in place, with one line per running step: who, which step, what it has done so far, how long it has run and the tokens its model replies have used.
+
+  ```text
+  ● Team · 3 running · 1 of 5 done
+    ├ explorer · security audit   Read 14 files · Searched 6 patterns   1m 12s · 38k tokens
+    ├ explorer · payments         Read 9 files · Ran 2 commands         58s · 31k tokens
+    └ explorer · frontend admin   Fetched 1 page · Read 6 files         40s · 22k tokens
+  Team is working... 75s
+  ```
+
+- When a step ends, its line is printed for good, with the start of its report (up to 160 characters) under it: `✓ explorer · security audit  Done (20 tool uses · 41k tokens · 1m 30s)`, `◐ ... Partial (ran out of steps)`, `✗ ... Failed` with the error, or `– ... Skipped` (a step whose dependency failed, or one not started because you said to wrap up). An empty report shows `(no report)`.
+- Approvals still appear when a helper needs one, one at a time, with a `Helper:` line naming who asks; the block steps aside for the prompt and comes back after it.
+- **`/team log`** lists every call each step of the last team job made, with a one-line result under each (`read_path  src/app.ts` / `⎿ Read 120 lines`). It covers the last job of this session; it is not saved with the conversation.
 
 The planner or a helper may need a fact only you have. It is asked as `Team question: ...` (a long question is cut at 12 lines and 1,500 characters) with `Answer (Enter to skip):`. Enter, Ctrl+D or Ctrl+C at that question skips it, and the team goes on without the answer; at most 3 questions are asked per job.
 
@@ -758,7 +770,7 @@ A checklist for the maintainer to run once on a real terminal before release. Te
 23. At an approval prompt press Down, Down, Enter (No), then type a reason; then repeat and press 1 (Yes). Press Esc at a prompt: it counts as no. `/resume` with no id shows an arrow-key list of conversations.
 24. Watch the cursor at the `>` prompt: it blinks and the prompt is cyan. While the agent works there is a spinner instead. (A terminal that ignores cursor-shape requests keeps its own cursor, but the prompt colour still differs from the working spinner.)
 25. Ask for something big ("survey this project, then add a docstring to each module and run the tests"): the hand-off prompt appears with the task, the helpers and the cost warning, and "don't ask again" is not offered. Approve it: the plan, the `-> explorer: ...` lines and the `[helper]` tool bullets show, and the spinner reads "Running <helper>".
-26. During that job, a write asks with a `Helper: coder` line in the box and `● [coder] edit_file ...` printed just above it. Each step ends with a `done (...)` line.
+26. During that job, a block above the spinner shows each running step (`├ explorer · ...  Read 3 files ...  12s · 9.1k tokens`) and no helper call is printed; a write asks with a `Helper: coder` line in the box. Each step ends with a `✓ ... Done (N tool uses · tokens · time)` line, and `/team log` then lists every call.
 27. Type `/team` with no task: the usage is printed. Type `/team <task>`: the same hand-off prompt appears (the model may decline; then nothing runs).
 28. Add `"deny": ["start_team_job:*"]` under `permissions` in your settings and start again, then ask for a big job: the hand-off is refused with the deny-rule message and no prompt.
 29. Press Ctrl+C during a job: "Turn interrupted" is printed, files already changed stay changed, and the next message works.
