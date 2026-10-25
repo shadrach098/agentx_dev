@@ -123,9 +123,10 @@ class FakeSupervisor:
     def __init__(self, **kw):
         type(self).closed = False
 
-    def stream(self, task):
+    async def astream(self, task):
         try:
-            yield from type(self).behaviour()
+            for event in type(self).behaviour():
+                yield event
         finally:
             type(self).closed = True
 
@@ -136,14 +137,14 @@ def test_a_supervisor_that_raises_gives_a_failure_result(tmp_path, tools, monkey
         yield  # pragma: no cover
 
     FakeSupervisor.behaviour = staticmethod(behaviour)
-    monkeypatch.setattr(team_module, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(team_module, "TeamSupervisor", FakeSupervisor)
     result, _ = run(tmp_path, tools, router(), describe_error=lambda error: f"<{error}>")
     assert result == ("Team job failed (RuntimeError): <boom> " + team_module.MAY_HAVE_CHANGED) and FakeSupervisor.closed
 
 
 def test_a_supervisor_that_ends_without_a_result_says_so(tmp_path, tools, monkeypatch):
     FakeSupervisor.behaviour = staticmethod(lambda: iter([{"type": "plan_start"}]))
-    monkeypatch.setattr(team_module, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(team_module, "TeamSupervisor", FakeSupervisor)
     result, _ = run(tmp_path, tools, router())
     assert result == "Team job ended without a result. " + team_module.MAY_HAVE_CHANGED
 
@@ -154,7 +155,7 @@ def test_ctrl_c_propagates_and_the_stream_is_closed(tmp_path, tools, monkeypatch
         raise KeyboardInterrupt
 
     FakeSupervisor.behaviour = staticmethod(behaviour)
-    monkeypatch.setattr(team_module, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(team_module, "TeamSupervisor", FakeSupervisor)
     with pytest.raises(KeyboardInterrupt):
         run(tmp_path, tools, router())
     assert FakeSupervisor.closed
@@ -169,13 +170,14 @@ def test_the_supervisor_is_built_with_the_agreed_limits(tmp_path, tools, monkeyp
             super().__init__(**kw)
 
     Spy.behaviour = staticmethod(lambda: iter([]))
-    monkeypatch.setattr(team_module, "Supervisor", Spy)
+    monkeypatch.setattr(team_module, "TeamSupervisor", Spy)
     run(tmp_path, tools, router(), ask_user=lambda question: None)
     assert built["max_subtasks"] == 6 and built["max_subtask_retries"] == 0 and built["max_plan_retries"] == 1
     assert built["verbose"] is False and built["max_questions"] == 3 and callable(built["ask_user"])
     assert built["spawn_config"].enabled is False
     assert "memory" not in built and "persistence" not in built
     assert set(built["agents"]) == {"explorer", "coder", "runner"}
+    assert built["max_parallel"] == team_module.PARALLEL_HELPERS == 3 and callable(built["on_start"])
 
 
 def test_the_tool_has_a_schema_that_refuses_empty_and_over_long_tasks(tmp_path):
@@ -212,7 +214,7 @@ def failing_supervisor(monkeypatch, error):
         yield  # pragma: no cover
 
     FakeSupervisor.behaviour = staticmethod(behaviour)
-    monkeypatch.setattr(team_module, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(team_module, "TeamSupervisor", FakeSupervisor)
 
 
 def test_a_failure_result_is_one_short_line_that_ends_with_the_warning(tmp_path, tools, monkeypatch):
@@ -248,7 +250,7 @@ def test_the_stream_is_closed_when_the_consumer_side_raises(tmp_path, tools, mon
         raise KeyboardInterrupt
 
     FakeSupervisor.behaviour = staticmethod(behaviour)
-    monkeypatch.setattr(team_module, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(team_module, "TeamSupervisor", FakeSupervisor)
     # `info` keeps the traceback, and with it the generator, alive: only an explicit close() can set `closed`
     with pytest.raises(KeyboardInterrupt) as info:
         run(tmp_path, tools, router(), notify=interrupt)
@@ -260,7 +262,7 @@ def test_a_supervisor_that_cannot_be_built_gives_a_failure_result(tmp_path, tool
         def __init__(self, **kw):
             raise ValueError("bad agents")
 
-    monkeypatch.setattr(team_module, "Supervisor", Broken)
+    monkeypatch.setattr(team_module, "TeamSupervisor", Broken)
     result, _ = run(tmp_path, tools, router())
     assert result == "Team job failed (ValueError): bad agents " + CHANGED
 

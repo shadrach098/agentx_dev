@@ -1236,7 +1236,7 @@ Things to know:
 
 ## 35. Hand a big job to a team of helpers *(3.7)*
 
-"Survey this project, add a docstring to each module and run the tests" is too much for one conversation to keep straight. In `agentx` the model can hand it to a team: a supervisor plans up to six steps and three helpers carry them out one at a time (`explorer` reads, `coder` edits, `runner` runs commands).
+"Survey this project, add a docstring to each module and run the tests" is too much for one conversation to keep straight. In `agentx` the model can hand it to a team: a supervisor plans up to six steps and three helpers carry them out (`explorer` reads, `coder` edits, `runner` runs commands). Explorer steps that do not depend on each other run side by side, up to three; coder and runner steps run one at a time.
 
 Usually you just ask, and the agent decides. To ask for a team on purpose:
 

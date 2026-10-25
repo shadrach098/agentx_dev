@@ -59,6 +59,18 @@ class TestTheLimit:
         assert "all done" in out.getvalue()
         assert sum("Keep going" in p for p in answers.prompts) == 1     # 45 tokens is within 30 + 20
 
+    def test_a_goes_on_and_does_not_ask_again_in_this_message(self, tmp_path):
+        app, out, model, answers = run(tmp_path, "look around", "a", limit=20,
+                                       script=[*(make_react_response("grep", {"pattern": f"p{n}"}) for n in range(4)),
+                                               make_final("all done")])      # four different calls: no loop guard
+        assert "all done" in out.getvalue() and "[y/a/N]" in answers.prompts[1]
+        assert sum("Keep going" in p for p in answers.prompts) == 1       # 75 tokens, asked once, at 30
+
+    def test_an_unclear_answer_is_asked_once_more(self, tmp_path):
+        app, out, model, answers = run(tmp_path, "look around", "maybe", "n", limit=20,
+                                       script=[looking(), looking(), make_final("wrapped")])
+        assert "Please answer y, a or n." in out.getvalue() and "wrapped" in out.getvalue()
+
     def test_no_limit_never_asks(self, tmp_path):
         app, out, model, answers = run(tmp_path, "look around", limit=0,
                                        script=[looking(), looking(), make_final("all done")])

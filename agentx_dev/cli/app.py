@@ -35,7 +35,8 @@ from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, l
 from agentx_dev.cli.settings import (DEFAULT_TOKEN_LIMIT, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
                                      write_project_model, write_project_team_models, write_user_token_limit)
-from agentx_dev.cli.team import MAX_TEAM_JOBS_PER_MESSAGE, make_team_tool, run_team_job, team_request
+from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, current_helper, make_team_tool, note_usage, on_main,
+                                 run_team_job, step_token_share, team_request)
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker, status_line
@@ -57,9 +58,9 @@ TEAM_STALLED = ("Refused: no step of the last team job finished, so another job 
 NOT_A_TERMINAL = "agentx needs an interactive terminal (headless mode is not available yet)."
 # The "What's new" lines of the start screen: the newest changes a user would notice, kept to three.
 WHATS_NEW = (
+    "Team jobs: reading helpers run side by side, fewer re-reads",
+    "An audit skill: /auditing-a-project",
     "MCP servers: /mcp add; read-only tools run without asking",
-    "Web search and page fetch; slow answers retried visibly",
-    "A token limit per message: /limit",
 )
 
 
@@ -216,18 +217,21 @@ class ChatApp:
         self._mode_before_grant: Optional[str] = None
         self._watch_mode_changes()
         self.progress = Progress(console)
-        self._team_helper = ""             # the helper whose step is running; "" outside a team job
+        self._team_running: List[str] = []   # the helpers whose steps are running (several when they only read)
         self._team_jobs = 0                # team jobs started for the current message
         self._team_stalled = False         # the last job in this message finished no step
         asker = make_asker(console, self.read_short, self.gate.cwd, select=select,
-                           helper=lambda: self._team_helper, helper_models=self.helper_models_line)
+                           helper=current_helper, helper_models=self.helper_models_line)
 
         def ask_with_spinner_paused(request: Any) -> Any:           # a prompt must not fight the spinner
             with self.progress.paused():
                 return asker(request)
 
-        self.gate.ask = self._remembering(ask_with_spinner_paused)
+        remembering = self._remembering(ask_with_spinner_paused)
+        # helpers run in worker threads: every approval is asked on the main thread, one at a time
+        self.gate.ask = lambda request: on_main(remembering, request)
         self.base_tools = build_tools(self.cwd, self.add_dirs, self.gate, observer=self._observe_tool)
+        self.screen.cwd = str(self.cwd)
         self.tools = [*self.base_tools,
                       self._within_job_limit(gate_tool(make_team_tool(self._start_team_job), self.gate))]
         self._memory_on = is_project_folder(self.cwd, self.home)    # no log or folder settings for home / a drive root
@@ -974,9 +978,12 @@ class ChatApp:
 
     def _show_retry(self, attempt: int, error: BaseException, delay: float) -> None:
         """A tracked model's ``on_retry`` hook: say that a model request failed and is being sent again, so a long
-        wait does not look like a hang."""
+        wait does not look like a hang. (Said on the main thread: a team helper's request runs in a worker.)"""
+        on_main(self._say_retry, attempt, error, wait=False)
+
+    def _say_retry(self, attempt: int, error: BaseException) -> None:
         what = "got no answer in time" if _is_timeout(error) else f"failed ({type(error).__name__})"
-        helper = self._team_helper
+        helper = current_helper()
         who = f" ({self._safe(helper, 60)})" if helper else ""
         with self.progress.paused():
             self.notice(f"A model request{who} {what}; trying again (attempt {attempt + 1}).")
@@ -987,7 +994,9 @@ class ChatApp:
         turn up: every tool call is refused with ``WRAP_UP`` from then on, so the agent and any team helpers answer
         with what they have, and the turn ends normally and is kept. Should wrapping up itself use more than its
         allowance (``WRAP_UP_TOKENS``, or half the limit), ``TokenLimitReached`` ends the turn like Ctrl+C. Helpers
-        running at the same time wait for the answer. Outside a turn, or with no limit, nothing."""
+        running at the same time wait for the answer; "a" goes on without asking again in this message. Outside a
+        turn, or with no limit, nothing. A team helper's reply also counts against its step's share."""
+        note_usage(_model)                   # a helper whose job is over stops here
         with self._limit_lock:
             if self._turn_start is None or not self.token_limit:
                 return
@@ -1000,19 +1009,44 @@ class ChatApp:
             if self._wrapping_up:
                 self._turn_stopped = True
                 raise TokenLimitReached(used, self.token_limit)
-            with self.progress.paused():
-                go_on = self._yes(f"This message has used {used:,} tokens; your limit is {self.token_limit:,} a "
-                                  f"message (/limit changes it). Keep going for up to {self.token_limit:,} more? "
-                                  "No wraps up with what was found so far. [y/N] ")
-            if go_on:
+            answer = on_main(self._ask_to_go_on, used)
+            if answer == "a":
+                self._turn_allowed = sys.maxsize
+                return
+            if answer == "y":
                 self._turn_allowed = used + self.token_limit
                 return
             self._wrapping_up = True
             self.gate.closed = WRAP_UP
             self._turn_allowed = used + max(WRAP_UP_TOKENS, self.token_limit // 2)
-            with self.progress.paused():
-                self.notice("Wrapping up: no more tool calls in this message; the agent answers with what it has "
-                            "found so far.")
+            on_main(self._say_paused, "Wrapping up: no more tool calls in this message; the agent answers with "
+                                      "what it has found so far.")
+
+    def _ask_to_go_on(self, used: int) -> str:
+        """The limit question: "y" (another limit), "a" (go on, and do not ask again in this message) or "n". Enter,
+        end of input, Ctrl+C and a reader that fails are all no; any other answer is asked once more."""
+        prompt = (f"This message has used {used:,} tokens; your limit is {self.token_limit:,} a message (/limit "
+                  f"changes it). Keep going for up to {self.token_limit:,} more? a = yes, and do not ask again in "
+                  "this message. No wraps up with what was found so far. [y/a/N] ")
+        with self.progress.paused():
+            for attempt in range(2):
+                try:
+                    answer = str(self.read_short(prompt)).strip().lower()
+                except (EOFError, KeyboardInterrupt, Exception):
+                    return "n"
+                if answer in ("y", "yes"):
+                    return "y"
+                if answer in ("a", "all", "always"):
+                    return "a"
+                if answer in ("", "n", "no"):
+                    return "n"
+                if attempt == 0:
+                    self.notice("Please answer y, a or n.")
+        return "n"
+
+    def _say_paused(self, text: str) -> None:
+        with self.progress.paused():
+            self.notice(text)
 
     def set_token_limit(self, limit: int) -> None:
         """``/limit <tokens>``: use ``limit`` from now on (0 is no limit) and save it in ~/.agentx/settings.json."""
@@ -1412,12 +1446,29 @@ class ChatApp:
         return wrapped
 
     def _observe_tool(self, name: str, args: dict) -> None:
-        """Called by the tool wrappers before the gate check. During a team job it shows the helper's call."""
-        if not self._team_helper:
+        """Called by the tool wrappers before the gate check, on the thread that runs the tool. During a team job it
+        shows the helper's call, on the main thread."""
+        helper = current_helper()
+        if not helper:
             return
+        on_main(self._show_helper_call, helper, name, args, wait=False)
+
+    def _show_helper_call(self, helper: str, name: str, args: dict) -> None:
         self.progress.stop()
-        self.screen.helper_call(self._team_helper, name, args)
-        self.progress.start(f"Running {self._team_helper}")
+        self.screen.helper_call(helper, name, args)
+        self.progress.start(self._team_label())
+
+    def _team_label(self) -> str:
+        """The spinner's words during a team job: what the helpers are doing, or which are running."""
+        activity = self.screen.helpers_line()
+        if activity:
+            return self._safe(activity, 160)
+        running = self._team_running
+        if not running:
+            return "Team is working"
+        if len(running) == 1:
+            return f"Running {self._safe(running[0], 80)}"
+        return f"Running {len(running)} helpers"
 
     def _team_notify(self, kind: str, data: dict) -> None:
         self.progress.stop()
@@ -1425,14 +1476,16 @@ class ChatApp:
             self.screen.team_plan(data.get("steps"))
             self.progress.start("Starting the team")
         elif kind == "dispatch":
-            self._team_helper = str(data.get("agent", ""))
+            self._team_running.append(str(data.get("agent", "")))
             self.screen.team_dispatch(data.get("agent"), data.get("query"))
-            self.progress.start(f"Running {self._team_helper}")
+            self.progress.start(self._team_label())
         elif kind == "result":
-            self._team_helper = ""
+            agent = str(data.get("agent", ""))
+            if agent in self._team_running:
+                self._team_running.remove(agent)
             self.screen.team_result(data.get("agent"), bool(data.get("ok")), data.get("text"),
                                     partial=bool(data.get("partial")))
-            self.progress.start("Team is working")
+            self.progress.start(self._team_label())
 
     def _team_question(self, question: str) -> Optional[str]:
         """The planner or a helper needs a fact: ask in the terminal. Enter, Ctrl+D and Ctrl+C skip it."""
@@ -1550,9 +1603,12 @@ class ChatApp:
                                 addendum=self.addendum,
                                 notify=self._team_notify, ask_user=self._team_question,
                                 describe_error=self._safe, extra_models=extras,
-                                chat_use=self._use_of(self.model_label), skills=self.skills)
+                                chat_use=self._use_of(self.model_label), skills=self.skills,
+                                step_tokens=step_token_share(self.token_limit))
         finally:
-            self._team_helper = ""
+            self._team_running = []
+            self.progress.stop()
+            self.screen.flush_helpers()                # what a helper did before an error or Ctrl+C
             self.progress.start("Thinking")
         # A job in which no step got anywhere would most likely fail the same way again: stop the batches.
         # (A failed job, one that ended without a result, and outcome "stuck" - no step finished - all count.)

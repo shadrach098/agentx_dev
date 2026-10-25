@@ -37,7 +37,8 @@ class TestWhatTheAgentIsGiven:
         runner = runner_of(app)
         names = [t.name for t in runner.tools]
         assert "use_skill" in names
-        for skill in ("exploring-a-project", "changing-files", "running-code", "delegating-work", "web-research"):
+        for skill in ("exploring-a-project", "changing-files", "running-code", "delegating-work", "web-research",
+                      "auditing-a-project"):
             assert f"- {skill}:" in runner.system_addendum           # web-research: the app has web tools now
         assert (skills_dir(home) / "running-code" / "SKILL.md").is_file()    # created on first use
 
@@ -181,7 +182,7 @@ class TestSkillsAsCommands:
         app, out, cwd, home, sent = self.app_with_sends(tmp_path)
         entries = app.skill_entries()
         assert set(entries) == {"/exploring-a-project", "/changing-files", "/running-code", "/delegating-work",
-                                "/web-research"}
+                                "/web-research", "/auditing-a-project"}
         assert entries["/running-code"].startswith("(skill) ")      # gui-testing has no tools here, so it is not offered
 
     def test_a_skill_with_a_task_sends_a_message_naming_it_and_the_task(self, tmp_path):
@@ -384,11 +385,16 @@ class TestSkillFirstExplorationEndToEnd:
 class TestHelperSkillReadsAreVisible:
     def test_a_helpers_use_skill_call_is_drawn_like_its_other_tool_calls(self, tmp_path):
         app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(), width=300)
+        from agentx_dev.cli import team
         use_skill = next(t for t in runner_of(app).tools if t.name == "use_skill")
-        app._team_helper = "explorer@gpt-6.1-sol"
-        use_skill.func("exploring-a-project")
+        team._local.step = team._Step("explorer@gpt-6.1-sol", team._Job())     # as inside a helper's step
+        try:
+            use_skill.func("exploring-a-project")
+        finally:
+            team._local.step = None
+        app.screen.flush_helpers()                      # the helper's looking calls are one line, printed at its end
         shown = out.getvalue()
-        assert "[explorer@gpt-6.1-sol] use_skill" in shown and "exploring-a-project" in shown
+        assert "[explorer@gpt-6.1-sol] Skills exploring-a-project" in shown
 
     def test_the_main_chat_is_not_drawn_twice(self, tmp_path):
         # in the main chat the runner's own events already show the call

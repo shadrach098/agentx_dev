@@ -81,8 +81,8 @@ class TestRunnerSettings:
     def test_team_helpers_trim_too(self, tmp_path):
         tools = build_tools(tmp_path, [], Gate(cwd=tmp_path))
         helpers = build_helpers(MockModel(), tools, "BASE", skills=Skills(tmp_path / "skills"))
-        assert all(runner._trim_policy == TrimPolicy(keep_last=1, keep_chars=24_000, step_chars=12_000)
-                   for desc, runner in helpers.values())        # a smaller window than the chat's
+        assert all(runner._trim_policy == TrimPolicy(keep_last=1, keep_chars=40_000, step_chars=20_000)
+                   for desc, runner in helpers.values())        # the chat's window: a smaller one caused re-reads
 
     def test_read_path_in_the_app_cuts_a_big_file_and_says_how_to_go_on(self, tmp_path):
         (tmp_path / "big.txt").write_text("\n".join(f"line {i} " + "z" * 60 for i in range(2_000)), encoding="utf-8")

@@ -209,7 +209,7 @@ def test_ctrl_c_in_the_middle_of_a_job_aborts_the_turn_and_the_next_message_work
     app, out, _, _ = make_app(tmp_path, Lines("do the big job", "next message", "/exit"), model, mode="auto")
     assert app.start() == 0
     assert "Turn interrupted" in out.getvalue() and "here is the summary" in out.getvalue()
-    assert app._team_helper == ""
+    assert app._team_running == []
 
 
 def test_team_command_asks_the_main_agent_to_call_the_tool(tmp_path):

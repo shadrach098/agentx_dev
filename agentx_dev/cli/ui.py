@@ -382,6 +382,33 @@ def prompt_message(width: Optional[int] = None) -> List[Tuple[str, str]]:
 
 
 SKILL_TOOL = "use_skill"
+# A team helper's calls that only look: counted into one line per helper instead of a line each.
+HELPER_LOOKS = {"read_path": "read", "list_directory": "list", "find_files": "search", "grep": "search",
+                "web_search": "web", "web_fetch": "fetch", "recall": "recall", SKILL_TOOL: "skill"}
+
+
+def _times(count: int) -> str:
+    return {1: "once", 2: "twice"}.get(count, f"{count:,} times")
+
+
+def helper_activity(counts: Mapping[str, Any], sep: str = " · ") -> str:
+    """``Read 12 files · Searched 3 patterns · Skills exploring-a-project`` for one helper's looking calls."""
+    parts = []
+    if counts.get("read"):
+        parts.append(f"Read {_plural(len(counts['read']), 'file')}")
+    if counts.get("search"):
+        parts.append(f"Searched {_plural(counts['search'], 'pattern')}")
+    if counts.get("list"):
+        parts.append(f"Listed {_plural(counts['list'], 'folder')}")
+    if counts.get("web"):
+        parts.append(f"Searched the web {_times(counts['web'])}")
+    if counts.get("fetch"):
+        parts.append(f"Fetched {_plural(counts['fetch'], 'page')}")
+    if counts.get("recall"):
+        parts.append(f"Looked up notes {_times(counts['recall'])}")
+    if counts.get("skill"):
+        parts.append("Skills " + ", ".join(counts["skill"]))
+    return sep.join(parts)
 
 
 class Screen:
@@ -391,12 +418,50 @@ class Screen:
     Skill reads are bookkeeping, not work: their text is never shown. A run of them becomes one line
     (``● Skills  using-superpowers → brainstorming → yt-script (+ score.py)``), printed when the agent moves on
     (``flush``); the agent's notes written between them wait until then, so they do not split the line. While a
-    run is open, ``skills_line()`` is what the app shows on the spinner, so the line grows in place."""
+    run is open, ``skills_line()`` is what the app shows on the spinner, so the line grows in place.
+
+    A team helper's looking calls (reads, searches, listings, web, skills) are counted the same way, one line per
+    helper (``● [explorer] Read 12 files · Searched 3 patterns``), printed when that helper does something else or
+    its step ends; ``helpers_line()`` is the spinner's text meanwhile. Paths under ``cwd`` are shown relative."""
 
     def __init__(self, console: Console) -> None:
         self.console = console
+        self.cwd: Optional[str] = None
         self._skills: Dict[str, List[str]] = {}      # skill -> other files of it read, in the order first read
         self._held: List[Dict[str, Any]] = []        # thoughts that came while a run of skill reads was open
+        self._helpers: Dict[str, Dict[str, Any]] = {}   # helper -> what its looking calls have done so far
+
+    def _sep(self) -> str:
+        return " · " if "utf" in (self.console.encoding or "").lower() else ", "
+
+    def _relative(self, text: str) -> str:
+        """``text`` with the project folder taken off the front of the paths in it."""
+        if not self.cwd or not text:
+            return text
+        root = self.cwd.rstrip("\\/")
+        flags = re.IGNORECASE if sys.platform == "win32" else 0
+        for prefix in {root + "\\", root + "/", root.replace("\\", "/") + "/"}:
+            text = re.sub(re.escape(prefix), "", text, flags=flags)
+        return text
+
+    def helpers_line(self) -> str:
+        sep = self._sep()
+        return "; ".join(f"{helper}: {helper_activity(counts, sep)}" for helper, counts in self._helpers.items()
+                         if helper_activity(counts, sep))
+
+    def flush_helper(self, helper: Any) -> None:
+        """Print what ``helper``'s looking calls did as one line, and start counting again."""
+        counts = self._helpers.pop(_short(helper, MAX_HELPER_CHARS), None)
+        activity = helper_activity(counts or {}, self._sep())
+        if not activity:
+            return
+        line = Text(f"{bullet(self.console)} [{_short(helper, MAX_HELPER_CHARS)}] ", style="bold")
+        line.append(activity, style="dim")
+        _print(self.console, line)
+
+    def flush_helpers(self) -> None:
+        for helper in list(self._helpers):
+            self.flush_helper(helper)
 
     def skills_line(self) -> str:
         parts = []
@@ -450,7 +515,8 @@ class Screen:
             name = _short(event.get("name", ""))
             args = event.get("args")
             try:
-                summary = _short(subject_of(str(event.get("name", "")), args if isinstance(args, dict) else {}))
+                summary = _short(self._relative(subject_of(str(event.get("name", "")),
+                                                           args if isinstance(args, dict) else {})))
             except Exception:
                 summary = ""
             line = Text(f"{bullet(self.console)} {name}", style="bold")
@@ -515,15 +581,32 @@ class Screen:
                                   style="bold magenta"))
 
     def team_result(self, agent: Any, ok: bool, text: Any, partial: bool = False) -> None:
+        self.flush_helper(agent)
         report = _short(_nothing_if_none(text), 160) or "(no report)"
         mark = ("partial" if partial else "done") if ok else "failed"
         _print(self.console, Text(f"   {mark} ({_short(agent, MAX_HELPER_CHARS)}): {report}",
                                   style="dim" if ok else "red"))
 
     def helper_call(self, helper: Any, name: Any, args: Any) -> None:
-        """A helper's tool call, drawn like the main chat's with the helper's name in front."""
+        """A helper's tool call. A looking call is counted into the helper's line (``helpers_line``); any other call
+        prints that line first, then its own, drawn like the main chat's with the helper's name in front."""
+        args = args if isinstance(args, dict) else {}
+        if isinstance(args.get("Input"), dict) and "path" not in args and "name" not in args:
+            args = args["Input"]                     # text-mode calls wrap the arguments
+        kind = HELPER_LOOKS.get(str(name))
+        if kind is not None:
+            counts = self._helpers.setdefault(_short(helper, MAX_HELPER_CHARS), {})
+            if kind == "read":
+                counts.setdefault("read", {})[str(args.get("path", ""))] = None
+            elif kind == "skill":
+                skills = counts.setdefault("skill", {})
+                skills[_short(args.get("name") or "?", 60)] = None
+            else:
+                counts[kind] = counts.get(kind, 0) + 1
+            return
+        self.flush_helper(helper)
         try:
-            summary = _short(subject_of(str(name), args if isinstance(args, dict) else {}))
+            summary = _short(self._relative(subject_of(str(name), args)))
         except Exception:
             summary = ""
         line = Text(f"{bullet(self.console)} [{_short(helper, MAX_HELPER_CHARS)}] {_short(name, 40)}",

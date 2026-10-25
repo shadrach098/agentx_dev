@@ -8,6 +8,14 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **`agentx` team helpers no longer read the same files over and over.** Helpers kept 12,000 to 24,000 characters of
+  tool results whole, lost the files they had read and read them again (eight to ten times each on one audit, about
+  2.5 million tokens and twelve limit questions). They now keep 20,000 to 40,000 like the chat, and a third whole read
+  of a file that has not changed in the step gets a note instead (an edit or any command resets it; a read with
+  `offset`/`limit` always works).
+- **A team's report reaches the chat whole.** The result text is cut at 20,000 characters (was 6,000, which cut an
+  audit's findings and made the agent start a second job).
+
 - **The wheel installs only `agentx_dev`.** `examples` and `host` (the docs site) were installed as top-level
   packages too; they stay in the source download. The license is now an SPDX expression (`MIT`, with
   `license-files`), which needs setuptools 77 or later to build.
@@ -23,6 +31,21 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   the plain chat path the call used to be retried up to three times after the budget was spent, paying each time.
 
 ### Added
+
+- **`agentx`: reading steps of a team job run side by side.** Explorer steps that do not depend on each other run
+  up to 3 at once (`AsyncSupervisor` with `max_parallel=3` and a lock: a coder or runner step runs alone). A plan
+  without `depends_on` keeps its order, with neighbouring explorer steps grouped. Helpers run in worker threads; every
+  approval, team question, limit question and screen line is handed to the main thread, so prompts never overlap,
+  and Ctrl+C stops the job at once (a helper stops at its next tool call or model reply).
+- **`agentx`: each team step has a token share,** one token limit's worth (at least 100,000); past it the step's
+  tools tell the helper to report what it has.
+- **`agentx`: `a` at the token-limit question** goes on and does not ask again in this message.
+- **`agentx`: helper lines like the chat.** A helper's reads, searches, listings, web calls and skills are one line
+  per helper (`● [explorer] Read 12 files · Searched 3 patterns`), shown on the spinner while it works and printed
+  when its step ends; edits and commands keep a line each, with project-relative paths.
+- **The `auditing-a-project` skill** (bundled): map, run the project's own checks, read by area with explorers side
+  by side, verify, and report Fix first / Medium / Low / Done well / Checks / Test gaps. `delegating-work` (version
+  2) says which steps run side by side.
 
 - **Smaller requests.** `AgentRunner(..., trim_results=True)` (and `AsyncAgentRunner`, or a `TrimPolicy` from
   `agentx_dev.Runner.Trim`) sends the model a one-line stub in place of each big tool result outside a window of the newest

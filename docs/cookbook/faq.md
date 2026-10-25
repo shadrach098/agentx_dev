@@ -374,11 +374,28 @@ catch an ordinary exception and carry on; to stop everything the way Ctrl+C does
 ## Why did `agentx` ask "Keep going for up to 200,000 more?" *(next release)*
 
 The message had used 200,000 tokens (input and output, every model, team helpers included). Every step of a turn
-sends the conversation again, so a long turn adds up fast. `y` goes on for another 200,000. `n` or Enter wraps up: tool
+sends the conversation again, so a long turn adds up fast. `y` goes on for another 200,000, and `a` goes on without
+asking again in this message (each team step still stops at its own share). `n` or Enter wraps up: tool
 calls are refused from then on, so the agent (and any team helpers) answer with what they have found, and the turn
 is kept. Only if wrapping up runs long too is the turn stopped like Ctrl+C.
 `/limit` shows the limit, `/limit 400k` raises it, `/limit 0` turns it off. See
 [The token limit](../guides/cli.md#the-token-limit).
+
+## Why did my team job read the same file again and again? *(next release)*
+
+Its helpers kept too few tool results whole (12,000 to 24,000 characters), so a file read early was left out of
+later requests and the helper read it again, eight to ten times on an audit. Helpers now keep 20,000 to 40,000, like
+the chat; a third whole read of a file that has not changed in the step gets a note instead ("Not read again: ...
+grep it for the part you need, or read a part with offset and limit"); and each step stops calling tools once it has
+used one token limit's worth (at least 100,000). See
+[Each step's limits](../guides/cli.md#each-steps-limits).
+
+## Can team helpers run at the same time? *(next release)*
+
+Reading steps can. Explorer steps that do not depend on each other run side by side, up to three, so "audit the
+security, the payments and the admin pages" reads all three areas at once. A coder or runner step runs alone, so
+nothing reads a file while it is being changed, and every approval still comes one at a time. See
+[Steps side by side](../guides/cli.md#steps-side-by-side).
 
 ## How do I make `agentx` cost less? *(next release)*
 

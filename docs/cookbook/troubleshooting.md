@@ -317,10 +317,19 @@ The summary call failed, so nothing was removed. It is tried again after 10 more
 a new conversation (`/clear`). If one huge result is the cause, summarising cannot help: `/clear` and ask for the
 part you need (`read_path` returns at most 30,000 characters at a time, and command output is cut at 30,000).
 
-**`This message has used 204,152 tokens; your limit is 200,000 a message (/limit changes it). Keep going for up to 200,000 more? [y/N]`**
-The token limit. `y` goes on for another 200,000; `n` or Enter stops the turn like Ctrl+C. `/limit 400k` raises it
+**`This message has used 204,152 tokens; your limit is 200,000 a message (/limit changes it). Keep going for up to 200,000 more? a = yes, and do not ask again in this message. No wraps up with what was found so far. [y/a/N]`**
+The token limit. `y` goes on for another 200,000, `a` goes on without asking again in this message, and `n` or
+Enter wraps up (below). `/limit 400k` raises it
 for long jobs, `/limit 0` turns it off. If it comes up often, see "How do I make `agentx` cost less?" in the
 [FAQ](faq.md).
+
+**`Not run: this step has used its share of the token limit (210,400 of 200,000 tokens). Stop calling tools and write your report now: ...`**
+A team helper's step used one token limit's worth (at least 100,000), so its tools now ask it to report. The step
+ends with what it found and the job goes on. `/limit` changes the share with the limit.
+
+**`Not read again: src/app.py was already read in full 2 times in this step and has not changed since. ...`**
+A team helper tried to read the same unchanged file whole a third time. It is told to use what it noted, grep the
+file, or read a part with `offset` and `limit`. An edit to the file or any command lets it read the file whole again.
 
 **`Wrapping up: no more tool calls in this message; the agent answers with what it has found so far.`**
 You answered no (or nothing) at the question above. Tool calls now return a refusal telling the agent to answer, so

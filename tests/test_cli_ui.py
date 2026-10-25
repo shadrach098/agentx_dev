@@ -68,8 +68,8 @@ class TestScreen:
         screen = Screen(c)
         screen.team_plan([{"agent": name, "query": "look around"}])
         screen.team_dispatch(name, "look around")
+        screen.helper_call(name, "read_path", {"path": "a.py"})       # counted; printed when the step ends
         screen.team_result(name, True, "all good")
-        screen.helper_call(name, "read_path", {"path": "a.py"})
         lines = out.getvalue().splitlines()
         assert [name in line for line in lines].count(True) == 4
         assert any(line.startswith("-> " + name + ":") for line in lines)
