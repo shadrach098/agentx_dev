@@ -11,9 +11,6 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **The wheel installs only `agentx_dev`.** `examples` and `host` (the docs site) were installed as top-level
   packages too; they stay in the source download. The license is now an SPDX expression (`MIT`, with
   `license-files`), which needs setuptools 77 or later to build.
-- **MCP tools sorted by what they do.** The first time agentx sees a server's tools, the ones the server marks
-  read-only run without asking (saved per server in `mcp.json` as `allow`/`seen`); the rest ask. `/mcp tools <name>`
-  lists them, `/mcp allow|ask <name> <tool...|read-only|all>` changes them; allowing a destructive tool asks first.
 - **An MCP sign-in survives a restart.** The SDK loaded a saved token as never expiring, sent it after it had run
   out, and asked for a new sign-in instead of renewing it; after a restart it also guessed the renewal address
   (`<server>/token`, a 404 for Supabase). agentx now keeps when the token runs out and the server's OAuth details from
@@ -66,6 +63,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   by themselves. Tools appear as `<server>__<tool>` for the chat and every team helper, ask before running even in
   auto mode, and their results are marked as outside data and cut at 30,000 characters. The `mcp` extra now needs
   `mcp>=1.10,<2` (2.x changed the client API and is not supported yet) and `keyring>=24`.
+- **MCP tools sorted by what they do.** The first time agentx sees a server's tools, the ones the server marks
+  read-only run without asking (saved per server in `mcp.json` as `allow`/`seen`); the rest ask. `/mcp tools <name>`
+  lists them, `/mcp allow|ask <name> <tool...|read-only|all>` changes them; allowing a destructive tool asks first.
 - **Model requests in `agentx` wait up to 5 minutes and are retried visibly.** `model.on_retry(attempt, error,
   delay)` is called before each retry; `agentx` prints a line.
 - **`agentx` input colours:** the `/name` at the start of the input line is coloured as you type (command cyan, skill
