@@ -240,6 +240,16 @@ def _kr_set(key: str, value: str) -> bool:
         return False
 
 
+def _secret_sent(client_info: Any) -> Any:
+    """``client_info`` set to send its secret with the token request when the server gave one but did not say how.
+    agentx asks to register as a public client (no secret); a server that issues a secret anyway and leaves
+    ``token_endpoint_auth_method`` out (Supabase) otherwise gets no secret and refuses the sign-in
+    ("Required parameter: client_secret")."""
+    if getattr(client_info, "client_secret", None) and not getattr(client_info, "token_endpoint_auth_method", None):
+        return client_info.model_copy(update={"token_endpoint_auth_method": "client_secret_post"})
+    return client_info
+
+
 class KeyringStorage:
     """The MCP SDK's ``TokenStorage`` over the system's credential store: one server's tokens and its registered
     client. Kept in memory as well, so a machine without a credential store still signs in for the session."""
@@ -269,10 +279,10 @@ class KeyringStorage:
     async def get_client_info(self) -> Any:
         from mcp.shared.auth import OAuthClientInformationFull
         text = self._get("client")
-        return OAuthClientInformationFull.model_validate_json(text) if text else None
+        return _secret_sent(OAuthClientInformationFull.model_validate_json(text)) if text else None
 
     async def set_client_info(self, client_info: Any) -> None:
-        self._set("client", client_info.model_dump_json())
+        self._set("client", _secret_sent(client_info).model_dump_json())
 
     def clear(self) -> None:
         self._memory.clear()
@@ -298,9 +308,10 @@ def _wait_for_callback(server: HTTPServer, timeout: float) -> Tuple[str, Optiona
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            message = "Signed in." if found.get("code") else "Sign-in failed."
-            self.wfile.write(f"<html><body><p>{message} You can close this tab and go back to agentx.</p>"
-                             "</body></html>".encode("utf-8"))
+            message = ("Sign-in received. You can close this tab; agentx finishes signing in and says whether it "
+                       "worked." if found.get("code") else "Sign-in failed. You can close this tab and go back to "
+                       "agentx.")
+            self.wfile.write(f"<html><body><p>{message}</p></body></html>".encode("utf-8"))
 
         def log_message(self, *args: Any) -> None:     # keep the terminal quiet
             pass

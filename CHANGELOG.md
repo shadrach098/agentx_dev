@@ -8,6 +8,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **MCP sign-in to servers that issue a client secret (Supabase).** A secret given without a method is now sent
+  in the token request; the sign-in failed with "Required parameter: client_secret".
 - **One stuck request no longer waits about 12 minutes.** A timed-out request is retried once at most (the client
   has usually retried it already; a timed-out request may still be billed), and a 429 waits for its `Retry-After`.
 - **A spent budget is not retried.** `CostBudgetExceeded` (and anything `model.on_usage` raises) is raised once; on

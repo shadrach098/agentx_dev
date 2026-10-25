@@ -234,3 +234,34 @@ class TestCommandWords:
         app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(), width=400)
         run_command(app, line)
         assert "Usage: /mcp" in out.getvalue()
+
+
+@needs_mcp
+class TestClientSecret:
+    """Supabase issues a client secret to a client that asked for none, and does not say how to send it; the sign-in
+    then failed with 'Required parameter: client_secret'. Such a secret is sent in the token request."""
+
+    def info(self, **kw):
+        from mcp.shared.auth import OAuthClientInformationFull
+        return OAuthClientInformationFull(client_id="c", redirect_uris=["http://localhost:33418/callback"], **kw)
+
+    def test_a_secret_without_a_method_is_posted(self, monkeypatch):
+        import asyncio
+        fake = FakeKeyring()
+        monkeypatch.setattr(mcp_module, "_keyring", lambda: fake)
+        asyncio.run(KeyringStorage("supa").set_client_info(self.info(client_secret="s3cret")))
+        stored = asyncio.run(KeyringStorage("supa").get_client_info())
+        assert stored.token_endpoint_auth_method == "client_secret_post" and stored.client_secret == "s3cret"
+
+    def test_one_saved_before_the_fix_is_mended_when_read(self, monkeypatch):
+        import asyncio
+        fake = FakeKeyring()
+        monkeypatch.setattr(mcp_module, "_keyring", lambda: fake)
+        fake.set_password("agentx-mcp", "supa:client", self.info(client_secret="s3cret").model_dump_json())
+        assert asyncio.run(KeyringStorage("supa").get_client_info()).token_endpoint_auth_method == "client_secret_post"
+
+    def test_a_public_client_and_a_stated_method_are_left_alone(self):
+        from agentx_dev.cli.mcp import _secret_sent
+        assert _secret_sent(self.info(token_endpoint_auth_method="none")).token_endpoint_auth_method == "none"
+        assert _secret_sent(self.info(client_secret="s", token_endpoint_auth_method="client_secret_basic")) \
+            .token_endpoint_auth_method == "client_secret_basic"
