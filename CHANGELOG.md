@@ -62,7 +62,7 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   `/mcp login`; tokens go to the system's credential store (`keyring`, split across entries when long) and renew
   by themselves. Tools appear as `<server>__<tool>` for the chat and every team helper, ask before running even in
   auto mode, and their results are marked as outside data and cut at 30,000 characters. The `mcp` extra now needs
-  `mcp>=1.10` and `keyring>=24`.
+  `mcp>=1.10,<2` (2.x changed the client API and is not supported yet) and `keyring>=24`.
 - **Model requests in `agentx` wait up to 5 minutes and are retried visibly.** `model.on_retry(attempt, error,
   delay)` is called before each retry; `agentx` prints a line.
 - **`agentx` input colours:** the `/name` at the start of the input line is coloured as you type (command cyan, skill
