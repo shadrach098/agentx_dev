@@ -286,17 +286,67 @@ def prompt_message(width: Optional[int] = None) -> List[Tuple[str, str]]:
     return [("class:rule", "─" * max(1, width - 1) + "\n"), ("class:prompt", "❯ ")]
 
 
+SKILL_TOOL = "use_skill"
+
+
 class Screen:
     """Draws what the agent does. Everything is printed as ``Text``, so square brackets in tool output are
-    never read as rich markup."""
+    never read as rich markup.
+
+    Skill reads are bookkeeping, not work: their text is never shown. A run of them becomes one line
+    (``● Skills  using-superpowers → brainstorming → yt-script (+ score.py)``), printed when the agent moves on
+    (``flush``); the agent's notes written between them wait until then, so they do not split the line. While a
+    run is open, ``skills_line()`` is what the app shows on the spinner, so the line grows in place."""
 
     def __init__(self, console: Console) -> None:
         self.console = console
+        self._skills: Dict[str, List[str]] = {}      # skill -> other files of it read, in the order first read
+        self._held: List[Dict[str, Any]] = []        # thoughts that came while a run of skill reads was open
+
+    def skills_line(self) -> str:
+        parts = []
+        for skill, files in self._skills.items():
+            parts.append(skill + (f" (+ {', '.join(files)})" if files else ""))
+        return " → ".join(parts)
+
+    def flush(self) -> None:
+        """Print the open run of skill reads as one line, then the notes held back meanwhile."""
+        if self._skills:
+            line = Text(f"{bullet(self.console)} Skills", style="bold")
+            line.append("  " + self.skills_line(), style="dim")
+            _print(self.console, line)
+            self._skills = {}
+        held, self._held = self._held, []
+        for event in held:
+            self.show_event(event)
+
+    def _note_skill(self, args: Any) -> None:
+        if isinstance(args, dict) and "name" not in args and isinstance(args.get("Input"), dict):
+            args = args["Input"]                     # text-mode calls wrap the arguments
+        args = args if isinstance(args, dict) else {}
+        skill = _short(args.get("name") or "?", 60)
+        files = self._skills.setdefault(skill, [])
+        extra = _short(args.get("file") or "", 40)
+        if extra and extra != "SKILL.md" and extra not in files:
+            files.append(extra)
 
     def show_event(self, event: Dict[str, Any]) -> None:
         if not isinstance(event, dict):
             return
         kind = event.get("type")
+        if kind == "tool_call" and event.get("name") == SKILL_TOOL:
+            self._note_skill(event.get("args"))
+            return
+        if kind == "tool_result" and event.get("name") == SKILL_TOOL:
+            result = _nothing_if_none(event.get("result"))
+            if event.get("is_error") or str(result).lstrip().startswith("ERROR"):
+                self.flush()                         # a failed read is shown: mistakes must not disappear
+                self._result(result, True)
+            return
+        if kind == "thought" and self._skills:
+            self._held.append(event)
+            return
+        self.flush()
         if kind == "thought":
             text = plain(_nothing_if_none(event.get("content")), keep_newlines=True).strip()
             if text:

@@ -624,10 +624,14 @@ class ChatApp:
                 kind = event.get("type") if isinstance(event, dict) else None
                 if kind in ("tool_call", "tool_result", "final"):
                     events.append(event)
-                if kind == "tool_call":
+                skills = self.screen.skills_line()
+                if skills and kind not in ("final", "completion"):
+                    self.progress.start(f"Skills: {self._safe(skills, 120)}")      # the open run, growing in place
+                elif kind == "tool_call":
                     self.progress.start(f"Running {self._safe(event.get('name', ''), 40)}")
                 elif kind not in ("final", "completion"):
                     self.progress.start("Thinking")
+            self.screen.flush()
             finished = True
         except TokenLimitReached as stop:
             self.notice(f"Stopped: this message used {stop.used:,} tokens, past your limit of {stop.limit:,} a "
@@ -639,6 +643,8 @@ class ChatApp:
         except Exception as e:
             self.error(self._failure(e))
         finally:
+            self.progress.stop()
+            self.screen.flush()                       # a run of skill reads left open by an error or Ctrl+C
             with self._limit_lock:
                 self._turn_start = None
                 self._wrapping_up = False

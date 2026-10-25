@@ -104,3 +104,72 @@ class TestStartScreen:
         app.cwd = deep
         short = app._short_folder()
         assert len(short) == 42 and short.startswith("…") and short.endswith("y" * 30)
+
+
+class TestSkillReadsAreOneLine:
+    """A skill read shows its name, never its text; a run of them is one line, printed when the agent moves on."""
+
+    def screen(self):
+        console = Console(file=io.StringIO(), width=200, color_system=None)
+        return Screen(console), console
+
+    def call(self, name, file=None):
+        args = {"name": name, **({"file": file} if file else {})}
+        return {"type": "tool_call", "name": "use_skill", "args": args}
+
+    def result(self, text="# A skill\nLook before you change anything", error=False):
+        return {"type": "tool_result", "name": "use_skill", "result": text, "is_error": error}
+
+    def test_a_run_of_reads_becomes_one_line_and_notes_wait_for_it(self):
+        screen, console = self.screen()
+        for event in (self.call("using-superpowers"), self.result(), {"type": "thought", "content": "Loading."},
+                      self.call("brainstorming"), self.result(), self.call("yt-script"), self.result(),
+                      self.call("yt-script", "score.py"), self.result("#!/usr/bin/env python3")):
+            screen.show_event(event)
+        assert console.file.getvalue() == ""                     # nothing yet: the run is still open
+        assert screen.skills_line() == "using-superpowers → brainstorming → yt-script (+ score.py)"
+        screen.show_event({"type": "tool_call", "name": "read_path", "args": {"path": "a.py"}})
+        lines = console.file.getvalue().splitlines()
+        assert lines[0].endswith("Skills  using-superpowers → brainstorming → yt-script (+ score.py)")
+        assert lines[1] == "Loading." and "read_path" in lines[2]
+        assert "Look before you change" not in console.file.getvalue() and screen.skills_line() == ""
+
+    def test_the_final_answer_closes_the_run(self):
+        screen, console = self.screen()
+        screen.show_event(self.call("brainstorming"))
+        screen.show_event(self.result())
+        screen.show_event({"type": "final", "content": "Done."})
+        text = console.file.getvalue()
+        assert text.index("Skills  brainstorming") < text.index("Done.")
+
+    def test_a_failed_read_is_shown(self):
+        screen, console = self.screen()
+        screen.show_event(self.call("flights"))
+        screen.show_event(self.result("ERROR: no skill named 'flights'.", error=True))
+        text = console.file.getvalue()
+        assert "Skills  flights" in text and "ERROR: no skill named 'flights'." in text
+
+    def test_reading_a_skill_again_does_not_repeat_it(self):
+        screen, console = self.screen()
+        for _ in range(2):
+            screen.show_event(self.call("brainstorming"))
+            screen.show_event(self.result())
+        assert screen.skills_line() == "brainstorming"
+
+    def test_flush_twice_prints_once(self):
+        screen, console = self.screen()
+        screen.show_event(self.call("brainstorming"))
+        screen.flush()
+        screen.flush()
+        assert console.file.getvalue().count("Skills") == 1
+
+    def test_in_a_real_turn_the_skill_text_never_reaches_the_screen(self, tmp_path):
+        from tests.conftest import make_final, make_react_response
+        model = MockModel(script=[make_react_response("use_skill", {"name": "exploring-a-project"}),
+                                  make_react_response("use_skill", {"name": "changing-files"}),
+                                  make_final("All read.")])
+        app, out, cwd, home = make_app(tmp_path, Lines("read the skills", "/exit"), model, width=200)
+        assert app.start() == 0
+        text = out.getvalue()
+        assert "Skills  exploring-a-project → changing-files" in text and text.count("Skills  ") == 1
+        assert "Look before you change anything" not in text and "All read." in text
