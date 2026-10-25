@@ -238,6 +238,7 @@ def _limit(ctx: Any, arg: str) -> None:
 
 
 MCP_USAGE = ("Usage: /mcp | /mcp add <name> <url> [--sse] | /mcp add <name> -- <command> [args...] | "
+             "/mcp tools <name> | /mcp allow <name> <tool...|read-only|all> | /mcp ask <name> <tool...|all> | "
              "/mcp remove <name> | /mcp login <name> | /mcp logout <name>")
 
 
@@ -277,6 +278,12 @@ def _mcp(ctx: Any, arg: str) -> None:
         return
     if sub in ("remove", "login", "logout") and len(rest) == 1:
         getattr(ctx, f"mcp_{sub}")(rest[0])
+        return
+    if sub == "tools" and len(rest) == 1:
+        ctx.show_mcp_tools(rest[0])
+        return
+    if sub in ("allow", "ask") and len(rest) >= 2:
+        ctx.mcp_allow(rest[0], rest[1:], sub == "allow")
         return
     ctx.error(MCP_USAGE)
 

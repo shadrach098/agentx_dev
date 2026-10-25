@@ -23,7 +23,7 @@ from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_
 from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, compact, needs_compaction
 from agentx_dev.Runner.Trim import TrimPolicy, trim_tool_results
 from agentx_dev.cli.context import build_addendum
-from agentx_dev.cli.mcp import INSTALL_HINT, MCPManager, ServerConfig, config_path, valid_name
+from agentx_dev.cli.mcp import INSTALL_HINT, KINDS, MCPManager, ServerConfig, config_path, valid_name
 from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events, summary_entry_text
 from agentx_dev.cli.recall import ProjectMemory, auto_block, choose_embeddings, make_recall_tool, worth_a_note
 from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, describe_prompt, is_auto_note,
@@ -681,7 +681,22 @@ class ChatApp:
         for name, status in statuses.items():
             if not status.startswith("connected"):
                 self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
+            else:
+                self._note_new_mcp_tools(name, quiet_if_none=True)
         self._refresh_mcp_tools(attach=False)
+
+    def _note_new_mcp_tools(self, name: str, quiet_if_none: bool = False) -> None:
+        """Allow the read-only tools ``name`` shows for the first time, and say what runs without asking."""
+        manager = self._mcp_manager()
+        added = manager.note_new_tools(name)
+        if quiet_if_none and not added:
+            return
+        kinds = manager.tool_kinds(name)
+        allowed = [tool for tool in kinds if tool in manager.servers[name].allow]
+        asking = len(kinds) - len(allowed)
+        self.notice(f"MCP {self._safe(name, 40)}: {len(allowed)} of its {len(kinds)} tools run without asking (the "
+                    f"server marks them read-only); {asking} ask first. /mcp tools {name} lists them; /mcp allow and "
+                    "/mcp ask change one.")
 
     def _refresh_mcp_tools(self, attach: bool = True) -> None:
         """Put the connected servers' tools (gated) in ``self.tools``; with ``attach``, give the conversation a
@@ -691,10 +706,14 @@ class ChatApp:
         fresh = []
         for tool in (self.mcp.tools() if self.mcp is not None else []):
             wrapped = gate_tool(tool, self.gate, observer=self._observe_tool)
-            wrapped.mcp_server = tool.name.split("__", 1)[0]
+            wrapped.mcp_server, wrapped.mcp_remote = tool.mcp_server, tool.mcp_remote
             fresh.append(wrapped)
         self._mcp_tools = fresh
         self.tools.extend(fresh)
+        # The servers' allowed tools run without asking: exact names, kept apart from the user's own rules.
+        servers = self.mcp.servers if self.mcp is not None else {}
+        self.gate.extra_allow = [tool.name for tool in fresh
+                                 if tool.mcp_remote in getattr(servers.get(tool.mcp_server), "allow", [])]
         if attach and self.session is not None and self.model is not None:
             self.session.attach(self._make_runner(self.model))
 
@@ -713,9 +732,9 @@ class ChatApp:
             names = ", ".join(tool.name for tool in self._mcp_tools[:12])
             more = f" and {len(self._mcp_tools) - 12} more" if len(self._mcp_tools) > 12 else ""
             lines.append(f"Tools: {self._safe(names, 800)}{more}.")
-        lines.append(f"Kept in {path}. Their tools ask before running, even in auto mode; to let one server's run "
-                     "without asking, add \"allow\": [\"<name>__*\"] to your settings. /mcp login <name> signs in, "
-                     "/mcp logout <name> signs out, /mcp remove <name> deletes.")
+        lines.append(f"Kept in {path}. Tools a server marks read-only run without asking; the rest ask, even in auto "
+                     "mode. /mcp tools <name> lists a server's tools, /mcp allow|ask <name> <tool> changes one, "
+                     "/mcp login|logout|remove <name>.")
         self.notice("\n".join(lines))
 
     def mcp_add(self, name: str, config: ServerConfig) -> None:
@@ -750,6 +769,8 @@ class ChatApp:
                 f"{name} wants you to sign in. Open the sign-in page in your browser now? [y/N] "):
             status = manager.login(name)
         self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
+        if status.startswith("connected"):
+            self._note_new_mcp_tools(name)
         self._refresh_mcp_tools()
 
     def _known_server(self, name: str) -> bool:
@@ -757,6 +778,71 @@ class ChatApp:
             return True
         self.error(f"No MCP server called {self._safe(name, 40)}. /mcp lists them.")
         return False
+
+    def show_mcp_tools(self, name: str) -> None:
+        """``/mcp tools <name>``: every tool of a connected server, what the server says it does, and whether it
+        runs without asking."""
+        if not self._known_server(name):
+            return
+        manager = self._mcp_manager()
+        kinds = manager.tool_kinds(name)
+        if not kinds:
+            self.notice(f"{name} is not connected ({self._safe(manager.status.get(name, 'not connected'), 200)}), so "
+                        "its tools are not known yet.")
+            return
+        allow = manager.servers[name].allow
+        free = [tool for tool in kinds if tool in allow]
+        asking = [tool for tool in kinds if tool not in allow]
+        lines = [f"{name}: {len(kinds)} tools. Run without asking ({len(free)}):"]
+        lines += [f"  {self._safe(tool, 60)}  ({KINDS[kinds[tool]]})" for tool in free] or ["  (none)"]
+        lines.append(f"Ask first ({len(asking)}):")
+        lines += [f"  {self._safe(tool, 60)}  ({KINDS[kinds[tool]]})" for tool in asking] or ["  (none)"]
+        lines.append(f"/mcp allow {name} <tool> [more...] lets tools run without asking (or: read-only, all); "
+                     f"/mcp ask {name} <tool> [more...] makes them ask (or: all). Saved in "
+                     f"{self._safe(config_path(self.home), 300)}. A deny rule in your settings still wins.")
+        self.notice("\n".join(lines))
+
+    def mcp_allow(self, name: str, words: List[str], allowed: bool) -> None:
+        """``/mcp allow|ask <name> <tool...>`` (``all``; for allow also ``read-only``)."""
+        if not self._known_server(name):
+            return
+        manager = self._mcp_manager()
+        kinds = manager.tool_kinds(name)
+        known = set(kinds) | set(manager.servers[name].seen)
+        prefix = f"{name}__"
+        picked: List[str] = []
+        for word in words:
+            if word == "all":
+                picked += list(kinds) or list(known)
+            elif word == "read-only" and allowed:
+                picked += [tool for tool, kind in kinds.items() if kind == "read-only"]
+            else:
+                tool = word[len(prefix):] if word.startswith(prefix) else word
+                if tool not in known:
+                    self.error(f"{name} has no tool called {self._safe(word, 60)}. /mcp tools {name} lists them.")
+                    return
+                picked.append(tool)
+        picked = list(dict.fromkeys(picked))
+        if not picked:
+            self.notice("Nothing changed.")
+            return
+        risky = [tool for tool in picked if kinds.get(tool) == "destructive"]
+        if allowed and risky and not self._yes(
+                f"{', '.join(self._safe(t, 40) for t in risky[:8])} {'deletes or cancels' if len(risky) == 1 else 'delete or cancel'} "
+                "things (the server says so). Let them run without asking? [y/N] "):
+            picked = [tool for tool in picked if tool not in risky]
+            if not picked:
+                self.notice("Nothing changed.")
+                return
+        try:
+            manager.set_allowed(name, picked, allowed)
+        except (OSError, ValueError) as error:
+            self.error(f"Could not save the change ({type(error).__name__}).")
+            return
+        self._refresh_mcp_tools()
+        what = "run without asking" if allowed else "ask first"
+        self.notice(f"{len(picked)} {name} tool{'s' if len(picked) != 1 else ''} now {what}: "
+                    f"{self._safe(', '.join(picked[:12]), 600)}{' ...' if len(picked) > 12 else ''}.")
 
     def mcp_remove(self, name: str) -> None:
         if not self._known_server(name):
@@ -776,6 +862,8 @@ class ChatApp:
             self.notice(f"{name} runs on your computer; there is nothing to sign in to. Reconnecting.")
         status = manager.login(name)
         self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
+        if status.startswith("connected"):
+            self._note_new_mcp_tools(name, quiet_if_none=True)
         self._refresh_mcp_tools()
 
     def mcp_logout(self, name: str) -> None:

@@ -128,9 +128,9 @@ class TestARealServer:
         manager = MCPManager(tmp_path, {})
         manager.add(echo_config())
         try:
-            assert manager.connect_all() == {"echo": "connected, 2 tools"}
+            assert manager.connect_all() == {"echo": "connected, 3 tools"}
             tools = {tool.name: tool for tool in manager.tools()}
-            assert set(tools) == {"echo__echo", "echo__add"}
+            assert set(tools) == {"echo__echo", "echo__add", "echo__wipe"}
             assert tools["echo__echo"].func(text="hi") == caution("echo") + "echo: hi"
             assert tools["echo__add"].func(a=2, b=3).endswith("5")
             assert tools["echo__add"].description.startswith("[MCP server 'echo', added by the user]")
@@ -167,18 +167,19 @@ class TestInTheApp:
         try:
             run_command(app, f'/mcp add echo -- "{sys.executable}" "{ECHO_SERVER}"')
             text = out.getvalue()
-            assert "MCP echo: connected, 2 tools" in text
+            assert "MCP echo: connected, 3 tools" in text
+            assert "1 of its 3 tools run without asking" in text
             assert load_servers(home)[0]["echo"].args == [str(ECHO_SERVER)]
-            assert "echo__echo" in [t.name for t in app.session.runner.tools]     # the conversation's agent has it
-            tool = next(t for t in app.tools if t.name == "echo__echo")
+            assert "echo__add" in [t.name for t in app.session.runner.tools]      # the conversation's agent has it
+            tool = next(t for t in app.tools if t.name == "echo__add")
             asked = []
             app.gate.ask = lambda request: asked.append(request) or Answer("n")
-            assert "declined" in tool.func(text="hi").lower()
-            assert asked and asked[0].tool == "echo__echo"            # asks even in auto mode
+            assert "declined" in tool.func(a=1, b=2).lower()
+            assert asked and asked[0].tool == "echo__add"             # unlabelled: asks, even in auto mode
             app.gate.allow.append("echo__*")
-            assert tool.func(text="hi").endswith("echo: hi")         # an allow rule lets it through
+            assert tool.func(a=1, b=2).endswith("3")                  # the user's own allow rule lets it through
             run_command(app, "/mcp")
-            assert "echo__echo" in out.getvalue() and '"allow": ["<name>__*"]' in out.getvalue()
+            assert "echo__add" in out.getvalue() and "/mcp tools <name>" in out.getvalue()
         finally:
             app.mcp.close()
 
@@ -285,11 +286,11 @@ class TestAnExpiredSignInIsRenewed:
         asyncio.run(storage.set_tokens(self.token(3600)))
         assert 3500 < storage.expires_at() - time.time() < 3600              # a minute early
 
-    def test_a_token_saved_before_the_fix_counts_as_run_out(self, monkeypatch):
+    def test_a_token_saved_before_the_time_was_kept_has_no_time(self, monkeypatch):
         fake = FakeKeyring()
         monkeypatch.setattr(mcp_module, "_keyring", lambda: fake)
         fake.set_password("agentx-mcp", "svc:tokens", self.token().model_dump_json())
-        assert KeyringStorage("svc").expires_at() == 1.0
+        assert KeyringStorage("svc").expires_at() is None            # sent as it is until the server says no
 
     def test_a_token_that_never_runs_out_has_no_time(self, monkeypatch):
         import asyncio
@@ -298,19 +299,50 @@ class TestAnExpiredSignInIsRenewed:
         asyncio.run(storage.set_tokens(self.token(None)))
         assert storage.expires_at() is None
 
-    def test_the_sdk_is_told_so_it_renews_instead_of_asking_for_a_sign_in(self, monkeypatch):
+    def metadata(self):
+        from mcp.shared.auth import OAuthMetadata
+        return OAuthMetadata(issuer="https://api.example", authorization_endpoint="https://api.example/authorize",
+                             token_endpoint="https://api.example/v1/oauth/token")
+
+    def test_a_run_out_token_is_renewed_at_the_saved_address(self, monkeypatch):
+        """Supabase signs in on api.supabase.com; after a restart the SDK guessed mcp.supabase.com/token (404)."""
         import asyncio
+        import time
         fake = FakeKeyring()
         monkeypatch.setattr(mcp_module, "_keyring", lambda: fake)
         storage = KeyringStorage("svc")
-        fake.set_password("agentx-mcp", "svc:tokens", self.token().model_dump_json())   # old: no expiry kept
-        provider = mcp_module.oauth_provider(ServerConfig("svc", url="https://a.example/mcp"), storage, False)
-        provider.context.client_info = None
+        storage.set_metadata(self.metadata().model_dump_json())
+        fake.set_password("agentx-mcp", "svc:tokens", self.token().model_dump_json())
+        fake.set_password("agentx-mcp", "svc:expires_at", str(time.time() - 10))       # ran out
+        provider = mcp_module.oauth_provider(ServerConfig("svc", url="https://mcp.example/mcp"), storage, False)
         asyncio.run(provider._initialize())
-        assert provider.context.token_expiry_time == 1.0
+        assert str(provider.context.oauth_metadata.token_endpoint) == "https://api.example/v1/oauth/token"
         assert not provider.context.is_token_valid()                    # so with client info and a renewal token,
-        provider.context.client_info = object()                         # the SDK refreshes before sending
+        provider.context.client_info = object()                         # the SDK renews, at the saved address
         assert provider.context.can_refresh_token()
+
+    def test_without_the_address_a_run_out_token_is_sent_rather_than_renewed_at_a_guess(self, monkeypatch):
+        import asyncio
+        import time
+        fake = FakeKeyring()
+        monkeypatch.setattr(mcp_module, "_keyring", lambda: fake)
+        fake.set_password("agentx-mcp", "svc:tokens", self.token().model_dump_json())
+        fake.set_password("agentx-mcp", "svc:expires_at", str(time.time() - 10))
+        provider = mcp_module.oauth_provider(ServerConfig("svc", url="https://mcp.example/mcp"),
+                                             KeyringStorage("svc"), False)
+        asyncio.run(provider._initialize())
+        assert provider.context.token_expiry_time is None and provider.context.is_token_valid()
+
+    def test_the_address_is_saved_when_the_sdk_finds_it(self, monkeypatch):
+        import asyncio
+        import httpx
+        fake = FakeKeyring()
+        monkeypatch.setattr(mcp_module, "_keyring", lambda: fake)
+        storage = KeyringStorage("svc")
+        provider = mcp_module.oauth_provider(ServerConfig("svc", url="https://mcp.example/mcp"), storage, False)
+        response = httpx.Response(200, content=self.metadata().model_dump_json().encode())
+        asyncio.run(provider._handle_oauth_metadata_response(response))
+        assert "api.example/v1/oauth/token" in storage.metadata()
 
     def test_clear_forgets_the_time_too(self, monkeypatch):
         import asyncio
@@ -319,3 +351,96 @@ class TestAnExpiredSignInIsRenewed:
         asyncio.run(KeyringStorage("svc").set_tokens(self.token()))
         KeyringStorage("svc").clear()
         assert fake.data == {}
+
+
+class TestToolKinds:
+    def tool(self, **hints):
+        from types import SimpleNamespace
+        return SimpleNamespace(name="t", annotations=SimpleNamespace(**{"readOnlyHint": None, "destructiveHint": None,
+                                                                       **hints}) if hints else None)
+
+    def test_the_servers_labels_decide(self):
+        from agentx_dev.cli.mcp import tool_kind
+        assert tool_kind(self.tool(readOnlyHint=True, destructiveHint=False)) == "read-only"
+        assert tool_kind(self.tool(readOnlyHint=False, destructiveHint=True)) == "destructive"
+        assert tool_kind(self.tool(readOnlyHint=True, destructiveHint=True)) == "destructive"   # the stricter word
+        assert tool_kind(self.tool(readOnlyHint=False, destructiveHint=False)) == "changes"
+        assert tool_kind(self.tool()) == "unlabelled"
+
+    def test_the_lists_are_saved_and_read_back(self, tmp_path):
+        save_servers(tmp_path, {"f": ServerConfig("f", url="https://a.example", allow=["search"],
+                                                  seen=["search", "cancel"])})
+        config = load_servers(tmp_path)[0]["f"]
+        assert config.allow == ["search"] and config.seen == ["cancel", "search"]
+
+
+@needs_mcp
+class TestTheAllowList:
+    """The first time agentx sees a server's tools it lets the ones the server marks read-only run without asking,
+    saves that in mcp.json, and never adds back one the user took out."""
+
+    def app(self, tmp_path, *answers):
+        app, out, cwd, home = make_app(tmp_path, Lines(*answers), MockModel(), width=400, mode="auto")
+        app.model = app.model_factory(None, {})
+        app._start_fresh()
+        return app, out, home
+
+    def test_read_only_tools_run_without_asking_the_rest_ask(self, tmp_path):
+        app, out, home = self.app(tmp_path, "y")
+        try:
+            run_command(app, f'/mcp add echo -- "{sys.executable}" "{ECHO_SERVER}"')
+            config = load_servers(home)[0]["echo"]
+            assert config.allow == ["echo"] and set(config.seen) == {"echo", "add", "wipe"}
+            asked = []
+            app.gate.ask = lambda request: asked.append(request.tool) or Answer("n")
+            tools = {t.name: t for t in app.tools}
+            assert tools["echo__echo"].func(text="hi").endswith("echo: hi") and asked == []
+            tools["echo__wipe"].func(what="x")
+            assert asked == ["echo__wipe"]
+        finally:
+            app.mcp.close()
+
+    def test_tools_lists_them_and_ask_takes_one_out_for_good(self, tmp_path):
+        app, out, home = self.app(tmp_path, "y")
+        try:
+            run_command(app, f'/mcp add echo -- "{sys.executable}" "{ECHO_SERVER}"')
+            run_command(app, "/mcp tools echo")
+            text = out.getvalue()
+            assert "Run without asking (1):\n  echo  (only reads)" in text
+            assert "wipe  (deletes or cancels)" in text and "add  (not labelled by the server)" in text
+            run_command(app, "/mcp ask echo echo")
+            assert load_servers(home)[0]["echo"].allow == []
+            assert "echo__echo" not in app.gate.extra_allow
+            app.mcp.connect("echo")                                   # seen again: not added back
+            assert app.mcp.note_new_tools("echo") == [] and load_servers(home)[0]["echo"].allow == []
+        finally:
+            app.mcp.close()
+
+    def test_allowing_a_destructive_tool_asks_first(self, tmp_path):
+        app, out, home = self.app(tmp_path, "y", "n", "y")
+        try:
+            run_command(app, f'/mcp add echo -- "{sys.executable}" "{ECHO_SERVER}"')
+            run_command(app, "/mcp allow echo all")                   # "n" to wipe: the others still go in
+            assert set(load_servers(home)[0]["echo"].allow) == {"echo", "add"}
+            run_command(app, "/mcp allow echo echo__wipe")            # "y"; the full name works too
+            assert "wipe" in load_servers(home)[0]["echo"].allow and "echo__wipe" in app.gate.extra_allow
+        finally:
+            app.mcp.close()
+
+    def test_a_deny_rule_still_wins(self, tmp_path):
+        app, out, home = self.app(tmp_path, "y")
+        try:
+            run_command(app, f'/mcp add echo -- "{sys.executable}" "{ECHO_SERVER}"')
+            app.gate.deny.append("echo__echo")
+            assert next(t for t in app.tools if t.name == "echo__echo").func(text="hi").startswith("Refused")
+        finally:
+            app.mcp.close()
+
+    def test_an_unknown_tool_name_changes_nothing(self, tmp_path):
+        app, out, home = self.app(tmp_path, "y")
+        try:
+            run_command(app, f'/mcp add echo -- "{sys.executable}" "{ECHO_SERVER}"')
+            run_command(app, "/mcp allow echo nope")
+            assert "has no tool called nope" in out.getvalue() and load_servers(home)[0]["echo"].allow == ["echo"]
+        finally:
+            app.mcp.close()

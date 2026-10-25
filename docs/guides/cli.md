@@ -319,9 +319,25 @@ environment variable, so the key itself is never written down:
 ```
 
 **The tools.** Each tool appears as `<server>__<tool>` (`flightclaw__search_flights`), described as coming from that
-server, in the chat and for every team helper. They ask before running in every mode, `auto` included; to let one
-server's tools run without asking, add `"allow": ["flightclaw__*"]` to your settings. A deny rule such as
-`"flightclaw__book*"` refuses some of them. What a tool returns is marked as data from an outside server, cut at
+server, in the chat and for every team helper.
+
+**Which run without asking.** A server labels each tool (MCP's `readOnlyHint` and `destructiveHint`). The first time
+`agentx` sees a tool, it lets the ones the server marks read-only run without asking, and saves that per server in
+`mcp.json` (`"allow"`, with every tool seen so far in `"seen"`). The rest ask first, in every mode, `auto` included:
+tools that change things, tools that delete or cancel, and tools the server did not label. You do not need to know
+the names:
+
+```text
+/mcp tools flightclaw                    # every tool, what the server says it does, and whether it asks
+/mcp allow flightclaw search_flights     # run without asking (several names, read-only, or all)
+/mcp ask flightclaw get_order            # ask first again (several names, or all)
+```
+
+Allowing a tool the server marks as deleting or cancelling asks you to confirm. A tool you set to ask is not allowed
+again when the server is reconnected; a new tool the server adds later is sorted the same way, once. The labels are
+the server's own word, so add only servers you trust. Your settings still apply on top: a deny rule such as
+`"flightclaw__cancel_order"` refuses a tool in every case, and an allow rule such as `"flightclaw__*"` lets all of a
+server's tools run without asking. What a tool returns is marked as data from an outside server, cut at
 30,000 characters. `/mcp add`, `/mcp remove`, `/mcp login` and `/mcp logout` change the tools of the conversation
 you are in, without losing it. MCP needs `pip install "agentx-dev[mcp]"`.
 

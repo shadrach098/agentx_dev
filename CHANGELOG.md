@@ -8,9 +8,13 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **MCP tools sorted by what they do.** The first time agentx sees a server's tools, the ones the server marks
+  read-only run without asking (saved per server in `mcp.json` as `allow`/`seen`); the rest ask. `/mcp tools <name>`
+  lists them, `/mcp allow|ask <name> <tool...|read-only|all>` changes them; allowing a destructive tool asks first.
 - **An MCP sign-in survives a restart.** The SDK loaded a saved token as never expiring, sent it after it had run
-  out, and asked for a new sign-in instead of renewing it. agentx now keeps when the token runs out and tells the SDK,
-  so it renews with the saved renewal token; a token saved before this counts as run out and is renewed.
+  out, and asked for a new sign-in instead of renewing it; after a restart it also guessed the renewal address
+  (`<server>/token`, a 404 for Supabase). agentx now keeps when the token runs out and the server's OAuth details from
+  the sign-in, and hands both back, so the token is renewed at the right address.
 - **MCP sign-in to servers that issue a client secret (Supabase).** A secret given without a method is now sent
   in the token request; the sign-in failed with "Required parameter: client_secret".
 - **One stuck request no longer waits about 12 minutes.** A timed-out request is retried once at most (the client

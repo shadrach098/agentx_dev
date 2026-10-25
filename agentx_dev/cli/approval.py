@@ -407,6 +407,9 @@ class Gate:
                  ask: Optional[Callable[[Request], Answer]] = None, cwd: Optional[Path] = None) -> None:
         self.allow = list(allow)
         self.deny = list(deny)
+        # Allow rules the app adds itself (an MCP server's tools that run without asking); kept apart from the
+        # settings so they can be replaced without touching the user's own rules. Deny rules still win.
+        self.extra_allow: list = []
         self.ask = ask
         if cwd is None:
             try:
@@ -465,7 +468,8 @@ class Gate:
         compound = _is_compound(tool, args)
         if kind != "destructive" and not compound:
             # an allow rule applies only if EVERY form matches it
-            if any(all(rule_matches(rule, tool, text, cwd=self.cwd) for text in subjects) for rule in self.allow) \
+            if any(all(rule_matches(rule, tool, text, cwd=self.cwd) for text in subjects)
+                   for rule in (*self.allow, *self.extra_allow)) \
                     or self._granted(tool, subject):
                 return None
         if kind == "edit" and self._mode == "accept-edits":

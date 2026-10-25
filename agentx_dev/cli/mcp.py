@@ -68,6 +68,11 @@ class ServerConfig:
     args: List[str] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
     headers: Dict[str, str] = field(default_factory=dict)
+    # The server's tools (its own names) that run without asking, and every tool agentx has seen from it. A tool
+    # seen for the first time is added to ``allow`` when the server marks it read-only; one the user took out of
+    # ``allow`` is in ``seen``, so it is not added back.
+    allow: List[str] = field(default_factory=list)
+    seen: List[str] = field(default_factory=list)
 
     def describe(self) -> str:
         if self.transport == "stdio":
@@ -79,12 +84,16 @@ class ServerConfig:
             data: Dict[str, Any] = {"command": self.command, "args": list(self.args)}
             if self.env:
                 data["env"] = dict(self.env)
-            return data
-        data = {"url": self.url}
-        if self.transport == "sse":
-            data["transport"] = "sse"
-        if self.headers:
-            data["headers"] = dict(self.headers)
+        else:
+            data = {"url": self.url}
+            if self.transport == "sse":
+                data["transport"] = "sse"
+            if self.headers:
+                data["headers"] = dict(self.headers)
+        if self.allow:
+            data["allow"] = sorted(self.allow)
+        if self.seen:
+            data["seen"] = sorted(self.seen)
         return data
 
 
@@ -115,18 +124,24 @@ def parse_server(name: str, data: Any) -> Tuple[Optional[ServerConfig], str]:
     headers, env = _strings(data.get("headers")), _strings(data.get("env"))
     if headers is None or env is None:
         return None, f"{name}: 'headers' and 'env' must map text to text"
+    lists = {}
+    for key in ("allow", "seen"):
+        value = data.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            return None, f"{name}: '{key}' must be a list of tool names"
+        lists[key] = list(dict.fromkeys(value))
     if isinstance(data.get("command"), str) and data["command"].strip():
         args = data.get("args", [])
         if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
             return None, f"{name}: 'args' must be a list of text"
-        return ServerConfig(name, "stdio", command=data["command"].strip(), args=list(args), env=env), ""
+        return ServerConfig(name, "stdio", command=data["command"].strip(), args=list(args), env=env, **lists), ""
     url = data.get("url")
     if not isinstance(url, str) or not url.startswith(("https://", "http://")):
         return None, f"{name}: needs a 'url' (http:// or https://) or a 'command'"
     transport = data.get("transport", "http")
     if transport not in ("http", "sse"):
         return None, f"{name}: 'transport' must be http or sse"
-    return ServerConfig(name, transport, url=url.strip(), headers=headers), ""
+    return ServerConfig(name, transport, url=url.strip(), headers=headers, **lists), ""
 
 
 def load_servers(home: Path) -> Tuple[Dict[str, ServerConfig], List[str]]:
@@ -269,22 +284,23 @@ class KeyringStorage:
         return bool(self._get("tokens"))
 
     def expires_at(self) -> Optional[float]:
-        """When the stored access token runs out (seconds since the epoch, a minute early), or None when it
-        does not run out. A token saved without that time counts as run out, so it is renewed rather than sent."""
-        text = self._get("tokens")
-        if not text:
-            return None
-        try:
-            data = json.loads(text)
-        except ValueError:
-            return 1.0
-        if not data.get("expires_in"):
+        """When the stored access token runs out (seconds since the epoch, a minute early), or None when that is
+        not known: a token that does not run out, or one saved before agentx kept the time. Such a token is sent as
+        it is (renewing it could fail: before the server's details are kept, the renewal address is a guess)."""
+        if not self._get("tokens"):
             return None
         saved = self._get("expires_at")
         try:
-            return float(saved) if saved else 1.0
+            return float(saved) if saved else None
         except ValueError:
-            return 1.0
+            return None
+
+    def metadata(self) -> Optional[str]:
+        """The server's OAuth details (its token address among them) from the last sign-in, as JSON."""
+        return self._get("metadata")
+
+    def set_metadata(self, text: str) -> None:
+        self._set("metadata", text)
 
     async def get_tokens(self) -> Any:
         from mcp.shared.auth import OAuthToken
@@ -307,7 +323,7 @@ class KeyringStorage:
 
     def clear(self) -> None:
         self._memory.clear()
-        for what in ("tokens", "client", "expires_at"):
+        for what in ("tokens", "client", "expires_at", "metadata"):
             _kr_delete(f"{self.server}:{what}")
 
 
@@ -384,12 +400,28 @@ def oauth_provider(config: ServerConfig, storage: KeyringStorage, interactive: b
 
     class Provider(OAuthClientProvider):
         """The SDK loads saved tokens without knowing when they run out, so it sent an expired token, got a 401
-        and asked for a new sign-in instead of renewing. Telling it when the token runs out makes it renew."""
+        and asked for a new sign-in instead of renewing; and after a restart it guesses the renewal address
+        (``<server>/token``), which is wrong when the sign-in lives elsewhere (Supabase). The time and the
+        server's OAuth details are kept from the sign-in and handed back here."""
 
         async def _initialize(self) -> None:
             await super()._initialize()
+            text = storage.metadata()
+            if text and self.context.oauth_metadata is None:
+                try:
+                    from mcp.shared.auth import OAuthMetadata
+                    self.context.oauth_metadata = OAuthMetadata.model_validate_json(text)
+                except Exception:                  # a broken copy: the SDK finds the details again if it must
+                    pass
             if self.context.current_tokens is not None:
-                self.context.token_expiry_time = storage.expires_at()
+                expires = storage.expires_at()
+                # Renew only when the renewal address is known; otherwise send the token until the server says no.
+                self.context.token_expiry_time = expires if (expires is None or self.context.oauth_metadata) else None
+
+        async def _handle_oauth_metadata_response(self, response: Any) -> None:
+            await super()._handle_oauth_metadata_response(response)
+            if self.context.oauth_metadata is not None:
+                storage.set_metadata(self.context.oauth_metadata.model_dump_json())
 
     return Provider(server_url=config.url, client_metadata=metadata, storage=storage,
                     redirect_handler=redirect_handler, callback_handler=callback_handler,
@@ -409,6 +441,25 @@ def tool_name(server: str, tool: str, taken: Optional[set] = None) -> str:
     if taken is not None:
         taken.add(name)
     return name
+
+
+KINDS = {"read-only": "only reads", "changes": "changes things", "destructive": "deletes or cancels",
+         "unlabelled": "not labelled by the server"}
+
+
+def tool_kind(mcp_tool: Any) -> str:
+    """What the server says a tool does (its MCP annotations): ``read-only``, ``destructive``, ``changes`` (it
+    writes but does not say it destroys) or ``unlabelled``. The labels are the server's word, not a check."""
+    notes = getattr(mcp_tool, "annotations", None)
+    if notes is None:
+        return "unlabelled"
+    if getattr(notes, "destructiveHint", None) is True:
+        return "destructive"
+    if getattr(notes, "readOnlyHint", None) is True:
+        return "read-only"
+    if getattr(notes, "readOnlyHint", None) is None and getattr(notes, "destructiveHint", None) is None:
+        return "unlabelled"
+    return "changes"
 
 
 def _one_line(text: str, limit: int) -> str:
@@ -634,6 +685,38 @@ class MCPManager:
         self._submit(self._close(name)).result(10)
         self.status[name] = "signed out"
 
+    def tool_kinds(self, name: str) -> Dict[str, str]:
+        """``{tool (the server's name): kind}`` for a connected server, in the server's order."""
+        live = self._live.get(name)
+        return {str(getattr(t, "name", "")): tool_kind(t) for t in live.tools} if live else {}
+
+    def note_new_tools(self, name: str) -> List[str]:
+        """Record the tools of ``name`` seen for the first time and allow the read-only ones among them; saves
+        mcp.json when anything changed. Returns the tools just allowed."""
+        config, kinds = self.servers.get(name), self.tool_kinds(name)
+        if config is None or not kinds:
+            return []
+        new = [tool for tool in kinds if tool not in config.seen]
+        if not new:
+            return []
+        allowed = [tool for tool in new if kinds[tool] == "read-only" and tool not in config.allow]
+        config.seen = [*config.seen, *new]
+        config.allow = [*config.allow, *allowed]
+        try:
+            save_servers(self.home, self.servers)
+        except (OSError, ValueError):
+            pass
+        return allowed
+
+    def set_allowed(self, name: str, tools: List[str], allowed: bool) -> Path:
+        config = self.servers[name]
+        if allowed:
+            config.allow = [*config.allow, *[t for t in tools if t not in config.allow]]
+        else:
+            config.allow = [t for t in config.allow if t not in tools]
+        config.seen = [*config.seen, *[t for t in tools if t not in config.seen]]
+        return save_servers(self.home, self.servers)
+
     def add(self, config: ServerConfig) -> Path:
         self.servers[config.name] = config
         return save_servers(self.home, self.servers)
@@ -667,7 +750,9 @@ class MCPManager:
         out: List[StructuredTool] = []
         for server, live in list(self._live.items()):
             for mcp_tool in live.tools:
-                out.append(self._wrap(server, mcp_tool, tool_name(server, getattr(mcp_tool, "name", "tool"), taken)))
+                tool = self._wrap(server, mcp_tool, tool_name(server, getattr(mcp_tool, "name", "tool"), taken))
+                tool.mcp_server, tool.mcp_remote = server, str(getattr(mcp_tool, "name", ""))
+                out.append(tool)
         return out
 
     def _wrap(self, server: str, mcp_tool: Any, name: str) -> StructuredTool:

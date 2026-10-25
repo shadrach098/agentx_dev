@@ -397,7 +397,8 @@ internet, so instructions written on a page cannot steer the agent. `"deny": ["w
 ## Can `agentx` use MCP servers? *(next release)*
 
 Yes. `/mcp add <name> <url>` (or `/mcp add <name> -- <command> [args]` for a program on your computer) adds one;
-its tools appear as `<name>__<tool>` for the agent and the team helpers and ask before they run. A server that
+its tools appear as `<name>__<tool>` for the agent and the team helpers. Tools the server marks read-only run without
+asking; the rest ask first. `/mcp tools <name>` lists them, `/mcp allow` and `/mcp ask` change one. A server that
 needs a sign-in: `/mcp login <name>` opens the browser, and the sign-in is kept in your system's credential store
 and renewed by itself. The agent cannot add a server or sign in on its own. Servers added with `claude mcp add`
 belong to Claude Code, not to `agentx`. See [MCP servers](../guides/cli.md#mcp-servers).
