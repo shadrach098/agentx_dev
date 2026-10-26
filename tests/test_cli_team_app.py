@@ -305,11 +305,22 @@ def test_a_helper_error_with_the_api_key_in_a_url_never_reaches_the_screen_the_c
     assert saved and secret not in saved[0].path.read_text(encoding="utf-8")
 
 
-def test_a_planned_new_agent_step_never_runs_a_helper(tmp_path):
-    model = team_model([new_agent_step("s1", "fixer", "Fix things.", query="do it")])
-    app, _, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto")
+def test_a_helper_the_planner_makes_runs_with_only_the_tools_it_may_have(tmp_path):
+    seen = []
+
+    def helper(messages, n):
+        seen.append(str(messages[0]["content"]))
+        return make_final("fixed report")
+
+    model = team_model([new_agent_step("s1", "fixer", "Find the bug and report it.", tools=["read_path", "delete_path"],
+                                       query="do it")], helper=helper)
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, mode="auto", width=300)
     assert app.start() == 0
-    assert model.state["helper_calls"] == 0
+    text = out.getvalue()
+    assert model.state["helper_calls"] == 1 and "you are the fixer helper" in seen[0]
+    assert "The supervisor made you for this job: Find the bug and report it." in seen[0]
+    assert "1. fixer (new helper; tools: read_path)" in text            # delete_path is never offered
+    assert "✓ fixer · do it  Done" in text
 
 
 def test_a_resumed_session_still_holds_the_job_result(tmp_path):

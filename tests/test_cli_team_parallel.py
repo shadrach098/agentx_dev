@@ -352,3 +352,77 @@ def test_the_audit_skill_is_open_to_the_helpers(tmp_path):
     from agentx_dev import AgentRunner
     runner = AgentRunner(**settings)
     assert "auditing-a-project" in runner.system_addendum
+
+
+class TestHelpersThePlannerMakes:
+    """The planner may make a helper for a step (a name, instructions, tools), like Claude Code's agents. It is built
+    the way the built-in helpers are, from the same gated tools, and a reading one runs beside other readers."""
+
+    def supervisor(self, tmp_path, built):
+        tools = build_tools(tmp_path, [], Gate(cwd=tmp_path))
+        helpers = team.build_helpers(MockModel(), tools, "")
+        from agentx_dev import SpawnConfig
+        pool = [tool for tool in tools if tool.name not in team.NOT_FOR_NEW_HELPERS]
+        return team.TeamSupervisor(model=MockModel(), agents=helpers, verbose=False,
+                                   spawn_config=SpawnConfig(enabled=True, tools=pool, capabilities=set(), max_depth=0),
+                                   make_helper=lambda name, instructions, names: built.append((name, names)) or object())
+
+    def test_its_tools_decide_whether_it_runs_beside_readers(self, tmp_path):
+        from agentx_dev.SubAgents import AgentSpec
+        built = []
+        sup = self.supervisor(tmp_path, built)
+        assert sup._spawn_spec(AgentSpec("reviewer", "Review.", ("read_path", "grep", "web_fetch"))) == ("reviewer", "")
+        assert sup._spawn_spec(AgentSpec("fixer", "Fix.", ("read_path", "edit_file"))) == ("fixer", "")
+        assert sup._spawn_spec(AgentSpec("tester", "Test.", ("run_shell",))) == ("tester", "")
+        assert sup._reads_only("reviewer") and not sup._reads_only("fixer") and not sup._reads_only("tester")
+        assert sup._reads_only("explorer") and not sup._reads_only("coder")
+
+    def test_it_never_gets_delete_move_or_the_team_tool(self, tmp_path):
+        from agentx_dev.SubAgents import AgentSpec
+        built = []
+        sup = self.supervisor(tmp_path, built)
+        sup._spawn_spec(AgentSpec("cleaner", "Clean.", ("delete_path", "move_file", "start_team_job", "grep")))
+        assert built == [("cleaner", ["grep"])]
+
+    def test_a_built_in_name_is_refused_a_second_definition_is_the_same_helper_and_there_is_a_cap(self, tmp_path):
+        from agentx_dev.SubAgents import AgentSpec
+        built = []
+        sup = self.supervisor(tmp_path, built)
+        assert sup._spawn_spec(AgentSpec("explorer", "x", ()))[0] is None
+        assert sup._spawn_spec(AgentSpec("a1", "x", ())) == ("a1", "") and sup._spawn_spec(AgentSpec("a1", "y", ())) == ("a1", "")
+        for number in range(2, team.MAX_NEW_HELPERS + 1):
+            sup._spawn_spec(AgentSpec(f"a{number}", "x", ()))
+        name, reason = sup._spawn_spec(AgentSpec("one-too-many", "x", ()))
+        assert name is None and "at most 6 new helpers" in reason and len(built) == team.MAX_NEW_HELPERS
+
+    def test_the_planner_is_told_it_may_make_helpers(self, tmp_path):
+        sup = self.supervisor(tmp_path, [])
+        assert "security-reviewer" in sup._build_agent_catalog()
+
+    def test_a_reading_helper_it_makes_runs_beside_an_explorer(self, tmp_path):
+        from tests.subagent_helpers import new_agent_step
+        together = threading.Barrier(2, timeout=10)
+
+        def work(messages):
+            together.wait()
+            return make_final("found")
+
+        result, seen = job(tmp_path, [step("a", "explorer", "look A"),
+                                      new_agent_step("b", "security-reviewer", "Review auth.", tools=["read_path", "grep"],
+                                                     query="review B")], work)
+        assert result.count(" - done: ") == 2 and "security-reviewer - done" in result
+        plan = seen[0][1]["steps"]
+        assert plan[1]["agent"] == "security-reviewer" and plan[1]["new"] == ["read_path", "grep"]
+
+    def test_it_gets_only_the_mcp_tools_it_asked_for(self, tmp_path):
+        tools = build_tools(tmp_path, [], Gate(cwd=tmp_path))
+        from agentx_dev.Tools import StructuredTool
+        grep = next(t for t in tools if t.name == "grep")
+        mcp = StructuredTool(func=grep.func, args_schema=grep.args_schema, name="srv__query", description="d")
+        mcp.mcp_server = "srv"
+        by_name = {t.name: t for t in [*tools, mcp]}
+        role = team.Role("reviewer", "Review.", ("read_path",), "Review.")
+        made = team._helper(role, MockModel(), by_name, "", str, None, "reviewer", every_mcp_tool=False)
+        assert [t.name for t in made.tools] == ["read_path"]
+        built_in = team._helper(team.ROLES[0], MockModel(), by_name, "", str)
+        assert "srv__query" in [t.name for t in built_in.tools]

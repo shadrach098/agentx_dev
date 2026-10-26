@@ -29,7 +29,8 @@ from agentx_dev.cli.memory import CHANGING_TOOLS, REFUSAL_STARTS
 from agentx_dev.cli.models import HelperModel, model_label, without_auto_prefix
 from agentx_dev.cli.ui import summarize_result
 from agentx_dev.Runner.Trim import TrimPolicy
-from agentx_dev.Supervisor import SubtaskResult, _plan_uses_deps, _result_failed
+from agentx_dev.SubAgents import AgentSpec
+from agentx_dev.Supervisor import Specialist, SubtaskResult, _plan_uses_deps, _result_failed, _step_agent_name
 from agentx_dev.Tools import StructuredTool
 
 TEAM_TOOL_NAME = "start_team_job"
@@ -59,6 +60,8 @@ STEP_BUDGET_NOTE = ("Not run: this step has used its share of the token limit ({
 OUT_OF_STEPS_NOTE = ("(This helper ran out of steps before finishing, so this is partial work: check what it "
                      "changed before relying on it.)\n")
 MAX_SUBTASKS = 6
+MAX_NEW_HELPERS = 6                  # helpers the planner may define for one job
+NEW_HELPER_DESCRIPTION_CHARS = 300
 MAX_LISTED_FILES = 40                # files named in a partial helper's note
 RUNNER_ADVICE = ("Hit max_iterations (", "The agent likely needed more iterations")   # recap lines dropped
 MAX_TEAM_JOBS_PER_MESSAGE = 5        # a big task may take several batches; this bounds one message's cost
@@ -72,6 +75,14 @@ READ_TOOLS = ("read_path", "list_directory", "find_files", "grep")
 WEB_TOOLS = ("web_search", "web_fetch")
 # tools that cannot change a file: after any other call (a command, an MCP tool) a file read before may differ
 QUIET_TOOLS = READ_TOOLS + WEB_TOOLS + ("use_skill", "recall")
+READING_TOOLS = frozenset(READ_TOOLS + WEB_TOOLS + ("recall",))   # a new helper with only these runs beside readers
+NOT_FOR_NEW_HELPERS = frozenset({"delete_path", "move_file", "start_team_job", "delegate", "use_skill", "ask_user"})
+NEW_HELPERS_NOTE = (
+    "\n\nBesides these helpers you may make a helper for a step (see CREATING NEW SPECIALISTS below) when the step "
+    "needs a focused role: give it a short name for its job (security-reviewer, payments-auditor, test-writer), "
+    "instructions that say what it must find and report, and only the tools it needs from the menu. A helper whose "
+    "tools only read, search or fetch runs beside other reading steps; one that edits files or runs commands runs "
+    "alone. Its tool calls go through the same approvals as every other helper's.")
 
 Notify = Callable[[str, Dict[str, Any]], None]
 
@@ -481,10 +492,11 @@ class _HelperRunner(AgentRunner):
 
 def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
             describe_error: Callable[[BaseException], str], skills: Any = None,
-            name: str = "") -> AgentRunner:
-    chosen = [by_name[name] for name in role.tools if name in by_name]
-    # The user's MCP tools go to every helper: what they do is up to the server, and each asks before it runs.
-    chosen += [tool for tool in by_name.values() if getattr(tool, "mcp_server", None) and tool not in chosen]
+            name: str = "", every_mcp_tool: bool = True) -> AgentRunner:
+    chosen = [by_name[tool] for tool in role.tools if tool in by_name]
+    if every_mcp_tool:
+        # The user's MCP tools go to every built-in helper: what they do is up to the server, and each asks first.
+        chosen += [tool for tool in by_name.values() if getattr(tool, "mcp_server", None) and tool not in chosen]
     return _HelperRunner(model=model, agent=AgentType.ReAct, tools=chosen,
                          system_addendum=(addendum or "") + role_prompt(role),
                          max_iterations=HELPER_STEPS, auto_cache=False, verbose=False,
@@ -575,16 +587,29 @@ def step_label(step: Dict[str, Any]) -> str:
     return (query[:40] + "…") if len(query) > 40 else (query or raw or "step")
 
 
+def _plan_step(step: Dict[str, Any]) -> Dict[str, Any]:
+    """A plan step for the screen: who runs it, what it is asked, its short name, and for a helper the planner
+    made, the tools it asked for (``new``)."""
+    shown: Dict[str, Any] = {"agent": str(_step_agent_name(step) or ""), "query": str(step.get("query", "")),
+                             "label": step_label(step)}
+    spec = step.get("new_agent")
+    if isinstance(spec, dict):
+        tools = spec.get("tools") if isinstance(spec.get("tools"), list) else []
+        shown["new"] = [str(tool) for tool in tools if str(tool) not in NOT_FOR_NEW_HELPERS]
+    return shown
+
+
 def _read_only(agent: Any) -> bool:
     return str(agent or "").split("@", 1)[0] in READ_ONLY_ROLES
 
 
-def _ordered(plan: List[Any]) -> List[Any]:
+def _ordered(plan: List[Any], reads_only: Callable[[Any], bool] = None) -> List[Any]:  # type: ignore[assignment]
     """A plan without ``depends_on`` runs in order, each step seeing every earlier step's findings. That stays,
     except that read-only steps next to each other run side by side: each step depends on every step before its run
     of read-only steps. A plan that declares its own dependencies is left as it is."""
     if _plan_uses_deps(plan):
         return plan
+    reads_only = reads_only or _read_only
     out: List[Any] = []
     before: List[str] = []
     together: List[str] = []
@@ -596,7 +621,7 @@ def _ordered(plan: List[Any]) -> List[Any]:
         step = dict(item)
         step_id = str(step.get("id") or f"step_{index + 1}")
         step["id"] = step_id
-        reads = _read_only(step.get("agent"))
+        reads = reads_only(_step_agent_name(step))
         if not (reads and reading):
             before, together = before + together, []
         step["depends_on"] = list(before)
@@ -642,14 +667,51 @@ class TeamSupervisor(AsyncSupervisor):
     not started is not started: it ends at once as skipped, and the job reports with what it has."""
 
     def __init__(self, *args: Any, on_start: Optional[Callable[[str, str, StepStatus], None]] = None,
-                 closed: Optional[Callable[[], Any]] = None, **kwargs: Any) -> None:
+                 closed: Optional[Callable[[], Any]] = None,
+                 make_helper: Optional[Callable[[str, str, List[str]], Any]] = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._on_start = on_start
         self._closed = closed
+        # make_helper(name, instructions, tool names) builds a helper the planner defined; None: no new helpers
+        self._make_helper = make_helper
+        self._new_helpers: Dict[str, bool] = {}          # name -> whether it only reads
+        self._planned_readers: set = set()
         self._step_lock: Optional[_StepLock] = None
         self._labels: Dict[Tuple[str, str], str] = {}
         self._slots = itertools.count(1)
         self._statuses: Dict[int, StepStatus] = {}        # id(SubtaskResult) -> the status of the step that made it
+
+    def _reads_only(self, agent: Any) -> bool:
+        name = str(agent or "")
+        if name in self._new_helpers:
+            return self._new_helpers[name]
+        return _read_only(name) or name in self._planned_readers
+
+    def _build_agent_catalog(self) -> str:
+        catalog = super()._build_agent_catalog()
+        return catalog + NEW_HELPERS_NOTE if self._make_helper is not None and self.spawn_config.enabled else catalog
+
+    def _spawn_spec(self, spec: AgentSpec) -> Tuple[Optional[str], str]:
+        """A helper the planner defined: built the way the built-in ones are (the same gated tools, step wrapping,
+        error redaction, steps and trimming), with only the tools it asked for out of ``spawn_config.tools``."""
+        if self._make_helper is None:
+            return None, "new helpers are off"
+        name = spec.name
+        if name in self._new_helpers:
+            return name, ""                             # defined by an earlier step: the same helper
+        if name in self.agents:
+            return None, f"the name {name!r} belongs to a built-in helper"
+        if len(self._new_helpers) >= MAX_NEW_HELPERS:
+            return None, f"at most {MAX_NEW_HELPERS} new helpers per job"
+        pool = {getattr(tool, "name", None) for tool in (self.spawn_config.tools or [])}
+        granted = [tool for tool in spec.tools if tool in pool and tool not in NOT_FOR_NEW_HELPERS]
+        try:
+            runner = self._make_helper(name, spec.instructions, granted)
+        except Exception as error:                      # a helper that cannot be built: the step fails, the job goes on
+            return None, f"could not build it ({type(error).__name__})"
+        self.agents[name] = Specialist(description=spec.instructions[:NEW_HELPER_DESCRIPTION_CHARS], runner=runner)
+        self._new_helpers[name] = all(tool in READING_TOOLS for tool in granted)
+        return name, ""
 
     def label_of(self, agent: Any, query: Any) -> str:
         return self._labels.get((str(agent), str(query))) or step_label({"query": query})
@@ -660,8 +722,13 @@ class TeamSupervisor(AsyncSupervisor):
     async def _run_plan(self, plan: List[dict], *args: Any, **kwargs: Any):
         for item in plan:
             if isinstance(item, dict):
-                self._labels[(str(item.get("agent", "")), str(item.get("query", "")))] = step_label(item)
-        async with aclosing(super()._run_plan(_ordered(plan), *args, **kwargs)) as events:
+                self._labels[(str(_step_agent_name(item) or ""), str(item.get("query", "")))] = step_label(item)
+                spec = item.get("new_agent")
+                if isinstance(spec, dict) and isinstance(spec.get("name"), str):
+                    tools = spec.get("tools") or []
+                    if isinstance(tools, list) and all(tool in READING_TOOLS for tool in tools):
+                        self._planned_readers.add(spec["name"])
+        async with aclosing(super()._run_plan(_ordered(plan, self._reads_only), *args, **kwargs)) as events:
             async for event in events:
                 if isinstance(event, dict) and event.get("type") == "dispatch":
                     continue
@@ -677,7 +744,7 @@ class TeamSupervisor(AsyncSupervisor):
                            budget: Any = None) -> Any:
         if self._step_lock is None:
             self._step_lock = _StepLock()
-        async with self._step_lock.hold(alone=not _read_only(agent_name)):
+        async with self._step_lock.hold(alone=not self._reads_only(agent_name)):
             if self._wrapping_up():
                 return SubtaskResult(agent=agent_name, query=sub_query, content="", error=NOT_STARTED, skipped=True)
             status = StepStatus(next(self._slots), agent_name, self.label_of(agent_name, sub_query), sub_query)
@@ -779,10 +846,23 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                                 chat_use=chat_use, skills=skills)
         for _, runner in helpers.values():
             runner.job = job
+        by_name = {tool.name: tool for tool in tools}
+        pool = [tool for tool in tools if tool.name not in NOT_FOR_NEW_HELPERS]
+
+        def make_helper(name: str, instructions: str, tool_names: List[str]) -> AgentRunner:
+            role = Role(name, instructions[:NEW_HELPER_DESCRIPTION_CHARS], tuple(tool_names),
+                        f"The supervisor made you for this job: {instructions}")
+            runner = _helper(role, model, by_name, addendum, describe_error, skills, name, every_mcp_tool=False)
+            runner.job = job
+            return runner
+
+        # New helpers pick their tools from the same gated tools (no delete, move, team or delegate); max_depth=0
+        # keeps the framework from giving anyone a delegate tool.
+        spawning = SpawnConfig(enabled=True, tools=pool, capabilities=set(), max_spawns=MAX_NEW_HELPERS, max_depth=0)
         supervisor = TeamSupervisor(
             model=model, agents=helpers, max_subtasks=MAX_SUBTASKS, verbose=False, max_subtask_retries=0,
-            max_plan_retries=1, ask_user=asker, max_questions=MAX_QUESTIONS, spawn_config=SpawnConfig(enabled=False),
-            max_parallel=PARALLEL_HELPERS, closed=closed,
+            max_plan_retries=1, ask_user=asker, max_questions=MAX_QUESTIONS, spawn_config=spawning,
+            max_parallel=PARALLEL_HELPERS, closed=closed, make_helper=make_helper,
             on_start=lambda agent, query, status: tell("dispatch", {"agent": str(agent), "query": str(query),
                                                                     "label": status.label, "status": status}))
         result = None
@@ -792,9 +872,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                     continue
                 kind = event.get("type")
                 if kind == "plan":
-                    steps = [{"agent": str(step.get("agent", "")), "query": str(step.get("query", "")),
-                              "label": step_label(step)}
-                             for step in (event.get("plan") or []) if isinstance(step, dict)]
+                    steps = [_plan_step(step) for step in (event.get("plan") or []) if isinstance(step, dict)]
                     tell("plan", {"steps": steps})
                 elif kind == "subtask_result":
                     sub = event.get("result")

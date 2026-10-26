@@ -719,7 +719,10 @@ class Screen:
             if not isinstance(step, dict):
                 continue
             label = f" · {_short(step.get('label'), 40)}" if step.get("label") else ""
-            _print(self.console, Text(f"  {number}. {_short(step.get('agent'), MAX_HELPER_CHARS)}{label}: "
+            new = step.get("new")
+            made = (f" (new helper; tools: {_short(', '.join(str(t) for t in new), 120) or 'none'})"
+                    if isinstance(new, list) else "")
+            _print(self.console, Text(f"  {number}. {_short(step.get('agent'), MAX_HELPER_CHARS)}{made}{label}: "
                                       f"{_short(step.get('query'), 160)}", style="dim"))
 
     def team_dispatch(self, agent: Any, query: Any) -> None:

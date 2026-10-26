@@ -175,7 +175,11 @@ def test_the_supervisor_is_built_with_the_agreed_limits(tmp_path, tools, monkeyp
     run(tmp_path, tools, router(), ask_user=lambda question: None)
     assert built["max_subtasks"] == 6 and built["max_subtask_retries"] == 0 and built["max_plan_retries"] == 1
     assert built["verbose"] is False and built["max_questions"] == 3 and callable(built["ask_user"])
-    assert built["spawn_config"].enabled is False
+    spawning = built["spawn_config"]                      # the planner may make helpers, from the gated tools only
+    assert spawning.enabled and spawning.max_depth == 0 and spawning.capabilities == set()
+    assert spawning.max_spawns == team_module.MAX_NEW_HELPERS == 6 and callable(built["make_helper"])
+    pool = {tool.name for tool in spawning.tools}
+    assert "read_path" in pool and "run_shell" in pool and not pool & {"delete_path", "move_file"}
     assert "memory" not in built and "persistence" not in built
     assert set(built["agents"]) == {"explorer", "coder", "runner"}
     assert built["max_parallel"] == team_module.PARALLEL_HELPERS == 3 and callable(built["on_start"])

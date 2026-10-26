@@ -391,6 +391,14 @@ grep it for the part you need, or read a part with offset and limit"); and each 
 used one token limit's worth (at least 100,000). See
 [Each step's limits](../guides/cli.md#each-steps-limits).
 
+## Can the team make its own helpers? *(next release)*
+
+Yes. Besides `explorer`, `coder` and `runner`, the supervisor may make a helper for a step, like Claude Code's
+agents: a name for its job (`security-reviewer`), instructions, and tools picked from agentx's own gated tools
+(never delete, move or another team). The plan shows each one and its tools before anything runs, and one that only
+reads runs beside other reading steps. Up to 6 per job. See
+[Helpers the supervisor makes](../guides/cli.md#helpers-the-supervisor-makes).
+
 ## Can team helpers run at the same time? *(next release)*
 
 Reading steps can. Explorer steps that do not depend on each other run side by side, up to three, so "audit the
