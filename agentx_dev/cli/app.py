@@ -35,8 +35,8 @@ from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, l
 from agentx_dev.cli.settings import (DEFAULT_TOKEN_LIMIT, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
                                      write_project_model, write_project_team_models, write_user_token_limit)
-from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, current_helper, current_status, make_team_tool,
-                                 note_usage, on_main, run_team_job, step_token_share, team_request)
+from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, counted_tokens, current_helper, current_status,
+                                 make_team_tool, note_usage, on_main, run_team_job, step_token_share, team_request)
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker, status_line
@@ -269,6 +269,7 @@ class ChatApp:
         self.token_limit = max(0, int(token_limit or 0))   # tokens one message may use before asking; 0 is off
         self._limit_lock = threading.Lock()
         self._turn_start: Optional[int] = None    # tokens used before the running turn; None outside a turn
+        self._turn_start_sent = 0                  # the same, every input token counted in full
         self._turn_allowed = 0                    # tokens the running turn may use before the next question
         self._turn_stopped = False                # past even the wrap-up allowance: every later reply stops
         self._wrapping_up = False                 # the user said no: tools refuse, the agent answers with what it has
@@ -613,7 +614,8 @@ class ChatApp:
         finished = False
         usage_before = self._usage_totals()
         with self._limit_lock:
-            self._turn_start = usage_before[1] + usage_before[2]
+            self._turn_start = counted_tokens(usage_before[1], usage_before[2], usage_before[3])
+            self._turn_start_sent = usage_before[1] + usage_before[2]
             self._turn_allowed = self.token_limit
             self._turn_stopped = False
             self._wrapping_up = False
@@ -1004,8 +1006,9 @@ class ChatApp:
         with self._limit_lock:
             if self._turn_start is None or not self.token_limit:
                 return
-            _, tokens_in, tokens_out, _ = self._usage_totals()
-            used = tokens_in + tokens_out - self._turn_start
+            _, tokens_in, tokens_out, cached = self._usage_totals()
+            used = counted_tokens(tokens_in, tokens_out, cached) - self._turn_start      # cached input as a tenth
+            sent = tokens_in + tokens_out - self._turn_start_sent
             if self._turn_stopped:
                 raise TokenLimitReached(used, self.token_limit)
             if used < self._turn_allowed:
@@ -1013,7 +1016,7 @@ class ChatApp:
             if self._wrapping_up:
                 self._turn_stopped = True
                 raise TokenLimitReached(used, self.token_limit)
-            answer = on_main(self._ask_to_go_on, used)
+            answer = on_main(self._ask_to_go_on, used, sent)
             if answer == "a":
                 self._turn_allowed = sys.maxsize
                 return
@@ -1026,12 +1029,14 @@ class ChatApp:
             on_main(self._say_paused, "Wrapping up: no more tool calls in this message; the agent answers with "
                                       "what it has found so far.")
 
-    def _ask_to_go_on(self, used: int) -> str:
+    def _ask_to_go_on(self, used: int, sent: int = 0) -> str:
         """The limit question: "y" (another limit), "a" (go on, and do not ask again in this message) or "n". Enter,
         end of input, Ctrl+C and a reader that fails are all no; any other answer is asked once more."""
-        prompt = (f"This message has used {used:,} tokens; your limit is {self.token_limit:,} a message (/limit "
-                  f"changes it). Keep going for up to {self.token_limit:,} more? a = yes, and do not ask again in "
-                  "this message. No wraps up with what was found so far. [y/a/N] ")
+        cache = (f" ({sent:,} sent and received; input from the provider's cache counts as a tenth, about what it "
+                 "costs)") if sent > used else ""
+        prompt = (f"This message has used {used:,} tokens{cache}; your limit is {self.token_limit:,} a message "
+                  f"(/limit changes it). Keep going for up to {self.token_limit:,} more? a = yes, and do not ask "
+                  "again in this message. No wraps up with what was found so far. [y/a/N] ")
         with self.progress.paused():
             for attempt in range(2):
                 try:

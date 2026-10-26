@@ -45,6 +45,9 @@ PARALLEL_HELPERS = 3                 # read-only steps running at once
 READ_ONLY_ROLES = ("explorer",)      # their steps may run side by side; every other step runs alone
 FULL_READS_PER_FILE = 2              # whole reads of one unchanged file in a step; the next one is answered instead
 MIN_STEP_TOKENS = 100_000            # a step's token share is the message's limit, and never less than this
+# Input the provider serves from its prompt cache is billed at about a tenth (OpenAI's GPT-5 models, Anthropic's
+# cache reads), and a helper's requests are mostly that: the limit and the shares count it as a tenth.
+CACHED_SHARE = 10
 STOP_WAIT_SEC = 5.0                  # after Ctrl+C, how long to wait for the job's thread to cancel its steps
 REPEAT_READ_NOTE = ("Not read again: {path} was already read in full {count} times in this step and has not "
                     "changed since. Use what you found in it, grep it for the part you need, or read a part with "
@@ -99,7 +102,8 @@ class StepStatus:
         self.query = query
         self.started = time.monotonic()
         self.ended: Optional[float] = None
-        self.tokens = 0
+        self.tokens = 0                              # input and output its model replies reported
+        self.cached = 0                              # the part of that input served from the provider's cache
         self.tool_uses = 0
         self.calls: Dict[str, int] = {}
         self.files: Dict[str, None] = {}
@@ -130,7 +134,8 @@ class StepStatus:
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
             return {"calls": dict(self.calls), "files": dict(self.files), "skills": list(self.skills),
-                    "tokens": self.tokens, "tool_uses": self.tool_uses, "seconds": self.seconds(),
+                    "tokens": self.tokens, "cached": self.cached, "tool_uses": self.tool_uses,
+                    "seconds": self.seconds(),
                     "log": list(self.log)}
 
     def seconds(self) -> float:
@@ -163,6 +168,17 @@ def current_helper() -> str:
     return step.helper if step is not None else ""
 
 
+def counted_tokens(tokens_in: Any, tokens_out: Any, cached: Any = 0) -> int:
+    """Tokens as the limit counts them: input and output, with input from the provider's cache counted as a tenth
+    (about what it is billed at)."""
+    try:
+        tokens_in, tokens_out = max(0, int(tokens_in or 0)), max(0, int(tokens_out or 0))
+        cached = min(max(0, int(cached or 0)), tokens_in)
+    except (TypeError, ValueError):
+        return 0
+    return tokens_in - cached + cached // CACHED_SHARE + tokens_out
+
+
 def current_status() -> Optional[StepStatus]:
     """The ``StepStatus`` of the step this thread is running (None outside one); inside ``on_main`` too."""
     step = getattr(_local, "step", None)
@@ -179,11 +195,14 @@ def note_usage(model: Any) -> None:
         raise JobStopped()
     usage = getattr(model, "usage", None)
     try:
-        used = int(getattr(usage, "last_input_tokens", 0) or 0) + int(getattr(usage, "last_output_tokens", 0) or 0)
+        tokens_in = int(getattr(usage, "last_input_tokens", 0) or 0)
+        tokens_out = int(getattr(usage, "last_output_tokens", 0) or 0)
+        cached = min(int(getattr(usage, "last_cache_read_tokens", 0) or 0), tokens_in)
     except (TypeError, ValueError):
         return
-    step.tokens += used
-    step.status.tokens += used
+    step.tokens += counted_tokens(tokens_in, tokens_out, cached)      # what the step's share is measured in
+    step.status.tokens += tokens_in + tokens_out                       # what the screen shows, with the cached part
+    step.status.cached += cached
 
 
 def step_token_share(token_limit: int) -> int:

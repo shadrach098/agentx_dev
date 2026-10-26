@@ -169,3 +169,10 @@ def test_a_step_is_named_by_its_id_or_its_task():
     assert step_label({"id": "security_audit", "query": "x"}) == "security audit"
     assert step_label({"id": "s1", "query": "Look at the payment webhooks and refunds"}) == "Look at the payment webhooks"
     assert step_label({"id": "step_3", "query": "check"}) == "check"
+
+
+def test_a_reports_markdown_marks_are_taken_out_of_its_line():
+    from agentx_dev.cli.ui import report_line
+    assert report_line("## Audit status: incomplete\n**This is not a clean bill** of `health`") == \
+        "Audit status: incomplete This is not a clean bill of health"
+    assert report_line("C# and 3 * 4 stay") == "C# and 3 * 4 stay"

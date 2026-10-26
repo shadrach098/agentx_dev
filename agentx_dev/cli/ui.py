@@ -456,10 +456,25 @@ def short_time(seconds: float) -> str:
     return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"
 
 
+def token_text(snapshot: Mapping[str, Any]) -> str:
+    """``230k tokens, 80% cached`` (the cached share only when the provider reported one)."""
+    tokens, cached = int(snapshot.get("tokens") or 0), int(snapshot.get("cached") or 0)
+    share = f", {cached * 100 // tokens}% cached" if tokens and cached else ""
+    return f"{short_tokens(tokens)} tokens{share}"
+
+
 def step_stats(snapshot: Mapping[str, Any]) -> str:
     uses = int(snapshot.get("tool_uses") or 0)
-    return (f"{_plural(uses, 'tool use')} · {short_tokens(snapshot.get('tokens') or 0)} tokens · "
-            f"{short_time(snapshot.get('seconds') or 0)}")
+    return f"{_plural(uses, 'tool use')} · {token_text(snapshot)} · {short_time(snapshot.get('seconds') or 0)}"
+
+
+_MARKDOWN = re.compile(r"(^|\s)#{1,6}\s+|\*\*|__|`")
+
+
+def report_line(text: Any) -> str:
+    """The start of a report as one plain line: markdown headings, bold and code marks taken out."""
+    flat = " ".join(str(_nothing_if_none(text)).split())
+    return " ".join(_MARKDOWN.sub(" ", flat).split())
 
 
 class Screen:
@@ -538,8 +553,7 @@ class Screen:
             line.append(f"{_short(row.helper, MAX_HELPER_CHARS)} · {_short(row.label, 40)}", style="bold")
             activity = helper_activity(step_counts(snapshot), sep)
             line.append(f"  {activity or 'starting'}", style="dim")
-            line.append(f"  {short_time(snapshot['seconds'])} · {short_tokens(snapshot['tokens'])} tokens",
-                        style="dim")
+            line.append(f"  {short_time(snapshot['seconds'])} · {token_text(snapshot)}", style="dim")
             lines.append(line)
         return Group(*lines)
 
@@ -567,7 +581,7 @@ class Screen:
                 stats = ""
         line.append(f"  {word}{stats}", style=style if style != "green" else "dim")
         _print(self.console, line)
-        report = _short(" ".join(str(_nothing_if_none(text)).split()), 160) or "(no report)"
+        report = _short(report_line(text), 160) or "(no report)"
         _print(self.console, Text(f"  {elbow(self.console)} {report}", style="red" if not ok and not skipped else "dim"))
 
     def team_log(self, statuses: Sequence[Any]) -> None:

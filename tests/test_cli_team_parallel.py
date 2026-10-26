@@ -302,3 +302,53 @@ class TestWrappingUp:
         assert "Wrapping up" in text and "Stopped:" not in text
         assert model.state["helper_calls"] == 0                   # neither step started
         assert "not started" in text and "The team finished; here is the summary." in text
+
+
+class TestCachedInputCountsAsATenth:
+    """Input the provider serves from its cache costs about a tenth, and most of a helper's input is that: the limit
+    and each step's share count it as a tenth, so a step is not cut off after a dozen calls."""
+
+    def test_the_count(self):
+        from agentx_dev.cli.team import counted_tokens
+        assert counted_tokens(200_000, 6_700, 160_000) == 40_000 + 16_000 + 6_700
+        assert counted_tokens(100, 5) == 105 and counted_tokens(100, 5, 500) == 15      # never more cached than input
+
+    def test_a_steps_share_counts_cached_input_as_a_tenth_and_its_line_shows_the_cache(self):
+        current = team._Step("explorer", team._Job(step_tokens=1_000))
+        model = MockModel()
+        team._local.step = current
+        model._record_usage_counts(input_tokens=5_000, output_tokens=100, cache_read_tokens=4_500)
+        team.note_usage(model)
+        team._local.step = None
+        assert current.tokens == 500 + 450 + 100                     # under its share of 1,000
+        snapshot = current.status.snapshot()
+        assert (snapshot["tokens"], snapshot["cached"]) == (5_100, 4_500)
+        from agentx_dev.cli.ui import step_stats
+        assert "5.1k tokens, 88% cached" in step_stats(snapshot)
+
+    def test_the_limit_question_counts_the_cache_as_a_tenth_and_says_so(self, tmp_path):
+        answers = Lines("y")
+        app, out, _, _ = make_app(tmp_path, Lines(), MockModel(), token_limit=100, read_short=answers)
+        model = MockModel()
+        app._track_usage_model("m", model, "chat")
+        with app._limit_lock:
+            app._turn_start, app._turn_start_sent, app._turn_allowed = 0, 0, 100
+        model.on_usage = None
+        model._record_usage_counts(input_tokens=500, output_tokens=4, cache_read_tokens=450)   # counts 99
+        app._check_token_limit(model)
+        assert not answers.prompts
+        model._record_usage_counts(input_tokens=10, output_tokens=1)                            # counts 110
+        app._check_token_limit(model)
+        assert answers.prompts and answers.prompts[0].startswith(
+            "This message has used 110 tokens (515 sent and received; input from the provider's cache counts as a "
+            "tenth")
+
+
+def test_the_audit_skill_is_open_to_the_helpers(tmp_path):
+    from agentx_dev.Skills import Skills
+    helpers = team.build_helpers(MockModel(), build_tools(tmp_path, [], Gate(cwd=tmp_path)), "",
+                                 skills=Skills(tmp_path / "skills"))
+    settings = helpers["explorer"][1]._settings[1]
+    from agentx_dev import AgentRunner
+    runner = AgentRunner(**settings)
+    assert "auditing-a-project" in runner.system_addendum

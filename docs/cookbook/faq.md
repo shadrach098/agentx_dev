@@ -373,7 +373,8 @@ catch an ordinary exception and carry on; to stop everything the way Ctrl+C does
 
 ## Why did `agentx` ask "Keep going for up to 200,000 more?" *(next release)*
 
-The message had used 200,000 tokens (input and output, every model, team helpers included). Every step of a turn
+The message had used 200,000 tokens (input and output, every model, team helpers included; input served from
+the provider's cache counts as a tenth, about what it costs, so a long turn is not stopped for tokens it barely paid for). Every step of a turn
 sends the conversation again, so a long turn adds up fast. `y` goes on for another 200,000, and `a` goes on without
 asking again in this message (each team step still stops at its own share). `n` or Enter wraps up: tool
 calls are refused from then on, so the agent (and any team helpers) answer with what they have found, and the turn

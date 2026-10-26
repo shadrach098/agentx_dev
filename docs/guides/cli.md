@@ -485,7 +485,7 @@ Each helper works in a thread of its own, but every approval, team question and 
 ### Each step's limits
 
 - **No reading the same file over and over.** When a step has read a file whole twice and has not changed it since, a third whole read gets a note instead of the file: `Not read again: src/app.py was already read in full 2 times in this step and has not changed since. Use what you found in it, grep it for the part you need, or read a part with offset and limit.` Reading a part (`offset`, `limit`) always works, and an edit to the file, or any command, lets it be read whole again.
-- **A token share.** One step may use as many tokens as your [token limit](#the-token-limit) for a message (at least 100,000). Past that its tools answer `Not run: this step has used its share of the token limit (...). Stop calling tools and write your report now: what you found, with file paths, and what is left undone.`, so the helper reports what it has instead of going on. With `/limit 0` there is no share.
+- **A token share.** One step may use as many tokens as your [token limit](#the-token-limit) for a message, counted the same way (cached input as a tenth), and at least 100,000). Past that its tools answer `Not run: this step has used its share of the token limit (...). Stop calling tools and write your report now: what you found, with file paths, and what is left undone.`, so the helper reports what it has instead of going on. With `/limit 0` there is no share.
 - Helpers keep the newest 20,000 to 40,000 characters of tool results whole, like the chat (see [Keeping requests small](#keeping-requests-small)).
 
 ### Skills in a team job
@@ -501,9 +501,9 @@ The helpers work in the background, the way Claude Code's agents do: their indiv
 
   ```text
   ● Team · 3 running · 1 of 5 done
-    ├ explorer · security audit   Read 14 files · Searched 6 patterns   1m 12s · 38k tokens
-    ├ explorer · payments         Read 9 files · Ran 2 commands         58s · 31k tokens
-    └ explorer · frontend admin   Fetched 1 page · Read 6 files         40s · 22k tokens
+    ├ explorer · security audit   Read 14 files · Searched 6 patterns   1m 12s · 180k tokens, 82% cached
+    ├ explorer · payments         Read 9 files · Ran 2 commands         58s · 150k tokens, 79% cached
+    └ explorer · frontend admin   Fetched 1 page · Read 6 files         40s · 90k tokens, 75% cached
   Team is working... 75s
   ```
 
@@ -678,7 +678,7 @@ On a measured turn that read 15 files of 6 KB each, the input sent went from abo
 
 ### The token limit
 
-One message may use 200,000 tokens (input and output, every model, team helpers included) before `agentx` stops and asks `Keep going for up to 200,000 more? a = yes, and do not ask again in this message. No wraps up with what was found so far. [y/a/N]`. Yes goes on for another 200,000; `a` goes on and does not ask again until your next message. No (or Enter) wraps the message up: from then on every tool call, skill reads included, is refused with a note telling the agent to answer now with what it has found, so the agent, and any team helpers, report what they have and the turn ends normally and is kept. In a team job no further step starts: the steps that had not started are listed as skipped (`not started: the user chose to wrap up at the token limit`), and the team reports with what the finished steps found. If wrapping up itself uses more than 50,000 more tokens (or half the limit, if that is more), the turn is stopped the way Ctrl+C stops it: your earlier turns are kept, the stopped one is not recorded, and changes already made stay on disk. The check runs after each model reply, so a turn can pass the limit by one request. `/limit` shows it, `/limit 300k` (or `500000`, `1m`) changes it and saves it in `~/.agentx/settings.json` as `"tokenLimit"`, and `/limit 0` turns it off. A project's `.agentx/settings.json` may set a lower limit but not a higher one.
+One message may use 200,000 tokens (input and output, every model, team helpers included; input the provider serves from its prompt cache counts as a tenth, about what it is billed at, and the question then also says how many were sent in full) before `agentx` stops and asks `Keep going for up to 200,000 more? a = yes, and do not ask again in this message. No wraps up with what was found so far. [y/a/N]`. Yes goes on for another 200,000; `a` goes on and does not ask again until your next message. No (or Enter) wraps the message up: from then on every tool call, skill reads included, is refused with a note telling the agent to answer now with what it has found, so the agent, and any team helpers, report what they have and the turn ends normally and is kept. In a team job no further step starts: the steps that had not started are listed as skipped (`not started: the user chose to wrap up at the token limit`), and the team reports with what the finished steps found. If wrapping up itself uses more than 50,000 more tokens (or half the limit, if that is more), the turn is stopped the way Ctrl+C stops it: your earlier turns are kept, the stopped one is not recorded, and changes already made stay on disk. The check runs after each model reply, so a turn can pass the limit by one request. `/limit` shows it, `/limit 300k` (or `500000`, `1m`) changes it and saves it in `~/.agentx/settings.json` as `"tokenLimit"`, and `/limit 0` turns it off. A project's `.agentx/settings.json` may set a lower limit but not a higher one.
 
 ### When the model is slow
 

@@ -8,6 +8,14 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **`agentx`: cached input counts as a tenth toward the token limit and each team step's share.** A helper's
+  requests are mostly input the provider serves from its cache, billed at about a tenth, but they were counted in
+  full: in one audit each explorer was cut off after about 15 calls at "220k tokens", reported partial, and the agent
+  started two more team jobs. The limit question also says how many tokens were sent in full, and the team block and
+  done lines show the cached share (`230k tokens, 80% cached`).
+- **`agentx`: helpers can open `auditing-a-project`** (version 2; it was listed only for the main agent, so helpers
+  told to follow it searched the disk for it). A step's report line drops markdown marks (`##`, `**`).
+
 - **`agentx`: a no at the token-limit question now ends a team job cleanly.** New steps still started after the no
   (three explorers at once, in one audit), and skill reads were not refused, so wrapping up ran past its allowance and
   the whole turn was thrown away. Now no step starts after a no (it is listed as `not started`), `use_skill` is refused

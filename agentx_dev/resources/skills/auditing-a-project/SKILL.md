@@ -1,8 +1,8 @@
 ---
 name: auditing-a-project
 description: How to audit or review a whole project (security, bugs, risks) - map it, run its checks, split the reading by area, verify, then report by severity.
-tools: [start_team_job]
-version: 1
+tools: [start_team_job, read_path]
+version: 2
 ---
 # Auditing a project
 
@@ -37,5 +37,8 @@ An audit is a report of what is wrong and how badly, with proof. Work in this or
    - **Done well** - what is already solid, so it is kept;
    - **Checks** - what ran (typecheck, tests, audit) and the results;
    - **Test gaps** - the risky paths that no test covers.
+
+**As a team helper** with one area: do steps 4 and 5 for your area only, then report your findings in the shape of
+step 6 (and what you did not get to). Do not look for this skill's file on disk; this text is all of it.
 
 Keep the whole report in one answer. If the team's result was cut, ask the team again only for what is missing.
