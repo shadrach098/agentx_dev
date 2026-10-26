@@ -396,7 +396,8 @@ used one token limit's worth (at least 100,000). See
 Yes. Besides `explorer`, `coder` and `runner`, the supervisor may make a helper for a step, like Claude Code's
 agents: a name for its job (`security-reviewer`), instructions, and tools picked from agentx's own gated tools
 (never delete, move or another team). The plan shows each one and its tools before anything runs, and one that only
-reads runs beside other reading steps. Up to 6 per job. See
+reads runs beside other reading steps. It may run on any of your helper models (`/team-models`), and
+its name then shows which (`security-reviewer@gpt-6-luna`). Up to 6 per job. See
 [Helpers the supervisor makes](../guides/cli.md#helpers-the-supervisor-makes).
 
 ## Can team helpers run at the same time? *(next release)*

@@ -53,7 +53,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   tools), like Claude Code's agents. agentx builds it the way it builds explorer, coder and runner (gated tools, step
   wrapping, redaction, 100 steps, trimming, skills); its tools come only from the gated set, never `delete_path`,
   `move_file`, `start_team_job` or `delegate`, and it gets only the MCP tools it names. A helper with only reading
-  tools runs beside other reading steps. At most 6 per job; the plan shows each one and its tools.
+  tools runs beside other reading steps. At most 6 per job; the plan shows each one and its tools. With helper
+  models set (`/team-models`), it may run on one of them (`"model"` in `new_agent`, read before the plan checker drops
+  it): the planner is told the list, a model not on it is not used, and the name shows it (`reviewer@gpt-6-luna`).
 - **`Skills(guard=fn)`**: `fn()` is asked before each `use_skill` read; a text it returns is the answer instead.
 - **`agentx`: reading steps of a team job run side by side.** Explorer steps that do not depend on each other run
   up to 3 at once (`AsyncSupervisor` with `max_parallel=3` and a lock: a coder or runner step runs alone). A plan

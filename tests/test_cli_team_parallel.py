@@ -365,7 +365,7 @@ class TestHelpersThePlannerMakes:
         pool = [tool for tool in tools if tool.name not in team.NOT_FOR_NEW_HELPERS]
         return team.TeamSupervisor(model=MockModel(), agents=helpers, verbose=False,
                                    spawn_config=SpawnConfig(enabled=True, tools=pool, capabilities=set(), max_depth=0),
-                                   make_helper=lambda name, instructions, names: built.append((name, names)) or object())
+                                   make_helper=lambda name, instructions, names, model="": built.append((name, names)) or object())
 
     def test_its_tools_decide_whether_it_runs_beside_readers(self, tmp_path):
         from agentx_dev.SubAgents import AgentSpec
@@ -426,3 +426,52 @@ class TestHelpersThePlannerMakes:
         assert [t.name for t in made.tools] == ["read_path"]
         built_in = team._helper(team.ROLES[0], MockModel(), by_name, "", str)
         assert "srv__query" in [t.name for t in built_in.tools]
+
+
+class TestANewHelperOnAnotherModel:
+    """The planner may put a new helper on one of the models the user allows (/team-models); any other choice runs it
+    on the chat's model."""
+
+    def run(self, tmp_path, model_name):
+        from agentx_dev.cli.models import HelperModel
+        chat_helper_calls = []
+        spec = {"name": "reviewer", "instructions": "Review it.", "tools": ["read_path"]}
+        if model_name is not None:
+            spec["model"] = model_name
+        chat = router(plans=[plan_json({"id": "s1", "query": "review it", "new_agent": spec})], synth="Done.",
+                      agent=lambda messages: chat_helper_calls.append(1) or make_final("chat report"))
+        chat.model_name = "chat-m"
+        luna = MockModel(script=lambda messages: make_final("luna report"))
+        luna.model_name = "luna-m"
+        seen = []
+        result = run_team_job("the job", model=chat, tools=build_tools(tmp_path, [], Gate(cwd=tmp_path)), addendum="",
+                              notify=lambda kind, data: seen.append((kind, data)),
+                              extra_models=[HelperModel("luna-m", luna, "fast reading")])
+        return result, seen, chat, luna, chat_helper_calls
+
+    def test_the_planner_is_offered_the_allowed_models(self, tmp_path):
+        result, seen, chat, luna, _ = self.run(tmp_path, None)
+        prompt = chat.planner_prompts()[0]
+        assert 'one of: "chat-m", "luna-m" (good for: fast reading)' in prompt and "it runs on chat-m" in prompt
+
+    def test_it_runs_on_the_model_asked_for_and_the_screen_says_so(self, tmp_path):
+        result, seen, chat, luna, chat_helper_calls = self.run(tmp_path, "LUNA-M")
+        assert luna.calls and not chat_helper_calls and "luna report" in str(seen)
+        plan = dict(seen)["plan"]["steps"]
+        assert plan[0]["agent"] == "reviewer@luna-m"
+        started = next(data for kind, data in seen if kind == "dispatch")
+        assert started["status"].helper == "reviewer@luna-m"
+
+    def test_a_model_the_user_did_not_allow_is_not_used(self, tmp_path):
+        result, seen, chat, luna, chat_helper_calls = self.run(tmp_path, "gpt-9-secret")
+        assert chat_helper_calls and not luna.calls
+        assert dict(seen)["plan"]["steps"][0]["agent"] == "reviewer@chat-m"
+
+    def test_with_one_model_nothing_is_offered_and_the_name_has_no_model(self, tmp_path):
+        seen = []
+        spec = {"name": "reviewer", "instructions": "Review it.", "tools": ["read_path"], "model": "x"}
+        chat = router(plans=[plan_json({"id": "s1", "query": "review it", "new_agent": spec})], synth="Done.")
+        run_team_job("the job", model=chat, tools=build_tools(tmp_path, [], Gate(cwd=tmp_path)), addendum="",
+                     notify=lambda kind, data: seen.append((kind, data)))
+        assert "To run it on another model" not in chat.planner_prompts()[0]
+        assert dict(seen)["plan"]["steps"][0]["agent"] == "reviewer"

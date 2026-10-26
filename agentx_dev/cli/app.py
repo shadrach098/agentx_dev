@@ -1515,7 +1515,8 @@ class ChatApp:
                 self._team_rows.pop(status.slot, None)
             ended, planned = self._team_steps
             self._team_steps = (ended + 1, planned)
-            self.screen.team_done(agent, data.get("label") or agent, bool(data.get("ok")), data.get("text"),
+            shown = getattr(status, "helper", "") or agent        # a new helper with its model: name@model
+            self.screen.team_done(shown, data.get("label") or agent, bool(data.get("ok")), data.get("text"),
                                   partial=bool(data.get("partial")), skipped=bool(data.get("skipped")),
                                   status=status)
             self.progress.start("Team is working")

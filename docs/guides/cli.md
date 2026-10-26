@@ -490,6 +490,7 @@ Team plan:
 - It is built the way the three built-in helpers are: the same step room (100 steps), re-read guard, token share, error redaction, trimming and skills, and it appears on the team block under its own name.
 - One whose tools only read, search or fetch (`read_path`, `list_directory`, `find_files`, `grep`, `web_search`, `web_fetch`, `recall`) runs beside other reading steps; one that can edit files or run commands runs alone.
 - At most 6 per job. A later step can use it again by name; a name of a built-in helper is refused.
+- With [helper models](#helper-models) set, the supervisor may put it on any of them (it is told the list, with your notes on what each is for) and its name shows the model: `security-reviewer@gpt-6-luna`. A model that is not on your list is not used; it runs on the chat's model instead. Without helper models it runs on the chat's model.
 
 ### Steps side by side
 
@@ -604,7 +605,7 @@ The agent is then refused every time it tries, in every mode, `auto` included. T
 ### Limits
 
 - Only explorer steps run side by side (up to 3 at once); coder and runner steps run one at a time.
-- Besides the three roles, the supervisor may make up to 6 helpers per job (see [Helpers the supervisor makes](#helpers-the-supervisor-makes)); they run on the chat's model. Extra models (see [Helper models](#helper-models)) add the three roles on other models, and the supervisor does not switch a failed step to another model.
+- Besides the three roles, the supervisor may make up to 6 helpers per job (see [Helpers the supervisor makes](#helpers-the-supervisor-makes)), on the chat's model or one of your helper models. Extra models (see [Helper models](#helper-models)) add the three roles on other models, and the supervisor does not switch a failed step to another model.
 - There is no memory between jobs. Each step is a fresh helper (the supervisor passes earlier results along), built for the job from the model in use at that moment (and from the helper models list at that moment), so `/model` and `/team-models` apply from the next job.
 - A failed step is not retried, because a retry would repeat what the helper already did. A step that depends on the failed one is skipped, and the result lists each step as done, partial (ran out of steps), failed or skipped.
 - A step is at most 100 model steps for the helper, and a job at most 6 plan steps. A helper that runs out of steps does not fail its step: what it did is handed on marked partial (`partial (ran out of steps)` in the result, `(This helper ran out of steps before finishing, so this is partial work ...)` in its report), and the steps after it, such as the runner that tests the coder's edits, still run. The live line reads `partial (coder): (This helper ran out of steps ...`.
@@ -748,7 +749,7 @@ meanwhile; a failed read is shown in full. For other tools the result is one lin
 - **No headless mode.** There is no `agentx -p "task"`; a non-terminal exits with code 1.
 - **No custom commands or hooks.**
 - **No mode that never asks.** `auto` still asks before delete and move and for tools the gate does not know. The protected files (`.git`, `.agentx`, git and shell config) are refused in every mode.
-- **Teams mode is limited:** only reading steps run side by side, and helpers the supervisor makes run on the chat's model only (see [Team jobs](#team-jobs)).
+- **Teams mode is limited:** only reading steps run side by side, and at most 6 helpers are made per job (see [Team jobs](#team-jobs)).
 - You cannot type while the agent is working.
 - **`read_path` returns at most 30,000 characters at a time.** A longer file comes back as numbered lines with a note on how to read the next part (`offset=`). Very long single lines (minified files) are cut.
 - **Project memory is approximate.** The work log is a short text record, not a search index, and summarising is triggered by a character count (see [Project memory](#project-memory)).

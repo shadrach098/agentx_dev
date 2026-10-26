@@ -83,6 +83,9 @@ NEW_HELPERS_NOTE = (
     "instructions that say what it must find and report, and only the tools it needs from the menu. A helper whose "
     "tools only read, search or fetch runs beside other reading steps; one that edits files or runs commands runs "
     "alone. Its tool calls go through the same approvals as every other helper's.")
+NEW_HELPER_MODELS_NOTE = (
+    ' To run it on another model, add "model" to its new_agent, one of: {models}. Without "model" it runs on '
+    "{chat}. Pick by what the step needs; no model is preferred.")
 
 Notify = Callable[[str, Dict[str, Any]], None]
 
@@ -587,10 +590,10 @@ def step_label(step: Dict[str, Any]) -> str:
     return (query[:40] + "…") if len(query) > 40 else (query or raw or "step")
 
 
-def _plan_step(step: Dict[str, Any]) -> Dict[str, Any]:
-    """A plan step for the screen: who runs it, what it is asked, its short name, and for a helper the planner
-    made, the tools it asked for (``new``)."""
-    shown: Dict[str, Any] = {"agent": str(_step_agent_name(step) or ""), "query": str(step.get("query", "")),
+def _plan_step(step: Dict[str, Any], shown_name: Callable[[Any], str] = str) -> Dict[str, Any]:
+    """A plan step for the screen: who runs it (a new helper with its model, ``shown_name``), what it is asked, its
+    short name, and for a helper the planner made, the tools it asked for (``new``)."""
+    shown: Dict[str, Any] = {"agent": shown_name(_step_agent_name(step) or ""), "query": str(step.get("query", "")),
                              "label": step_label(step)}
     spec = step.get("new_agent")
     if isinstance(spec, dict):
@@ -668,13 +671,18 @@ class TeamSupervisor(AsyncSupervisor):
 
     def __init__(self, *args: Any, on_start: Optional[Callable[[str, str, StepStatus], None]] = None,
                  closed: Optional[Callable[[], Any]] = None,
-                 make_helper: Optional[Callable[[str, str, List[str]], Any]] = None, **kwargs: Any) -> None:
+                 make_helper: Optional[Callable[[str, str, List[str], str], Any]] = None,
+                 models: Sequence[Tuple[str, str]] = (), **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._on_start = on_start
         self._closed = closed
-        # make_helper(name, instructions, tool names) builds a helper the planner defined; None: no new helpers
+        # make_helper(name, instructions, tool names, model) builds a helper the planner defined; None: no new helpers
         self._make_helper = make_helper
+        # (model, what it is good for) a new helper may run on, the chat's first; one model: no choice offered
+        self._models = [(str(name), str(use or "")) for name, use in models]
+        self._asked_models: Dict[str, str] = {}          # new helper -> the model the planner asked for
         self._new_helpers: Dict[str, bool] = {}          # name -> whether it only reads
+        self._planned_new: set = set()                   # names of the helpers the plans define
         self._planned_readers: set = set()
         self._step_lock: Optional[_StepLock] = None
         self._labels: Dict[Tuple[str, str], str] = {}
@@ -689,7 +697,37 @@ class TeamSupervisor(AsyncSupervisor):
 
     def _build_agent_catalog(self) -> str:
         catalog = super()._build_agent_catalog()
-        return catalog + NEW_HELPERS_NOTE if self._make_helper is not None and self.spawn_config.enabled else catalog
+        if self._make_helper is None or not self.spawn_config.enabled:
+            return catalog
+        note = NEW_HELPERS_NOTE
+        if len(self._models) > 1:
+            listed = ", ".join(f'"{name}"' + (f" (good for: {use})" if use else "") for name, use in self._models)
+            note += NEW_HELPER_MODELS_NOTE.format(models=listed, chat=self._models[0][0])
+        return catalog + note
+
+    def model_for(self, name: Any) -> str:
+        """The model a new helper runs on: the one the planner asked for when the user allows it, else the chat's
+        ("" when there is only one model)."""
+        if not self._models:
+            return ""
+        asked = self._asked_models.get(str(name), "").strip().lower()
+        return next((model for model, _ in self._models if model.lower() == asked), self._models[0][0])
+
+    def shown_name(self, name: Any) -> str:
+        """A new helper's name on the screen: ``security-reviewer@gpt-6-luna`` when there is a model to tell."""
+        name = str(name or "")
+        return f"{name}@{self.model_for(name)}" if name in self._planned_new and len(self._models) > 1 else name
+
+    async def _plan_once(self, user_task: str, repair_note: str = "", ask_allowed: bool = False) -> List[dict]:
+        # The plan checker rebuilds new_agent from its name, instructions and tools: note the model first.
+        plan = await super()._plan_once(user_task, repair_note=repair_note, ask_allowed=ask_allowed)
+        for item in plan:
+            spec = item.get("new_agent") if isinstance(item, dict) else None
+            if isinstance(spec, dict) and isinstance(spec.get("name"), str):
+                self._planned_new.add(spec["name"].strip())
+                if isinstance(spec.get("model"), str):
+                    self._asked_models[spec["name"].strip()] = spec["model"]
+        return plan
 
     def _spawn_spec(self, spec: AgentSpec) -> Tuple[Optional[str], str]:
         """A helper the planner defined: built the way the built-in ones are (the same gated tools, step wrapping,
@@ -706,7 +744,7 @@ class TeamSupervisor(AsyncSupervisor):
         pool = {getattr(tool, "name", None) for tool in (self.spawn_config.tools or [])}
         granted = [tool for tool in spec.tools if tool in pool and tool not in NOT_FOR_NEW_HELPERS]
         try:
-            runner = self._make_helper(name, spec.instructions, granted)
+            runner = self._make_helper(name, spec.instructions, granted, self.model_for(name))
         except Exception as error:                      # a helper that cannot be built: the step fails, the job goes on
             return None, f"could not build it ({type(error).__name__})"
         self.agents[name] = Specialist(description=spec.instructions[:NEW_HELPER_DESCRIPTION_CHARS], runner=runner)
@@ -747,7 +785,8 @@ class TeamSupervisor(AsyncSupervisor):
         async with self._step_lock.hold(alone=not self._reads_only(agent_name)):
             if self._wrapping_up():
                 return SubtaskResult(agent=agent_name, query=sub_query, content="", error=NOT_STARTED, skipped=True)
-            status = StepStatus(next(self._slots), agent_name, self.label_of(agent_name, sub_query), sub_query)
+            status = StepStatus(next(self._slots), self.shown_name(agent_name), self.label_of(agent_name, sub_query),
+                                sub_query)
             _running_status.set(status)             # this task's context: asyncio.to_thread hands it to the helper
             if self._on_start is not None:
                 try:
@@ -849,10 +888,17 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
         by_name = {tool.name: tool for tool in tools}
         pool = [tool for tool in tools if tool.name not in NOT_FOR_NEW_HELPERS]
 
-        def make_helper(name: str, instructions: str, tool_names: List[str]) -> AgentRunner:
+        chat_label = model_label(model)
+        models = {chat_label: model, **{extra.name: extra.model for extra in extra_models}}
+        offered = [(chat_label, without_auto_prefix(chat_use)),
+                   *((extra.name, without_auto_prefix(extra.use)) for extra in extra_models)]
+
+        def make_helper(name: str, instructions: str, tool_names: List[str], model_name: str = "") -> AgentRunner:
             role = Role(name, instructions[:NEW_HELPER_DESCRIPTION_CHARS], tuple(tool_names),
                         f"The supervisor made you for this job: {instructions}")
-            runner = _helper(role, model, by_name, addendum, describe_error, skills, name, every_mcp_tool=False)
+            shown = f"{name}@{model_name}" if extra_models and model_name else name
+            runner = _helper(role, models.get(model_name, model), by_name, addendum, describe_error, skills, shown,
+                             every_mcp_tool=False)
             runner.job = job
             return runner
 
@@ -862,7 +908,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
         supervisor = TeamSupervisor(
             model=model, agents=helpers, max_subtasks=MAX_SUBTASKS, verbose=False, max_subtask_retries=0,
             max_plan_retries=1, ask_user=asker, max_questions=MAX_QUESTIONS, spawn_config=spawning,
-            max_parallel=PARALLEL_HELPERS, closed=closed, make_helper=make_helper,
+            max_parallel=PARALLEL_HELPERS, closed=closed, make_helper=make_helper, models=offered,
             on_start=lambda agent, query, status: tell("dispatch", {"agent": str(agent), "query": str(query),
                                                                     "label": status.label, "status": status}))
         result = None
@@ -872,7 +918,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                     continue
                 kind = event.get("type")
                 if kind == "plan":
-                    steps = [_plan_step(step) for step in (event.get("plan") or []) if isinstance(step, dict)]
+                    steps = [_plan_step(step, getattr(supervisor, "shown_name", str))
+                             for step in (event.get("plan") or []) if isinstance(step, dict)]
                     tell("plan", {"steps": steps})
                 elif kind == "subtask_result":
                     sub = event.get("result")
