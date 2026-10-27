@@ -61,6 +61,7 @@ Advanced topics:
 
 Reference & recipes:
 - [API summary](reference/api-summary.md) — every exported symbol at a glance
+- [Public API](reference/public-api.md) — what stays stable between releases, and how versions change
 - [Patterns cookbook](cookbook/patterns.md) — reusable multi-agent shapes
   (`agentx` patterns 34-37 *(3.7)*: [using the assistant](cookbook/patterns.md#34-use-the-agentx-assistant-on-a-project-37),
   [team jobs](cookbook/patterns.md#35-hand-a-big-job-to-a-team-of-helpers-37),

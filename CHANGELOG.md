@@ -8,6 +8,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Changed
 
+- **The public API is written down** in `docs/reference/public-api.md`: every name exported from `agentx_dev`, the
+  stable import paths below it, what is not public (underscore names, the `agentx` command's Python modules), and
+  how patch, minor and major versions may change it. A test fails when the package and the page disagree.
+
 - **A smaller base install.** `chromadb`, `qdrant-client`, `psycopg`, `pandas` and `openpyxl` moved from the base
   dependencies to extras: `[rag]` (the three vector stores; `[chroma]`, `[qdrant]`, `[pgvector]` one at a time),
   `[excel]` (spreadsheets in `Media`), `[all]`. A missing package's error names the extra. See Upgrading.
