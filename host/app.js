@@ -418,7 +418,7 @@ result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"
           </svg>
         </div>
         <h1>${heroTitle}<span class="cursor">|</span></h1>
-        <p class="hero-tagline">A production-grade Python framework for building LLM agents.</p>
+        <p class="hero-tagline">Build LLM agents in Python, and get agentx: a coding assistant for your terminal, with helpers that work in parallel.</p>
         <p class="hero-sub">// nothing sprawls</p>
         <div class="hero-code"><pre><code>${heroSnippet}</code></pre></div>
         <div class="hero-cta">

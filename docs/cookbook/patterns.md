@@ -1236,7 +1236,7 @@ Things to know:
 
 ## 35. Hand a big job to a team of helpers *(3.7)*
 
-"Survey this project, add a docstring to each module and run the tests" is too much for one conversation to keep straight. In `agentx` the model can hand it to a team: a supervisor plans up to six steps and three helpers carry them out (`explorer` reads, `coder` edits, `runner` runs commands). Explorer steps that do not depend on each other run side by side, up to three; coder and runner steps run one at a time.
+"Survey this project, add a docstring to each module and run the tests" is too much for one conversation to keep straight. In `agentx` the model can hand it to a team: a supervisor plans up to six steps and helpers carry them out: `explorer` reads, `coder` edits, `runner` runs commands, and the supervisor may make a helper of its own for a step. **Helpers run in parallel:** reading steps that do not depend on each other run side by side, up to three; a step that edits or runs commands runs alone. See [pattern 40](#40-let-helpers-work-in-parallel-next-release).
 
 Usually you just ask, and the agent decides. To ask for a team on purpose:
 
@@ -1449,3 +1449,54 @@ Add the server once; `agentx` connects it at every start and its tools reach the
   included. Keep it that way for servers that can spend money or change data.
 - **Only you** add servers: the agent has no tool for it, so a page or a file cannot plant one.
 - See [MCP servers](../guides/cli.md#mcp-servers).
+
+---
+
+## 40. Let helpers work in parallel *(next release)*
+
+Independent pieces of a job should not wait for each other. Both halves of the package run them at the same time.
+
+**In `agentx`,** ask for a job whose parts are independent and say so:
+
+```text
+> /team audit this repo: security, payments and the admin pages are separate areas - review them side by side
+```
+
+```text
+Team plan:
+  1. security-reviewer (new helper; tools: read_path, grep, find_files) · auth routes: ...
+  2. explorer · payments: ...
+  3. explorer · admin pages: ...
+● Team · 3 running · 0 of 3 done
+  ├ security-reviewer · auth routes   Read 14 files · Searched 6 patterns   1m 12s · 180k tokens, 82% cached
+  ├ explorer · payments               Read 9 files · Ran 2 commands         58s · 150k tokens, 79% cached
+  └ explorer · admin pages            Fetched 1 page · Read 6 files         40s · 90k tokens, 75% cached
+```
+
+- Steps whose helpers only read, search or fetch run side by side, up to three. A step that edits files or runs
+  commands waits for them and runs alone, and no reading step starts while it runs.
+- The supervisor may make a helper for a step: a name, instructions, and tools from agentx's own gated set (never
+  delete, move or another team), on the chat's model or one you allow with `/team-models`.
+- Approvals still come one at a time, each naming the helper; Ctrl+C stops the whole job.
+- `/team log` lists every call each helper made. See [Team jobs](../guides/cli.md#team-jobs).
+
+**In your own code,** declare which steps depend on which, and `AsyncSupervisor` runs the rest concurrently:
+
+```python
+import asyncio
+from agentx_dev import AsyncSupervisor
+
+supervisor = AsyncSupervisor(
+    model=llm,
+    agents={"researcher": ("Looks things up on the web.", researcher),
+            "writer": ("Writes the summary from the findings.", writer)},
+    max_parallel=3,                     # at most three steps at once (rate limits)
+)
+result = asyncio.run(supervisor.run("Compare the pricing of three vector databases and summarise it"))
+```
+
+- The planner gives every step an `id`; a step lists the ids it needs in `depends_on`. Steps with no edge between
+  them run at the same time, and a step starts the moment its own dependencies finish.
+- `max_parallel=N` caps the concurrency; `sequential=True` is `max_parallel=1`.
+- A specialist that runs a blocking `AgentRunner` is moved to a worker thread, so sync and async runners mix.
+- See [How do I run multiple agents in parallel?](faq.md#how-do-i-run-multiple-agents-in-parallel).

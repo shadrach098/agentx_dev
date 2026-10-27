@@ -1,11 +1,38 @@
 # agentx_dev
 
-A production-grade Python framework for building LLM agents.
-Nothing sprawls.
+Two things in one install:
 
-This README walks you through real usage — start an agent, add tools,
-connect MCP servers, ship to production. Every code block is something
-you can paste and run.
+1. **A framework for building LLM agents in Python.** Runners with permission-gated tools, skills, a Supervisor
+   that plans multi-step work and runs independent steps **in parallel**, sub-agents, RAG, memory, MCP, evals,
+   prompt caching and the Batch API. The same code runs on GPT and Claude.
+2. **`agentx`, a coding assistant for your terminal**, built on that framework, in the spirit of Claude Code. It
+   reads, edits and runs code in your project and asks before it changes anything. Big jobs go to a **team of
+   helpers that work in parallel**: reading helpers side by side, and helpers the supervisor makes for the job
+   (`security-reviewer`, `test-writer`). It connects MCP servers, keeps notes per project, and holds a token
+   limit per message.
+
+```bash
+pip install "agentx-dev[anthropic,mcp]"     # then, in a project folder:
+agentx
+```
+
+| Start here | |
+|---|---|
+| **The framework** | [Your first agent in 5 lines](#your-first-agent--5-lines) · [Multi-agent orchestration](#multi-agent-orchestration-supervisor) · [Skills](#skills) · [MCP](#connect-an-mcp-server) |
+| **`agentx` in the terminal** | [The terminal guide](https://github.com/shadrach098/agentx_dev/blob/main/docs/guides/cli.md) · [Team jobs](https://github.com/shadrach098/agentx_dev/blob/main/docs/guides/cli.md#team-jobs) · [Full-screen mode](https://github.com/shadrach098/agentx_dev/blob/main/docs/guides/cli.md#full-screen-mode) |
+| **Recipes and answers** | [Patterns cookbook](https://github.com/shadrach098/agentx_dev/blob/main/docs/cookbook/patterns.md) · [FAQ](https://github.com/shadrach098/agentx_dev/blob/main/docs/cookbook/faq.md) · [Troubleshooting](https://github.com/shadrach098/agentx_dev/blob/main/docs/cookbook/troubleshooting.md) |
+
+### Helpers that work in parallel
+
+- **In the framework:** `AsyncSupervisor` runs plan steps that do not depend on each other at the same time, and
+  starts each step the moment its own dependencies finish (`depends_on`); `max_parallel=N` caps how many run at
+  once. A runner can also hand side jobs to fresh sub-agents (`delegate`).
+- **In `agentx`:** a team job's reading steps run side by side (up to three), while a step that edits files or runs
+  commands runs alone, so nothing reads a file while another step changes it. The supervisor can make a helper for
+  a step, with a name, instructions and only the tools it needs, on any model you allow. A live block shows every
+  running helper, what it has done, its time and its tokens.
+
+Every code block below is something you can paste and run.
 
 ---
 

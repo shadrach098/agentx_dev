@@ -547,6 +547,10 @@ runner can consume, regardless of provider.
 
 ## How do I run multiple agents in parallel?
 
+In the `agentx` terminal app this is automatic: a team job's reading helpers run side by side and the supervisor can
+make helpers of its own (see [Can team helpers run at the same time?](#can-team-helpers-run-at-the-same-time-next-release)
+and [pattern 40](patterns.md#40-let-helpers-work-in-parallel-next-release)). In your own code:
+
 - **`AsyncSupervisor` with a `depends_on` DAG *(3.3)*** — the default
   answer. Steps with no shared edges run concurrently, and a step
   starts the moment its own dependencies finish rather than waiting on

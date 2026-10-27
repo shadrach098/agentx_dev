@@ -2,7 +2,9 @@
 
 name = "agentx-dev"
 version = "3.7.0"
-description = "A production-grade Python framework for building LLM agents. Multi-provider chat, permission-gated tools, RAG (in-mem + Chroma/Qdrant/pgvector), semantic memory, Supervisor + Handoffs multi-agent orchestration with streaming, evals harness, prompt caching, Batch API, prompt-optimizer, MCP integration."
+description = "Build LLM agents in Python, and get agentx: a Claude Code-style coding assistant for your terminal. GPT and Claude, permission-gated tools, skills, MCP, team jobs with helpers that run in parallel, RAG, memory and evals."
+keywords = ["llm", "agents", "ai-agents", "multi-agent", "coding-assistant", "terminal", "cli", "claude-code",
+            "openai", "anthropic", "claude", "gpt", "mcp", "rag", "tool-calling", "supervisor", "skills"]
 authors = [{ name = "Bruce-Arhin Shadrach", email = "brucearhin098@gmail.com" }]
 # An SPDX expression plus the file (the table form is deprecated and will stop building)
 license = "MIT"

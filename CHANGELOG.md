@@ -6,6 +6,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+### Changed
+
+- **The package says what it is.** The PyPI summary, keywords, README opening, docs index and docs site name both
+  halves: the framework and the `agentx` terminal assistant, with helpers that run in parallel. New cookbook pattern
+  40, "Let helpers work in parallel", for the terminal app and for `AsyncSupervisor` in your own code.
+
 ### Fixed
 
 - **`agentx`: cached input counts as a tenth toward the token limit and each team step's share.** A helper's

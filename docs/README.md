@@ -1,7 +1,9 @@
 # AgentX documentation
 
-`agentx_dev` is a production-grade Python framework for building
-LLM agents. Nothing sprawls.
+`agentx_dev` is two things in one install: a Python framework for building LLM agents (gated tools, skills, a
+Supervisor that runs independent steps in parallel, sub-agents, RAG, memory, MCP, evals; GPT and Claude), and
+`agentx`, a coding assistant for your terminal built on it, whose team jobs run helpers in parallel. Nothing sprawls.
+For the terminal app, start with [the agentx guide](guides/cli.md).
 
 This documentation walks you from your first agent to a production
 multi-agent system. Read in order if you're new; jump to the section
