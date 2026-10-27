@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 import shutil
 import sys
+import time
 import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -664,16 +665,24 @@ class Screen:
             item["result"], item["failed"] = plain(summary), failed_command
         return True
 
-    def _flow_lines(self, live: bool) -> List[Text]:
-        """The flow as a tree: the first step after a dot (yellow while the flow runs), the others hanging off it,
-        each with its result under it; the step still running is yellow."""
+    def _flow_lines(self, live: bool, now: Optional[float] = None) -> List[Text]:
+        """The flow as a tree: the first step after a dot, the others hanging off it, each with its result under it.
+        While it runs (``live``) the dot is yellow and the running step white, both blinking (bright, then dim, each
+        half second of ``now``); once printed the dot is green, and red when the last step failed."""
         utf = self._utf()
+        lit = int((time.monotonic() if now is None else now) * 2) % 2 == 0
         lines: List[Text] = []
         for index, item in enumerate(self._flow):
             running = live and item["result"] is None
-            name_style = "bold yellow" if running else "bold"
+            name_style = ("bold bright_white" if lit else "dim") if running else "bold"
+            subject_style = ("bright_white" if lit else "dim") if running else "dim"
             if index == 0:
-                line = Text(f"{bullet(self.console)} ", style="bold yellow" if live else "bold")
+                if live:
+                    dot = "bold yellow" if lit else "dim yellow"
+                else:
+                    dot = "bold red" if self._flow[-1]["failed"] else "bold green"
+                line = Text()
+                line.append(f"{bullet(self.console)} ", style=dot)
                 indent = "  "
             else:
                 last = index == len(self._flow) - 1
@@ -682,7 +691,7 @@ class Screen:
             line.append(item["name"], style=name_style)
             subject = self._skills_text(item) if item["tool"] == SKILL_TOOL else item["subject"]
             if subject:
-                line.append(f"  {subject}", style="dim")
+                line.append(f"  {subject}", style=subject_style)
             lines.append(line)
             if item["result"]:
                 lines.append(Text(f"{indent}{elbow(self.console)} {item['result']}",

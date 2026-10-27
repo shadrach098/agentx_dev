@@ -228,18 +228,32 @@ class TestTheLookAroundFlow:
         shown = self.text(out)
         assert "long text" not in shown and "conversation-start" not in shown and "historical" not in shown
 
-    def test_while_it_runs_the_flow_is_drawn_and_the_running_step_is_yellow(self):
+    @staticmethod
+    def styles(line):
+        return [str(span.style) for span in line.spans]
+
+    def test_while_it_runs_the_dot_and_the_running_step_blink(self):
         screen, out = self.screen()
         screen.show_event({"type": "tool_call", "name": "use_skill", "args": {"name": "using-superpowers"}})
         screen.show_event({"type": "tool_result", "name": "use_skill", "result": "text"})
         screen.show_event({"type": "tool_call", "name": "grep", "args": {"pattern": "x", "path": "src"}})
-        lines = screen._flow_lines(live=True)
-        assert lines[0].style == "bold yellow"                            # the flow is running
-        assert any("yellow" in str(span.style) for span in lines[1].spans)       # and so is grep
-        assert not any("yellow" in str(span.style) for span in lines[0].spans)   # the skill read is done
+        bright, dim = screen._flow_lines(live=True, now=0.0), screen._flow_lines(live=True, now=0.5)
+        assert self.styles(bright[0])[0] == "bold yellow" and self.styles(dim[0])[0] == "dim yellow"   # the dot
+        assert self.styles(bright[0])[1:] == ["bold", "dim"]              # the skill read is done: not blinking
+        assert self.styles(bright[1]) == ["bold bright_white", "bright_white"]       # grep runs: white ...
+        assert self.styles(dim[1]) == ["dim", "dim"]                                  # ... and blinks
         assert screen.flow_block() is not None
+
+    def test_when_it_is_done_the_dot_is_green(self):
+        screen, out = self.screen()
+        screen.show_event({"type": "tool_call", "name": "grep", "args": {"pattern": "x"}})
+        screen.show_event({"type": "tool_result", "name": "grep", "result": "(no matches ...)"})
+        assert self.styles(screen._flow_lines(live=False)[0])[0] == "bold green"
+        screen.show_event({"type": "tool_call", "name": "read_path", "args": {"path": "nope"}})
+        screen.show_event({"type": "tool_result", "name": "read_path", "result": "ERROR: no", "is_error": True})
+        assert self.styles(screen._flow_lines(live=False)[0])[0] == "bold red"    # the last step failed
         screen.flush()
-        assert screen.flow_block() is None and "yellow" not in str([line.spans for line in screen._flow_lines(False)])
+        assert screen.flow_block() is None
 
     def test_a_failed_step_is_red_in_the_flow_and_a_command_ends_it(self):
         screen, out = self.screen()

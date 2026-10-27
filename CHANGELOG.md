@@ -51,8 +51,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 - **`agentx`: the agent looking around is one tree.** Skill reads, `recall`, reads, searches, listings and web calls
   in a row are drawn as one flow (`● Skills  using-superpowers` / `├─ recall ...` / `│  ⎿ Found 2 notes` /
-  `└─ read_path ...`), redrawn in place above the spinner with the running step in yellow, and printed when the agent
-  moves on. The agent's narration leading into those steps or into its answer is no longer printed; a note before
+  `└─ read_path ...`), redrawn in place above the spinner while it runs (a blinking yellow dot, the running step
+  blinking white) and printed when the agent moves on, with a green dot (red when the last step failed). The agent's narration leading into those steps or into its answer is no longer printed; a note before
   an edit or a command still is.
 
 - **`agentx`: the supervisor can make helpers.** A plan step may define a helper (`new_agent`: a name, instructions,

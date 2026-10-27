@@ -739,8 +739,9 @@ While `agentx` waits for you the prompt is coloured and the cursor blinks; while
 
 The line under the input shows the mode, the Shift+Tab hint, the model and the folder's name (`/sessions` shows the
 session ids). When the agent looks around (skill reads, `recall`, reads, searches, listings, web calls), the steps in a
-row are one flow, drawn as a tree and redrawn in place above the spinner while it grows, with the running step in
-yellow; when the agent moves on, it is printed for good:
+row are one flow, drawn as a tree and redrawn in place above the spinner while it grows: the dot is yellow and the
+running step white, both blinking. When the agent moves on it is printed for good, with a green dot (red when the last
+step failed):
 
 ```text
 ● Skills  using-superpowers
