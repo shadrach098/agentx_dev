@@ -231,6 +231,9 @@ class AgentSpec:
     instructions: str
     tools: Tuple[str, ...] = ()
     origin: str = "plan"            # "plan" | "delegate"
+    # The model the planner asked this helper to run on ("" for none). The default builder ignores it (helpers run
+    # on the Supervisor's model); a ``spawn_specialist`` override may honour it.
+    model: str = ""
 
 
 def parse_agent_spec(raw: Any, origin: str = "plan", *, reserve_dunder: bool = True) -> AgentSpec:
@@ -257,11 +260,14 @@ def parse_agent_spec(raw: Any, origin: str = "plan", *, reserve_dunder: bool = T
     if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
         raise SpecError("tools must be a list of tool names")
     cleaned = tuple(dict.fromkeys(t.strip() for t in tools if t.strip()))
+    model = raw.get("model")
+    model = "".join(c for c in model.strip() if c.isprintable())[:80] if isinstance(model, str) else ""
     return AgentSpec(
         name=name.strip(),
         instructions=instructions.strip()[:MAX_INSTRUCTIONS_CHARS],
         tools=cleaned,
         origin=origin,
+        model=model,
     )
 
 

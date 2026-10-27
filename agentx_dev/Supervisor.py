@@ -22,7 +22,7 @@ import asyncio
 import json
 from contextlib import aclosing, closing, contextmanager
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union, Any
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field
 
@@ -779,7 +779,8 @@ def _sanitize_plan(
                 continue
             checked.append(step)
             continue
-        step["new_agent"] = {"name": spec.name, "instructions": spec.instructions, "tools": list(spec.tools)}
+        step["new_agent"] = {"name": spec.name, "instructions": spec.instructions, "tools": list(spec.tools),
+                             **({"model": spec.model} if spec.model else {})}
         step["agent"] = spec.name
         checked.append(step)
     plan = checked
@@ -1108,9 +1109,24 @@ class _SpawnMixin:
                 return n
         return None
 
-    def _spawn_spec(self, spec: AgentSpec) -> Tuple[Optional[str], str]:
-        """Build, reuse or refuse ``spec``. Returns ``(name, "")`` when an agent is available
-        under ``name`` (a clashing name may have been suffixed), or ``(None, reason)``."""
+    # -- public extension points (stable: see docs/reference/public-api.md) ---------------------------
+
+    planner_note: str = ""      # text added to the end of the planner's catalog of specialists
+
+    def prepare_plan(self, plan: List[dict]) -> List[dict]:
+        """Called with every plan just before it runs (the first plan and each recovery plan, after the
+        plan checker), and returns the plan to run. The default returns it unchanged. Override it to
+        add ``depends_on`` edges, reorder steps, or note what the plan asks for; return a new list rather
+        than editing steps in place if the caller's copy must stay as the planner wrote it."""
+        return plan
+
+    def spawn_specialist(self, spec: AgentSpec) -> Tuple[Optional[str], str]:
+        """Build, reuse or refuse the specialist a plan step defines (``new_agent``; ``spec.model`` is
+        the model it asked for, or ""). Return ``(name, "")`` once a specialist is registered in
+        ``self.agents`` under ``name``, or ``(None, reason)`` to refuse (the step then fails with the
+        reason). The default applies ``spawn_config``'s ceiling and runs the helper on this Supervisor's
+        model. Override it to build helpers your own way; an override is called only when
+        ``spawn_config.enabled`` is on."""
         policy = self._spawn_policy()
         registered = {n for n in self.agents if n not in policy.run.built}
         try:
@@ -1126,6 +1142,9 @@ class _SpawnMixin:
                 print(f"{_C_PLAN}[supervisor.spawn] '{name}' has the same tools as the registered "
                       f"specialist '{twin}'; keeping both (different instructions){_C_RESET}")
         return name, ""
+
+    def _spawn_spec(self, spec: AgentSpec) -> Tuple[Optional[str], str]:
+        return self.spawn_specialist(spec)
 
     def _handle_spawn(self, spawn_step: dict) -> Tuple[Optional[str], Optional[str]]:
         """Process a legacy ``__spawn__`` step. Returns ``(name, None)`` when the agent is
@@ -1173,6 +1192,7 @@ class Supervisor(_SpawnMixin):
         ask_when_done: bool = False,
         follow_up: bool = False,
         max_follow_ups: int = 5,
+        planner_note: str = "",
     ):
         """
         Args:
@@ -1299,6 +1319,7 @@ class Supervisor(_SpawnMixin):
         self.max_questions = max(0, int(max_questions))
         self.ask_timeout = ask_timeout
         self._operator: Optional[OperatorChannel] = None
+        self.planner_note = str(planner_note or "")      # added to the planner's catalog of specialists
         self.follow_up, self.ask_when_done, self.max_follow_ups = _session_settings(
             self.ask_user, ask_when_done, follow_up, max_follow_ups)
         self.memory = validate_memory(memory)
@@ -1336,7 +1357,13 @@ class Supervisor(_SpawnMixin):
         return _evaluate_success_verdict(verdict)
 
     def _build_agent_catalog(self) -> str:
-        return _render_agent_catalog(self.agents)
+        return _render_agent_catalog(self.agents) + (self.planner_note or "")
+
+    def run_step(self, agent_name: str, query: str, run: Callable[[], SubtaskResult]) -> SubtaskResult:
+        """Runs one step: ``run()`` dispatches it to ``agent_name`` (with retries) and returns its result.
+        The default just calls it. Override it to wrap every step (time it, hold a lock, set up context)
+        or to skip one by returning your own ``SubtaskResult`` without calling ``run``."""
+        return run()
 
     def _plan_once(self, user_task: str, repair_note: str = "", ask_allowed: bool = False) -> List[dict]:
         offer = ask_allowed and self._operator is not None and self._operator.remaining() > 0
@@ -1566,6 +1593,7 @@ class Supervisor(_SpawnMixin):
         ``subtask_result`` events. Results are appended to the shared
         ``subtask_results`` / ``results_by_id`` so several rounds can build on
         one another."""
+        plan = self.prepare_plan(plan)
         # 3.3: DAG mode fires when ANY step declares depends_on. Dep-free
         # plans keep byte-identical legacy semantics (plan order, every
         # step sees ALL prior results).
@@ -1724,9 +1752,9 @@ class Supervisor(_SpawnMixin):
                    "step": step_idx, "step_id": step_id}
             if self.verbose:
                 _log_dispatch(agent_name, sub_query)
-            sub_result = self._dispatch_with_retry(
-                agent_runner, agent_name, sub_query, dispatched_query, budget,
-            )
+            sub_result = self.run_step(agent_name, sub_query, lambda runner=agent_runner, name=agent_name,
+                                       query=sub_query, dispatched=dispatched_query:
+                                       self._dispatch_with_retry(runner, name, query, dispatched, budget))
             sub_result.step_id = step_id
             sub_result.depends_on = step_deps
             subtask_results.append(sub_result)
@@ -2009,6 +2037,7 @@ class AsyncSupervisor(_SpawnMixin):
         ask_when_done: bool = False,
         follow_up: bool = False,
         max_follow_ups: int = 5,
+        planner_note: str = "",
     ):
         """
         Args:
@@ -2103,6 +2132,7 @@ class AsyncSupervisor(_SpawnMixin):
         self.max_questions = max(0, int(max_questions))
         self.ask_timeout = ask_timeout
         self._operator: Optional[OperatorChannel] = None
+        self.planner_note = str(planner_note or "")      # added to the planner's catalog of specialists
         self.follow_up, self.ask_when_done, self.max_follow_ups = _session_settings(
             self.ask_user, ask_when_done, follow_up, max_follow_ups)
         self.memory = validate_memory(memory)
@@ -2137,7 +2167,22 @@ class AsyncSupervisor(_SpawnMixin):
     # -- internal helpers ----------------------------------------------------
 
     def _build_agent_catalog(self) -> str:
-        return _render_agent_catalog(self.agents)
+        return _render_agent_catalog(self.agents) + (self.planner_note or "")
+
+    async def run_step(self, agent_name: str, query: str,
+                       run: Callable[[], Awaitable[SubtaskResult]]) -> SubtaskResult:
+        """Runs one step: ``await run()`` dispatches it to ``agent_name`` (with retries) and returns its
+        result. The default just awaits it. Override it to wrap every step (hold a lock so some steps
+        never overlap, set a context variable a sync specialist's thread inherits, time it) or to skip
+        one by returning your own ``SubtaskResult`` without awaiting ``run``. It runs in the step's own
+        task, so steps that may run at once (``max_parallel``) call it concurrently."""
+        return await run()
+
+    async def _step(self, agent_name: str, sub_query: str, prior_results: Optional[List[SubtaskResult]],
+                    budget: Optional[RunBudget]) -> SubtaskResult:
+        async def run() -> SubtaskResult:
+            return await self._run_subtask(agent_name, sub_query, prior_results=prior_results, budget=budget)
+        return await self.run_step(agent_name, sub_query, run)
 
     async def _call_model(self, messages: List[Dict[str, str]]) -> str:
         """One planner or synthesis call. In persistent mode a transient provider
@@ -2409,6 +2454,7 @@ class AsyncSupervisor(_SpawnMixin):
         ``dispatch`` / ``subtask_result`` events. Results are appended to the
         shared ``subtask_results`` / ``results_by_id`` so several rounds can
         build on one another."""
+        plan = self.prepare_plan(plan)
         # Emit a `dispatch` event for every step up-front so UIs can
         # render the plan as a "task list" before results start landing.
         for step_idx, item in enumerate(plan):
@@ -2572,10 +2618,8 @@ class AsyncSupervisor(_SpawnMixin):
                     dep_results = [
                         results_by_id[d] for d in deps_of[i] if d in results_by_id
                     ]
-                    task = asyncio.create_task(self._run_subtask(
-                        launch_agent, plan[i]["query"],
-                        prior_results=dep_results if dep_results else None,
-                        budget=budget,
+                    task = asyncio.create_task(self._step(
+                        launch_agent, plan[i]["query"], dep_results if dep_results else None, budget,
                     ))
                     running[task] = i
                     launched_as[i] = launch_agent

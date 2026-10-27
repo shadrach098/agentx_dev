@@ -325,6 +325,43 @@ Things to know:
 - **Noisy matches.** `HashEmbeddings` is noisy; raise `memory_min_score` if irrelevant items appear.
 - See [pattern 33](../cookbook/patterns.md) for file-backed, Chroma and read-only examples.
 
+## Changing how a Supervisor runs
+
+Four public extension points let a subclass change how plans run without copying private methods. They are stable
+(see [Public API](../reference/public-api.md)) and exist on both `Supervisor` and `AsyncSupervisor`:
+
+| Extension point | Called | Default | Use it to |
+|---|---|---|---|
+| `prepare_plan(plan) -> plan` | with every plan just before it runs (the first plan and each recovery plan), after the plan checker | returns it unchanged | add `depends_on` edges, reorder or drop steps, note what the plan asks for |
+| `run_step(agent_name, query, run)` | around every step; `run()` (awaited on `AsyncSupervisor`) dispatches it with retries | calls `run()` | hold a lock, set a context variable, time a step, or skip it by returning your own `SubtaskResult` |
+| `spawn_specialist(spec) -> (name, reason)` | when a plan step defines a helper (`new_agent`) and `spawn_config.enabled` is on | the ceiling rules, on the Supervisor's model | build helpers your own way; register in `self.agents[name]` and return `(name, "")`, or `(None, reason)` to fail the step |
+| `planner_note` (constructor argument or attribute) | added to the end of the planner's list of specialists | `""` | tell the planner something it should know every time |
+
+A plan step's `new_agent` may also carry a `model`: the model the planner asks the helper to run on. It reaches
+`spawn_specialist` as `spec.model`; the default ignores it.
+
+```python
+import asyncio
+from agentx_dev import AsyncSupervisor, SubtaskResult
+
+class OneWriterAtATime(AsyncSupervisor):
+    """Readers run side by side; the writer never overlaps anything."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, planner_note="\n\nRead before you write.", **kwargs)
+        self._writing = asyncio.Lock()
+
+    async def run_step(self, agent_name, query, run):
+        if agent_name != "writer":
+            return await run()
+        async with self._writing:
+            return await run()
+```
+
+`run_step` runs in the step's own task, so with `max_parallel` above 1 it is called for several steps at once. The
+`agentx` command's team jobs are built this way: its step lock, wrap-up skip, step status and helpers on other models
+use only these four.
+
 ## Watching it
 
 `supervisor.stream(task)` includes:

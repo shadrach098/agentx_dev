@@ -61,6 +61,13 @@ package is installed (`pip install "agentx-dev[mcp]"`).
 
 What each name does: the [API summary](api-summary.md).
 
+## Extension points
+
+These methods and attributes of `Supervisor` and `AsyncSupervisor` are public, for subclasses: `prepare_plan`,
+`run_step`, `spawn_specialist` and `planner_note` (also a constructor argument). Override them instead of an
+underscore method; see [Changing how a Supervisor runs](../guides/sub-agents.md#changing-how-a-supervisor-runs).
+`AgentSpec.model` (the model a planned helper asks for) is part of `AgentSpec`.
+
 ## Stable import paths below the package
 
 These are documented in the guides and stay where they are:

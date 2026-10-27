@@ -6,6 +6,14 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+### Added
+
+- **Public extension points on `Supervisor` and `AsyncSupervisor`:** `prepare_plan(plan)` (change a plan before it
+  runs), `run_step(agent_name, query, run)` (wrap or skip every step), `spawn_specialist(spec)` (build the helpers a
+  plan defines your own way) and `planner_note` (text added to the planner's list of specialists). A planned helper's
+  `new_agent` may name a `model`, kept by the plan checker and passed as `AgentSpec.model`. The `agentx` team runner
+  now uses only these, no underscore methods. See "Changing how a Supervisor runs" in the sub-agents guide.
+
 ### Changed
 
 - **The public API is written down** in `docs/reference/public-api.md`: every name exported from `agentx_dev`, the
