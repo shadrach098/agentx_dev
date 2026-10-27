@@ -49,6 +49,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **`agentx`: the agent looking around is one tree.** Skill reads, `recall`, reads, searches, listings and web calls
+  in a row are drawn as one flow (`● Skills  using-superpowers` / `├─ recall ...` / `│  ⎿ Found 2 notes` /
+  `└─ read_path ...`), redrawn in place above the spinner with the running step in yellow, and printed when the agent
+  moves on. The agent's narration leading into those steps or into its answer is no longer printed; a note before
+  an edit or a command still is.
+
 - **`agentx`: the supervisor can make helpers.** A plan step may define a helper (`new_agent`: a name, instructions,
   tools), like Claude Code's agents. agentx builds it the way it builds explorer, coder and runner (gated tools, step
   wrapping, redaction, 100 steps, trimming, skills); its tools come only from the gated set, never `delete_path`,

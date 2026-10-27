@@ -46,13 +46,15 @@ class TestScreen:
         c, out = console()
         s = Screen(c)
         s.show_event({"type": "thought", "content": "thinking about it"})
+        s.show_event({"type": "tool_call", "name": "run_shell", "args": {"command": "pytest"}})   # a note before a command
+        s.show_event({"type": "thought", "content": "narrating the answer"})                   # one before the answer
         s.show_event({"type": "final", "content": "**Done** with the task"})
         s.show_event({"type": "text_delta", "content": "ignored"})
         s.show_event({"type": "completion", "completion": object()})
         s.notice("hello")
         s.error("boom")
         text = out.getvalue()
-        assert "thinking about it" in text and "Done with the task" in text
+        assert "thinking about it" in text and "Done with the task" in text and "narrating" not in text
         assert "ignored" not in text and "hello" in text and "boom" in text
 
     def test_a_console_that_cannot_print_the_bullet_gets_a_star(self):

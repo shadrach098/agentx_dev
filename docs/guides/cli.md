@@ -738,10 +738,22 @@ While `agentx` waits for you the prompt is coloured and the cursor blinks; while
 | Ctrl+D | Leave. |
 
 The line under the input shows the mode, the Shift+Tab hint, the model and the folder's name (`/sessions` shows the
-session ids). A tool call prints as one line (`● edit_file src/app.py`). Skill reads never show their text: while the agent reads
-them the spinner line grows in place (`Skills: using-superpowers → brainstorming`), and when it moves on one line
-stays (`● Skills  using-superpowers → brainstorming → yt-script (+ score.py)`), followed by the notes it wrote
-meanwhile; a failed read is shown in full. For other tools the result is one line under the call: `⎿ Read 51 lines`, `⎿ Found 2 files`, `⎿ 3 matches in 12 files searched`, `⎿ Found 1 note`, `⎿ Fetched 8,412 characters`, the first line of a command's output with how many more (`⎿ 42  (+3 more lines)`), or `⎿ Exit code 1: ZeroDivisionError: ...` in red when it failed. A refusal or an error is shown in full, in red; the model's thoughts are dim, and the final answer is rendered as Markdown. When the output stream is not UTF-8 (a redirected cp1252 or ASCII stream, say) the line starts with `*` instead of the dot; a Windows console reports UTF-8 and prints the dot.
+session ids). When the agent looks around (skill reads, `recall`, reads, searches, listings, web calls), the steps in a
+row are one flow, drawn as a tree and redrawn in place above the spinner while it grows, with the running step in
+yellow; when the agent moves on, it is printed for good:
+
+```text
+● Skills  using-superpowers
+├─ recall  most recent work audit findings
+│  ⎿ Found 2 notes
+└─ read_path  .agentx/notes/2026-10-25-180958-audit-this-repo.md
+   ⎿ Read lines 1-60
+```
+
+A skill's text is never shown, and skill reads in a row are one step (`Skills  using-superpowers → brainstorming`). The
+notes the agent writes leading into such a step, or into its answer, are narration and are not printed; a note before
+an edit or a command is (dim). Any other tool call prints as one line (`● edit_file src/app.py`). A failed step is
+shown in red. The result is one line under the call: `⎿ Read 51 lines`, `⎿ Found 2 files`, `⎿ 3 matches in 12 files searched`, `⎿ Found 1 note`, `⎿ Fetched 8,412 characters`, the first line of a command's output with how many more (`⎿ 42  (+3 more lines)`), or `⎿ Exit code 1: ZeroDivisionError: ...` in red when it failed. A refusal or an error is shown in full, in red; the model's thoughts are dim, and the final answer is rendered as Markdown. When the output stream is not UTF-8 (a redirected cp1252 or ASCII stream, say) the line starts with `*` instead of the dot; a Windows console reports UTF-8 and prints the dot.
 
 ## Limits in this version
 

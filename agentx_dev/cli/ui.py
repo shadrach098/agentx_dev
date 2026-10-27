@@ -481,10 +481,10 @@ class Screen:
     """Draws what the agent does. Everything is printed as ``Text``, so square brackets in tool output are
     never read as rich markup.
 
-    Skill reads are bookkeeping, not work: their text is never shown. A run of them becomes one line
-    (``● Skills  using-superpowers → brainstorming → yt-script (+ score.py)``), printed when the agent moves on
-    (``flush``); the agent's notes written between them wait until then, so they do not split the line. While a
-    run is open, ``skills_line()`` is what the app shows on the spinner, so the line grows in place.
+    The agent looking around (skill reads, recall, reads, searches, listings, web calls) is one flow, drawn as a
+    tree and redrawn in place above the spinner while it grows (``flow_block``), printed when the agent moves on
+    (``flush``); a skill's text is never shown, and skill reads in a row are one step (``Skills  a → b``). The
+    agent's notes that lead into such a step are narration and are not printed.
 
     A team helper's looking calls (reads, searches, listings, web, skills) are counted the same way, one line per
     helper (``● [explorer] Read 12 files · Searched 3 patterns``), printed when that helper does something else or
@@ -493,8 +493,8 @@ class Screen:
     def __init__(self, console: Console) -> None:
         self.console = console
         self.cwd: Optional[str] = None
-        self._skills: Dict[str, List[str]] = {}      # skill -> other files of it read, in the order first read
-        self._held: List[Dict[str, Any]] = []        # thoughts that came while a run of skill reads was open
+        self._flow: List[Dict[str, Any]] = []        # the open look-around flow: one item per step
+        self._held: List[str] = []                   # the agent's notes, until the next event says what they lead to
         self._helpers: Dict[str, Dict[str, Any]] = {}   # helper -> what its looking calls have done so far
 
     def _sep(self) -> str:
@@ -608,68 +608,139 @@ class Screen:
                     _print(self.console, Text(f"      {elbow(self.console)} {_short(summary, 140)}",
                                               style="red" if failed else "dim"))
 
+    # -- the main chat's look-around flow ------------------------------------------------------------------------
+
+    def flow_open(self) -> bool:
+        return bool(self._flow)
+
     def skills_line(self) -> str:
-        parts = []
-        for skill, files in self._skills.items():
-            parts.append(skill + (f" (+ {', '.join(files)})" if files else ""))
-        return " → ".join(parts)
+        """The skills read in the open flow, in order: ``using-superpowers → yt-script (+ score.py)``."""
+        return " → ".join(self._skills_text(item) for item in self._flow if item["tool"] == SKILL_TOOL)
 
-    def flush(self) -> None:
-        """Print the open run of skill reads as one line, then the notes held back meanwhile."""
-        if self._skills:
-            line = Text(f"{bullet(self.console)} Skills", style="bold")
-            line.append("  " + self.skills_line(), style="dim")
-            _print(self.console, line)
-            self._skills = {}
-        held, self._held = self._held, []
-        for event in held:
-            self.show_event(event)
+    @staticmethod
+    def _skills_text(item: Dict[str, Any]) -> str:
+        return " → ".join(skill + (f" (+ {', '.join(files)})" if files else "")
+                          for skill, files in item["skills"].items())
 
-    def _note_skill(self, args: Any) -> None:
-        if isinstance(args, dict) and "name" not in args and isinstance(args.get("Input"), dict):
+    def _add_to_flow(self, name: str, args: Any) -> None:
+        if isinstance(args, dict) and isinstance(args.get("Input"), dict) and not ({"name", "path"} & set(args)):
             args = args["Input"]                     # text-mode calls wrap the arguments
         args = args if isinstance(args, dict) else {}
-        skill = _short(args.get("name") or "?", 60)
-        files = self._skills.setdefault(skill, [])
-        extra = _short(args.get("file") or "", 40)
-        if extra and extra != "SKILL.md" and extra not in files:
-            files.append(extra)
+        if name == SKILL_TOOL:                       # skill reads in a row are one step: Skills  a → b
+            last = self._flow[-1] if self._flow else None
+            if last is None or last["tool"] != SKILL_TOOL:
+                last = {"tool": SKILL_TOOL, "name": "Skills", "skills": {}, "subject": "", "result": None,
+                        "failed": False}
+                self._flow.append(last)
+            files = last["skills"].setdefault(_short(args.get("name") or "?", 60), [])
+            extra = _short(args.get("file") or "", 40)
+            if extra and extra != "SKILL.md" and extra not in files:
+                files.append(extra)
+            last["result"] = None
+            return
+        try:
+            subject = _short(self._relative(subject_of(name, args)))
+        except Exception:
+            subject = ""
+        self._flow.append({"tool": name, "name": _short(name), "subject": subject, "result": None, "failed": False})
+
+    def _flow_result(self, name: str, result: Any, is_error: bool) -> bool:
+        """Put a result under its call in the open flow; False when no call there waits for it."""
+        item = next((item for item in reversed(self._flow) if item["tool"] == name and item["result"] is None), None)
+        if item is None:
+            return False
+        try:
+            raw = str(_nothing_if_none(result))
+        except Exception:                            # an object that cannot be shown must not stop the screen
+            raw = ""
+        text = plain(raw, keep_newlines=True).lstrip()
+        failed = is_error or text.startswith(("ERROR", "Refused", "The user declined"))
+        if failed:
+            item["result"], item["failed"] = _short((_lines(text) or [""])[0], 160) or "(failed)", True
+        elif name == SKILL_TOOL:
+            item["result"] = ""                     # a skill's text is never shown
+        else:
+            summary, failed_command = summarize_result(name, raw)
+            item["result"], item["failed"] = plain(summary), failed_command
+        return True
+
+    def _flow_lines(self, live: bool) -> List[Text]:
+        """The flow as a tree: the first step after a dot (yellow while the flow runs), the others hanging off it,
+        each with its result under it; the step still running is yellow."""
+        utf = self._utf()
+        lines: List[Text] = []
+        for index, item in enumerate(self._flow):
+            running = live and item["result"] is None
+            name_style = "bold yellow" if running else "bold"
+            if index == 0:
+                line = Text(f"{bullet(self.console)} ", style="bold yellow" if live else "bold")
+                indent = "  "
+            else:
+                last = index == len(self._flow) - 1
+                line = Text(("└─ " if last else "├─ ") if utf else ("`- " if last else "|- "), style="dim")
+                indent = ("   " if last else "│  ") if utf else ("   " if last else "|  ")
+            line.append(item["name"], style=name_style)
+            subject = self._skills_text(item) if item["tool"] == SKILL_TOOL else item["subject"]
+            if subject:
+                line.append(f"  {subject}", style="dim")
+            lines.append(line)
+            if item["result"]:
+                lines.append(Text(f"{indent}{elbow(self.console)} {item['result']}",
+                                  style="red" if item["failed"] else "dim"))
+        return lines
+
+    def flow_block(self) -> Optional[Group]:
+        """The open flow, for the block above the spinner; None when none is open."""
+        return Group(*self._flow_lines(live=True)) if self._flow else None
+
+    def flush(self) -> None:
+        """Print the open flow for good, then the notes held back meanwhile."""
+        if self._flow:
+            for line in self._flow_lines(live=False):
+                _print(self.console, line)
+            self._flow = []
+        held, self._held = self._held, []
+        for text in held:
+            _print(self.console, Text(text, style="dim italic"))
 
     def show_event(self, event: Dict[str, Any]) -> None:
+        """Draw one event. Reads, searches, listings, web calls, recalls and skill reads in a row are one flow (see
+        ``_flow_lines``), drawn in place by the app (``flow_block``) and printed when the agent does something else.
+        A note the agent writes is held until the next event: before a look-around step or the answer it is
+        narration and is dropped; before an edit or a command it is printed."""
         if not isinstance(event, dict):
             return
         kind = event.get("type")
-        if kind == "tool_call" and event.get("name") == SKILL_TOOL:
-            self._note_skill(event.get("args"))
-            return
-        if kind == "tool_result" and event.get("name") == SKILL_TOOL:
-            result = _nothing_if_none(event.get("result"))
-            if event.get("is_error") or str(result).lstrip().startswith("ERROR"):
-                self.flush()                         # a failed read is shown: mistakes must not disappear
-                self._result(result, True)
-            return
-        if kind == "thought" and self._skills:
-            self._held.append(event)
-            return
-        self.flush()
+        try:
+            name = str(event.get("name") or "")
+        except Exception:                            # a name that cannot be shown must not stop the screen
+            name = "?"
         if kind == "thought":
             text = plain(_nothing_if_none(event.get("content")), keep_newlines=True).strip()
             if text:
-                _print(self.console, Text(text, style="dim italic"))
-        elif kind == "tool_call":
-            name = _short(event.get("name", ""))
+                self._held.append(text)
+            return
+        if (kind == "tool_call" and name in HELPER_LOOKS) or kind == "final":
+            self._held = []                          # narration leading into a look-around step or the answer
+        if kind == "tool_call" and name in HELPER_LOOKS:
+            self._add_to_flow(name, event.get("args"))
+            return
+        if kind == "tool_result" and name in HELPER_LOOKS and \
+                self._flow_result(name, event.get("result"), bool(event.get("is_error"))):
+            return
+        self.flush()
+        if kind == "tool_call":
             args = event.get("args")
             try:
-                summary = _short(self._relative(subject_of(str(event.get("name", "")),
-                                                           args if isinstance(args, dict) else {})))
+                summary = _short(self._relative(subject_of(name, args if isinstance(args, dict) else {})))
             except Exception:
                 summary = ""
-            line = Text(f"{bullet(self.console)} {name}", style="bold")
+            line = Text(f"{bullet(self.console)} {_short(name)}", style="bold")
             if summary:
                 line.append(f"  {summary}", style="dim")
             _print(self.console, line)
         elif kind == "tool_result":
-            self._result(event.get("result"), bool(event.get("is_error")), str(event.get("name") or ""))
+            self._result(event.get("result"), bool(event.get("is_error")), name)
         elif kind == "final":
             content = plain(_nothing_if_none(event.get("content")), keep_newlines=True)
             _print(self.console, Markdown(content, hyperlinks=False))

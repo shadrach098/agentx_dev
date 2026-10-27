@@ -217,7 +217,7 @@ class ChatApp:
         self._mode_before_grant: Optional[str] = None
         self._watch_mode_changes()
         self.progress = Progress(console)
-        self.progress.board = self._team_board
+        self.progress.board = self._board
         self._team_running: List[str] = []   # the helpers whose steps are running (several when they only read)
         self._team_rows: Dict[int, Any] = {}  # slot -> StepStatus of each running step, drawn above the spinner
         self._team_steps = (0, 0)             # (steps ended, steps planned) in the running job
@@ -634,10 +634,7 @@ class ChatApp:
                 kind = event.get("type") if isinstance(event, dict) else None
                 if kind in ("tool_call", "tool_result", "final"):
                     events.append(event)
-                skills = self.screen.skills_line()
-                if skills and kind not in ("final", "completion"):
-                    self.progress.start(f"Skills: {self._safe(skills, 120)}")      # the open run, growing in place
-                elif kind == "tool_call":
+                if kind == "tool_call":                    # an open look-around flow is drawn above the spinner
                     self.progress.start(f"Running {self._safe(event.get('name', ''), 40)}")
                 elif kind not in ("final", "completion"):
                     self.progress.start("Thinking")
@@ -654,7 +651,7 @@ class ChatApp:
             self.error(self._failure(e))
         finally:
             self.progress.stop()
-            self.screen.flush()                       # a run of skill reads left open by an error or Ctrl+C
+            self.screen.flush()                       # a look-around flow left open by an error or Ctrl+C
             with self._limit_lock:
                 self._turn_start = None
                 self._wrapping_up = False
@@ -1465,6 +1462,10 @@ class ChatApp:
     def _team_board(self) -> Any:
         rows = list(self._team_rows.values())
         return self.screen.team_board(rows, *self._team_steps) if rows else None
+
+    def _board(self) -> Any:
+        """What is drawn above the spinner: the team's running steps, else the chat's open look-around flow."""
+        return self._team_board() or self.screen.flow_block()
 
     def show_team_log(self) -> None:
         """``/team log``: every call of every step of the last team job in this session."""

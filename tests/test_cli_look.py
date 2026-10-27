@@ -107,7 +107,8 @@ class TestStartScreen:
 
 
 class TestSkillReadsAreOneLine:
-    """A skill read shows its name, never its text; a run of them is one line, printed when the agent moves on."""
+    """A skill read shows its name, never its text; a run of them is one step of the look-around flow, printed when
+    the agent moves on to something else."""
 
     def screen(self):
         console = Console(file=io.StringIO(), width=200, color_system=None)
@@ -129,10 +130,16 @@ class TestSkillReadsAreOneLine:
         assert console.file.getvalue() == ""                     # nothing yet: the run is still open
         assert screen.skills_line() == "using-superpowers → brainstorming → yt-script (+ score.py)"
         screen.show_event({"type": "tool_call", "name": "read_path", "args": {"path": "a.py"}})
+        assert console.file.getvalue() == ""                     # a read joins the flow
+        screen.show_event({"type": "thought", "content": "Now run it."})
+        screen.show_event({"type": "tool_call", "name": "run_shell", "args": {"command": "pytest"}})
         lines = console.file.getvalue().splitlines()
         assert lines[0].endswith("Skills  using-superpowers → brainstorming → yt-script (+ score.py)")
-        assert lines[1] == "Loading." and "read_path" in lines[2]
-        assert "Look before you change" not in console.file.getvalue() and screen.skills_line() == ""
+        assert lines[1] == "└─ read_path  a.py"
+        assert lines[2] == "Now run it." and "run_shell" in lines[3]       # a note before a command is kept
+        text = console.file.getvalue()
+        assert "Loading." not in text                                      # a note leading into a look is not
+        assert "Look before you change" not in text and screen.skills_line() == ""
 
     def test_the_final_answer_closes_the_run(self):
         screen, console = self.screen()
@@ -146,6 +153,7 @@ class TestSkillReadsAreOneLine:
         screen, console = self.screen()
         screen.show_event(self.call("flights"))
         screen.show_event(self.result("ERROR: no skill named 'flights'.", error=True))
+        screen.flush()
         text = console.file.getvalue()
         assert "Skills  flights" in text and "ERROR: no skill named 'flights'." in text
 
@@ -173,3 +181,88 @@ class TestSkillReadsAreOneLine:
         text = out.getvalue()
         assert "Skills  exploring-a-project → changing-files" in text and text.count("Skills  ") == 1
         assert "Look before you change anything" not in text and "All read." in text
+
+
+class TestTheLookAroundFlow:
+    """Skill reads, recall, reads, searches and web calls in a row are one tree, drawn in place while it grows and
+    printed when the agent moves on; the agent's narration leading into them, or into its answer, is not printed."""
+
+    def screen(self, encoding="utf-8"):
+        out = io.TextIOWrapper(io.BytesIO(), encoding=encoding, newline="")
+        console = Console(file=out, width=200, color_system=None)
+        return Screen(console), out
+
+    @staticmethod
+    def text(out):
+        out.flush()
+        return out.buffer.getvalue().decode(out.encoding)
+
+    def where_were_we(self, screen):
+        notes = ("These notes were written by agentx from earlier sessions in this folder. ...\n\n"
+                 "- 2026-10-25 a (.agentx/notes/a.md):\n  x\n- 2026-10-24 b (b.md):\n")
+        for event in (
+                {"type": "thought", "content": "The user wants a recap. First read the conversation-start skill."},
+                {"type": "tool_call", "name": "use_skill", "args": {"name": "using-superpowers"}},
+                {"type": "tool_result", "name": "use_skill", "result": "# Using superpowers\nlong text"},
+                {"type": "thought", "content": "Using the conversation-start skill; retrieve the prior notes."},
+                {"type": "tool_call", "name": "recall", "args": {"query": "most recent work"}},
+                {"type": "tool_result", "name": "recall", "result": notes},
+                {"type": "thought", "content": "Read the audit note for the exact three issues."},
+                {"type": "tool_call", "name": "read_path", "args": {"path": ".agentx/notes/a.md"}},
+                {"type": "tool_result", "name": "read_path", "result": "1\tx\n2\ty\n3\tz"},
+                {"type": "thought", "content": "Frame these as historical results."}):
+            screen.show_event(event)
+
+    def test_the_users_example(self):
+        screen, out = self.screen()
+        self.where_were_we(screen)
+        assert self.text(out) == ""                                       # still open: drawn in place
+        screen.show_event({"type": "final", "content": "We had finished the repo audit."})
+        lines = self.text(out).splitlines()
+        assert lines[:5] == ["● Skills  using-superpowers",
+                             "├─ recall  most recent work",
+                             "│  ⎿ Found 2 notes",
+                             "└─ read_path  .agentx/notes/a.md",
+                             "   ⎿ Read lines 1-3"]
+        assert "We had finished the repo audit." in lines[5]
+        shown = self.text(out)
+        assert "long text" not in shown and "conversation-start" not in shown and "historical" not in shown
+
+    def test_while_it_runs_the_flow_is_drawn_and_the_running_step_is_yellow(self):
+        screen, out = self.screen()
+        screen.show_event({"type": "tool_call", "name": "use_skill", "args": {"name": "using-superpowers"}})
+        screen.show_event({"type": "tool_result", "name": "use_skill", "result": "text"})
+        screen.show_event({"type": "tool_call", "name": "grep", "args": {"pattern": "x", "path": "src"}})
+        lines = screen._flow_lines(live=True)
+        assert lines[0].style == "bold yellow"                            # the flow is running
+        assert any("yellow" in str(span.style) for span in lines[1].spans)       # and so is grep
+        assert not any("yellow" in str(span.style) for span in lines[0].spans)   # the skill read is done
+        assert screen.flow_block() is not None
+        screen.flush()
+        assert screen.flow_block() is None and "yellow" not in str([line.spans for line in screen._flow_lines(False)])
+
+    def test_a_failed_step_is_red_in_the_flow_and_a_command_ends_it(self):
+        screen, out = self.screen()
+        screen.show_event({"type": "tool_call", "name": "read_path", "args": {"path": "nope.py"}})
+        screen.show_event({"type": "tool_result", "name": "read_path", "result": "ERROR: path does not exist: nope.py",
+                           "is_error": True})
+        screen.show_event({"type": "thought", "content": "Run the tests instead."})
+        screen.show_event({"type": "tool_call", "name": "run_shell", "args": {"command": "pytest"}})
+        lines = self.text(out).splitlines()
+        assert lines[0] == "● read_path  nope.py" and lines[1] == "  ⎿ ERROR: path does not exist: nope.py"
+        assert lines[2] == "Run the tests instead." and lines[3].startswith("● run_shell")
+
+    def test_a_plain_console_gets_a_plain_tree(self):
+        screen, out = self.screen("cp1252")
+        self.where_were_we(screen)
+        screen.flush()
+        lines = self.text(out).splitlines()
+        assert lines[0] == "* Skills  using-superpowers" and lines[1].startswith("|- recall")
+        assert lines[3].startswith("`- read_path")
+
+    def test_the_app_draws_the_open_flow_above_the_spinner(self, tmp_path):
+        from tests.test_cli_app import Lines, make_app
+        from tests.conftest import MockModel
+        app, out, _, _ = make_app(tmp_path, Lines(), MockModel())
+        app.screen.show_event({"type": "tool_call", "name": "grep", "args": {"pattern": "x"}})
+        assert app._board() is not None
