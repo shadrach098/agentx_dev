@@ -431,6 +431,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/memory [words]` | Show the project notes kept for later (how many, how they are searched, the newest), or search them. See [Notes and recall](#notes-and-recall). | `/memory login redirect` |
 | `/usage` | Show the tokens used this session (requests, input and output tokens, how much of the input came from the provider's cache, per model when a team used others) and by the last turn, and the token limit. | `/usage` |
 | `/mcp` | List your MCP servers and their state; `/mcp add <name> <url>`, `/mcp add <name> -- <command> [args]`, `/mcp remove`, `/mcp login`, `/mcp logout <name>`. See [MCP servers](#mcp-servers). | `/mcp add flightclaw https://mcp.flightclaw.com/mcp` |
+| `/fullscreen [on\|off]` | Show whether full-screen mode is on, or turn it on or off from the next start (saved as `"fullscreen"` in `~/.agentx/settings.json`). See [Full-screen mode](#full-screen-mode). | `/fullscreen on` |
 | `/limit [tokens]` | Show or set how many tokens one message may use before agentx asks whether to go on (`0` for no limit). See [The token limit](#the-token-limit). | `/limit 300k` |
 | `/exit` | Save the conversation and leave (Ctrl+D does the same). | `/exit` |
 
@@ -723,6 +724,34 @@ Every turn sends the whole history again, so a long conversation costs more with
 - A team job is one log line (see above), and the log holds what the app saw, not everything that happened.
 - There is no `/compact` command; summarising happens by itself.
 
+## Full-screen mode
+
+`agentx --fullscreen` (or `/fullscreen on`, which saves `"fullscreen": true` in `~/.agentx/settings.json` for the
+next start) takes the whole window, the way vim or htop do. The welcome box stays at the top, and the input line and
+the status line stay at the bottom, while only the conversation between them scrolls:
+
+```text
+╭─ agentx ── welcome box (one line on a window under 30 rows) ─╮   fixed
+│ … the conversation …                                          │   scrolls
+│ ● Team · 2 running …  /  the look-around tree  /  a question  │   fixed, above the input
+├───────────────────────────────────────────────────────────────┤
+│ ❯ your message                                                │   fixed
+│ ⏵⏵ auto mode on (shift+tab to cycle) · model · folder         │   fixed
+╰───────────────────────────────────────────────────────────────╯
+```
+
+- Scroll with the mouse wheel or PgUp / PgDn; Ctrl+End (or PgDn to the bottom) follows the end again. While you are
+  scrolled up a line above the input says so.
+- To select text with the mouse, hold **Shift** while you drag (the mouse wheel belongs to agentx in this mode).
+- Questions (approvals, the token limit, pick-lists) are asked in the fixed area above the input, so they never
+  scroll away; the keys are the same as on the normal screen.
+- You can type while the agent works: a message sent then is kept and sent when the agent is done.
+- Ctrl+C stops the agent as before; Ctrl+D on an empty input leaves.
+- When agentx exits the window goes back to what it was, and the whole conversation is written to the terminal
+  once, so it is in the terminal's scrollback.
+- `agentx --no-fullscreen` uses the normal screen for one run even when the setting is on. If full-screen mode cannot
+  start, agentx says so and uses the normal screen.
+
 ## Keys
 
 While `agentx` waits for you the prompt is coloured and the cursor blinks; while it is working, a spinner with the seconds elapsed shows instead (see the checklist below). A still cursor with no spinner means the terminal is the problem, not the program.
@@ -763,7 +792,7 @@ shown in red. The result is one line under the call: `⎿ Read 51 lines`, `⎿ F
 - **No custom commands or hooks.**
 - **No mode that never asks.** `auto` still asks before delete and move and for tools the gate does not know. The protected files (`.git`, `.agentx`, git and shell config) are refused in every mode.
 - **Teams mode is limited:** only reading steps run side by side, and at most 6 helpers are made per job (see [Team jobs](#team-jobs)).
-- You cannot type while the agent is working.
+- You cannot type while the agent is working (except in [full-screen mode](#full-screen-mode)).
 - **`read_path` returns at most 30,000 characters at a time.** A longer file comes back as numbered lines with a note on how to read the next part (`offset=`). Very long single lines (minified files) are cut.
 - **Project memory is approximate.** The work log is a short text record, not a search index, and summarising is triggered by a character count (see [Project memory](#project-memory)).
 - `run_shell` and `run_python` run with a scrubbed environment, and `run_python` uses `agentx`'s own interpreter (see [What it can do](#what-it-can-do)).

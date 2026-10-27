@@ -236,6 +236,10 @@ class Progress:
         self._spinner = None
         # ``board()``, when set, returns lines drawn above the spinner (the team's running helpers), or None
         self.board: Optional[Callable[[], Any]] = None
+        # Full-screen mode draws the spinner itself: then start/stop only set what ``renderable`` returns, and call
+        # ``drawn_by()`` so the screen redraws.
+        self.drawn_by: Optional[Callable[[], None]] = None
+        self._shown = False
 
     @property
     def enabled(self) -> bool:
@@ -245,7 +249,6 @@ class Progress:
             return False
 
     def __rich__(self):
-        import time
         if self._spinner is not None:
             self._spinner.update(text=Text(f"{self._label}... {int(time.monotonic() - self._since)}s", style="dim"))
         extra = None
@@ -256,24 +259,40 @@ class Progress:
                 extra = None
         return Group(extra, self._spinner) if extra is not None and self._spinner is not None else self._spinner
 
+    def renderable(self) -> Any:
+        """What full-screen mode draws for the spinner (with its block), or None when it is not running."""
+        return self.__rich__() if self._shown and self._spinner is not None else None
+
     def start(self, label: str = "Thinking") -> None:
         self.stop()
-        if not self.enabled:
+        if not self.enabled and self.drawn_by is None:
             return
-        import time
         from rich.live import Live
         from rich.spinner import Spinner
         self._label = plain(label)
         self._since = time.monotonic()
         utf = (getattr(self.console, "encoding", "") or "").lower().startswith("utf")
         self._spinner = Spinner("dots" if utf else "line", text=Text(f"{self._label}...", style="dim"))
+        if self.drawn_by is not None:
+            self._shown = True
+            self._redraw()
+            return
         try:
             self._live = Live(self, console=self.console, transient=True, refresh_per_second=10)
             self._live.start()
         except Exception:
             self._live = None
 
+    def _redraw(self) -> None:
+        try:
+            self.drawn_by()                          # type: ignore[misc]
+        except Exception:
+            pass
+
     def stop(self) -> None:
+        if self._shown:
+            self._shown = False
+            self._redraw()
         live, self._live = self._live, None
         if live is not None:
             try:
@@ -287,7 +306,7 @@ class Progress:
 
         @contextmanager
         def block():
-            running = self._live is not None
+            running = self._live is not None or self._shown
             label = self._label
             self.stop()
             try:
@@ -494,6 +513,8 @@ class Screen:
     def __init__(self, console: Console) -> None:
         self.console = console
         self.cwd: Optional[str] = None
+        # full-screen mode: header(factory, compact) shows the welcome box as the fixed header
+        self.header: Optional[Callable[[Callable[[int], Any], str], None]] = None
         self._flow: List[Dict[str, Any]] = []        # the open look-around flow: one item per step
         self._held: List[str] = []                   # the agent's notes, until the next event says what they lead to
         self._helpers: Dict[str, Dict[str, Any]] = {}   # helper -> what its looking calls have done so far
@@ -788,6 +809,12 @@ class Screen:
         _print(self.console, line)
 
     def welcome(self, **parts: Any) -> None:
+        """The welcome box; in full-screen mode (``header`` set) it becomes the fixed header instead."""
+        if self.header is not None:
+            compact = " · ".join(str(part) for part in (f"agentx v{parts.get('version', '')}", parts.get("model"),
+                                                        parts.get("folder")) if part)
+            self.header(lambda width: welcome_panel(width=width, **parts), compact)
+            return
         _print(self.console, welcome_panel(width=self.console.width, **parts))
 
     def error(self, text: str) -> None:

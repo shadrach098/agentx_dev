@@ -91,6 +91,22 @@ def _write_project_key(cwd: Path, key: str, value: Any, what: str) -> Tuple[Opti
     return _write_key(Path(cwd), key, value, what)
 
 
+def read_user_fullscreen(home: Path) -> bool:
+    """``"fullscreen": true`` in ~/.agentx/settings.json (the user's own file only: it is read before the folder is
+    trusted). Anything else, or a file that cannot be read, is off."""
+    path = Path(home) / FOLDER / SETTINGS_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return False
+    return isinstance(data, dict) and data.get("fullscreen") is True
+
+
+def write_user_fullscreen(home: Path, on: bool) -> Tuple[Optional[Path], str]:
+    """Save ``"fullscreen"`` in ~/.agentx/settings.json (``/fullscreen on|off``)."""
+    return _write_key(Path(home), "fullscreen", bool(on), f"fullscreen {'true' if on else 'false'}")
+
+
 def write_user_token_limit(home: Path, limit: int) -> Tuple[Optional[Path], str]:
     """Save ``limit`` as ``tokenLimit`` in ``~/.agentx/settings.json`` (``/limit``). See ``_write_project_key``."""
     what = f"tokenLimit {limit}" if limit else "tokenLimit 0 (no limit)"

@@ -391,6 +391,12 @@ grep it for the part you need, or read a part with offset and limit"); and each 
 used one token limit's worth (at least 100,000). See
 [Each step's limits](../guides/cli.md#each-steps-limits).
 
+## Can the header and the input stay put while the conversation scrolls? *(next release)*
+
+Yes, in full-screen mode: `agentx --fullscreen` for one run, or `/fullscreen on` to keep it from the next start. Only
+the conversation scrolls (mouse wheel, PgUp / PgDn); hold Shift to select text with the mouse. The normal screen
+scrolls like any terminal program, Claude Code included. See [Full-screen mode](../guides/cli.md#full-screen-mode).
+
 ## Can the team make its own helpers? *(next release)*
 
 Yes. Besides `explorer`, `coder` and `runner`, the supervisor may make a helper for a step, like Claude Code's

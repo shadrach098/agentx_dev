@@ -49,6 +49,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **`agentx`: full-screen mode** (`agentx --fullscreen`, `/fullscreen on|off`, `"fullscreen": true` in
+  `~/.agentx/settings.json`; off by default). The welcome box, the input and the status line stay put while only the
+  conversation scrolls (mouse wheel, PgUp / PgDn, Ctrl+End). Questions are asked above the input; a message typed
+  while the agent works is kept for later; Ctrl+C and Ctrl+D work as before; on exit the conversation is written to
+  the terminal. The app runs unchanged on a worker thread: its console writes into the screen, and the spinner is
+  drawn by the screen (`Progress.drawn_by`).
 - **`agentx`: the agent looking around is one tree.** Skill reads, `recall`, reads, searches, listings and web calls
   in a row are drawn as one flow (`● Skills  using-superpowers` / `├─ recall ...` / `│  ⎿ Found 2 notes` /
   `└─ read_path ...`), redrawn in place above the spinner while it runs (a blinking yellow dot, the running step

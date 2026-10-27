@@ -46,7 +46,7 @@ def test_help_lists_every_command():
     assert run_command(ctx, "/help") is True
     text = "\n".join(ctx.said)
     assert all(name in text for name in command_names())
-    assert command_names() == ["/help", "/clear", "/model", "/mode", "/settings", "/resume", "/sessions", "/init", "/team", "/team-models", "/skills", "/memory", "/usage", "/mcp", "/limit", "/exit"]
+    assert command_names() == ["/help", "/clear", "/model", "/mode", "/settings", "/resume", "/sessions", "/init", "/team", "/team-models", "/skills", "/memory", "/usage", "/mcp", "/limit", "/fullscreen", "/exit"]
 
 
 def test_clear_exit_init_sessions():

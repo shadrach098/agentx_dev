@@ -241,6 +241,16 @@ def _limit(ctx: Any, arg: str) -> None:
     ctx.set_token_limit(tokens)
 
 
+def _fullscreen(ctx: Any, arg: str) -> None:
+    word = arg.strip().lower()
+    if not word:
+        ctx.show_fullscreen()
+    elif word in ("on", "off"):
+        ctx.set_fullscreen(word == "on")
+    else:
+        ctx.error("Usage: /fullscreen [on|off]")
+
+
 MCP_USAGE = ("Usage: /mcp | /mcp add <name> <url> [--sse] | /mcp add <name> -- <command> [args...] | "
              "/mcp tools <name> | /mcp allow <name> <tool...|read-only|all> | /mcp ask <name> <tool...|all> | "
              "/mcp remove <name> | /mcp login <name> | /mcp logout <name>")
@@ -320,6 +330,8 @@ COMMANDS = (
     Command("usage", "Show the tokens used this session, per model, and by the last turn", _usage),
     Command("mcp", "MCP servers: list, or /mcp add <name> <url>, remove, login, logout <name>", _mcp),
     Command("limit", "Show or set how many tokens one message may use before agentx asks: /limit [tokens]", _limit),
+    Command("fullscreen", "Keep the header and input fixed while the conversation scrolls: /fullscreen [on|off]",
+            _fullscreen),
     Command("exit", "Leave", _exit),
 )
 _BY_NAME = {command.name: command for command in COMMANDS}

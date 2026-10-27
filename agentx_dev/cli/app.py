@@ -34,7 +34,8 @@ from agentx_dev.cli.safepaths import safe_location
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
 from agentx_dev.cli.settings import (DEFAULT_TOKEN_LIMIT, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
-                                     write_project_model, write_project_team_models, write_user_token_limit)
+                                     read_user_fullscreen, write_project_model, write_project_team_models,
+                                     write_user_fullscreen, write_user_token_limit)
 from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, counted_tokens, current_helper, current_status,
                                  make_team_tool, note_usage, on_main, run_team_job, step_token_share, team_request)
 from agentx_dev.cli.tools import build_tools, gate_tool
@@ -217,6 +218,7 @@ class ChatApp:
         self._mode_before_grant: Optional[str] = None
         self._watch_mode_changes()
         self.progress = Progress(console)
+        self.fullscreen = False                    # set by main when agentx runs in full-screen mode
         self.progress.board = self._board
         self._team_running: List[str] = []   # the helpers whose steps are running (several when they only read)
         self._team_rows: Dict[int, Any] = {}  # slot -> StepStatus of each running step, drawn above the spinner
@@ -1061,6 +1063,19 @@ class ChatApp:
         shown = f"{self.token_limit:,} tokens a message" if self.token_limit else "off"
         self.notice(f"Token limit: {shown}. {self._safe(message, 300)}")
 
+    def set_fullscreen(self, on: bool) -> None:
+        """``/fullscreen on|off``: saved in ~/.agentx/settings.json; it applies the next time agentx starts."""
+        _, message = write_user_fullscreen(self.home, on)
+        now = "on" if self.fullscreen else "off"
+        self.notice(f"Full-screen mode {'on' if on else 'off'} from the next start (it is {now} now). "
+                    f"{self._safe(message, 300)}")
+
+    def show_fullscreen(self) -> None:
+        self.notice(f"Full-screen mode is {'on' if self.fullscreen else 'off'}. /fullscreen on keeps the header and "
+                    "the input fixed while the conversation scrolls (PgUp / PgDn or the mouse wheel; Shift+drag to "
+                    "select text); /fullscreen off goes back to the normal screen. Either applies from the next "
+                    "start; agentx --fullscreen or --no-fullscreen picks for one run.")
+
     def show_token_limit(self) -> None:
         if self.token_limit:
             self.notice(f"Token limit: {self.token_limit:,} tokens a message. When a message gets there, agentx asks "
@@ -1678,6 +1693,11 @@ def build_parser() -> argparse.ArgumentParser:
                        help="resume the latest conversation in this folder")
     group.add_argument("--resume", nargs="?", const="pick", default=None, metavar="ID",
                        help="resume a saved conversation (pick from a list, or give an id)")
+    screen = parser.add_mutually_exclusive_group()
+    screen.add_argument("--fullscreen", dest="fullscreen", action="store_true", default=None,
+                        help="full-screen mode: the header and the input stay put while the conversation scrolls")
+    screen.add_argument("--no-fullscreen", dest="fullscreen", action="store_false",
+                        help="the normal screen, even when the settings turn full-screen mode on")
     return parser
 
 
@@ -1752,20 +1772,45 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not is_terminal():
         print(NOT_A_TERMINAL, file=sys.stderr)
         return 1
+    home = Path.home()
+    holder: List[Any] = []
+    hooks = dict(extra_commands=lambda: holder[0].skill_entries() if holder else {},
+                 toolbar=lambda: holder[0].status_bar() if holder else "",
+                 cycle_mode=lambda: holder[0].cycle_mode() if holder else None)
+    wanted = args.fullscreen if args.fullscreen is not None else read_user_fullscreen(home)
+    if wanted:
+        try:
+            from agentx_dev.cli.fullscreen import FullScreen
+            screen = FullScreen(history_file=home / ".agentx" / "history", commands=command_names(),
+                                descriptions=command_descriptions(), **hooks)
+        except Exception as e:
+            print(f"agentx: full-screen mode could not start ({type(e).__name__}); using the normal screen.",
+                  file=sys.stderr)
+        else:
+            def wire(app: "ChatApp") -> None:
+                app.fullscreen = True
+                app.screen.header = screen.set_header
+                app.progress.drawn_by = screen.invalidate
+                screen.progress = app.progress
+
+            return screen.run(lambda: _run(args, home, screen.console, screen.read, screen.read_short, screen.select,
+                                           holder, wire))
+    prompt = PromptInput(history_file=home / ".agentx" / "history", commands=command_names(),
+                         descriptions=command_descriptions(), **hooks)
+    return _run(args, home, Console(), prompt.read, prompt.read_short, prompt.select, holder)
+
+
+def _run(args: argparse.Namespace, home: Path, console: Console, read: Callable[..., str],
+         read_short: Callable[..., str], select: Callable[..., Any], holder: List[Any],
+         wire: Optional[Callable[["ChatApp"], None]] = None) -> int:
+    """Everything after the screen is chosen: the trust question, the settings, the app, the loop."""
     try:
-        cwd, home = Path.cwd().resolve(), Path.home()
+        cwd = Path.cwd().resolve()
         setup_logging(home)
-        console = Console()
-        holder: List[Any] = []
-        prompt = PromptInput(history_file=home / ".agentx" / "history", commands=command_names(),
-                             descriptions=command_descriptions(),
-                             extra_commands=lambda: holder[0].skill_entries() if holder else {},
-                             toolbar=lambda: holder[0].status_bar() if holder else "",
-                             cycle_mode=lambda: holder[0].cycle_mode() if holder else None)
         # Nothing in this folder (its settings, its AGENTX.md) is read until the user has said they trust it.
         # A folder trusted for the first time in this run gets its own settings file (``ChatApp.start``).
         was_trusted = is_trusted(cwd, home)
-        if not ensure_trusted(cwd, home, console, select=prompt.select, read_line=prompt.read_short):
+        if not ensure_trusted(cwd, home, console, select=select, read_line=read_short):
             print("agentx: this folder is not trusted, so nothing was started. Run agentx in a folder you trust.",
                   file=sys.stderr)
             return 1
@@ -1774,14 +1819,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for entry in [*settings.add_dirs, *args.add_dir]:
             path = Path(entry).expanduser()
             add_dirs.append(_resolved(path if path.is_absolute() else cwd / path))
-        app = ChatApp(cwd=cwd, home=home, console=console, read_line=prompt.read, read_short=prompt.read_short,
-                      select=prompt.select,
+        app = ChatApp(cwd=cwd, home=home, console=console, read_line=read, read_short=read_short,
+                      select=select,
                       model_name=args.model or settings.model, mode=args.mode or settings.mode or "default",
                       allow=settings.allow, deny=settings.deny, add_dirs=add_dirs, problems=settings.problems,
                       project_allow=settings.project_allow, newly_trusted=not was_trusted,
                       model_source=None if args.model else settings.model_source,
                       team_models=settings.team_models, team_models_source=settings.team_models_source,
                       team_model_uses=settings.team_model_uses, token_limit=settings.token_limit)
+        if wire is not None:
+            wire(app)
         holder.append(app)
         # ~/.agentx/settings.json is written by ChatApp.start once the model is built, so it holds its real name.
     except KeyboardInterrupt:
