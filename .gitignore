@@ -26,3 +26,6 @@ examples/_sandbox_mcp/
 sessions/
 .run_python_state.pkl
 data/
+
+# benchmark run logs (the JSON results are kept)
+bench/results/*/

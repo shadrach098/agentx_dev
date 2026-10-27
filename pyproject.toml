@@ -67,6 +67,10 @@ all = [
     "openpyxl>=3.1",
 ]
 
+[tool.pytest.ini_options]
+# The benchmark's sample repos (bench/repos) have their own tests, one failing on purpose.
+testpaths = ["tests"]
+
 [project.scripts]
 agentx = "agentx_dev.cli:main"
 

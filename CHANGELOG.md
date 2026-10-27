@@ -63,6 +63,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **A benchmark for `agentx`** (`python -m bench`): ten fixed tasks on two sample repos (find, explain, fix, fix and
+  test, validate, add a feature, rename, audit, a team job, run and report), each checked automatically (the tests,
+  hidden tests, the files), with pass/fail, time, model requests, tokens, the cached share and tool calls recorded;
+  `compare` sets two runs side by side. It asks before it uses your API key. See `bench/README.md`.
 - **`agentx`: `/mcp reload [name]`** (also `/mcp refresh`): reads `~/.agentx/mcp.json` again and reconnects every
   server (or one) with the saved sign-ins, never opening the browser; servers taken out of the file are dropped and
   the conversation gets the new tools. On Windows it also reads the user's saved environment variables, so a key set
