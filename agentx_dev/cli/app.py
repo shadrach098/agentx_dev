@@ -16,34 +16,31 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 from rich.console import Console
 
 from agentx_dev import AgentRunner, AgentType, Session
-from agentx_dev.ChatModel import _is_timeout
 from agentx_dev.cli.approval import MODES, Gate
 from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
-                                     shown, skill_request)
-from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, compact, needs_compaction
-from agentx_dev.Runner.Trim import TrimPolicy, trim_tool_results
+                                     shown)
 from agentx_dev.cli.context import build_addendum
-from agentx_dev.cli.mcp import (INSTALL_HINT, KINDS, MCPManager, ServerConfig, config_path, valid_name,
-                               windows_user_env)
-from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events, summary_entry_text
+from agentx_dev.cli.mcp import (MCPManager, windows_user_env)
+from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events
 from agentx_dev.cli.recall import ProjectMemory, auto_block, choose_embeddings, make_recall_tool, worth_a_note
-from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, describe_prompt, is_auto_note,
-                                   parse_descriptions, parse_team_models, team_models_line, usable_team_models)
+from agentx_dev.cli.models import (ModelError, build_team_models, choose_model)
 from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.models import provider_for
 from agentx_dev.cli.safepaths import safe_location
 from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
 from agentx_dev.cli.settings import (DEFAULT_TOKEN_LIMIT, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
-                                     read_user_fullscreen, write_project_model, write_project_team_models,
-                                     write_user_fullscreen, write_user_token_limit)
-from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, counted_tokens, current_helper, current_status,
-                                 make_team_tool, note_usage, on_main, run_team_job, step_token_share, team_request)
+                                     read_user_fullscreen, write_user_fullscreen)
+from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, counted_tokens, current_helper, make_team_tool, note_usage, on_main, run_team_job, step_token_share)
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker, status_line
-from agentx_dev.Skills import (SkillInstallError, Skills, discover, install, open_source, preview_text,
-                               remove_skill)
+from agentx_dev.cli.app_mcp import McpCommands
+from agentx_dev.cli.app_models import ModelCommands
+from agentx_dev.cli.app_usage import UsageCommands
+from agentx_dev.cli.app_team import TeamCommands
+from agentx_dev.cli.app_team import TEAM_LIMIT_REACHED, TEAM_STALLED  # noqa: F401  (re-exported)
+from agentx_dev.Skills import (SkillInstallError, Skills, discover, install, open_source, preview_text)
 
 INIT_PROMPT = (
     "Look at this project: list the top-level files, read the README and the main config files. Then write a "
@@ -51,11 +48,6 @@ INIT_PROMPT = (
     "the code layout, and the conventions to follow. Keep it under 60 lines. Use write_file. If an AGENTX.md "
     "already exists, tell me instead of overwriting it."
 )
-
-TEAM_LIMIT_REACHED = (f"Refused: {MAX_TEAM_JOBS_PER_MESSAGE} team jobs already ran for this message. Report to the "
-                      "user what is done and what remains, and let them say whether to continue.")
-TEAM_STALLED = ("Refused: no step of the last team job finished, so another job would likely fail the same way. "
-                "Report to the user what happened and what remains, and let them decide.")
 
 NOT_A_TERMINAL = "agentx needs an interactive terminal (headless mode is not available yet)."
 # The "What's new" lines of the start screen: the newest changes a user would notice, kept to three.
@@ -173,7 +165,7 @@ def _version() -> str:
         return "unknown"
 
 
-class ChatApp:
+class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
     """One interactive session. All terminal I/O comes in through ``console``, ``read_line`` (the chat prompt)
     and ``read_short`` (approvals and choices), so it runs the same in tests.
 
@@ -328,23 +320,6 @@ class ChatApp:
         self._confirm_project_rules()
         self._announce_project_team_models()
         self._check_extra_folders()
-
-    def _announce_project_team_models(self) -> None:
-        """A repository's own ``teamModels`` can send a team job's work to another provider or a dearer model, and
-        in auto mode (or with an allow rule for the team tool) nothing else would say so: one notice, no prompt.
-        A list from the user's own settings, or one set in this session, is not announced."""
-        source = self.team_models_source
-        if not self.team_models or source is None:
-            return
-        try:
-            from_project = Path(source).resolve() == project_settings_path(self.cwd).resolve()
-        except OSError:
-            from_project = False
-        if not from_project:
-            return
-        self.notice(f"This project's settings let team helpers also use: "
-                    f"{self._safe(self._listed_with_uses(), 800)} (from {self._safe(source, 300)}). "
-                    "/team-models clear turns that off for this session.")
 
     def _confirm_project_rules(self) -> None:
         """A repository's own allow rules can switch off the prompts (``"write_file"`` is accept-edits under
@@ -672,16 +647,6 @@ class ChatApp:
 
     # -- /mcp -------------------------------------------------------------------
 
-    def _mcp_manager(self) -> MCPManager:
-        if self.mcp is None:
-            self.mcp = MCPManager(self.home, self.env, show=self._mcp_show)
-        return self.mcp
-
-    def _mcp_show(self, text: str) -> None:
-        with self.progress.paused():
-            for line in str(text).splitlines():
-                self.notice(self._safe(line, 2000))
-
     def _show_welcome(self) -> None:
         """The box at the top: who, the mark, the model and folder; tips for this folder; what is new."""
         import getpass
@@ -720,260 +685,6 @@ class ChatApp:
         """The lines under the input: the mode and how to change it, the model and the folder's name."""
         return status_line(self.gate.mode, self.model_label, self.cwd.name or str(self.cwd))
 
-    def _connect_mcp(self) -> None:
-        """At startup: connect the servers in ~/.agentx/mcp.json (never opening a browser) and add their tools."""
-        try:
-            manager = self._mcp_manager()
-        except Exception as error:                 # a broken file must not stop the app
-            self.error(f"MCP servers were not loaded ({type(error).__name__}).")
-            return
-        for problem in manager.problems:
-            self.error(self._safe(problem, 300))
-        if not manager.servers:
-            return
-        self.progress.start("Connecting to MCP servers")
-        try:
-            statuses = manager.connect_all()
-        finally:
-            self.progress.stop()
-        signin = [name for name, status in statuses.items() if status.startswith("needs sign-in")]
-        down = [name for name, status in statuses.items()
-                if not status.startswith("connected") and name not in signin]
-        if signin:
-            many = len(signin) != 1
-            self.screen.warning(f"{len(signin)} MCP server{'s' if many else ''} need{'' if many else 's'} sign-in: "
-                                f"{self._safe(', '.join(signin), 200)}",
-                                f"run /mcp login {signin[0]}" if not many else "run /mcp login <name>")
-        for name in down:
-            self.screen.warning(f"MCP {self._safe(name, 40)}: {self._safe(statuses[name], 300)}", "run /mcp")
-        for name, status in statuses.items():
-            if status.startswith("connected"):
-                self._note_new_mcp_tools(name, quiet_if_none=True)
-        self._refresh_mcp_tools(attach=False)
-
-    def _note_new_mcp_tools(self, name: str, quiet_if_none: bool = False) -> None:
-        """Allow the read-only tools ``name`` shows for the first time, and say what runs without asking."""
-        manager = self._mcp_manager()
-        added = manager.note_new_tools(name)
-        if quiet_if_none and not added:
-            return
-        kinds = manager.tool_kinds(name)
-        allowed = [tool for tool in kinds if tool in manager.servers[name].allow]
-        asking = len(kinds) - len(allowed)
-        self.notice(f"MCP {self._safe(name, 40)}: {len(allowed)} of its {len(kinds)} tools run without asking (the "
-                    f"server marks them read-only); {asking} ask first. /mcp tools {name} lists them; /mcp allow and "
-                    "/mcp ask change one.")
-
-    def _refresh_mcp_tools(self, attach: bool = True) -> None:
-        """Put the connected servers' tools (gated) in ``self.tools``; with ``attach``, give the conversation a
-        runner that has them, keeping its history."""
-        old = {id(tool) for tool in self._mcp_tools}
-        self.tools = [tool for tool in self.tools if id(tool) not in old]
-        fresh = []
-        for tool in (self.mcp.tools() if self.mcp is not None else []):
-            wrapped = gate_tool(tool, self.gate, observer=self._observe_tool)
-            wrapped.mcp_server, wrapped.mcp_remote = tool.mcp_server, tool.mcp_remote
-            fresh.append(wrapped)
-        self._mcp_tools = fresh
-        self.tools.extend(fresh)
-        # The servers' allowed tools run without asking: exact names, kept apart from the user's own rules.
-        servers = self.mcp.servers if self.mcp is not None else {}
-        self.gate.extra_allow = [tool.name for tool in fresh
-                                 if tool.mcp_remote in getattr(servers.get(tool.mcp_server), "allow", [])]
-        if attach and self.session is not None and self.model is not None:
-            self.session.attach(self._make_runner(self.model))
-
-    def show_mcp(self) -> None:
-        manager = self._mcp_manager()
-        path = self._safe(config_path(self.home), 300)
-        if not manager.servers:
-            self.notice(f"No MCP servers yet. Add one with /mcp add <name> <url> (or /mcp add <name> -- <command> "
-                        f"[args]). They are kept in {path}.")
-            return
-        lines = ["MCP servers:"]
-        for name, config in manager.servers.items():
-            status = manager.status.get(name, "not connected")
-            lines.append(f"  {self._safe(name, 40)}  {self._safe(config.describe(), 200)}  - {self._safe(status, 200)}")
-        if self._mcp_tools:
-            names = ", ".join(tool.name for tool in self._mcp_tools[:12])
-            more = f" and {len(self._mcp_tools) - 12} more" if len(self._mcp_tools) > 12 else ""
-            lines.append(f"Tools: {self._safe(names, 800)}{more}.")
-        lines.append(f"Kept in {path}. Tools a server marks read-only run without asking; the rest ask, even in auto "
-                     "mode. /mcp tools <name> lists a server's tools, /mcp allow|ask <name> <tool> changes one, "
-                     "/mcp login|logout|remove <name>.")
-        self.notice("\n".join(lines))
-
-    def mcp_add(self, name: str, config: ServerConfig) -> None:
-        manager = self._mcp_manager()
-        if not valid_name(name):
-            self.error("An MCP server name is lower-case letters, digits, - and _ (at most 40), starting with a "
-                       "letter or digit.")
-            return
-        if name in manager.servers:
-            status = manager.status.get(name, "not connected")
-            self.error(f"There is already an MCP server called {self._safe(name, 40)} ({self._safe(status, 120)}). "
-                       f"/mcp login {name} signs in again; /mcp remove {name} deletes it.")
-            return
-        try:
-            import mcp  # noqa: F401
-        except ImportError:
-            self.error(INSTALL_HINT)
-            return
-        if config.transport == "stdio" and not self._yes(
-                f"This runs `{self._safe(config.describe(), 300)}` on your computer each time agentx starts, and "
-                "its tools act for the agent. Add it? [y/N] "):
-            self.notice("Nothing was added.")
-            return
-        try:
-            path = manager.add(config)
-        except (OSError, ValueError) as error:
-            self.error(f"Could not save the server ({type(error).__name__}).")
-            return
-        self.notice(f"Added {self._safe(name, 40)} to {self._safe(path, 300)}. Connecting...")
-        status = manager.connect(name)
-        if status.startswith("needs sign-in") and self._yes(
-                f"{name} wants you to sign in. Open the sign-in page in your browser now? [y/N] "):
-            status = manager.login(name)
-        self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
-        if status.startswith("connected"):
-            self._note_new_mcp_tools(name)
-        self._refresh_mcp_tools()
-
-    def _known_server(self, name: str) -> bool:
-        if name in self._mcp_manager().servers:
-            return True
-        self.error(f"No MCP server called {self._safe(name, 40)}. /mcp lists them.")
-        return False
-
-    def show_mcp_tools(self, name: str) -> None:
-        """``/mcp tools <name>``: every tool of a connected server, what the server says it does, and whether it
-        runs without asking."""
-        if not self._known_server(name):
-            return
-        manager = self._mcp_manager()
-        kinds = manager.tool_kinds(name)
-        if not kinds:
-            self.notice(f"{name} is not connected ({self._safe(manager.status.get(name, 'not connected'), 200)}), so "
-                        "its tools are not known yet.")
-            return
-        allow = manager.servers[name].allow
-        free = [tool for tool in kinds if tool in allow]
-        asking = [tool for tool in kinds if tool not in allow]
-        lines = [f"{name}: {len(kinds)} tools. Run without asking ({len(free)}):"]
-        lines += [f"  {self._safe(tool, 60)}  ({KINDS[kinds[tool]]})" for tool in free] or ["  (none)"]
-        lines.append(f"Ask first ({len(asking)}):")
-        lines += [f"  {self._safe(tool, 60)}  ({KINDS[kinds[tool]]})" for tool in asking] or ["  (none)"]
-        lines.append(f"/mcp allow {name} <tool> [more...] lets tools run without asking (or: read-only, all); "
-                     f"/mcp ask {name} <tool> [more...] makes them ask (or: all). Saved in "
-                     f"{self._safe(config_path(self.home), 300)}. A deny rule in your settings still wins.")
-        self.notice("\n".join(lines))
-
-    def mcp_allow(self, name: str, words: List[str], allowed: bool) -> None:
-        """``/mcp allow|ask <name> <tool...>`` (``all``; for allow also ``read-only``)."""
-        if not self._known_server(name):
-            return
-        manager = self._mcp_manager()
-        kinds = manager.tool_kinds(name)
-        known = set(kinds) | set(manager.servers[name].seen)
-        prefix = f"{name}__"
-        picked: List[str] = []
-        for word in words:
-            if word == "all":
-                picked += list(kinds) or list(known)
-            elif word == "read-only" and allowed:
-                picked += [tool for tool, kind in kinds.items() if kind == "read-only"]
-            else:
-                tool = word[len(prefix):] if word.startswith(prefix) else word
-                if tool not in known:
-                    self.error(f"{name} has no tool called {self._safe(word, 60)}. /mcp tools {name} lists them.")
-                    return
-                picked.append(tool)
-        picked = list(dict.fromkeys(picked))
-        if not picked:
-            self.notice("Nothing changed.")
-            return
-        risky = [tool for tool in picked if kinds.get(tool) == "destructive"]
-        if allowed and risky and not self._yes(
-                f"{', '.join(self._safe(t, 40) for t in risky[:8])} {'deletes or cancels' if len(risky) == 1 else 'delete or cancel'} "
-                "things (the server says so). Let them run without asking? [y/N] "):
-            picked = [tool for tool in picked if tool not in risky]
-            if not picked:
-                self.notice("Nothing changed.")
-                return
-        try:
-            manager.set_allowed(name, picked, allowed)
-        except (OSError, ValueError) as error:
-            self.error(f"Could not save the change ({type(error).__name__}).")
-            return
-        self._refresh_mcp_tools()
-        what = "run without asking" if allowed else "ask first"
-        self.notice(f"{len(picked)} {name} tool{'s' if len(picked) != 1 else ''} now {what}: "
-                    f"{self._safe(', '.join(picked[:12]), 600)}{' ...' if len(picked) > 12 else ''}.")
-
-    def mcp_remove(self, name: str) -> None:
-        if not self._known_server(name):
-            return
-        if not self._yes(f"Remove the MCP server {name} and its saved sign-in? [y/N] "):
-            self.notice("Nothing was removed.")
-            return
-        self._mcp_manager().remove(name)
-        self._refresh_mcp_tools()
-        self.notice(f"Removed {self._safe(name, 40)}.")
-
-    def mcp_login(self, name: str) -> None:
-        if not self._known_server(name):
-            return
-        manager = self._mcp_manager()
-        if manager.servers[name].transport == "stdio":
-            self.notice(f"{name} runs on your computer; there is nothing to sign in to. Reconnecting.")
-        status = manager.login(name)
-        self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
-        if status.startswith("connected"):
-            self._note_new_mcp_tools(name, quiet_if_none=True)
-        self._refresh_mcp_tools()
-
-    def mcp_reload(self, name: Optional[str] = None) -> None:
-        """``/mcp reload [name]``: read ~/.agentx/mcp.json again and reconnect (with the saved sign-ins; no browser),
-        then give the agent the tools. On Windows the variables saved for the user since agentx started (setx) are
-        read too, so a ``${VAR}`` set after the start is found."""
-        manager = self._mcp_manager()
-        env = dict(self.env)
-        try:
-            saved = self._user_env_reader()
-        except Exception:
-            saved = {}
-        for key, value in saved.items():
-            env.setdefault(key, value)                 # what this run already has wins
-        self.progress.start("Reconnecting MCP servers")
-        try:
-            statuses = manager.reload(name, env=env)
-        finally:
-            self.progress.stop()
-        for problem in manager.problems:
-            self.error(self._safe(problem, 300))
-        if name is not None and not statuses:
-            self.error(f"No MCP server named {self._safe(name, 40)!r}. /mcp lists them.")
-            return
-        if not statuses:
-            self.notice(f"No MCP servers in {self._safe(config_path(self.home), 300)}. Add one with /mcp add.")
-            self._refresh_mcp_tools()
-            return
-        lines = ["MCP servers reloaded:"]
-        lines += [f"  {self._safe(server, 40)}  - {self._safe(status, 200)}" for server, status in statuses.items()]
-        self.notice("\n".join(lines))
-        for server, status in statuses.items():
-            if status.startswith("connected"):
-                self._note_new_mcp_tools(server, quiet_if_none=True)
-        self._refresh_mcp_tools()
-
-    def mcp_logout(self, name: str) -> None:
-        if not self._known_server(name):
-            return
-        self._mcp_manager().logout(name)
-        self._refresh_mcp_tools()
-        self.notice(f"Signed out of {self._safe(name, 40)}: its saved sign-in was deleted. /mcp login {name} signs "
-                    "in again.")
-
     # -- /memory ----------------------------------------------------------------
 
     def show_memory(self, query: str = "") -> None:
@@ -1006,28 +717,6 @@ class ChatApp:
         self.notice("\n".join(lines))
 
     # -- tokens used ----------------------------------------------------------
-
-    def _track_usage_model(self, label: str, model: Any, role: str) -> None:
-        """Remember a model whose token counters ``/usage`` should add up (once per object)."""
-        if model is not None and not any(model is known for _, _, known in self._usage_models):
-            self._usage_models.append((str(label), role, model))
-            try:
-                model.on_usage = self._check_token_limit
-                model.on_retry = self._show_retry
-            except (AttributeError, TypeError):          # an object that takes no attributes keeps no usage either
-                pass
-
-    def _show_retry(self, attempt: int, error: BaseException, delay: float) -> None:
-        """A tracked model's ``on_retry`` hook: say that a model request failed and is being sent again, so a long
-        wait does not look like a hang. (Said on the main thread: a team helper's request runs in a worker.)"""
-        on_main(self._say_retry, attempt, error, wait=False)
-
-    def _say_retry(self, attempt: int, error: BaseException) -> None:
-        what = "got no answer in time" if _is_timeout(error) else f"failed ({type(error).__name__})"
-        helper = current_helper()
-        who = f" ({self._safe(helper, 60)})" if helper else ""
-        with self.progress.paused():
-            self.notice(f"A model request{who} {what}; trying again (attempt {attempt + 1}).")
 
     def _check_token_limit(self, _model: Any = None) -> None:
         """A tracked model's ``on_usage`` hook. Once the running message has used ``token_limit`` tokens (input
@@ -1064,41 +753,6 @@ class ChatApp:
             on_main(self._say_paused, "Wrapping up: no more tool calls in this message; the agent answers with "
                                       "what it has found so far.")
 
-    def _ask_to_go_on(self, used: int, sent: int = 0) -> str:
-        """The limit question: "y" (another limit), "a" (go on, and do not ask again in this message) or "n". Enter,
-        end of input, Ctrl+C and a reader that fails are all no; any other answer is asked once more."""
-        cache = (f" ({sent:,} sent and received; input from the provider's cache counts as a tenth, about what it "
-                 "costs)") if sent > used else ""
-        prompt = (f"This message has used {used:,} tokens{cache}; your limit is {self.token_limit:,} a message "
-                  f"(/limit changes it). Keep going for up to {self.token_limit:,} more? a = yes, and do not ask "
-                  "again in this message. No wraps up with what was found so far. [y/a/N] ")
-        with self.progress.paused():
-            for attempt in range(2):
-                try:
-                    answer = str(self.read_short(prompt)).strip().lower()
-                except (EOFError, KeyboardInterrupt, Exception):
-                    return "n"
-                if answer in ("y", "yes"):
-                    return "y"
-                if answer in ("a", "all", "always"):
-                    return "a"
-                if answer in ("", "n", "no"):
-                    return "n"
-                if attempt == 0:
-                    self.notice("Please answer y, a or n.")
-        return "n"
-
-    def _say_paused(self, text: str) -> None:
-        with self.progress.paused():
-            self.notice(text)
-
-    def set_token_limit(self, limit: int) -> None:
-        """``/limit <tokens>``: use ``limit`` from now on (0 is no limit) and save it in ~/.agentx/settings.json."""
-        self.token_limit = max(0, int(limit))
-        _, message = write_user_token_limit(self.home, self.token_limit)
-        shown = f"{self.token_limit:,} tokens a message" if self.token_limit else "off"
-        self.notice(f"Token limit: {shown}. {self._safe(message, 300)}")
-
     def set_fullscreen(self, on: bool) -> None:
         """``/fullscreen on|off``: saved in ~/.agentx/settings.json; it applies the next time agentx starts."""
         _, message = write_user_fullscreen(self.home, on)
@@ -1111,67 +765,6 @@ class ChatApp:
                     "the input fixed while the conversation scrolls (PgUp / PgDn or the mouse wheel; Shift+drag to "
                     "select text); /fullscreen off goes back to the normal screen. Either applies from the next "
                     "start; agentx --fullscreen or --no-fullscreen picks for one run.")
-
-    def show_token_limit(self) -> None:
-        if self.token_limit:
-            self.notice(f"Token limit: {self.token_limit:,} tokens a message. When a message gets there, agentx asks "
-                        "before it goes on. /limit <tokens> changes it (300k, 1m, and 0 for no limit also work).")
-        else:
-            self.notice("Token limit: off. /limit <tokens> sets one (for example /limit 200k).")
-
-    @staticmethod
-    def _counters(model: Any) -> Tuple[int, int, int, int]:
-        """``(requests, input tokens, output tokens, cached input tokens)`` a model has recorded; zeros when it
-        keeps none."""
-        usage = getattr(model, "usage", None)
-        try:
-            return (int(getattr(usage, "total_calls", 0) or 0), int(getattr(usage, "total_input_tokens", 0) or 0),
-                    int(getattr(usage, "total_output_tokens", 0) or 0),
-                    int(getattr(usage, "total_cache_read_tokens", 0) or 0))
-        except (TypeError, ValueError):
-            return 0, 0, 0, 0
-
-    def _usage_totals(self) -> Tuple[int, int, int, int]:
-        """``(requests, input, output, cached input)`` summed over every model used so far."""
-        rows = [self._counters(model) for _, _, model in self._usage_models]
-        return tuple(sum(row[i] for row in rows) for i in range(4))              # type: ignore[return-value]
-
-    @staticmethod
-    def _cached_note(cached: int, tokens_in: int) -> str:
-        if not cached or not tokens_in:
-            return ""
-        return f" ({cached:,} of the input, {cached * 100 // tokens_in}%, from the provider's cache)"
-
-    def show_usage(self) -> None:
-        """``/usage``: the tokens used this session, per model, and what the last turn used. Counts what the
-        provider's replies report; a model that reports nothing shows zeros."""
-        rows: Dict[Tuple[str, str], List[int]] = {}
-        for label, role, model in self._usage_models:
-            row = rows.setdefault((label, role), [0, 0, 0, 0])
-            for i, value in enumerate(self._counters(model)):
-                row[i] += value
-        requests, tokens_in, tokens_out, cached_in = self._usage_totals()
-        if requests == 0:
-            self.notice("No model calls yet in this session.")
-            return
-        lines = ["Session (all models):",
-                 f"  {requests:,} requests, {tokens_in:,} input tokens, {tokens_out:,} output tokens"
-                 + self._cached_note(cached_in, tokens_in)]
-        if len(rows) > 1 or any(role == "helper" for _, role in rows):
-            for (label, role), (calls, inp, out, cached) in rows.items():
-                if calls:
-                    extra = f", {cached:,} of the input from the provider's cache" if cached else ""
-                    lines.append(f"  {self._safe(label, 60)} ({role}): {calls:,} requests, {inp:,} in, {out:,} out{extra}")
-        if self._last_turn_usage is not None and self._last_turn_usage[0] > 0:
-            calls, inp, out, cached = self._last_turn_usage
-            lines.append(f"Last turn: {calls:,} request{'s' if calls != 1 else ''}, {inp:,} input tokens, "
-                         f"{out:,} output tokens" + self._cached_note(cached, inp))
-        limit = f"{self.token_limit:,} tokens a message" if self.token_limit else "off"
-        lines.append(f"Token limit: {limit} (/limit).")
-        lines.append("Every request re-sends the conversation, so input grows with the number of steps in a turn. "
-                     "Long results are trimmed, big files are read in pieces, and /clear starts fresh. Input the "
-                     "provider served from its cache is billed at its cheaper cached rate.")
-        self.notice("\n".join(lines))
 
     # -- project memory: the work log and summarising ------------------------
 
@@ -1204,43 +797,6 @@ class ChatApp:
             self._log_warned = True
             self.notice("Could not write the work log in .agentx/log.md; carrying on without it.")
 
-    def _summary_call(self, prompt: str) -> str:
-        """One plain call to the current model (no tools, no agent loop): every model's ``Initialize`` takes the
-        message list and returns the reply text."""
-        reply = self.model.Initialize(messages=[{"role": "user", "content": prompt}])
-        return reply if isinstance(reply, str) else ""
-
-    def _maybe_compact(self) -> None:
-        """Summarise a very long conversation before the turn. Nothing is removed unless a summary replaces it;
-        after a failure it is not tried again until ``RETRY_AFTER_MESSAGES`` more messages have been added.
-        The runner rebuilds its messages from ``session.history`` on every turn, so replacing it is enough."""
-        assert self.session is not None
-        history = self.session.history
-        # Measured on what the model is actually sent (old big tool results are stubs), not on the saved history.
-        if len(history) < self._compact_wait or not needs_compaction(trim_tool_results(history, TrimPolicy())):
-            return
-        self.progress.start("Summarising the conversation")
-        try:
-            result = compact(history, self._summary_call)
-        finally:
-            self.progress.stop()
-        if result.status == "done":
-            self.session.history = result.history
-            self._forget_skill_reads()          # the skill texts went into the summary: they may be read again
-            self.notice(f"Summarised {result.replaced} earlier messages to keep the conversation short.")
-            self._append_log(summary_entry_text(result.summary, datetime.now(), self._hide))
-        elif result.status == "failed":
-            self._compact_wait = len(history) + RETRY_AFTER_MESSAGES
-            self.notice("The conversation is getting long, but it could not be summarised right now; "
-                        "it will be tried again later.")
-
-    def _forget_skill_reads(self) -> None:
-        runner = getattr(self.session, "runner", None)
-        for tool in getattr(runner, "tools", None) or []:
-            forget = getattr(tool, "forget_reads", None)
-            if callable(forget):
-                forget()
-
     def save(self) -> None:
         if self.session is None or self.session_path is None or not self.session.history:
             return                                # nothing to keep: no empty session files
@@ -1250,174 +806,6 @@ class ChatApp:
             self.error(f"Could not save the session: {self._safe(e)}")
 
     # -- commands that need the app ------------------------------------------
-
-    def switch_model(self, name: str) -> None:
-        """Switch the model, keeping the conversation. A model that cannot be built raises (``ModelError``)
-        before anything changes, so the old model stays."""
-        model = self.model_factory(name, self.env)
-        self.model = model
-        self._track_usage_model(self.model_label, model, "chat")
-        self.requested_model = name
-        assert self.session is not None
-        self.session.attach(self._make_runner(model))
-
-    def save_folder_model(self, name: str) -> None:
-        """``/model <name> --folder``: keep the model for this folder in its settings file."""
-        if not self._memory_on:
-            self.notice("No folder settings file is kept for your home folder or a drive root.")
-            return
-        path, message = write_project_model(self.cwd, name)
-        (self.notice if path is not None else self.error)(self._safe(message, 600))
-
-    def helper_models_line(self) -> str:
-        """The approval panel's ``Helper models:`` line; "" when no extra models are set or there is no model."""
-        if not self.team_models or self.model is None:
-            return ""
-        return team_models_line(self.model_label, self.team_models, self.env)
-
-    def show_team_models(self) -> None:
-        """``/team-models``: the list, where it came from, and which entries a job would use now."""
-        if not self.team_models and self.team_models_source is not None:
-            self.notice(f"Helper models: none - turned off by {self._safe(self.team_models_source, 300)}, so team "
-                        f"helpers use the chat's model ({self._safe(self.model_label, 80)}). Set some with "
-                        "/team-models <name> [<name> ...]; add --folder to keep them for this folder.")
-            return
-        if not self.team_models:
-            self.notice("Helper models: none set, so team helpers use the chat's model "
-                        f"({self._safe(self.model_label, 80)}). Set some with /team-models <name> [<name> ...]; "
-                        "add --folder to keep them for this folder.")
-            return
-        usable, notes = usable_team_models(self.model_label, self.team_models, self.env)
-        source = (f" (from {self._safe(self.team_models_source, 300)})" if self.team_models_source
-                  else " (this session)")
-        lines = [f"Helper models{source}: {self._safe(self._listed_with_uses(), 800)}",
-                 f"A team job may use: {self._safe(self.model_label, 110)} (chat"
-                 + (f"; {self._safe(self._use_of(self.model_label), 90)})" if self._use_of(self.model_label) else ")")
-                 + "".join(f", {self._safe(name, 110)}" for name in usable)]
-        lines += [self._safe(note.replace('Not used:', 'Not used now:', 1), 200) for note in notes]
-        lines.append('Change them with /team-models <name>[="what it is for"] ..., /team-models clear, or add --folder '
-                     "to save.")
-        self.notice("\n".join(lines))
-
-    def _use_of(self, name: str) -> str:
-        """The user's note on what model ``name`` is for ("" when none); names match in any case."""
-        wanted = str(name).strip().lower()
-        return next((use for listed, use in self.team_model_uses.items() if listed.lower() == wanted), "")
-
-    def _with_use(self, name: str) -> str:
-        use = self._use_of(name)
-        return f"{name} ({use})" if use else name
-
-    def _listed_with_uses(self) -> str:
-        """The list as shown: ``gpt-6.1-sol (hard coding), gpt-5.5``."""
-        return ", ".join(self._with_use(name) for name in self.team_models)
-
-    def set_team_models(self, names: Sequence[str], folder: bool = False) -> None:
-        """``/team-models <name>[=<what it is for>] ...`` (session) or ``... --folder`` (also saved in this
-        folder's settings file)."""
-        cleaned, uses, problems = parse_team_models(list(names))
-        for problem in problems:
-            self.error(self._safe(problem, 300))
-        if names and not cleaned:
-            self.error("No usable model name was given, so the list was left unchanged.")
-            return
-        self.team_models = cleaned
-        self.team_model_uses = uses
-        self.team_models_source = None
-        if cleaned:
-            self._apply_known_notes()             # what the chat model already said this session is kept
-            self._describe_models()
-        report = self._save_team_models_in_folder() if folder else None
-        self.show_team_models()               # after the write, so it names the file as the source
-        if report is not None:
-            report[0](report[1])
-
-    def describe_team_models(self, folder: bool = False) -> None:
-        """``/team-models describe``: ask the chat model again what each model is good for, replacing only its own
-        (``auto:``) notes, then show the list; with ``folder`` the list and its notes are saved in this folder's
-        settings file. The list itself and where it came from are not changed."""
-        if not self.team_models:
-            self.notice("No helper models are set, so there is nothing to describe. Set some with "
-                        "/team-models <name> ...")
-            return
-        self._describe_models(force=True)
-        report = self._save_team_models_in_folder() if folder else None
-        self.show_team_models()
-        if report is not None:
-            report[0](report[1])
-
-    def _save_team_models_in_folder(self) -> Tuple[Callable[[str], None], str]:
-        """Write the list and its notes to this folder's settings file; what to print about it."""
-        if not self._memory_on:
-            return self.notice, "No folder settings file is kept for your home folder or a drive root."
-        path, message = write_project_team_models(self.cwd, self.team_models, self.team_model_uses)
-        if path is not None:
-            self.team_models_source = path
-        return (self.notice if path is not None else self.error), self._safe(message, 600)
-
-    def _apply_known_notes(self) -> None:
-        """Give each model on the list (and the chat's own) the note the chat model already wrote for it this
-        session, unless it has a note."""
-        for name in [self.model_label, *self.team_models]:
-            known = self._auto_notes.get(name.lower(), "")
-            if known and not self._use_of(name):
-                self.team_model_uses[name] = known
-
-    def _describe_models(self, force: bool = False) -> None:
-        """Ask the chat model, in one call, what each model a team may use (the list and the chat's own) is good
-        for, and keep the answers as ``auto:`` notes. A note the user wrote is never asked about or replaced.
-        Each model is asked about once per session (its answer, or the lack of one, is remembered and reused
-        when the list is set again); ``force`` asks again about every model without a note of the user's. A
-        model the chat model does not know gets no note. A failure or an unreadable reply gives one notice;
-        Ctrl+C skips it. The reply is model output: only short, printable notes for the names asked about are
-        kept."""
-        if self.model is None:
-            return
-        wanted: List[str] = []
-        for name in [self.model_label, *self.team_models]:
-            note = self._use_of(name)
-            if name.lower() in (w.lower() for w in wanted) or (note and not is_auto_note(note)):
-                continue
-            if force or (not note and name.lower() not in self._auto_notes):
-                wanted.append(name)
-        if not wanted:
-            self._apply_known_notes()
-            return
-        for name in wanted:                      # asked once, whatever happens below
-            self._auto_notes.setdefault(name.lower(), "")
-        self.progress.start("Asking the model about the helper models")
-        try:
-            reply = self._summary_call(describe_prompt(wanted))
-        except KeyboardInterrupt:
-            self.progress.stop()
-            self.notice("Skipped describing the helper models.")
-            return
-        except Exception as error:
-            self.progress.stop()
-            self.notice(f"Could not describe the models ({type(error).__name__}); add notes yourself with "
-                        '/team-models <name>="what it is for".')
-            return
-        self.progress.stop()
-        found = parse_descriptions(reply, wanted)
-        if found is None:
-            self.notice("The model's answer about the helper models could not be read; add notes yourself with "
-                        '/team-models <name>="what it is for", or try /team-models describe.')
-            return
-        for name in wanted:
-            self._auto_notes[name.lower()] = found.get(name, "")
-            if name not in found:                 # now unknown: an older auto note must not linger
-                for key in [key for key, use in self.team_model_uses.items()
-                            if key.lower() == name.lower() and is_auto_note(use)]:
-                    del self.team_model_uses[key]
-        for name, note in found.items():
-            for key in [key for key in self.team_model_uses if key.lower() == name.lower()]:
-                del self.team_model_uses[key]
-            self.team_model_uses[name] = note
-        self._apply_known_notes()
-        unknown = [name for name in wanted if name not in found]
-        if unknown:
-            self.notice("No note for " + self._safe(", ".join(unknown), 400) + ": the chat model does not know "
-                        'what they are good at. Add one with /team-models <name>="what it is for" if you know.')
 
     def _refresh_instructions(self, with_log: bool = False) -> None:
         """Read AGENTX.md again (``/init`` or the user may have written or changed it). ``with_log`` adds the
@@ -1480,147 +868,9 @@ class ChatApp:
     def run_init(self) -> None:
         self.send(INIT_PROMPT, log_title="/init")
 
-    def run_team_command(self, task: str) -> None:
-        """``/team <task>``: ask the main agent to call the team tool for ``task`` (same prompt, gate and history)."""
-        self.send(team_request(task), log_title=f"/team {task}")
-
     # -- team jobs ----------------------------------------------------------
 
-    def _within_job_limit(self, gated: Any) -> Any:
-        """``gated`` (the team tool behind the gate) with the jobs-per-message limit checked first, so a call past
-        ``MAX_TEAM_JOBS_PER_MESSAGE`` is refused without asking the user again. Other calls go through the gate
-        as before; a job the user declined does not count (``_team_jobs`` grows only when a job starts)."""
-        inner = gated.func
-
-        def once(**kwargs):
-            refusal = self._team_refusal()
-            return refusal if refusal else inner(**kwargs)
-
-        once.__name__, once.__qualname__, once.__module__ = gated.name, f"within_job_limit.{gated.name}", __name__
-        wrapped = type(gated)(func=once, args_schema=gated.args_schema, name=gated.name,
-                              description=gated.description)
-        wrapped.cacheable = False
-        return wrapped
-
-    def _observe_tool(self, name: str, args: dict) -> None:
-        """Called by the tool wrappers before the gate check, on the thread that runs the tool. A team helper's calls
-        are not printed: they are counted on its step's line above the spinner (the step's own wrapper counts the
-        other tools; the skills it opens are counted here) and listed by /team log."""
-        status = current_status()
-        if status is not None and name == "use_skill" and isinstance(args, dict):
-            status.note_skill(str(args.get("name") or "?"))
-
-    def _team_board(self) -> Any:
-        rows = list(self._team_rows.values())
-        return self.screen.team_board(rows, *self._team_steps) if rows else None
-
-    def _board(self) -> Any:
-        """What is drawn above the spinner: the team's running steps, else the chat's open look-around flow."""
-        return self._team_board() or self.screen.flow_block()
-
-    def show_team_log(self) -> None:
-        """``/team log``: every call of every step of the last team job in this session."""
-        if not self._team_log:
-            self.notice("No team job has run in this session yet.")
-            return
-        self.screen.team_log(self._team_log)
-
-    def _show_helper_call(self, helper: str, name: str, args: dict) -> None:
-        self.progress.stop()
-        self.screen.helper_call(helper, name, args)
-        self.progress.start(self._team_label())
-
-    def _team_label(self) -> str:
-        """The spinner's words during a team job: what the helpers are doing, or which are running."""
-        activity = self.screen.helpers_line()
-        if activity:
-            return self._safe(activity, 160)
-        running = self._team_running
-        if not running:
-            return "Team is working"
-        if len(running) == 1:
-            return f"Running {self._safe(running[0], 80)}"
-        return f"Running {len(running)} helpers"
-
-    def _team_notify(self, kind: str, data: dict) -> None:
-        self.progress.stop()
-        if kind == "plan":
-            steps = data.get("steps") or []
-            self._team_steps = (0, len(steps))
-            self.screen.team_plan(steps)
-            self.progress.start("Starting the team")
-        elif kind == "dispatch":
-            self._team_running.append(str(data.get("agent", "")))
-            status = data.get("status")
-            if status is not None:
-                self._team_rows[status.slot] = status
-                self._team_log.append(status)
-            else:                                   # no status to draw: say that the step started
-                self.screen.team_dispatch(data.get("agent"), data.get("query"))
-            self.progress.start("Team is working")
-        elif kind == "result":
-            agent = str(data.get("agent", ""))
-            if agent in self._team_running:
-                self._team_running.remove(agent)
-            status = data.get("status")
-            if status is not None:
-                self._team_rows.pop(status.slot, None)
-            ended, planned = self._team_steps
-            self._team_steps = (ended + 1, planned)
-            shown = getattr(status, "helper", "") or agent        # a new helper with its model: name@model
-            self.screen.team_done(shown, data.get("label") or agent, bool(data.get("ok")), data.get("text"),
-                                  partial=bool(data.get("partial")), skipped=bool(data.get("skipped")),
-                                  status=status)
-            self.progress.start("Team is working")
-
-    def _team_question(self, question: str) -> Optional[str]:
-        """The planner or a helper needs a fact: ask in the terminal. Enter, Ctrl+D and Ctrl+C skip it."""
-        with self.progress.paused():
-            self.screen.team_question(question)
-            try:
-                answer = self.read_short("Answer (Enter to skip): ")
-            except (EOFError, KeyboardInterrupt):
-                return None
-        return str(answer).strip() or None
-
     # -- skills ---------------------------------------------------------------
-
-    def show_skills(self) -> None:
-        """``/skills``: every skill found on disk (the ones this conversation's agent has first-class, shown as the
-        ``/name`` that runs them), and how to use, add or remove one."""
-        store = self.skills.store()
-        taken = set(command_names())
-
-        def label(skill: Any) -> str:
-            if skill.name not in self._runner_skills:
-                return skill.name
-            return f"/{skill.name}" if f"/{skill.name}" not in taken else f"/skills use {skill.name}"
-
-        lines = [f"  {label(s)} ({s.source}) - {self._safe(s.description, 100)}"
-                 + ("" if s.name in self._runner_skills else "  [not active in this conversation]")
-                 for s in store.all()]
-        lines += [f"  Skipped: {self._safe(problem, 160)}" for problem in store.problems[:5]]
-        shown = "\n".join(lines) if lines else "  none yet; the built-in ones are created when a conversation starts"
-        self.notice(f"Skills (the agent reads one when its work matches):\n{shown}\n"
-                    "Use one with /<skill> [what you want] (type / to pick from the list). "
-                    f"They live in {self._safe(self.skills.dir, 300)}. /skills install <github link or folder> adds "
-                    "more; /skills remove <name> deletes one. A new conversation (/clear) picks up changes, and "
-                    "skills for tools this agent does not have stay inactive.")
-
-    def skill_entries(self) -> Dict[str, str]:
-        """``{"/name": "(skill) description"}`` for the `/` pop-up: the skills this conversation's agent has, except
-        ones named like a built-in command (those are reached with ``/skills use <name>``)."""
-        taken = set(command_names())
-        return {f"/{name}": f"(skill) {self._safe(description, 120)}"
-                for name, description in sorted(self._runner_skills.items()) if f"/{name}" not in taken}
-
-    def run_skill(self, name: str, text: str = "") -> bool:
-        """``/<skill> [what you want]`` and ``/skills use <name> [what you want]``: ask the agent to read the skill
-        and do the task. False (nothing sent) when this conversation's agent has no skill of that name."""
-        if name not in self._runner_skills:
-            return False
-        self.send(skill_request(name, text), log_title=f"/{name} {text}".strip())
-        return True
 
     def install_skills(self, link: str) -> None:
         """``/skills install <link>``. Only the user can start this (no tool does), and nothing is saved until
@@ -1644,26 +894,6 @@ class ChatApp:
             return
         self.notice("Installed: " + ", ".join(names) + ". Start a new conversation (/clear) to use "
                     + ("them." if len(names) != 1 else "it."))
-
-    def remove_skill(self, name: str) -> None:
-        """``/skills remove <name>``: deletes a skill folder from the user's skills folder after a yes."""
-        skill = self.skills.store().skills.get(name.strip())
-        if skill is None or skill.folder is None:
-            self.error(f"No skill named {self._safe(name, 60)!r}. /skills lists them.")
-            return
-        if skill.source == "project":
-            self.error("That skill belongs to this project's folder. Delete .agentx/skills/<name> yourself if you "
-                       "want it gone.")
-            return
-        if not self._yes(f"Remove the skill {skill.name} from {self._safe(self.skills.dir, 200)}? [y/N] "):
-            self.notice("Nothing was removed.")
-            return
-        try:
-            remove_skill(skill.folder.name, self.skills.dir)
-        except SkillInstallError as e:
-            self.error(self._safe(e, 400))
-            return
-        self.notice(f"Removed {skill.name}.")
 
     def _start_team_job(self, task: str, why: str) -> str:
         """The ``start_team_job`` tool: run the team and hand the result text back to the main agent."""
@@ -1703,14 +933,6 @@ class ChatApp:
         self._team_stalled = (not text.startswith("Team job finished (outcome: ")
                               or text.startswith("Team job finished (outcome: stuck"))
         return f"{text}\n(team job {self._team_jobs} of {MAX_TEAM_JOBS_PER_MESSAGE} for this message)"
-
-    def _team_refusal(self) -> str:
-        """Why another team job may not start in this message ("" when it may)."""
-        if self._team_jobs >= MAX_TEAM_JOBS_PER_MESSAGE:
-            return TEAM_LIMIT_REACHED
-        if self._team_stalled:
-            return TEAM_STALLED
-        return ""
 
 
 # -- the command line -------------------------------------------------------

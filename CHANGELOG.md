@@ -22,6 +22,11 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   working in a notebook. Each class keeps its own way of running a plan: one step at a time, or side by side. No
   change in behaviour: the same events and log lines.
 
+- **Smaller source files.** `Supervisor.py` (2,900 lines) keeps the two classes; its helpers moved to the private
+  package `agentx_dev/_supervisor/`. The `agentx` app's `ChatApp` gets its MCP, model, usage and team commands from
+  four files (`cli/app_mcp.py`, `app_models.py`, `app_usage.py`, `app_team.py`), and `cli/ui.py` its text and input
+  helpers from `ui_text.py` and `ui_input.py`. Every name is still importable from where it was.
+
 - **The public API is written down** in `docs/reference/public-api.md`: every name exported from `agentx_dev`, the
   stable import paths below it, what is not public (underscore names, the `agentx` command's Python modules), and
   how patch, minor and major versions may change it. A test fails when the package and the page disagree.
