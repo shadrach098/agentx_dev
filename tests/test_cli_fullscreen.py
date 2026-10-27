@@ -72,6 +72,15 @@ class TestTheConversation:
         assert "".join(t for _, t in screen.header_fragments()).strip() == "agentx v1 · model · folder"
 
 
+def test_the_footer_has_room_for_the_whole_status_bar(tmp_path, keys):
+    from agentx_dev.cli.ui import status_line
+    screen = FullScreen(history_file=tmp_path / "history", commands=[], cycle_mode=lambda: None,
+                        toolbar=lambda: status_line("auto", "gpt-6.1-sol", "proj", width=40))
+    assert screen.footer_height() == 2                                 # the rule and the mode line
+    assert "auto mode on" in "".join(text for _, text in screen.footer_fragments())
+    assert make(tmp_path).footer_height() == 1                          # a one-line text
+
+
 class TestQuestions:
     def test_a_message_a_choice_and_an_answer(self, tmp_path, keys, capsys):
         screen = make(tmp_path)

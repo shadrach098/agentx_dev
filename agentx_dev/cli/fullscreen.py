@@ -321,6 +321,15 @@ class FullScreen:
     def live_height(self) -> int:
         return len(self.live_lines())
 
+    def footer_fragments(self) -> Any:
+        return self._toolbar() or ""
+
+    def footer_height(self) -> int:
+        """The status bar's rows: it is a rule and the mode line, so two (one for a plain one-line text)."""
+        text = self.footer_fragments()
+        joined = text if isinstance(text, str) else "".join(str(part[1]) for part in text if len(part) > 1)
+        return max(1, joined.rstrip("\n").count("\n") + 1)
+
     # -- questions -----------------------------------------------------------------------------------------------
 
     def _wait(self, kind: str, **data: Any) -> Any:
@@ -507,7 +516,8 @@ class FullScreen:
             Window(BufferControl(buffer=self.short_buffer, input_processors=[BeforeInput([("class:prompt", "› ")])]),
                    height=1, dont_extend_height=True),
             filter=asking_short)
-        footer = Window(FormattedTextControl(lambda: self._toolbar()), height=1, style="class:bottom-toolbar")
+        footer = Window(FormattedTextControl(self.footer_fragments),
+                        height=lambda: Dimension.exact(self.footer_height()), style="class:bottom-toolbar")
         body = HSplit([header, conversation, live, rule, chat_input, short_input, footer])
         root = FloatContainer(content=body, floats=[
             Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=12, scroll_offset=1))])
