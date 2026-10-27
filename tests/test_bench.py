@@ -165,6 +165,23 @@ def test_run_asks_before_spending_and_a_no_runs_nothing(monkeypatch, capsys):
     assert "Nothing was run." in capsys.readouterr().out
 
 
+def test_the_answer_check_names_what_it_found(tmp_path):
+    repo, before = copy(tmp_path, "shop")
+    passed, note = BY_ID["audit"].check(Workspace(repo, before, GOOD["audit"][1]))
+    assert passed and "the answer names" in note and "covers it" not in note
+
+
+def test_a_model_name_with_dots_keeps_its_whole_name_in_the_result_file(tmp_path, monkeypatch):
+    import bench.__main__ as main_module
+    from bench.runner import Result
+    monkeypatch.setattr(main_module, "RESULTS", tmp_path)
+    monkeypatch.setattr("bench.runner.run_task", lambda task, model, **kw: Result(
+        task=task.id, passed=True, note="ok", seconds=1.0, requests=1, tokens_in=1, tokens_out=1, cached=0, counted=1,
+        tool_calls=0, team_tool_uses=0, team_jobs=0))
+    assert bench_main(["run", "--model", "gpt-6.1-sol", "--task", "find-code", "--yes"]) == 0
+    assert [p.name.endswith("-gpt-6.1-sol.json") for p in tmp_path.glob("*.json")] == [True]
+
+
 def test_list(capsys):
     assert bench_main(["list"]) == 0
     assert "team-job" in capsys.readouterr().out

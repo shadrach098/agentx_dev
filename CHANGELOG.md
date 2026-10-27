@@ -41,6 +41,13 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **An OpenAI model that needs the Responses API for tool calls is found out once per program, not once per model
+  object.** Each new `agentx` session, team helper and benchmark task used to send one chat-completions request that
+  the provider rejected before switching. Now the switch is remembered for that model at that address until the
+  program exits.
+- **Benchmark:** a result file keeps the whole model name (`gpt-6.1-sol` was saved as `gpt-6.json`), and an answer
+  check says which words it found instead of "the answer covers it". The first baseline, 10/10 on `gpt-6.1-sol`,
+  is in `bench/results/`.
 - **`agentx`: cached input counts as a tenth toward the token limit and each team step's share.** A helper's
   requests are mostly input the provider serves from its cache, billed at about a tenth, but they were counted in
   full: in one audit each explorer was cut off after about 15 calls at "220k tokens", reported partial, and the agent

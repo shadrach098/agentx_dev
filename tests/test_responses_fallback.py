@@ -102,6 +102,21 @@ class TestAutomaticSwitch:
         assert len(fake.chat_calls) == chat_before, "second call retried chat completions"
         assert len(fake.responses_calls) == 2
 
+    def test_a_new_model_object_for_the_same_model_skips_the_rejected_request(self):
+        first, _ = make_gpt()
+        first.call_with_tools(MSGS, TOOLS)
+        second, fake = make_gpt()                      # a new agentx session, team helper or benchmark task
+        second.call_with_tools(MSGS, TOOLS)
+        assert fake.chat_calls == [] and fake.responses_calls, "no rejected chat-completions request"
+
+    def test_the_same_model_at_another_address_learns_on_its_own(self):
+        first, _ = make_gpt()
+        first.call_with_tools(MSGS, TOOLS)
+        other, fake = make_gpt()
+        fake.base_url = "https://proxy.example/v1/"
+        other.call_with_tools(MSGS, TOOLS)
+        assert fake.chat_calls, "a different endpoint must not inherit the switch"
+
     def test_text_calls_stay_on_chat_completions(self):
         g, fake = make_gpt()
         g.call_with_tools(MSGS, TOOLS)

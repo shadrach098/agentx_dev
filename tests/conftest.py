@@ -122,3 +122,12 @@ def make_react():
 @pytest.fixture
 def make_final_response():
     return make_final
+
+
+@pytest.fixture(autouse=True)
+def _forget_learned_endpoints():
+    """Which OpenAI models need the Responses API is remembered for the whole process; each test starts fresh."""
+    from agentx_dev.ChatModel import forget_learned_endpoints
+    forget_learned_endpoints()
+    yield
+    forget_learned_endpoints()

@@ -97,7 +97,10 @@ def mentions(*groups: Tuple[str, ...]) -> Check:
     def run(ws: Workspace) -> Tuple[bool, str]:
         text = ws.answer.lower()
         missing = [group for group in groups if not any(word.lower() in text for word in group)]
-        return (not missing, "the answer covers it" if not missing else f"the answer misses {missing}")
+        if missing:
+            return False, f"the answer misses {missing}"
+        found = [next(word for word in group if word.lower() in text) for group in groups]
+        return True, "the answer names " + ", ".join(repr(word) for word in found)
     return run
 
 

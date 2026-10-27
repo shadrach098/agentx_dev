@@ -674,6 +674,19 @@ def _system_text(content: Any) -> str:
 # Parameters that exist on responses.create; anything else from the chat
 # defaults (seed, stop, n, penalties, logit_bias, ...) has no Responses
 # equivalent and is left out, with one WARNING.
+# (provider address, model) pairs the provider said need /v1/responses for tool calls, for the whole process: a new
+# model object for the same model (each agentx session, each team helper, each benchmark task) skips the rejected
+# chat-completions request instead of learning it again. ``forget_learned_endpoints()`` clears it.
+_RESPONSES_FOR_TOOLS: set = set()
+_RESPONSES_LOCK = _threading.Lock()
+
+
+def forget_learned_endpoints() -> None:
+    """Forget which OpenAI models were found to need the Responses API for tool calls (tests use it)."""
+    with _RESPONSES_LOCK:
+        _RESPONSES_FOR_TOOLS.clear()
+
+
 _RESPONSES_PARAMS = frozenset({
     "model", "input", "instructions", "tools", "tool_choice", "reasoning",
     "max_output_tokens", "temperature", "top_p", "parallel_tool_calls",
@@ -1512,7 +1525,11 @@ class GPT(BaseChatModel):
             return True
         if self.use_responses_api is False:
             return False
-        return for_tools and str(model) in self._responses_models
+        return for_tools and (str(model) in self._responses_models
+                              or (self._endpoint_key(), str(model)) in _RESPONSES_FOR_TOOLS)
+
+    def _endpoint_key(self) -> str:
+        return str(getattr(getattr(self, "client", None), "base_url", "") or "")
 
     def _switch_to_responses(self, model: Any, exc: Exception) -> bool:
         """Record that ``model`` needs the Responses API for tool calls, if
@@ -1520,10 +1537,12 @@ class GPT(BaseChatModel):
         if self.use_responses_api is not None or not _wants_responses_api(exc):
             return False
         self._responses_models.add(str(model))
+        with _RESPONSES_LOCK:
+            _RESPONSES_FOR_TOOLS.add((self._endpoint_key(), str(model)))
         logger.warning(
             f"OpenAI model {str(model)!r} can't call tools on /v1/chat/completions "
             "with the current settings; switching its tool calls to the Responses "
-            f"API (/v1/responses) and retrying. Remembered for this model. "
+            f"API (/v1/responses) and retrying. Remembered for this model until the program exits. "
             f"(Provider said: {_error_text(exc)[:200]})"
         )
         return True

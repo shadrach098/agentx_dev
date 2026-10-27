@@ -79,7 +79,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             rows.append(result.as_dict())
             print(f"    {'PASS' if result.passed else 'FAIL'} - {result.note[:100]}", flush=True)
     report = {"model": args.model, "started": stamp, "commit": git_commit(), "repeat": args.repeat, "tasks": rows}
-    path = run_dir.with_suffix(".json")
+    path = run_dir.parent / f"{run_dir.name}.json"     # not with_suffix: "gpt-6.1-sol" would lose ".1-sol"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print()
