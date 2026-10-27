@@ -1162,7 +1162,521 @@ class _SpawnMixin:
         return name, None
 
 
-class Supervisor(_SpawnMixin):
+class _SupervisorCore(_SpawnMixin):
+    """What ``Supervisor`` and ``AsyncSupervisor`` share, written once: planning, replanning, synthesis,
+    the retry loop of a step, and the rounds of a session. These are coroutines that reach the outside
+    world only through the ``_io_*`` methods and ``_plan_events``: ``AsyncSupervisor`` awaits real work
+    there, while ``Supervisor`` calls its sync code directly, so its coroutines never suspend and it runs
+    them to the end without an event loop (``_run_sync``, ``_iterate_sync``), in the caller's thread."""
+
+    def _configure(self, model, agents, max_subtasks, verbose, max_subtask_retries, subtask_success_check,
+                   max_plan_retries, persistence, spawn_config, ask_user, max_questions, ask_timeout, memory,
+                   memory_top_k, memory_min_score, memory_write, ask_when_done, follow_up, max_follow_ups,
+                   planner_note) -> None:
+        self.model = model
+        # Normalize (and copy) so run-time spawns don't mutate the caller's dict. Accepts
+        # (description, runner) tuples or Specialist entries (3.3); everything is stored as
+        # Specialist, which still tuple-unpacks for older code.
+        self.agents = _normalize_agents(agents)
+        self.max_subtasks = max_subtasks
+        self.verbose = verbose
+        if spawn_config is None:
+            # Persistent supervisors may create sub-agents out of the box, inside a safe
+            # ceiling (web search plus read-only files). Without persistence the default is off.
+            spawn_config = (
+                SpawnConfig(enabled=True, capabilities={"web", "files_read"}, max_spawns=6)
+                if persistence is not None else SpawnConfig(enabled=False)
+            )
+        self.spawn_config = spawn_config
+        self._spawn_run_policy: Optional[SpawnPolicy] = None
+        self.max_subtask_retries = max(0, int(max_subtask_retries))
+        self.subtask_success_check = subtask_success_check
+        self.max_plan_retries = max(0, int(max_plan_retries))
+        self.persistence = persistence
+        self.ask_user = validate_ask_user(ask_user, is_async=self._SPAWN_ASYNC)
+        self.max_questions = max(0, int(max_questions))
+        self.ask_timeout = ask_timeout
+        self._operator: Optional[OperatorChannel] = None
+        self.planner_note = str(planner_note or "")      # added to the planner's catalog of specialists
+        self.follow_up, self.ask_when_done, self.max_follow_ups = _session_settings(
+            self.ask_user, ask_when_done, follow_up, max_follow_ups)
+        self.memory = validate_memory(memory)
+        if int(memory_top_k) < 0:
+            raise ValueError("memory_top_k must be >= 0")
+        self.memory_top_k = int(memory_top_k)
+        self.memory_min_score = float(memory_min_score)
+        self.memory_write = bool(memory_write)
+        self._run_memory: Optional[RunMemory] = None
+        # Persistent runs only: waits out transient planner/synthesis errors until the deadline.
+        self._patience: Optional[PersistentRun] = None
+
+    # -- I/O: each class says how it talks to the model, the operator and the store -----------------
+
+    async def _io_model(self, messages: List[Dict[str, str]]) -> str:
+        raise NotImplementedError
+
+    async def _io_planning_task(self, user_task: str) -> str:
+        raise NotImplementedError
+
+    async def _io_memory_block(self, query: str, stage: str) -> str:
+        raise NotImplementedError
+
+    async def _io_ask(self, question: str, why: str, source: str) -> None:
+        raise NotImplementedError
+
+    async def _io_checkpoint(self, channel: OperatorChannel, text: str) -> Any:
+        raise NotImplementedError
+
+    async def _io_remember(self, user_task: str, final: str) -> None:
+        raise NotImplementedError
+
+    def _plan_events(self, plan: List[dict], subtask_results: List[SubtaskResult],
+                     results_by_id: Dict[str, SubtaskResult], budget: Optional[RunBudget]):
+        """The events of running ``plan`` (an async generator over ``_run_plan``)."""
+        raise NotImplementedError
+
+    def _filter_plan(self, plan: List[Any]) -> List[dict]:
+        """The planned steps worth keeping (before the plan checker)."""
+        raise NotImplementedError
+
+    # -- shared logic ---------------------------------------------------------------------------------
+
+    def _evaluate_success(self, result: SubtaskResult) -> tuple:
+        """Run ``subtask_success_check`` against a returned result.
+        Returns ``(ok, reason)``. No check configured → always ``(True, "")``.
+        A check that raises is swallowed (treated as pass) so a broken
+        predicate can't wedge the run."""
+        if self.subtask_success_check is None:
+            return True, ""
+        try:
+            verdict = self.subtask_success_check(result)
+        except Exception as e:
+            logger.warning(f"subtask_success_check raised; treating as pass: {e}")
+            return True, ""
+        return _evaluate_success_verdict(verdict)
+
+    def _build_agent_catalog(self) -> str:
+        return _render_agent_catalog(self.agents) + (self.planner_note or "")
+
+    async def _plan_once(self, user_task: str, repair_note: str = "", ask_allowed: bool = False) -> List[dict]:
+        offer = ask_allowed and self._operator is not None and self._operator.remaining() > 0
+        prompt = SUPERVISOR_PLAN_PROMPT.format(
+            agent_catalog=self._build_agent_catalog(),
+            user_task=await self._io_planning_task(user_task),
+            max_subtasks=self.max_subtasks,
+        )
+        if self.spawn_config.enabled:
+            prompt = prompt + spawn_instruction(self._spawn_policy())
+        if offer:
+            prompt = prompt + ask_instruction(self._operator.remaining())
+            if await self._io_memory_block(user_task, "plan"):
+                prompt = prompt + MEMORY_ASK_LINE
+        if self._operator is not None:
+            prompt = prompt + self._operator.plan_note()
+        if repair_note:
+            prompt = prompt + repair_note
+        messages = [{"role": "user", "content": prompt}]
+        response = await self._io_model(messages)
+
+        cleaned = _strip_code_fences(response)
+
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            return []
+
+        if offer and isinstance(parsed, dict) and not (parsed.get("plan") or []):
+            questions = parse_ask_request(parsed.get("ask"), self._operator.remaining())
+            if questions:
+                for q in questions:
+                    await self._io_ask(q["question"], q["why"], PLANNER_SOURCE)
+                note = "" if self._operator.has_answers() else NO_ANSWER_PLAN_NOTE
+                # Plan again on the task plus the answers; no ask option this time.
+                return await self._plan_once(user_task, repair_note=repair_note + note)
+
+        plan = parsed.get("plan", []) or []
+        return self._filter_plan(plan)[: self.max_subtasks]
+
+    async def _plan(self, user_task: str) -> List[dict]:
+        """Plan, sanitize, and (3.3) replan once per repair budget when
+        sanitization had to fix the graph. Returns a sanitized plan whose
+        every step carries a valid ``id`` and acyclic ``depends_on``."""
+        ask_kw = {"ask_allowed": True} if self._operator is not None else {}
+        plan = await self._plan_once(user_task, **ask_kw)
+        if not plan:
+            return []
+        sane, repairs = _sanitize_plan(plan, verbose=self.verbose)
+        retries = self.max_plan_retries
+        while repairs and retries > 0:
+            retries -= 1
+            retry_plan = await self._plan_once(user_task, repair_note=_plan_repair_note(repairs))
+            if not retry_plan:
+                break
+            retry_sane, retry_repairs = _sanitize_plan(retry_plan, verbose=self.verbose)
+            if len(retry_repairs) < len(repairs):
+                sane, repairs = retry_sane, retry_repairs
+            else:
+                break   # retry was no better; keep the sanitized original
+        return sane
+
+    async def _plan_recovery(self, user_task: str, results: List[SubtaskResult], round_no: int) -> List[dict]:
+        """Ask the planner for a recovery plan covering only the unfinished
+        work. Returns ``[]`` when it cannot (the caller then synthesizes with
+        what it has). A spent budget propagates so the caller can say so."""
+        try:
+            raw = await self._plan_once(user_task, repair_note=_recovery_note(results, round_no))
+        except (CostBudgetExceeded, BudgetExpired):
+            raise
+        except Exception as e:
+            logger.warning(f"recovery planning failed: {e}")
+            return []
+        if not raw:
+            return []
+        known = {r.step_id for r in results
+                 if r.step_id and r.agent != "__spawn__" and not _result_failed(r) and not r.superseded}
+        replaceable = {r.step_id for r in results if r.step_id and _result_failed(r)}
+        sane, _ = _sanitize_plan(raw, verbose=self.verbose, known_ids=known, replaceable=replaceable)
+        prior = {r.step_id for r in results if r.step_id}
+        return _rename_colliding_ids(sane, prior, round_no)
+
+    async def _synthesize(
+        self,
+        user_task: str,
+        subtask_results: List[SubtaskResult],
+        unresolved: Optional[List[SubtaskResult]] = None,
+    ) -> str:
+        self._synth_fell_back = False
+        results_block = _format_results_block(subtask_results)
+        prompt = SUPERVISOR_SYNTHESIZE_PROMPT.format(
+            user_task=self._task_for_model(user_task),
+            results_block=results_block,
+        )
+        if unresolved:
+            prompt += _unresolved_note(unresolved)
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            return await self._io_model(messages)
+        except (CostBudgetExceeded, BudgetExpired) as e:
+            if self.persistence is None:
+                raise
+            self._synth_fell_back = True
+            what = "cost budget" if isinstance(e, CostBudgetExceeded) else "time limit"
+            return f"Stopped: the {what} was reached.\n\n{results_block}"
+
+    async def _attempts(self, call: Callable[[str], Awaitable[Any]], agent_name: str, sub_query: str,
+                        dispatched_query: str) -> SubtaskResult:
+        """Run one sub-task through ``call(query)`` (the specialist), retrying up to
+        ``max_subtask_retries`` times.
+
+        Three kinds of failure are retried, each feeding context back into
+        the query:
+          - a RAISED exception (crash, unrecoverable tool error),
+          - a returned completion whose ``outcome`` is not "done" (the
+            specialist gave up: stuck, out of time, out of budget,
+            iteration limit), with or without a success check, and
+          - a returned "done" result that ``subtask_success_check``
+            rejects (ran fine but produced nothing useful).
+
+        Without a success check, a "done" result is accepted even if thin,
+        since the Supervisor can't tell "terse but correct" from "wrong"
+        on its own.
+
+        The retry loop stops early when the shared run budget is spent (a
+        result with outcome ``out_of_time`` or ``out_of_budget``): another
+        attempt cannot help.
+
+        On exhaustion: returns the last result with ``error`` set (content
+        preserved) if we got one, else an empty errored SubtaskResult."""
+        attempts = self.max_subtask_retries + 1
+        query = dispatched_query
+        last_error = ""
+        last_result: Optional[SubtaskResult] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                completion = await call(query)
+                result = SubtaskResult(
+                    agent=agent_name, query=sub_query, content=completion.content,
+                    # Preserve the runner's validated Pydantic instance so
+                    # downstream steps get typed data, not just prose.
+                    output=getattr(completion, "output", None),
+                    outcome=_outcome_of(completion),
+                    progress=_progress_of(completion),
+                )
+            except Exception as e:
+                last_error = str(e)
+                last_result = None
+                if self.verbose:
+                    print(
+                        f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
+                        f"attempt {attempt}/{attempts} failed: {last_error}"
+                        f"{_C_RESET}"
+                    )
+                if attempt < attempts:
+                    query = _augment_query_with_error(
+                        dispatched_query, last_error, attempt,
+                    )
+                continue
+
+            # No exception — now apply the caller's success criteria.
+            if result.outcome != OUTCOME_DONE:
+                ok, reason = False, _unfinished_reason(result.outcome)
+            else:
+                ok, reason = self._evaluate_success(result)
+            if ok:
+                return result
+            last_result = result
+            last_error = f"did not meet success criteria: {reason}"
+            if result.outcome in (OUTCOME_OUT_OF_TIME, OUTCOME_OUT_OF_BUDGET):
+                break          # the shared budget is spent; another attempt cannot help
+            if self.verbose:
+                print(
+                    f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
+                    f"attempt {attempt}/{attempts} rejected: {reason}"
+                    f"{_C_RESET}"
+                )
+            if attempt < attempts:
+                if result.outcome == OUTCOME_ITERATION_LIMIT:
+                    query = _augment_query_with_iteration_limit(
+                        dispatched_query, result.content, attempt,
+                    )
+                else:
+                    query = _augment_query_with_unmet_criteria(
+                        dispatched_query, reason, attempt,
+                    )
+
+        if last_result is not None:
+            # Keep the content the specialist produced, but flag it failed.
+            last_result.error = last_error
+            return last_result
+        return SubtaskResult(
+            agent=agent_name, query=sub_query, content="", error=last_error,
+        )
+
+    async def _round_events(self, user_task: str, *, save_result: bool = True,
+                            seed: Optional[OperatorChannel] = None):
+        """One plan / dispatch / synthesize round, as a stream of events. ``save_result`` False
+        keeps the round's answer out of long-term memory (a follow-up round, whose task is a
+        composed one). ``seed`` is the previous round's operator channel, whose answers this
+        round's channel starts with. The last event is this round's ``completion``."""
+        self._spawn_run_policy = self._new_spawn_policy()
+        budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
+        self._spawn_run_policy.budget = budget        # delegate falls back to it (see SpawnPolicy)
+        self._operator = self._new_operator_channel()
+        self._spawn_run_policy.operator = self._operator
+        if self._operator is not None:
+            self._operator.budget = budget            # waiting on the operator pauses the deadline
+        if self._operator is not None and seed is not None:
+            self._operator.seed_from(seed)
+        self._run_memory = self._new_run_memory()
+        if self._operator is not None:
+            self._operator.memory = self._run_memory
+            if seed is not None and self._run_memory is not None:
+                for question, _answer in seed._answers:       # OPERATOR ANSWERS already has these
+                    self._run_memory.note_answered(question)
+        self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
+                          if budget is not None else None)
+
+        yield {"type": "plan_start"}
+        try:
+            plan = await self._plan(user_task)
+        except (CostBudgetExceeded, BudgetExpired) as e:
+            if self.persistence is None:
+                raise
+            stopped = _stopped_before_planning(user_task, e)
+            stopped.asked = self._asked_records()
+            stopped.memory = self._memory_records()
+            for ev in self._drain_operator_events():
+                yield ev
+            spent = budget_event(stopped.outcome)
+            yield spent
+            if self.verbose:
+                _log_budget(spent)
+            yield {"type": "final", "content": stopped.content}
+            yield {"type": "completion", "result": stopped}
+            return
+        for ev in self._drain_operator_events():
+            yield ev
+
+        if not plan:
+            if self.verbose:
+                _log_no_plan()
+            result = SupervisorResult(
+                query=user_task,
+                content="Supervisor failed to produce a valid plan.",
+                plan=[],
+                subtasks=[],
+                outcome=OUTCOME_STUCK,
+                asked=self._asked_records(),
+                memory=self._memory_records(),
+            )
+            yield {"type": "final", "content": result.content}
+            yield {"type": "completion", "result": result}
+            return
+
+        yield {"type": "plan", "plan": plan}
+        if self.verbose:
+            _log_plan(plan)
+
+        subtask_results: List[SubtaskResult] = []
+        results_by_id: Dict[str, SubtaskResult] = {}
+        budget_reason: Optional[str] = None
+        with _per_run_agents(self), \
+                attach_delegation([s.runner for s in self.agents.values()], self._spawn_policy()), \
+                attach_ask_user({n: s.runner for n, s in self.agents.items()}, self._operator), \
+                apply_persistence([s.runner for s in self.agents.values()], self.persistence):
+            async with aclosing(self._plan_events(plan, subtask_results, results_by_id, budget)) as events:
+                async for event in events:
+                    yield event
+            if self.persistence is not None:
+                stagnant = 0
+                round_no = 1
+                while True:
+                    unresolved = [r for r in subtask_results if _result_failed(r)]
+                    if not unresolved:
+                        break
+                    budget_reason = _budget_reason(budget, subtask_results)
+                    if budget_reason or stagnant >= self.persistence.max_replans:
+                        break
+                    try:
+                        recovery = await self._plan_recovery(user_task, subtask_results, round_no + 1)
+                    except (CostBudgetExceeded, BudgetExpired) as e:
+                        budget_reason = _budget_outcome_of(e)
+                        break
+                    if not recovery:
+                        break
+                    round_no += 1
+                    yield {"type": "replan", "round": round_no,
+                           "unresolved": [r.step_id for r in unresolved], "plan": recovery}
+                    if self.verbose:
+                        _log_replan(round_no, unresolved)
+                    plan.extend(recovery)
+                    async with aclosing(self._plan_events(recovery, subtask_results, results_by_id,
+                                                          budget)) as events:
+                        async for event in events:
+                            yield event
+                    # Progress is an unresolved step resolved by a replacement that finished;
+                    # a round that resolves nothing counts toward max_replans.
+                    stagnant = 0 if _resolve_replaced(recovery, subtask_results) else stagnant + 1
+
+        spent = budget_event(budget_reason)
+        if spent is not None:
+            yield spent
+            if self.verbose:
+                _log_budget(spent)
+        for ev in self._drain_operator_events():
+            yield ev
+        yield {"type": "synthesize_start"}
+        persistent = self.persistence is not None
+        unresolved = [r for r in subtask_results if _result_failed(r)] if persistent else []
+        shown = [r for r in subtask_results if not r.superseded] if persistent else list(subtask_results)
+        final = await self._synthesize(user_task, shown, unresolved=unresolved)
+        if self.verbose:
+            _log_final(final)
+
+        outcome = _supervisor_outcome(subtask_results, budget_reason)
+        if (save_result and self._run_memory is not None and outcome == OUTCOME_DONE
+                and not self._synth_fell_back and str(final).strip()):
+            await self._io_remember(user_task, final)
+
+        result = SupervisorResult(
+            query=user_task, content=final,
+            subtasks=list(subtask_results), plan=plan,
+            outcome=outcome,
+            spawned=list(self._spawn_policy().run.records),
+            asked=self._asked_records(),
+            memory=self._memory_records(),
+        )
+        yield {"type": "final", "content": final}
+        yield {"type": "completion", "result": result}
+
+    async def _session_events(self, user_task: str):
+        """Every round of a session (one, unless ``ask_when_done`` / ``follow_up``), as events; the last
+        is one ``completion`` for the session. Closing it early closes the round in progress too, so a
+        running round's steps are stopped before it returns."""
+        if not self.ask_when_done:
+            async with aclosing(self._round_events(user_task)) as stream:
+                async for event in stream:
+                    yield event
+            return
+        rounds: List[Dict[str, Any]] = []
+        asked: List[Dict[str, Any]] = []
+        task, instruction, seed = user_task, user_task, None
+        while True:
+            number = len(rounds) + 1
+            if number > 1:
+                yield {"type": "round", "round": number, "query": instruction}
+                if self.verbose:
+                    print(f"{_C_PLAN}[supervisor.round] round {number}: {_cap_text(instruction, 120)}{_C_RESET}")
+            result: Optional[SupervisorResult] = None
+            async with aclosing(self._round_events(task, save_result=number == 1, seed=seed)) as stream:
+                async for event in stream:
+                    if event["type"] == "completion":
+                        result = event["result"]
+                    else:
+                        yield event
+            assert result is not None, "a round must yield a completion event"
+            rounds.append({"round": number, "query": instruction, "content": result.content,
+                           "outcome": result.outcome})
+            asked.extend(result.asked)
+            channel = self._operator
+            if channel is None:                           # ask_user was cleared after construction: nobody to ask
+                next_step = None
+                break
+            if self.follow_up and number > 1 and number == 1 + self.max_follow_ups:
+                if self.verbose:
+                    print(f"{_C_PLAN}[supervisor.round] follow-up limit reached{_C_RESET}")
+                next_step = None
+                break
+            yield {"type": "checkpoint", "round": number, "outcome": result.outcome}
+            before = len(channel.records)
+            reply = await self._io_checkpoint(channel, checkpoint_text(
+                result.content, _outcome_line(result), question_first=channel.builtin))
+            asked.extend(channel.records[before:])
+            for event in self._drain_operator_events():
+                yield event
+            next_step = reply.text
+            more = (self.follow_up and number <= self.max_follow_ups
+                    and result.outcome != OUTCOME_OUT_OF_BUDGET and not is_stop_reply(reply.text))
+            if not more:
+                break
+            task, instruction, seed = _follow_up_task(user_task, rounds, reply.text), reply.text, channel
+        yield {"type": "completion", "result": result.model_copy(update={
+            "query": instruction, "asked": asked, "next_step": next_step,
+            "rounds": rounds if len(rounds) > 1 else []})}
+
+    def __repr__(self) -> str:
+        return (
+            f"<{type(self).__name__}(agents={list(self.agents.keys())}, "
+            f"max_subtasks={self.max_subtasks})>"
+        )
+
+
+def _run_sync(awaitable: Any) -> Any:
+    """Run a coroutine of a sync ``Supervisor`` to the end, in this thread, without an event loop. Its
+    I/O is sync, so it never suspends; one that does (a coroutine awaiting real async work) is an error."""
+    try:
+        awaitable.send(None)
+    except StopIteration as done:
+        return done.value
+    awaitable.close()
+    raise RuntimeError("a sync Supervisor awaited async work; use AsyncSupervisor for async specialists")
+
+
+def _iterate_sync(events: Any):
+    """A sync generator over an async generator of a sync ``Supervisor`` (see ``_run_sync``). Closing it
+    closes ``events``, so their ``finally`` blocks and context managers run as they would in ``for``."""
+    try:
+        while True:
+            try:
+                event = _run_sync(events.__anext__())
+            except StopAsyncIteration:
+                return
+            yield event
+    finally:
+        _run_sync(events.aclose())
+
+
+class Supervisor(_SupervisorCore):
     """
     Synchronous multi-agent supervisor.
 
@@ -1294,45 +1808,30 @@ class Supervisor(_SpawnMixin):
             max_follow_ups: (3.6.2) Rounds allowed after the first (default 5). After the last
                 one no question is asked.
         """
-        self.model = model
-        # Normalize (and copy) so run-time spawns don't mutate the
-        # caller's dict. Accepts (description, runner) tuples or
-        # Specialist entries (3.3); everything is stored as Specialist,
-        # which still tuple-unpacks for older code.
-        self.agents = _normalize_agents(agents)
-        self.max_subtasks = max_subtasks
-        self.verbose = verbose
-        if spawn_config is None:
-            # Persistent supervisors may create sub-agents out of the box, inside a safe
-            # ceiling (web search plus read-only files). Without persistence the default is off.
-            spawn_config = (
-                SpawnConfig(enabled=True, capabilities={"web", "files_read"}, max_spawns=6)
-                if persistence is not None else SpawnConfig(enabled=False)
-            )
-        self.spawn_config = spawn_config
-        self._spawn_run_policy: Optional[SpawnPolicy] = None
-        self.max_subtask_retries = max(0, int(max_subtask_retries))
-        self.subtask_success_check = subtask_success_check
-        self.max_plan_retries = max(0, int(max_plan_retries))
-        self.persistence = persistence
-        self.ask_user = validate_ask_user(ask_user, is_async=False)
-        self.max_questions = max(0, int(max_questions))
-        self.ask_timeout = ask_timeout
-        self._operator: Optional[OperatorChannel] = None
-        self.planner_note = str(planner_note or "")      # added to the planner's catalog of specialists
-        self.follow_up, self.ask_when_done, self.max_follow_ups = _session_settings(
-            self.ask_user, ask_when_done, follow_up, max_follow_ups)
-        self.memory = validate_memory(memory)
-        if int(memory_top_k) < 0:
-            raise ValueError("memory_top_k must be >= 0")
-        self.memory_top_k = int(memory_top_k)
-        self.memory_min_score = float(memory_min_score)
-        self.memory_write = bool(memory_write)
-        self._run_memory: Optional[RunMemory] = None
-        # Persistent runs only: waits out transient planner/synthesis errors until the deadline.
-        self._patience: Optional[PersistentRun] = None
+        self._configure(
+            model=model,
+            agents=agents,
+            max_subtasks=max_subtasks,
+            verbose=verbose,
+            max_subtask_retries=max_subtask_retries,
+            subtask_success_check=subtask_success_check,
+            max_plan_retries=max_plan_retries,
+            persistence=persistence,
+            spawn_config=spawn_config,
+            ask_user=ask_user,
+            max_questions=max_questions,
+            ask_timeout=ask_timeout,
+            memory=memory,
+            memory_top_k=memory_top_k,
+            memory_min_score=memory_min_score,
+            memory_write=memory_write,
+            ask_when_done=ask_when_done,
+            follow_up=follow_up,
+            max_follow_ups=max_follow_ups,
+            planner_note=planner_note,
+        )
 
-    # -- internal helpers ----------------------------------------------------
+    # -- I/O: sync calls; the shared coroutines never suspend ------------------------------------------
 
     def _call_model(self, messages: List[Dict[str, str]]) -> str:
         """One planner or synthesis call. In persistent mode a transient provider
@@ -1342,120 +1841,47 @@ class Supervisor(_SpawnMixin):
             return self.model.Initialize(messages=messages)
         return patience.patient(lambda: self.model.Initialize(messages=messages))
 
-    def _evaluate_success(self, result: SubtaskResult) -> tuple:
-        """Run ``subtask_success_check`` against a returned result.
-        Returns ``(ok, reason)``. No check configured → always ``(True, "")``.
-        A check that raises is swallowed (treated as pass) so a broken
-        predicate can't wedge the run."""
-        if self.subtask_success_check is None:
-            return True, ""
-        try:
-            verdict = self.subtask_success_check(result)
-        except Exception as e:
-            logger.warning(f"subtask_success_check raised; treating as pass: {e}")
-            return True, ""
-        return _evaluate_success_verdict(verdict)
+    async def _io_model(self, messages: List[Dict[str, str]]) -> str:
+        return self._call_model(messages)
 
-    def _build_agent_catalog(self) -> str:
-        return _render_agent_catalog(self.agents) + (self.planner_note or "")
+    async def _io_planning_task(self, user_task: str) -> str:
+        return self._planning_task(user_task)
+
+    async def _io_memory_block(self, query: str, stage: str) -> str:
+        return self._memory_block(query, stage)
+
+    async def _io_ask(self, question: str, why: str, source: str) -> None:
+        self._operator.ask(question, why, source)
+
+    async def _io_checkpoint(self, channel: OperatorChannel, text: str) -> Any:
+        return channel.checkpoint(text)
+
+    async def _io_remember(self, user_task: str, final: str) -> None:
+        self._run_memory.remember_result(user_task, final)
+
+    async def _plan_events(self, plan, subtask_results, results_by_id, budget):
+        with closing(self._run_plan(plan, subtask_results, results_by_id, budget)) as events:
+            for event in events:
+                yield event
+
+    def _filter_plan(self, plan: List[Any]) -> List[dict]:
+        # Keep spawn steps AND known-agent steps. Unknown agents at this
+        # stage might refer to a specialist a later spawn step will
+        # create; validate order in run() rather than dropping them here.
+        return [
+            item for item in plan
+            if isinstance(item, dict)
+            and isinstance(item.get("agent"), (str, type(None)))   # a list/dict agent is unhashable
+            and (item.get("agent") == "__spawn__" or item.get("agent") or item.get("query"))
+        ]
+
+    # -- running steps ---------------------------------------------------------------------------------
 
     def run_step(self, agent_name: str, query: str, run: Callable[[], SubtaskResult]) -> SubtaskResult:
         """Runs one step: ``run()`` dispatches it to ``agent_name`` (with retries) and returns its result.
         The default just calls it. Override it to wrap every step (time it, hold a lock, set up context)
         or to skip one by returning your own ``SubtaskResult`` without calling ``run``."""
         return run()
-
-    def _plan_once(self, user_task: str, repair_note: str = "", ask_allowed: bool = False) -> List[dict]:
-        offer = ask_allowed and self._operator is not None and self._operator.remaining() > 0
-        base_prompt = SUPERVISOR_PLAN_PROMPT.format(
-            agent_catalog=self._build_agent_catalog(),
-            user_task=self._planning_task(user_task),
-            max_subtasks=self.max_subtasks,
-        )
-        prompt = base_prompt
-        if self.spawn_config.enabled:
-            prompt = prompt + spawn_instruction(self._spawn_policy())
-        if offer:
-            prompt = prompt + ask_instruction(self._operator.remaining())
-            if self._memory_block(user_task, "plan"):
-                prompt = prompt + MEMORY_ASK_LINE
-        if self._operator is not None:
-            prompt = prompt + self._operator.plan_note()
-        if repair_note:
-            prompt = prompt + repair_note
-        messages = [{"role": "user", "content": prompt}]
-        response = self._call_model(messages)
-
-        cleaned = _strip_code_fences(response)
-
-        try:
-            parsed = json.loads(cleaned)
-        except json.JSONDecodeError:
-            return []
-
-        if offer and isinstance(parsed, dict) and not (parsed.get("plan") or []):
-            questions = parse_ask_request(parsed.get("ask"), self._operator.remaining())
-            if questions:
-                for q in questions:
-                    self._operator.ask(q["question"], q["why"], PLANNER_SOURCE)
-                note = "" if self._operator.has_answers() else NO_ANSWER_PLAN_NOTE
-                # Plan again on the task plus the answers; no ask option this time.
-                return self._plan_once(user_task, repair_note=repair_note + note)
-
-        plan = parsed.get("plan", []) or []
-        # Keep spawn steps AND known-agent steps. Unknown agents at this
-        # stage might refer to a specialist a later spawn step will
-        # create; validate order in run() rather than dropping them here.
-        filtered = [
-            item for item in plan
-            if isinstance(item, dict)
-            and isinstance(item.get("agent"), (str, type(None)))   # a list/dict agent is unhashable
-            and (item.get("agent") == "__spawn__" or item.get("agent") or item.get("query"))
-        ]
-        return filtered[: self.max_subtasks]
-
-    def _plan(self, user_task: str) -> List[dict]:
-        """Plan, sanitize, and (3.3) replan once per repair budget when
-        sanitization had to fix the graph. Returns a sanitized plan whose
-        every step carries a valid ``id`` and acyclic ``depends_on``."""
-        ask_kw = {"ask_allowed": True} if self._operator is not None else {}
-        plan = self._plan_once(user_task, **ask_kw)
-        if not plan:
-            return []
-        sane, repairs = _sanitize_plan(plan, verbose=self.verbose)
-        retries = self.max_plan_retries
-        while repairs and retries > 0:
-            retries -= 1
-            note = _plan_repair_note(repairs)
-            retry_plan = self._plan_once(user_task, repair_note=note)
-            if not retry_plan:
-                break
-            retry_sane, retry_repairs = _sanitize_plan(retry_plan, verbose=self.verbose)
-            if len(retry_repairs) < len(repairs):
-                sane, repairs = retry_sane, retry_repairs
-            else:
-                break   # retry was no better; keep the sanitized original
-        return sane
-
-    def _plan_recovery(self, user_task: str, results: List[SubtaskResult], round_no: int) -> List[dict]:
-        """Ask the planner for a recovery plan covering only the unfinished
-        work. Returns ``[]`` when it cannot (the caller then synthesizes with
-        what it has). A spent budget propagates so the caller can say so."""
-        try:
-            raw = self._plan_once(user_task, repair_note=_recovery_note(results, round_no))
-        except (CostBudgetExceeded, BudgetExpired):
-            raise
-        except Exception as e:
-            logger.warning(f"recovery planning failed: {e}")
-            return []
-        if not raw:
-            return []
-        known = {r.step_id for r in results
-                 if r.step_id and r.agent != "__spawn__" and not _result_failed(r) and not r.superseded}
-        replaceable = {r.step_id for r in results if r.step_id and _result_failed(r)}
-        sane, _ = _sanitize_plan(raw, verbose=self.verbose, known_ids=known, replaceable=replaceable)
-        prior = {r.step_id for r in results if r.step_id}
-        return _rename_colliding_ids(sane, prior, round_no)
 
     def _dispatch_with_retry(
         self,
@@ -1487,99 +1913,15 @@ class Supervisor(_SpawnMixin):
 
         On exhaustion: returns the last result with ``error`` set (content
         preserved) if we got one, else an empty errored SubtaskResult."""
-        attempts = self.max_subtask_retries + 1
-        query = dispatched_query
-        last_error = ""
-        last_result: Optional[SubtaskResult] = None
-        for attempt in range(1, attempts + 1):
-            try:
-                if budget is not None and accepts_budget(agent_runner.Initialize):
-                    completion = agent_runner.Initialize(query, _budget=budget)
-                else:
-                    completion = agent_runner.Initialize(query)
-                result = SubtaskResult(
-                    agent=agent_name, query=sub_query, content=completion.content,
-                    # Preserve the runner's validated Pydantic instance so
-                    # downstream steps get typed data, not just prose.
-                    output=getattr(completion, "output", None),
-                    outcome=_outcome_of(completion),
-                    progress=_progress_of(completion),
-                )
-            except Exception as e:
-                last_error = str(e)
-                last_result = None
-                if self.verbose:
-                    print(
-                        f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
-                        f"attempt {attempt}/{attempts} failed: {last_error}"
-                        f"{_C_RESET}"
-                    )
-                if attempt < attempts:
-                    query = _augment_query_with_error(
-                        dispatched_query, last_error, attempt,
-                    )
-                continue
+        def call(query: str) -> Any:
+            if budget is not None and accepts_budget(agent_runner.Initialize):
+                return agent_runner.Initialize(query, _budget=budget)
+            return agent_runner.Initialize(query)
 
-            # No exception — now apply the caller's success criteria.
-            if result.outcome != OUTCOME_DONE:
-                ok, reason = False, _unfinished_reason(result.outcome)
-            else:
-                ok, reason = self._evaluate_success(result)
-            if ok:
-                return result
-            last_result = result
-            last_error = f"did not meet success criteria: {reason}"
-            if result.outcome in (OUTCOME_OUT_OF_TIME, OUTCOME_OUT_OF_BUDGET):
-                break          # the shared budget is spent; another attempt cannot help
-            if self.verbose:
-                print(
-                    f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
-                    f"attempt {attempt}/{attempts} rejected: {reason}"
-                    f"{_C_RESET}"
-                )
-            if attempt < attempts:
-                if result.outcome == OUTCOME_ITERATION_LIMIT:
-                    query = _augment_query_with_iteration_limit(
-                        dispatched_query, result.content, attempt,
-                    )
-                else:
-                    query = _augment_query_with_unmet_criteria(
-                        dispatched_query, reason, attempt,
-                    )
+        async def attempt(query: str) -> Any:
+            return call(query)
 
-        if last_result is not None:
-            # Keep the content the specialist produced, but flag it failed.
-            last_result.error = last_error
-            return last_result
-        return SubtaskResult(
-            agent=agent_name, query=sub_query, content="", error=last_error,
-        )
-
-    def _synthesize(
-        self,
-        user_task: str,
-        subtask_results: List[SubtaskResult],
-        unresolved: Optional[List[SubtaskResult]] = None,
-    ) -> str:
-        self._synth_fell_back = False
-        results_block = _format_results_block(subtask_results)
-        prompt = SUPERVISOR_SYNTHESIZE_PROMPT.format(
-            user_task=self._task_for_model(user_task),
-            results_block=results_block,
-        )
-        if unresolved:
-            prompt += _unresolved_note(unresolved)
-        messages = [{"role": "user", "content": prompt}]
-        try:
-            return self._call_model(messages)
-        except (CostBudgetExceeded, BudgetExpired) as e:
-            if self.persistence is None:
-                raise
-            self._synth_fell_back = True
-            what = "cost budget" if isinstance(e, CostBudgetExceeded) else "time limit"
-            return f"Stopped: the {what} was reached.\n\n{results_block}"
-
-    # -- public API ----------------------------------------------------------
+        return _run_sync(self._attempts(attempt, agent_name, sub_query, dispatched_query))
 
     def _run_plan(
         self,
@@ -1768,134 +2110,7 @@ class Supervisor(_SpawnMixin):
             if self.verbose:
                 _log_result(sub_result)
 
-    def _stream_round(self, user_task: str, *, save_result: bool = True,
-                      seed: Optional[OperatorChannel] = None):
-        """One plan / dispatch / synthesize round, as a stream of events. ``save_result`` False
-        keeps the round's answer out of long-term memory (a follow-up round, whose task is a
-        composed one). ``seed`` is the previous round's operator channel, whose answers this
-        round's channel starts with. The last event is this round's ``completion``."""
-        self._spawn_run_policy = self._new_spawn_policy()
-        budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
-        self._spawn_run_policy.budget = budget        # delegate falls back to it (see SpawnPolicy)
-        self._operator = self._new_operator_channel()
-        self._spawn_run_policy.operator = self._operator
-        if self._operator is not None:
-            self._operator.budget = budget            # waiting on the operator pauses the deadline
-        if self._operator is not None and seed is not None:
-            self._operator.seed_from(seed)
-        self._run_memory = self._new_run_memory()
-        if self._operator is not None:
-            self._operator.memory = self._run_memory
-            if seed is not None and self._run_memory is not None:
-                for question, _answer in seed._answers:       # OPERATOR ANSWERS already has these
-                    self._run_memory.note_answered(question)
-        self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
-                          if budget is not None else None)
-
-        yield {"type": "plan_start"}
-        try:
-            plan = self._plan(user_task)
-        except (CostBudgetExceeded, BudgetExpired) as e:
-            if self.persistence is None:
-                raise
-            stopped = _stopped_before_planning(user_task, e)
-            stopped.asked = self._asked_records()
-            stopped.memory = self._memory_records()
-            yield from self._drain_operator_events()
-            spent = budget_event(stopped.outcome)
-            yield spent
-            if self.verbose:
-                _log_budget(spent)
-            yield {"type": "final", "content": stopped.content}
-            yield {"type": "completion", "result": stopped}
-            return
-        yield from self._drain_operator_events()
-
-        if not plan:
-            if self.verbose:
-                _log_no_plan()
-            result = SupervisorResult(
-                query=user_task,
-                content="Supervisor failed to produce a valid plan.",
-                plan=[],
-                subtasks=[],
-                outcome=OUTCOME_STUCK,
-                asked=self._asked_records(),
-                memory=self._memory_records(),
-            )
-            yield {"type": "final", "content": result.content}
-            yield {"type": "completion", "result": result}
-            return
-
-        yield {"type": "plan", "plan": plan}
-        if self.verbose:
-            _log_plan(plan)
-
-        subtask_results: List[SubtaskResult] = []
-        results_by_id: Dict[str, SubtaskResult] = {}
-        budget_reason: Optional[str] = None
-        with _per_run_agents(self), \
-                attach_delegation([s.runner for s in self.agents.values()], self._spawn_policy()), \
-                attach_ask_user({n: s.runner for n, s in self.agents.items()}, self._operator), \
-                apply_persistence([s.runner for s in self.agents.values()], self.persistence):
-            yield from self._run_plan(plan, subtask_results, results_by_id, budget)
-            if self.persistence is not None:
-                stagnant = 0
-                round_no = 1
-                while True:
-                    unresolved = [r for r in subtask_results if _result_failed(r)]
-                    if not unresolved:
-                        break
-                    budget_reason = _budget_reason(budget, subtask_results)
-                    if budget_reason or stagnant >= self.persistence.max_replans:
-                        break
-                    try:
-                        recovery = self._plan_recovery(user_task, subtask_results, round_no + 1)
-                    except (CostBudgetExceeded, BudgetExpired) as e:
-                        budget_reason = _budget_outcome_of(e)
-                        break
-                    if not recovery:
-                        break
-                    round_no += 1
-                    yield {"type": "replan", "round": round_no,
-                           "unresolved": [r.step_id for r in unresolved], "plan": recovery}
-                    if self.verbose:
-                        _log_replan(round_no, unresolved)
-                    plan.extend(recovery)
-                    yield from self._run_plan(recovery, subtask_results, results_by_id, budget)
-                    # Progress is an unresolved step resolved by a replacement that finished;
-                    # a round that resolves nothing counts toward max_replans.
-                    stagnant = 0 if _resolve_replaced(recovery, subtask_results) else stagnant + 1
-
-        spent = budget_event(budget_reason)
-        if spent is not None:
-            yield spent
-            if self.verbose:
-                _log_budget(spent)
-        yield from self._drain_operator_events()
-        yield {"type": "synthesize_start"}
-        persistent = self.persistence is not None
-        unresolved = [r for r in subtask_results if _result_failed(r)] if persistent else []
-        shown = [r for r in subtask_results if not r.superseded] if persistent else subtask_results
-        final = self._synthesize(user_task, shown, unresolved=unresolved)
-        if self.verbose:
-            _log_final(final)
-
-        outcome = _supervisor_outcome(subtask_results, budget_reason)
-        if (save_result and self._run_memory is not None and outcome == OUTCOME_DONE
-                and not self._synth_fell_back and str(final).strip()):
-            self._run_memory.remember_result(user_task, final)
-
-        result = SupervisorResult(
-            query=user_task, content=final,
-            subtasks=subtask_results, plan=plan,
-            outcome=outcome,
-            spawned=list(self._spawn_policy().run.records),
-            asked=self._asked_records(),
-            memory=self._memory_records(),
-        )
-        yield {"type": "final", "content": final}
-        yield {"type": "completion", "result": result}
+    # -- public API ----------------------------------------------------------
 
     def stream(self, user_task: str):
         """Yield structured events as the supervisor plans, dispatches,
@@ -1927,54 +2142,7 @@ class Supervisor(_SpawnMixin):
         stream covers every round and ends with one ``completion`` for the
         session.
         """
-        if not self.ask_when_done:
-            yield from self._stream_round(user_task)
-            return
-        rounds: List[Dict[str, Any]] = []
-        asked: List[Dict[str, Any]] = []
-        task, instruction, seed = user_task, user_task, None
-        while True:
-            number = len(rounds) + 1
-            if number > 1:
-                yield {"type": "round", "round": number, "query": instruction}
-                if self.verbose:
-                    print(f"{_C_PLAN}[supervisor.round] round {number}: {_cap_text(instruction, 120)}{_C_RESET}")
-            result: Optional[SupervisorResult] = None
-            # closing: closing this stream early closes the round generator too, as aclosing does in astream
-            with closing(self._stream_round(task, save_result=number == 1, seed=seed)) as stream:
-                for event in stream:
-                    if event["type"] == "completion":
-                        result = event["result"]
-                    else:
-                        yield event
-            assert result is not None, "a round must yield a completion event"
-            rounds.append({"round": number, "query": instruction, "content": result.content,
-                           "outcome": result.outcome})
-            asked.extend(result.asked)
-            channel = self._operator
-            if channel is None:                           # ask_user was cleared after construction: nobody to ask
-                next_step = None
-                break
-            if self.follow_up and number > 1 and number == 1 + self.max_follow_ups:
-                if self.verbose:
-                    print(f"{_C_PLAN}[supervisor.round] follow-up limit reached{_C_RESET}")
-                next_step = None
-                break
-            yield {"type": "checkpoint", "round": number, "outcome": result.outcome}
-            before = len(channel.records)
-            reply = channel.checkpoint(checkpoint_text(
-                result.content, _outcome_line(result), question_first=channel.builtin))
-            asked.extend(channel.records[before:])
-            yield from self._drain_operator_events()
-            next_step = reply.text
-            more = (self.follow_up and number <= self.max_follow_ups
-                    and result.outcome != OUTCOME_OUT_OF_BUDGET and not is_stop_reply(reply.text))
-            if not more:
-                break
-            task, instruction, seed = _follow_up_task(user_task, rounds, reply.text), reply.text, channel
-        yield {"type": "completion", "result": result.model_copy(update={
-            "query": instruction, "asked": asked, "next_step": next_step,
-            "rounds": rounds if len(rounds) > 1 else []})}
+        yield from _iterate_sync(self._session_events(user_task))
 
     def run(self, user_task: str) -> SupervisorResult:
         """Plan, execute sub-tasks sequentially, and synthesize.
@@ -1991,18 +2159,13 @@ class Supervisor(_SpawnMixin):
         return result
 
 
-    def __repr__(self) -> str:
-        return (
-            f"<Supervisor(agents={list(self.agents.keys())}, "
-            f"max_subtasks={self.max_subtasks})>"
-        )
 
 
 # ----------------------------------------------------------------------------
 # Async Supervisor
 # ----------------------------------------------------------------------------
 
-class AsyncSupervisor(_SpawnMixin):
+class AsyncSupervisor(_SupervisorCore):
     """
     Asynchronous multi-agent supervisor.
 
@@ -2116,73 +2279,34 @@ class AsyncSupervisor(_SpawnMixin):
             max_follow_ups: (3.6.2) Rounds allowed after the first (default 5). After the last
                 one no question is asked.
         """
-        self.model = model
-        self.agents = _normalize_agents(agents)
-        self.max_subtasks = max_subtasks
-        self.verbose = verbose
         self.sequential = sequential
-        self.max_subtask_retries = max(0, int(max_subtask_retries))
-        self.subtask_success_check = subtask_success_check
         self.max_parallel = 1 if sequential else (
             max(1, int(max_parallel)) if max_parallel is not None else None
         )
-        self.max_plan_retries = max(0, int(max_plan_retries))
-        self.persistence = persistence
-        self.ask_user = validate_ask_user(ask_user, is_async=True)
-        self.max_questions = max(0, int(max_questions))
-        self.ask_timeout = ask_timeout
-        self._operator: Optional[OperatorChannel] = None
-        self.planner_note = str(planner_note or "")      # added to the planner's catalog of specialists
-        self.follow_up, self.ask_when_done, self.max_follow_ups = _session_settings(
-            self.ask_user, ask_when_done, follow_up, max_follow_ups)
-        self.memory = validate_memory(memory)
-        if int(memory_top_k) < 0:
-            raise ValueError("memory_top_k must be >= 0")
-        self.memory_top_k = int(memory_top_k)
-        self.memory_min_score = float(memory_min_score)
-        self.memory_write = bool(memory_write)
-        self._run_memory: Optional[RunMemory] = None
-        if spawn_config is None:
-            # Same default as Supervisor: persistent runs may create sub-agents inside a safe ceiling.
-            spawn_config = (
-                SpawnConfig(enabled=True, capabilities={"web", "files_read"}, max_spawns=6)
-                if persistence is not None else SpawnConfig(enabled=False)
-            )
-        self.spawn_config = spawn_config
-        self._spawn_run_policy: Optional[SpawnPolicy] = None
-        # Persistent runs only: waits out transient planner/synthesis errors until the deadline.
-        self._patience: Optional[PersistentRun] = None
+        self._configure(
+            model=model,
+            agents=agents,
+            max_subtasks=max_subtasks,
+            verbose=verbose,
+            max_subtask_retries=max_subtask_retries,
+            subtask_success_check=subtask_success_check,
+            max_plan_retries=max_plan_retries,
+            persistence=persistence,
+            spawn_config=spawn_config,
+            ask_user=ask_user,
+            max_questions=max_questions,
+            ask_timeout=ask_timeout,
+            memory=memory,
+            memory_top_k=memory_top_k,
+            memory_min_score=memory_min_score,
+            memory_write=memory_write,
+            ask_when_done=ask_when_done,
+            follow_up=follow_up,
+            max_follow_ups=max_follow_ups,
+            planner_note=planner_note,
+        )
 
-    def _evaluate_success(self, result: SubtaskResult) -> tuple:
-        """See ``Supervisor._evaluate_success``."""
-        if self.subtask_success_check is None:
-            return True, ""
-        try:
-            verdict = self.subtask_success_check(result)
-        except Exception as e:
-            logger.warning(f"subtask_success_check raised; treating as pass: {e}")
-            return True, ""
-        return _evaluate_success_verdict(verdict)
-
-    # -- internal helpers ----------------------------------------------------
-
-    def _build_agent_catalog(self) -> str:
-        return _render_agent_catalog(self.agents) + (self.planner_note or "")
-
-    async def run_step(self, agent_name: str, query: str,
-                       run: Callable[[], Awaitable[SubtaskResult]]) -> SubtaskResult:
-        """Runs one step: ``await run()`` dispatches it to ``agent_name`` (with retries) and returns its
-        result. The default just awaits it. Override it to wrap every step (hold a lock so some steps
-        never overlap, set a context variable a sync specialist's thread inherits, time it) or to skip
-        one by returning your own ``SubtaskResult`` without awaiting ``run``. It runs in the step's own
-        task, so steps that may run at once (``max_parallel``) call it concurrently."""
-        return await run()
-
-    async def _step(self, agent_name: str, sub_query: str, prior_results: Optional[List[SubtaskResult]],
-                    budget: Optional[RunBudget]) -> SubtaskResult:
-        async def run() -> SubtaskResult:
-            return await self._run_subtask(agent_name, sub_query, prior_results=prior_results, budget=budget)
-        return await self.run_step(agent_name, sub_query, run)
+    # -- I/O ---------------------------------------------------------------------------------------------
 
     async def _call_model(self, messages: List[Dict[str, str]]) -> str:
         """One planner or synthesis call. In persistent mode a transient provider
@@ -2201,43 +2325,30 @@ class AsyncSupervisor(_SpawnMixin):
         # Fall back to running the sync method in a thread.
         return await asyncio.to_thread(self.model.Initialize, messages)
 
-    async def _plan_once(self, user_task: str, repair_note: str = "", ask_allowed: bool = False) -> List[dict]:
-        offer = ask_allowed and self._operator is not None and self._operator.remaining() > 0
-        prompt = SUPERVISOR_PLAN_PROMPT.format(
-            agent_catalog=self._build_agent_catalog(),
-            user_task=await self._aplanning_task(user_task),
-            max_subtasks=self.max_subtasks,
-        )
-        if self.spawn_config.enabled:
-            prompt = prompt + spawn_instruction(self._spawn_policy())
-        if offer:
-            prompt = prompt + ask_instruction(self._operator.remaining())
-            if await self._amemory_block(user_task, "plan"):
-                prompt = prompt + MEMORY_ASK_LINE
-        if self._operator is not None:
-            prompt = prompt + self._operator.plan_note()
-        if repair_note:
-            prompt = prompt + repair_note
-        messages = [{"role": "user", "content": prompt}]
-        response = await self._call_model(messages)
+    async def _io_model(self, messages: List[Dict[str, str]]) -> str:
+        return await self._call_model(messages)
 
-        cleaned = _strip_code_fences(response)
+    async def _io_planning_task(self, user_task: str) -> str:
+        return await self._aplanning_task(user_task)
 
-        try:
-            parsed = json.loads(cleaned)
-        except json.JSONDecodeError:
-            return []
+    async def _io_memory_block(self, query: str, stage: str) -> str:
+        return await self._amemory_block(query, stage)
 
-        if offer and isinstance(parsed, dict) and not (parsed.get("plan") or []):
-            questions = parse_ask_request(parsed.get("ask"), self._operator.remaining())
-            if questions:
-                for q in questions:
-                    await self._operator.aask(q["question"], q["why"], PLANNER_SOURCE)
-                note = "" if self._operator.has_answers() else NO_ANSWER_PLAN_NOTE
-                # Plan again on the task plus the answers; no ask option this time.
-                return await self._plan_once(user_task, repair_note=repair_note + note)
+    async def _io_ask(self, question: str, why: str, source: str) -> None:
+        await self._operator.aask(question, why, source)
 
-        plan = parsed.get("plan", []) or []
+    async def _io_checkpoint(self, channel: OperatorChannel, text: str) -> Any:
+        return await channel.acheckpoint(text)
+
+    async def _io_remember(self, user_task: str, final: str) -> None:
+        await asyncio.to_thread(self._run_memory.remember_result, user_task, final)
+
+    async def _plan_events(self, plan, subtask_results, results_by_id, budget):
+        async with aclosing(self._run_plan(plan, subtask_results, results_by_id, budget)) as events:
+            async for event in events:
+                yield event
+
+    def _filter_plan(self, plan: List[Any]) -> List[dict]:
         # A step may name a registered agent, define one inline (new_agent), or use one an
         # earlier step defines; a legacy __spawn__ step carries no query.
         # Only string names count: a list or dict here would be unhashable.
@@ -2247,7 +2358,7 @@ class AsyncSupervisor(_SpawnMixin):
         defined |= {s.get("name") for s in plan
                     if isinstance(s, dict) and s.get("agent") == "__spawn__"
                     and isinstance(s.get("name"), str)}
-        filtered = [
+        return [
             item for item in plan
             if isinstance(item, dict)
             and isinstance(item.get("agent"), (str, type(None)))   # a list/dict agent is unhashable
@@ -2260,71 +2371,23 @@ class AsyncSupervisor(_SpawnMixin):
                 ))
             )
         ]
-        return filtered[: self.max_subtasks]
 
-    async def _plan(self, user_task: str) -> List[dict]:
-        """Plan + sanitize + (3.3) replan-on-repair. See Supervisor._plan."""
-        ask_kw = {"ask_allowed": True} if self._operator is not None else {}
-        plan = await self._plan_once(user_task, **ask_kw)
-        if not plan:
-            return []
-        sane, repairs = _sanitize_plan(plan, verbose=self.verbose)
-        retries = self.max_plan_retries
-        while repairs and retries > 0:
-            retries -= 1
-            retry_plan = await self._plan_once(
-                user_task, repair_note=_plan_repair_note(repairs),
-            )
-            if not retry_plan:
-                break
-            retry_sane, retry_repairs = _sanitize_plan(retry_plan, verbose=self.verbose)
-            if len(retry_repairs) < len(repairs):
-                sane, repairs = retry_sane, retry_repairs
-            else:
-                break
-        return sane
+    # -- running steps ---------------------------------------------------------------------------------
 
-    async def _plan_recovery(self, user_task: str, results: List[SubtaskResult], round_no: int) -> List[dict]:
-        """Async twin of :meth:`Supervisor._plan_recovery`."""
-        try:
-            raw = await self._plan_once(user_task, repair_note=_recovery_note(results, round_no))
-        except (CostBudgetExceeded, BudgetExpired):
-            raise
-        except Exception as e:
-            logger.warning(f"recovery planning failed: {e}")
-            return []
-        if not raw:
-            return []
-        known = {r.step_id for r in results
-                 if r.step_id and r.agent != "__spawn__" and not _result_failed(r) and not r.superseded}
-        replaceable = {r.step_id for r in results if r.step_id and _result_failed(r)}
-        sane, _ = _sanitize_plan(raw, verbose=self.verbose, known_ids=known, replaceable=replaceable)
-        prior = {r.step_id for r in results if r.step_id}
-        return _rename_colliding_ids(sane, prior, round_no)
+    async def run_step(self, agent_name: str, query: str,
+                       run: Callable[[], Awaitable[SubtaskResult]]) -> SubtaskResult:
+        """Runs one step: ``await run()`` dispatches it to ``agent_name`` (with retries) and returns its
+        result. The default just awaits it. Override it to wrap every step (hold a lock so some steps
+        never overlap, set a context variable a sync specialist's thread inherits, time it) or to skip
+        one by returning your own ``SubtaskResult`` without awaiting ``run``. It runs in the step's own
+        task, so steps that may run at once (``max_parallel``) call it concurrently."""
+        return await run()
 
-    async def _synthesize(
-        self,
-        user_task: str,
-        subtask_results: List[SubtaskResult],
-        unresolved: Optional[List[SubtaskResult]] = None,
-    ) -> str:
-        self._synth_fell_back = False
-        results_block = _format_results_block(subtask_results)
-        prompt = SUPERVISOR_SYNTHESIZE_PROMPT.format(
-            user_task=self._task_for_model(user_task),
-            results_block=results_block,
-        )
-        if unresolved:
-            prompt += _unresolved_note(unresolved)
-        messages = [{"role": "user", "content": prompt}]
-        try:
-            return await self._call_model(messages)
-        except (CostBudgetExceeded, BudgetExpired) as e:
-            if self.persistence is None:
-                raise
-            self._synth_fell_back = True
-            what = "cost budget" if isinstance(e, CostBudgetExceeded) else "time limit"
-            return f"Stopped: the {what} was reached.\n\n{results_block}"
+    async def _step(self, agent_name: str, sub_query: str, prior_results: Optional[List[SubtaskResult]],
+                    budget: Optional[RunBudget]) -> SubtaskResult:
+        async def run() -> SubtaskResult:
+            return await self._run_subtask(agent_name, sub_query, prior_results=prior_results, budget=budget)
+        return await self.run_step(agent_name, sub_query, run)
 
     async def _run_subtask(
         self,
@@ -2369,74 +2432,13 @@ class AsyncSupervisor(_SpawnMixin):
             if self.verbose:
                 _log_result(result)
             return result
+        async def attempt(query: str) -> Any:
+            budget_kw = {"_budget": budget} if budget is not None and accepts_budget(initialize) else {}
+            if asyncio.iscoroutinefunction(initialize):
+                return await initialize(query, **budget_kw)
+            return await asyncio.to_thread(initialize, query, **budget_kw)
 
-        attempts = self.max_subtask_retries + 1
-        query = dispatched_query
-        last_error = ""
-        result: Optional[SubtaskResult] = None
-        last_result: Optional[SubtaskResult] = None
-        for attempt in range(1, attempts + 1):
-            try:
-                budget_kw = {"_budget": budget} if budget is not None and accepts_budget(initialize) else {}
-                if asyncio.iscoroutinefunction(initialize):
-                    completion = await initialize(query, **budget_kw)
-                else:
-                    completion = await asyncio.to_thread(initialize, query, **budget_kw)
-                candidate = SubtaskResult(
-                    agent=agent_name, query=sub_query, content=completion.content,
-                    output=getattr(completion, "output", None),
-                    outcome=_outcome_of(completion),
-                    progress=_progress_of(completion),
-                )
-            except Exception as e:
-                last_error = str(e)
-                last_result = None
-                if self.verbose:
-                    print(
-                        f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
-                        f"attempt {attempt}/{attempts} failed: {last_error}"
-                        f"{_C_RESET}"
-                    )
-                if attempt < attempts:
-                    query = _augment_query_with_error(
-                        dispatched_query, last_error, attempt,
-                    )
-                continue
-
-            if candidate.outcome != OUTCOME_DONE:
-                ok, reason = False, _unfinished_reason(candidate.outcome)
-            else:
-                ok, reason = self._evaluate_success(candidate)
-            if ok:
-                result = candidate
-                break
-            last_result = candidate
-            last_error = f"did not meet success criteria: {reason}"
-            if candidate.outcome in (OUTCOME_OUT_OF_TIME, OUTCOME_OUT_OF_BUDGET):
-                break          # the shared budget is spent; another attempt cannot help
-            if self.verbose:
-                print(
-                    f"{_C_ERROR}[supervisor.retry <- {agent_name}] "
-                    f"attempt {attempt}/{attempts} rejected: {reason}"
-                    f"{_C_RESET}"
-                )
-            if attempt < attempts:
-                if candidate.outcome == OUTCOME_ITERATION_LIMIT:
-                    query = _augment_query_with_iteration_limit(
-                        dispatched_query, candidate.content, attempt,
-                    )
-                else:
-                    query = _augment_query_with_unmet_criteria(
-                        dispatched_query, reason, attempt,
-                    )
-        if result is None:
-            if last_result is not None:
-                last_result.error = last_error
-                result = last_result
-            else:
-                result = SubtaskResult(
-                    agent=agent_name, query=sub_query, content="", error=last_error,
-                )
+        result = await self._attempts(attempt, agent_name, sub_query, dispatched_query)
         if self.verbose:
             _log_result(result)
         return result
@@ -2656,144 +2658,6 @@ class AsyncSupervisor(_SpawnMixin):
                 await asyncio.gather(*running, return_exceptions=True)
             running.clear()
 
-    async def _astream_round(self, user_task: str, *, save_result: bool = True,
-                             seed: Optional[OperatorChannel] = None):
-        """One plan / dispatch / synthesize round, as an async stream of events. See
-        ``Supervisor._stream_round``. Concurrent-dispatch mode (``sequential=False``) yields
-        ``subtask_result`` events as each sub-task finishes, so the UI sees whichever
-        completes first, not the plan order."""
-        self._spawn_run_policy = self._new_spawn_policy()
-        budget = RunBudget.start(self.persistence.max_minutes) if self.persistence is not None else None
-        self._spawn_run_policy.budget = budget        # delegate falls back to it (see SpawnPolicy)
-        self._operator = self._new_operator_channel()
-        self._spawn_run_policy.operator = self._operator
-        if self._operator is not None:
-            self._operator.budget = budget            # waiting on the operator pauses the deadline
-        if self._operator is not None and seed is not None:
-            self._operator.seed_from(seed)
-        self._run_memory = self._new_run_memory()
-        if self._operator is not None:
-            self._operator.memory = self._run_memory
-            if seed is not None and self._run_memory is not None:
-                for question, _answer in seed._answers:       # OPERATOR ANSWERS already has these
-                    self._run_memory.note_answered(question)
-        self._patience = (PersistentRun(self.persistence, user_task, budget=budget, verbose=self.verbose)
-                          if budget is not None else None)
-        yield {"type": "plan_start"}
-        try:
-            plan = await self._plan(user_task)
-        except (CostBudgetExceeded, BudgetExpired) as e:
-            if self.persistence is None:
-                raise
-            stopped = _stopped_before_planning(user_task, e)
-            stopped.asked = self._asked_records()
-            stopped.memory = self._memory_records()
-            for ev in self._drain_operator_events():
-                yield ev
-            spent = budget_event(stopped.outcome)
-            yield spent
-            if self.verbose:
-                _log_budget(spent)
-            yield {"type": "final", "content": stopped.content}
-            yield {"type": "completion", "result": stopped}
-            return
-        for ev in self._drain_operator_events():
-            yield ev
-
-        if not plan:
-            if self.verbose:
-                _log_no_plan()
-            result = SupervisorResult(
-                query=user_task,
-                content="Supervisor failed to produce a valid plan.",
-                plan=[], subtasks=[],
-                outcome=OUTCOME_STUCK,
-                asked=self._asked_records(),
-                memory=self._memory_records(),
-            )
-            yield {"type": "final", "content": result.content}
-            yield {"type": "completion", "result": result}
-            return
-
-        yield {"type": "plan", "plan": plan}
-        if self.verbose:
-            _log_plan(plan)
-
-        subtask_results: List[SubtaskResult] = []
-        results_by_id: Dict[str, SubtaskResult] = {}
-        budget_reason: Optional[str] = None
-        with _per_run_agents(self), \
-                attach_delegation([s.runner for s in self.agents.values()], self._spawn_policy()), \
-                attach_ask_user({n: s.runner for n, s in self.agents.items()}, self._operator), \
-                apply_persistence([s.runner for s in self.agents.values()], self.persistence):
-            plan_run = self._run_plan(plan, subtask_results, results_by_id, budget)
-            try:
-                async for event in plan_run:
-                    yield event
-            finally:
-                await plan_run.aclose()
-            if self.persistence is not None:
-                stagnant = 0
-                round_no = 1
-                while True:
-                    unresolved = [r for r in subtask_results if _result_failed(r)]
-                    if not unresolved:
-                        break
-                    budget_reason = _budget_reason(budget, subtask_results)
-                    if budget_reason or stagnant >= self.persistence.max_replans:
-                        break
-                    try:
-                        recovery = await self._plan_recovery(user_task, subtask_results, round_no + 1)
-                    except (CostBudgetExceeded, BudgetExpired) as e:
-                        budget_reason = _budget_outcome_of(e)
-                        break
-                    if not recovery:
-                        break
-                    round_no += 1
-                    yield {"type": "replan", "round": round_no,
-                           "unresolved": [r.step_id for r in unresolved], "plan": recovery}
-                    if self.verbose:
-                        _log_replan(round_no, unresolved)
-                    plan.extend(recovery)
-                    plan_run = self._run_plan(recovery, subtask_results, results_by_id, budget)
-                    try:
-                        async for event in plan_run:
-                            yield event
-                    finally:
-                        await plan_run.aclose()
-                    stagnant = 0 if _resolve_replaced(recovery, subtask_results) else stagnant + 1
-
-        spent = budget_event(budget_reason)
-        if spent is not None:
-            yield spent
-            if self.verbose:
-                _log_budget(spent)
-        for ev in self._drain_operator_events():
-            yield ev
-        yield {"type": "synthesize_start"}
-        persistent = self.persistence is not None
-        unresolved = [r for r in subtask_results if _result_failed(r)] if persistent else []
-        shown = [r for r in subtask_results if not r.superseded] if persistent else list(subtask_results)
-        final = await self._synthesize(user_task, shown, unresolved=unresolved)
-        if self.verbose:
-            _log_final(final)
-
-        outcome = _supervisor_outcome(subtask_results, budget_reason)
-        if (save_result and self._run_memory is not None and outcome == OUTCOME_DONE
-                and not self._synth_fell_back and str(final).strip()):
-            await asyncio.to_thread(self._run_memory.remember_result, user_task, final)
-
-        result = SupervisorResult(
-            query=user_task, content=final,
-            subtasks=list(subtask_results), plan=plan,
-            outcome=outcome,
-            spawned=list(self._spawn_policy().run.records),
-            asked=self._asked_records(),
-            memory=self._memory_records(),
-        )
-        yield {"type": "final", "content": final}
-        yield {"type": "completion", "result": result}
-
     async def astream(self, user_task: str):
         """Async event stream. Same event shapes as ``Supervisor.stream``, including the
         ``checkpoint`` and ``round`` events of ``ask_when_done`` / ``follow_up``.
@@ -2802,59 +2666,9 @@ class AsyncSupervisor(_SpawnMixin):
         ``subtask_result`` events as each sub-task finishes -- so the
         UI sees whichever completes first, not the plan order.
         """
-        # aclosing: closing this stream early must close the round generator too, so its
-        # running sub-tasks are cancelled before aclose() returns (``yield from`` did this
-        # implicitly in the sync version).
-        if not self.ask_when_done:
-            async with aclosing(self._astream_round(user_task)) as stream:
-                async for event in stream:
-                    yield event
-            return
-        rounds: List[Dict[str, Any]] = []
-        asked: List[Dict[str, Any]] = []
-        task, instruction, seed = user_task, user_task, None
-        while True:
-            number = len(rounds) + 1
-            if number > 1:
-                yield {"type": "round", "round": number, "query": instruction}
-                if self.verbose:
-                    print(f"{_C_PLAN}[supervisor.round] round {number}: {_cap_text(instruction, 120)}{_C_RESET}")
-            result: Optional[SupervisorResult] = None
-            async with aclosing(self._astream_round(task, save_result=number == 1, seed=seed)) as stream:
-                async for event in stream:
-                    if event["type"] == "completion":
-                        result = event["result"]
-                    else:
-                        yield event
-            assert result is not None, "a round must yield a completion event"
-            rounds.append({"round": number, "query": instruction, "content": result.content,
-                           "outcome": result.outcome})
-            asked.extend(result.asked)
-            channel = self._operator
-            if channel is None:                           # ask_user was cleared after construction: nobody to ask
-                next_step = None
-                break
-            if self.follow_up and number > 1 and number == 1 + self.max_follow_ups:
-                if self.verbose:
-                    print(f"{_C_PLAN}[supervisor.round] follow-up limit reached{_C_RESET}")
-                next_step = None
-                break
-            yield {"type": "checkpoint", "round": number, "outcome": result.outcome}
-            before = len(channel.records)
-            reply = await channel.acheckpoint(checkpoint_text(
-                result.content, _outcome_line(result), question_first=channel.builtin))
-            asked.extend(channel.records[before:])
-            for event in self._drain_operator_events():
+        async with aclosing(self._session_events(user_task)) as events:
+            async for event in events:
                 yield event
-            next_step = reply.text
-            more = (self.follow_up and number <= self.max_follow_ups
-                    and result.outcome != OUTCOME_OUT_OF_BUDGET and not is_stop_reply(reply.text))
-            if not more:
-                break
-            task, instruction, seed = _follow_up_task(user_task, rounds, reply.text), reply.text, channel
-        yield {"type": "completion", "result": result.model_copy(update={
-            "query": instruction, "asked": asked, "next_step": next_step,
-            "rounds": rounds if len(rounds) > 1 else []})}
 
     async def run(self, user_task: str) -> SupervisorResult:
         """Plan, execute sub-tasks concurrently, and synthesize.
@@ -2869,9 +2683,3 @@ class AsyncSupervisor(_SpawnMixin):
                 result = event["result"]
         assert result is not None, "AsyncSupervisor.astream must yield completion"
         return result
-
-    def __repr__(self) -> str:
-        return (
-            f"<AsyncSupervisor(agents={list(self.agents.keys())}, "
-            f"max_subtasks={self.max_subtasks})>"
-        )

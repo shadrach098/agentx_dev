@@ -16,6 +16,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Changed
 
+- **`Supervisor` and `AsyncSupervisor` share one core.** Planning, replanning, synthesis, a step's retries and the
+  rounds of a session are written once (they were two copies that had to be fixed twice). `AsyncSupervisor` awaits
+  real work; `Supervisor` runs the same code with sync calls, still in your thread, with no event loop, so it keeps
+  working in a notebook. Each class keeps its own way of running a plan: one step at a time, or side by side. No
+  change in behaviour: the same events and log lines.
+
 - **The public API is written down** in `docs/reference/public-api.md`: every name exported from `agentx_dev`, the
   stable import paths below it, what is not public (underscore names, the `agentx` command's Python modules), and
   how patch, minor and major versions may change it. A test fails when the package and the page disagree.
