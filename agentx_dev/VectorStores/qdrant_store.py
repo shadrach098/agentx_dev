@@ -86,7 +86,7 @@ class QdrantVectorStore:
         except ImportError as e:
             raise optional_import_error(
                 "QdrantVectorStore", e, modules=("qdrant_client",), pip="qdrant-client",
-                core=True,
+                extra="rag",
             ) from e
 
         # Reject mutually-exclusive backend selectors up front so the user

@@ -15,7 +15,13 @@ module stays imported until you do, which shows up as errors like
 
 ## Upgrading to the release after 3.7.0 (skills)
 
-**Nothing breaks.** The CHANGELOG lists no changed or removed API.
+**One install change; no changed or removed API.**
+
+- **Changed: a smaller base install.** `chromadb`, `qdrant-client`, `psycopg`, `pandas` and `openpyxl` are no
+  longer installed by `pip install agentx-dev` (chromadb alone is hundreds of megabytes). If you use
+  `ChromaVectorStore`, `QdrantVectorStore` or `PgVectorStore`, install `pip install -U "agentx-dev[rag]"`; for
+  spreadsheets in `Media`, `[excel]`; `[all]` has everything. An existing environment keeps the packages it already
+  has, so nothing breaks until you build a fresh one. A class whose package is missing says which extra to install.
 
 - **New:** `AgentRunner(..., skills=True)` and `AsyncAgentRunner(..., skills=True)` (or `skills=Skills("./folder")`) give the agent a `use_skill` tool and a short list of skills at the end of its system prompt. The default, `skills=None`, changes nothing: no new tool, no prompt change, no new files. See the [Skills guide](skills.md).
 - **New in `agentx`:** skills are on. The first time you start it after upgrading, it creates five skill folders in `~/.agentx/skills/`, and the agent gets one more tool, `use_skill`, which only reads. Its system prompt gains a short list of skills, so the first request after the upgrade is not served from a prompt cache built before it. `/skills` lists them, `/skills install <github link or folder>` installs more after showing you what it found, `/skills remove <name>` deletes one. Edit the created skills freely: they are never overwritten, and one you delete is not recreated.

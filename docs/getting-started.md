@@ -12,12 +12,14 @@ pip install agentx-dev            # OpenAI provider ships in the base install
 pip install agentx-dev[anthropic] # adds Claude support
 pip install agentx-dev[mcp]       # adds MCP client (stdio / sse / http)
 pip install agentx-dev[otel]      # OpenTelemetry adapter
+pip install agentx-dev[rag]       # Chroma, Qdrant and pgvector stores
+pip install agentx-dev[excel]     # spreadsheets in Media (pandas, openpyxl)
 pip install agentx-dev[all]       # everything above
 ```
 
-The vector-store clients (Chroma, Qdrant, psycopg) come with the base install. Install into the same
-Python that runs your code (`python -m pip install agentx-dev`); `pip` and `python` can point at
-different installs on one machine.
+The vector-store clients (Chroma, Qdrant, psycopg) come with `[rag]`, and pandas with `[excel]`; the in-memory
+`VectorStore` needs nothing. Install into the same Python that runs your code (`python -m pip install
+"agentx-dev[rag]"`); `pip` and `python` can point at different installs on one machine.
 
 If you want a coding assistant in your terminal before you write any code, the install also gives you the
 `agentx` command: set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, `cd` into a project and run `agentx`. It asks

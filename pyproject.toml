@@ -13,20 +13,16 @@ readme = "README.md"
 # Codebase uses PEP 604 union types (str | None) which require 3.10+.
 requires-python = ">=3.10"
 
-# Core runtime — every install pulls these. The three vector-store clients are
-# here (3.6.2) so ChromaVectorStore, QdrantVectorStore and PgVectorStore work
-# after a plain `pip install agentx-dev`. Provider SDKs and MCP stay optional
-# extras below so an OpenAI-only user doesn't pull in Anthropic + MCP.
+# Core runtime: what every install pulls, kept small. The vector-store clients
+# (chromadb alone is hundreds of megabytes) and pandas are extras again: [rag]
+# for ChromaVectorStore / QdrantVectorStore / PgVectorStore, [excel] for
+# spreadsheets in Media, [all] for everything. Each class that needs one says
+# which extra to install when it is missing.
 dependencies = [
     "openai>=1.0.0",       # ChatModel.GPT + native tool-calling API
     "pydantic>=2.0",       # StructuredTool schemas, output parsing, everywhere
     "PyYAML>=5.3.1",       # AgentType prompt templates (>=5.3.1 for CVE fixes)
     "rich>=10.0",          # console output in the Agents module
-    "pandas>=1.5",         # Media: Excel / OpenDocument sheets -> CSV text
-    "openpyxl>=3.1",       # pandas' reader for .xlsx
-    "chromadb>=0.4",       # ChromaVectorStore
-    "qdrant-client>=1.6",  # QdrantVectorStore
-    "psycopg[binary]>=3.1",  # PgVectorStore (psycopg v3)
     "prompt_toolkit>=3.0",   # the agentx command's input line
 ]
 
@@ -38,16 +34,15 @@ anthropic = ["anthropic>=0.36"]     # 3.1 needs Batch API + prompt cache
 mcp = ["mcp>=1.10,<2", "keyring>=24"]      # 2.x changed the client API; not supported yet
 # `pip install agentx-dev[otel]` — enables the OTelHook observability adapter
 otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
-# `pip install agentx-dev[chroma]` — ChromaVectorStore adapter. Since 3.6.2 the
-# vector-store clients are core dependencies; these three extras stay as aliases
-# so existing install commands keep working.
+# `pip install agentx-dev[rag]` — all three vector-store adapters
+rag = ["chromadb>=0.4", "qdrant-client>=1.6", "psycopg[binary]>=3.1"]
+# `pip install agentx-dev[chroma]` — ChromaVectorStore adapter only
 chroma = ["chromadb>=0.4"]
 # `pip install agentx-dev[qdrant]` — QdrantVectorStore adapter
 qdrant = ["qdrant-client>=1.6"]
 # `pip install agentx-dev[pgvector]` — PgVectorStore adapter (psycopg v3)
 pgvector = ["psycopg[binary]>=3.1"]
-# `pip install agentx-dev[excel]` — kept for older install commands; pandas
-# and openpyxl are core dependencies since 3.4.2
+# `pip install agentx-dev[excel]` — spreadsheets (.xlsx, .ods) in Media
 excel = ["pandas>=1.5", "openpyxl>=3.1"]
 # `pip install agentx-dev[dev]` — everything needed to run the tests
 dev = [

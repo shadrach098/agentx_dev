@@ -8,6 +8,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Changed
 
+- **A smaller base install.** `chromadb`, `qdrant-client`, `psycopg`, `pandas` and `openpyxl` moved from the base
+  dependencies to extras: `[rag]` (the three vector stores; `[chroma]`, `[qdrant]`, `[pgvector]` one at a time),
+  `[excel]` (spreadsheets in `Media`), `[all]`. A missing package's error names the extra. See Upgrading.
+
 - **The package says what it is.** The PyPI summary, keywords, README opening, docs index and docs site name both
   halves: the framework and the `agentx` terminal assistant, with helpers that run in parallel. New cookbook pattern
   40, "Let helpers work in parallel", for the terminal app and for `AsyncSupervisor` in your own code.

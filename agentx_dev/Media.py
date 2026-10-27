@@ -226,8 +226,8 @@ def _spreadsheet_to_text(src: Any, name: str, sheets: Any) -> str:
         import pandas as pd
     except ImportError as e:
         raise ImportError(
-            "Reading spreadsheets needs pandas and openpyxl, which install "
-            "with agentx-dev: pip install -U agentx-dev pandas openpyxl"
+            "Reading spreadsheets needs pandas and openpyxl: "
+            'python -m pip install "agentx-dev[excel]" (or: python -m pip install pandas openpyxl)'
         ) from e
     try:
         frames = pd.read_excel(src, sheet_name=sheets, dtype=object)

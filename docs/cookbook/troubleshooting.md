@@ -116,9 +116,9 @@ the first part, raise `max_chars=`, or — better for real datasets — let
 an agent load the file with pandas through `run_python`.
 
 **`ImportError: Reading spreadsheets needs pandas and openpyxl`**
-pandas and openpyxl install with agentx-dev since 3.4.2. If they're
-missing (an older install, or a different environment), run
-`pip install -U agentx-dev pandas openpyxl`. `.xls` files also need
+pandas and openpyxl come with the `[excel]` extra (they left the base
+install in the release after 3.7.0). Run `pip install "agentx-dev[excel]"`
+in the Python that runs your code. `.xls` files also need
 `xlrd`, and `.ods` files need `odfpy`.
 
 **`ValueError: Word files aren't accepted by GPT or Claude`** (or PowerPoint, or archives)

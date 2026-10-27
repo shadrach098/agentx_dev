@@ -132,7 +132,7 @@ class TestSpreadsheets:
         monkeypatch.setitem(sys.modules, "pandas", None)
         path = tmp_path / "sales.xlsx"
         path.write_bytes(b"PK")
-        with pytest.raises(ImportError, match="pip install -U agentx-dev pandas openpyxl"):
+        with pytest.raises(ImportError, match=r"agentx-dev\[excel\]"):
             Media.from_path(path)
 
     def test_real_xlsx_round_trip(self, tmp_path):

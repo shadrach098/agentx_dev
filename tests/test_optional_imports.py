@@ -112,9 +112,9 @@ def make_mcp_http():
 
 
 CASES = [
-    ("chroma", make_chroma, ("chromadb",), "pip install --upgrade agentx-dev"),
-    ("qdrant", make_qdrant, ("qdrant_client",), "pip install --upgrade agentx-dev"),
-    ("pgvector", make_pg, ("psycopg", "psycopg2"), "pip install --upgrade agentx-dev"),
+    ("chroma", make_chroma, ("chromadb",), 'agentx-dev[rag]'),
+    ("qdrant", make_qdrant, ("qdrant_client",), 'agentx-dev[rag]'),
+    ("pgvector", make_pg, ("psycopg", "psycopg2"), 'agentx-dev[rag]'),
     ("claude", make_claude, ("anthropic",), 'agentx-dev[anthropic]'),
     ("otel", make_otel, ("opentelemetry",), 'agentx-dev[otel]'),
     ("mcp-stdio", make_mcp_stdio, ("mcp",), 'agentx-dev[mcp]'),

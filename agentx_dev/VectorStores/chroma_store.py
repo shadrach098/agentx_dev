@@ -56,7 +56,7 @@ class ChromaVectorStore:
             import chromadb
         except ImportError as e:
             raise optional_import_error(
-                "ChromaVectorStore", e, modules=("chromadb",), pip="chromadb", core=True,
+                "ChromaVectorStore", e, modules=("chromadb",), pip="chromadb", extra="rag",
             ) from e
 
         self._embeddings = embeddings
