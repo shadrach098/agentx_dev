@@ -228,6 +228,64 @@ class TestTheAgentCannotAddServers:
         assert not target.exists()
 
 
+@needs_mcp
+class TestReload:
+    """/mcp reload reads mcp.json again and reconnects with the saved sign-ins, without a restart."""
+
+    def app(self, tmp_path):
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(), width=400, mode="auto")
+        app.model = app.model_factory(None, {})
+        app._start_fresh()
+        app._user_env_reader = lambda: {}
+        return app, out, home
+
+    def test_a_server_added_to_the_file_by_hand_is_connected_and_its_tools_reach_the_agent(self, tmp_path):
+        app, out, home = self.app(tmp_path)
+        try:
+            run_command(app, "/mcp reload")
+            assert "No MCP servers in" in out.getvalue()
+            save_servers(home, {"echo": echo_config()})
+            run_command(app, "/mcp reload")
+            text = out.getvalue()
+            assert "MCP servers reloaded:" in text and "echo  - connected, 3 tools" in text
+            assert "echo__add" in [t.name for t in app.session.runner.tools]
+            save_servers(home, {})                                   # taken out of the file by hand
+            run_command(app, "/mcp refresh")
+            assert not any(t.name.startswith("echo__") for t in app.tools)
+        finally:
+            app.mcp.close()
+
+    def test_one_server_by_name_and_an_unknown_name(self, tmp_path):
+        app, out, home = self.app(tmp_path)
+        try:
+            save_servers(home, {"echo": echo_config()})
+            run_command(app, "/mcp reload echo")
+            assert "echo  - connected" in out.getvalue()
+            run_command(app, "/mcp reload nope")
+            assert "No MCP server named 'nope'" in out.getvalue()
+        finally:
+            app.mcp.close()
+
+    def test_a_variable_saved_after_the_start_is_found(self, tmp_path):
+        app, out, home = self.app(tmp_path)
+        try:
+            config = echo_config()
+            config.args = [*config.args, "${AGENTX_TEST_SAVED}"]
+            save_servers(home, {"echo": config})
+            app._user_env_reader = lambda: {"AGENTX_TEST_SAVED": "--anything"}
+            run_command(app, "/mcp reload")
+            assert app.mcp.env.get("AGENTX_TEST_SAVED") == "--anything"
+            assert "is not set in the environment" not in out.getvalue()
+        finally:
+            app.mcp.close()
+
+
+def test_the_saved_windows_variables_are_a_plain_dict():
+    from agentx_dev.cli.mcp import windows_user_env
+    found = windows_user_env()
+    assert isinstance(found, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in found.items())
+
+
 class TestCommandWords:
     def test_backslashes_stay_and_quotes_group(self):
         assert _words(r'add x -- "C:\Program Files\node.exe" C:\a\b.js') == \

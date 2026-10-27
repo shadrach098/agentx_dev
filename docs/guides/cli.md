@@ -333,7 +333,16 @@ to plant one.
 /mcp login flightclaw                                      # sign in in the browser
 /mcp logout flightclaw                                     # delete the saved sign-in
 /mcp remove flightclaw                                     # delete the server (asks first)
+/mcp reload                                                # read mcp.json again and reconnect them all
+/mcp reload github                                         # ... or one (also /mcp refresh)
 ```
+
+`/mcp reload` is for when something changed while agentx was running: you edited `~/.agentx/mcp.json` by hand, a
+server dropped, a sign-in finished after agentx stopped waiting, or you set a key a server needs. It reconnects with
+the saved sign-ins (it never opens the browser), drops servers no longer in the file, and gives the conversation the
+new tools without losing it. On Windows it also reads the variables saved for your user since agentx started (with
+`setx` or the Environment Variables dialog), which a running program otherwise does not see, so a `${GITHUB_MCP_TOKEN}`
+set after the start is found.
 
 Servers are kept in `~/.agentx/mcp.json` and connected when `agentx` starts; one that does not answer within 20
 seconds is reported and skipped. A server run on your computer is asked about when you add it (it runs each time
@@ -389,7 +398,7 @@ again when the server is reconnected; a new tool the server adds later is sorted
 the server's own word, so add only servers you trust. Your settings still apply on top: a deny rule such as
 `"flightclaw__cancel_order"` refuses a tool in every case, and an allow rule such as `"flightclaw__*"` lets all of a
 server's tools run without asking. What a tool returns is marked as data from an outside server, cut at
-30,000 characters. `/mcp add`, `/mcp remove`, `/mcp login` and `/mcp logout` change the tools of the conversation
+30,000 characters. `/mcp add`, `/mcp remove`, `/mcp login`, `/mcp logout` and `/mcp reload` change the tools of the conversation
 you are in, without losing it. MCP needs `pip install "agentx-dev[mcp]"` (the `mcp` package 1.10 or later, below
 2.0: the 2.x line changed its client interface and is not supported yet).
 
@@ -430,7 +439,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/skills [install <link>\|remove <name>\|use <name> ...]` | List the skills the agent can read (each is also a `/name` command in the pop-up, e.g. `/changing-files rename the helper`), or add one from a `https://github.com/<owner>/<repo>` link or a folder (you are shown what it contains and asked first), or remove one. See [Skills](#skills). | `/skills install https://github.com/obra/superpowers` |
 | `/memory [words]` | Show the project notes kept for later (how many, how they are searched, the newest), or search them. See [Notes and recall](#notes-and-recall). | `/memory login redirect` |
 | `/usage` | Show the tokens used this session (requests, input and output tokens, how much of the input came from the provider's cache, per model when a team used others) and by the last turn, and the token limit. | `/usage` |
-| `/mcp` | List your MCP servers and their state; `/mcp add <name> <url>`, `/mcp add <name> -- <command> [args]`, `/mcp remove`, `/mcp login`, `/mcp logout <name>`. See [MCP servers](#mcp-servers). | `/mcp add flightclaw https://mcp.flightclaw.com/mcp` |
+| `/mcp` | List your MCP servers and their state; `/mcp add <name> <url>`, `/mcp add <name> -- <command> [args]`, `/mcp remove`, `/mcp login`, `/mcp logout <name>`, `/mcp reload [name]`. See [MCP servers](#mcp-servers). | `/mcp add flightclaw https://mcp.flightclaw.com/mcp` |
 | `/fullscreen [on\|off]` | Show whether full-screen mode is on, or turn it on or off from the next start (saved as `"fullscreen"` in `~/.agentx/settings.json`). See [Full-screen mode](#full-screen-mode). | `/fullscreen on` |
 | `/limit [tokens]` | Show or set how many tokens one message may use before agentx asks whether to go on (`0` for no limit). See [The token limit](#the-token-limit). | `/limit 300k` |
 | `/exit` | Save the conversation and leave (Ctrl+D does the same). | `/exit` |

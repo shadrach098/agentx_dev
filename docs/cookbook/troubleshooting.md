@@ -344,8 +344,9 @@ The server wants you to sign in. Run `/mcp login <name>`; the browser opens. It 
 `agentx` starts.
 
 **`MCP <name>: not connected: ${KEY} is not set in the environment`**
-`~/.agentx/mcp.json` names an environment variable for a key or a header that is not set. Set it and start
-`agentx` again.
+`~/.agentx/mcp.json` names an environment variable for a key or a header that is not set. Set it, then
+`/mcp reload` (on Windows a variable saved with `setx` or the Environment Variables dialog is found without a restart;
+elsewhere, or for one set only in another terminal, start `agentx` again from a terminal that has it).
 
 **`/mcp login` says the address is in use (port 33418)**
 Another program, or another `agentx` signing in, is using the port the sign-in page sends the browser back to.

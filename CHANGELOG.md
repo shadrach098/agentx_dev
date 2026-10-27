@@ -49,6 +49,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **`agentx`: `/mcp reload [name]`** (also `/mcp refresh`): reads `~/.agentx/mcp.json` again and reconnects every
+  server (or one) with the saved sign-ins, never opening the browser; servers taken out of the file are dropped and
+  the conversation gets the new tools. On Windows it also reads the user's saved environment variables, so a key set
+  with `setx` after the start is found. `MCPManager.reload(name=None, env=None)`.
 - **`agentx`: full-screen mode** (`agentx --fullscreen`, `/fullscreen on|off`, `"fullscreen": true` in
   `~/.agentx/settings.json`; off by default). The welcome box, the input and the status line stay put while only the
   conversation scrolls (mouse wheel, PgUp / PgDn, Ctrl+End). Questions are asked above the input; a message typed

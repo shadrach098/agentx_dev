@@ -391,6 +391,12 @@ grep it for the part you need, or read a part with offset and limit"); and each 
 used one token limit's worth (at least 100,000). See
 [Each step's limits](../guides/cli.md#each-steps-limits).
 
+## Do I have to restart agentx after an MCP sign-in or a change to mcp.json? *(next release)*
+
+No. `/mcp login <name>` reconnects that server when the sign-in is done, and `/mcp reload` (or `/mcp reload <name>`)
+reads `~/.agentx/mcp.json` again and reconnects with the saved sign-ins, keeping your conversation. On Windows it also
+finds a key you saved with `setx` after agentx started.
+
 ## Can the header and the input stay put while the conversation scrolls? *(next release)*
 
 Yes, in full-screen mode: `agentx --fullscreen` for one run, or `/fullscreen on` to keep it from the next start. Only

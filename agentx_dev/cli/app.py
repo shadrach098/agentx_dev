@@ -23,7 +23,8 @@ from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_
 from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, compact, needs_compaction
 from agentx_dev.Runner.Trim import TrimPolicy, trim_tool_results
 from agentx_dev.cli.context import build_addendum
-from agentx_dev.cli.mcp import INSTALL_HINT, KINDS, MCPManager, ServerConfig, config_path, valid_name
+from agentx_dev.cli.mcp import (INSTALL_HINT, KINDS, MCPManager, ServerConfig, config_path, valid_name,
+                               windows_user_env)
 from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events, summary_entry_text
 from agentx_dev.cli.recall import ProjectMemory, auto_block, choose_embeddings, make_recall_tool, worth_a_note
 from agentx_dev.cli.models import (ModelError, build_team_models, choose_model, describe_prompt, is_auto_note,
@@ -219,6 +220,7 @@ class ChatApp:
         self._watch_mode_changes()
         self.progress = Progress(console)
         self.fullscreen = False                    # set by main when agentx runs in full-screen mode
+        self._user_env_reader: Callable[[], Mapping[str, str]] = windows_user_env     # for /mcp reload
         self.progress.board = self._board
         self._team_running: List[str] = []   # the helpers whose steps are running (several when they only read)
         self._team_rows: Dict[int, Any] = {}  # slot -> StepStatus of each running step, drawn above the spinner
@@ -928,6 +930,40 @@ class ChatApp:
         self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
         if status.startswith("connected"):
             self._note_new_mcp_tools(name, quiet_if_none=True)
+        self._refresh_mcp_tools()
+
+    def mcp_reload(self, name: Optional[str] = None) -> None:
+        """``/mcp reload [name]``: read ~/.agentx/mcp.json again and reconnect (with the saved sign-ins; no browser),
+        then give the agent the tools. On Windows the variables saved for the user since agentx started (setx) are
+        read too, so a ``${VAR}`` set after the start is found."""
+        manager = self._mcp_manager()
+        env = dict(self.env)
+        try:
+            saved = self._user_env_reader()
+        except Exception:
+            saved = {}
+        for key, value in saved.items():
+            env.setdefault(key, value)                 # what this run already has wins
+        self.progress.start("Reconnecting MCP servers")
+        try:
+            statuses = manager.reload(name, env=env)
+        finally:
+            self.progress.stop()
+        for problem in manager.problems:
+            self.error(self._safe(problem, 300))
+        if name is not None and not statuses:
+            self.error(f"No MCP server named {self._safe(name, 40)!r}. /mcp lists them.")
+            return
+        if not statuses:
+            self.notice(f"No MCP servers in {self._safe(config_path(self.home), 300)}. Add one with /mcp add.")
+            self._refresh_mcp_tools()
+            return
+        lines = ["MCP servers reloaded:"]
+        lines += [f"  {self._safe(server, 40)}  - {self._safe(status, 200)}" for server, status in statuses.items()]
+        self.notice("\n".join(lines))
+        for server, status in statuses.items():
+            if status.startswith("connected"):
+                self._note_new_mcp_tools(server, quiet_if_none=True)
         self._refresh_mcp_tools()
 
     def mcp_logout(self, name: str) -> None:

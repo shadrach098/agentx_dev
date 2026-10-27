@@ -253,7 +253,7 @@ def _fullscreen(ctx: Any, arg: str) -> None:
 
 MCP_USAGE = ("Usage: /mcp | /mcp add <name> <url> [--sse] | /mcp add <name> -- <command> [args...] | "
              "/mcp tools <name> | /mcp allow <name> <tool...|read-only|all> | /mcp ask <name> <tool...|all> | "
-             "/mcp remove <name> | /mcp login <name> | /mcp logout <name>")
+             "/mcp remove <name> | /mcp login <name> | /mcp logout <name> | /mcp reload [name]")
 
 
 def _words(arg: str) -> List[str]:
@@ -296,6 +296,9 @@ def _mcp(ctx: Any, arg: str) -> None:
     if sub == "tools" and len(rest) == 1:
         ctx.show_mcp_tools(rest[0])
         return
+    if sub in ("reload", "refresh", "reconnect") and len(rest) <= 1:
+        ctx.mcp_reload(rest[0] if rest else None)
+        return
     if sub in ("allow", "ask") and len(rest) >= 2:
         ctx.mcp_allow(rest[0], rest[1:], sub == "allow")
         return
@@ -328,7 +331,7 @@ COMMANDS = (
     Command("skills", "List the skills, or add one: /skills [install <link>|remove <name>]", _skills),
     Command("memory", "Show the project notes kept for later, or search them: /memory [words]", _memory),
     Command("usage", "Show the tokens used this session, per model, and by the last turn", _usage),
-    Command("mcp", "MCP servers: list, or /mcp add <name> <url>, remove, login, logout <name>", _mcp),
+    Command("mcp", "MCP servers: list, or /mcp add <name> <url>, remove, login, logout <name>, reload", _mcp),
     Command("limit", "Show or set how many tokens one message may use before agentx asks: /limit [tokens]", _limit),
     Command("fullscreen", "Keep the header and input fixed while the conversation scrolls: /fullscreen [on|off]",
             _fullscreen),

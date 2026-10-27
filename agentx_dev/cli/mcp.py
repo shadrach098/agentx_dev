@@ -17,7 +17,9 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import os
 import re
+import sys
 import threading
 import time
 import webbrowser
@@ -508,6 +510,30 @@ class _Live:
     task: Any                 # asyncio.Task
 
 
+def windows_user_env() -> Dict[str, str]:
+    """The environment variables saved for the user on Windows (``setx``, the Environment Variables dialog). A
+    running program does not see one saved after it started; ``/mcp reload`` reads them here. Empty elsewhere, or
+    when they cannot be read."""
+    if sys.platform != "win32":
+        return {}
+    try:
+        import winreg
+        found: Dict[str, str] = {}
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            index = 0
+            while True:
+                try:
+                    name, value, kind = winreg.EnumValue(key, index)
+                except OSError:
+                    break
+                index += 1
+                if isinstance(value, str):
+                    found[str(name)] = os.path.expandvars(value) if kind == winreg.REG_EXPAND_SZ else value
+        return found
+    except Exception:
+        return {}
+
+
 class MCPManager:
     """Connects the user's MCP servers and hands out their tools as ordinary (synchronous) tools.
 
@@ -675,6 +701,24 @@ class MCPManager:
         for thread in threads:
             thread.join(CONNECT_TIMEOUT_SEC + 20)
         return {name: self.status.get(name, "not connected: no answer in time") for name in self.servers}
+
+    def reload(self, name: Optional[str] = None, env: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+        """``/mcp reload``: read mcp.json again and reconnect every server (or only ``name``) with the sign-ins already
+        saved; a browser is never opened. ``env`` replaces the variables ``${VAR}`` is filled from. Servers no longer
+        in the file are disconnected. Returns the status of each server reconnected ({} for an unknown ``name``)."""
+        if env is not None:
+            self.env = dict(env)
+        servers, self.problems = load_servers(self.home)
+        if name is not None:
+            if name not in servers:
+                return {}
+            self.servers[name] = servers[name]
+            return {name: self.connect(name)}
+        for gone in [known for known in self.servers if known not in servers]:
+            self._submit(self._close(gone)).result(10)
+            self.status.pop(gone, None)
+        self.servers = servers
+        return self.connect_all()
 
     def login(self, name: str) -> str:
         """Sign in to ``name`` in the browser and connect it. The only place a browser is opened."""
