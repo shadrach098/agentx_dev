@@ -2,8 +2,8 @@
 
 name = "agentx-dev"
 version = "3.7.0"
-description = "Build LLM agents in Python, and get agentx: a Claude Code-style coding assistant for your terminal. GPT and Claude, permission-gated tools, skills, MCP, team jobs with helpers that run in parallel, RAG, memory and evals."
-keywords = ["llm", "agents", "ai-agents", "multi-agent", "coding-assistant", "terminal", "cli", "claude-code",
+description = "Build LLM agents in Python, and get agentx: a coding assistant for your terminal. GPT and Claude, permission-gated tools, skills, MCP, team jobs with helpers that run in parallel, RAG, memory and evals."
+keywords = ["llm", "agents", "ai-agents", "multi-agent", "coding-assistant", "terminal", "cli",
             "openai", "anthropic", "claude", "gpt", "mcp", "rag", "tool-calling", "supervisor", "skills"]
 authors = [{ name = "Bruce-Arhin Shadrach", email = "brucearhin098@gmail.com" }]
 # An SPDX expression plus the file (the table form is deprecated and will stop building)

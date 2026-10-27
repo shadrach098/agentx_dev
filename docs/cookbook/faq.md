@@ -83,7 +83,7 @@ cost limit is reached. Set a cost cap with
 output_price_per_1k=...)` too. See
 [Long-running agents](../guides/long-running-agents.md).
 
-## Can the supervisor create its own sub-agents, like Claude Code's Task tool? *(3.6)*
+## Can the supervisor create its own sub-agents? *(3.6)*
 
 Yes. Give the Supervisor a `spawn_config`:
 `Supervisor(..., spawn_config=SpawnConfig(enabled=True, capabilities={"web", "files_read"}))`.
@@ -401,12 +401,11 @@ finds a key you saved with `setx` after agentx started.
 
 Yes, in full-screen mode: `agentx --fullscreen` for one run, or `/fullscreen on` to keep it from the next start. Only
 the conversation scrolls (mouse wheel, PgUp / PgDn); hold Shift to select text with the mouse. The normal screen
-scrolls like any terminal program, Claude Code included. See [Full-screen mode](../guides/cli.md#full-screen-mode).
+scrolls like any terminal program. See [Full-screen mode](../guides/cli.md#full-screen-mode).
 
 ## Can the team make its own helpers? *(next release)*
 
-Yes. Besides `explorer`, `coder` and `runner`, the supervisor may make a helper for a step, like Claude Code's
-agents: a name for its job (`security-reviewer`), instructions, and tools picked from agentx's own gated tools
+Yes. Besides `explorer`, `coder` and `runner`, the supervisor may make a helper for a step: a name for its job (`security-reviewer`), instructions, and tools picked from agentx's own gated tools
 (never delete, move or another team). The plan shows each one and its tools before anything runs, and one that only
 reads runs beside other reading steps. It may run on any of your helper models (`/team-models`), and
 its name then shows which (`security-reviewer@gpt-6-luna`). Up to 6 per job. See
@@ -446,8 +445,8 @@ Yes. `/mcp add <name> <url>` (or `/mcp add <name> -- <command> [args]` for a pro
 its tools appear as `<name>__<tool>` for the agent and the team helpers. Tools the server marks read-only run without
 asking; the rest ask first. `/mcp tools <name>` lists them, `/mcp allow` and `/mcp ask` change one. A server that
 needs a sign-in: `/mcp login <name>` opens the browser, and the sign-in is kept in your system's credential store
-and renewed by itself. The agent cannot add a server or sign in on its own. Servers added with `claude mcp add`
-belong to Claude Code, not to `agentx`. See [MCP servers](../guides/cli.md#mcp-servers).
+and renewed by itself. The agent cannot add a server or sign in on its own. Servers added in another program's own MCP
+settings are not seen by `agentx`; add them here with `/mcp add`. See [MCP servers](../guides/cli.md#mcp-servers).
 
 ## How do I add the GitHub MCP server to `agentx`? *(next release)*
 

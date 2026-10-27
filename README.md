@@ -5,7 +5,7 @@ Two things in one install:
 1. **A framework for building LLM agents in Python.** Runners with permission-gated tools, skills, a Supervisor
    that plans multi-step work and runs independent steps **in parallel**, sub-agents, RAG, memory, MCP, evals,
    prompt caching and the Batch API. The same code runs on GPT and Claude.
-2. **`agentx`, a coding assistant for your terminal**, built on that framework, in the spirit of Claude Code. It
+2. **`agentx`, a coding assistant for your terminal**, built on that framework. It
    reads, edits and runs code in your project and asks before it changes anything. Big jobs go to a **team of
    helpers that work in parallel**: reading helpers side by side, and helpers the supervisor makes for the job
    (`security-reviewer`, `test-writer`). It connects MCP servers, keeps notes per project, and holds a token
@@ -68,8 +68,8 @@ runner = AgentRunner(model=llm, agent=AgentType.ReAct,
 | **Team jobs, faster and cheaper** | In `agentx`, explorer steps that do not depend on each other run side by side (up to 3); a step that edits or runs commands still runs alone, and every prompt still comes one at a time from the main thread. A helper that reads the same unchanged file whole a third time gets a note instead, each step may use one token limit's worth (at least 100,000) before it is told to report, and the team's report reaches the chat whole (up to 20,000 characters, was 6,000). The limit question takes `a`: go on and do not ask again in this message. |
 | **Full-screen mode** | `agentx --fullscreen` (or `/fullscreen on`): the welcome box, the input and the status line stay put while only the conversation scrolls (mouse wheel, PgUp / PgDn). Questions stay above the input, and you can type while the agent works. Off by default. |
 | **Looking around is one tree** | In `agentx`, skill reads, recall, reads and searches in a row are one tree (`● Skills  using-superpowers` / `├─ recall …  ⎿ Found 2 notes` / `└─ read_path …  ⎿ Read lines 1-60`), redrawn in place with a blinking yellow dot and the running step blinking white, then printed with a green dot. The agent's narration between them is not printed, and a skill's text never is. |
-| **Helpers in the background** | A team's helpers work like Claude Code's agents: their calls are not printed. A block above the spinner, redrawn in place, shows each running step (`├ explorer · security audit  Read 14 files · Searched 6 patterns  1m 12s · 38k tokens`); a finished step leaves one line (`✓ explorer · security audit  Done (20 tool uses · 41k tokens · 1m 30s)`) and the start of its report. `/team log` lists every call. |
-| **Helpers the supervisor makes** | Besides explorer, coder and runner, a team's supervisor may make a helper for a step, like Claude Code's agents: a name (`security-reviewer`), instructions, and tools from agentx's gated set (never delete, move or another team). It may run on any of your helper models (`security-reviewer@gpt-6-luna`). The plan shows it and its tools first; a reading one runs beside other readers. Up to 6 per job. |
+| **Helpers in the background** | A team's helpers work in the background: their calls are not printed. A block above the spinner, redrawn in place, shows each running step (`├ explorer · security audit  Read 14 files · Searched 6 patterns  1m 12s · 38k tokens`); a finished step leaves one line (`✓ explorer · security audit  Done (20 tool uses · 41k tokens · 1m 30s)`) and the start of its report. `/team log` lists every call. |
+| **Helpers the supervisor makes** | Besides explorer, coder and runner, a team's supervisor may make a helper for a step: a name (`security-reviewer`), instructions, and tools from agentx's gated set (never delete, move or another team). It may run on any of your helper models (`security-reviewer@gpt-6-luna`). The plan shows it and its tools first; a reading one runs beside other readers. Up to 6 per job. |
 | **An audit skill** | `auditing-a-project`: map the project, run its own checks, read it by area with explorers side by side, verify the findings in the code, then report Fix first / Medium / Low / Done well / Checks / Test gaps. `/auditing-a-project` starts one. |
 | **Input colours** | In `agentx`, the `/name` you type is coloured (command cyan, skill magenta, unknown red) and the selected row of the `/` pop-up is highlighted. |
 | **Notes and recall** | `agentx` writes a readable note per worthwhile turn to `.agentx/notes/` and indexes it (OpenAI embeddings with `OPENAI_API_KEY`, local search otherwise). The agent searches them with a `recall` tool, a fresh conversation starts with the closest ones, and `/memory [words]` shows or searches them. |
@@ -83,7 +83,7 @@ runner = AgentRunner(model=llm, agent=AgentType.ReAct,
 ## What's new in 3.7 — the `agentx` terminal assistant
 
 `pip install agentx-dev` now also installs `agentx`, a coding assistant for your
-terminal, like Claude Code but built on this framework. Run it in a project folder and ask for changes: it reads
+terminal, built on this framework. Run it in a project folder and ask for changes: it reads
 files, edits them and runs commands there, and asks you first. It works with GPT and Claude, from
 `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
 
@@ -123,7 +123,7 @@ Full notes: [docs/guides/upgrading.md](docs/guides/upgrading.md).
 
 ## What's new in 3.6 — sub-agents
 
-A Supervisor can now create its own helpers, like Claude Code's Task tool.
+A Supervisor can now create its own helpers.
 The planner defines a helper inline (its own instructions and tools), and a
 specialist can hand a side job to a fresh agent and get a short summary back.
 You set the most a helper may ever do, once.

@@ -1,6 +1,6 @@
 # Sub-agents
 
-A Supervisor can create its own helpers, the way Claude Code launches a sub-agent for a side job. There are two ways, and both go through one set of limits that you set once.
+A Supervisor can create its own helpers: a fresh sub-agent for a side job. There are two ways, and both go through one set of limits that you set once.
 
 - **The planner defines a helper inline.** When no specialist you registered fits a sub-task, the planner writes a new one into the plan: a name, its own instructions, and the tools it needs. The Supervisor builds it, runs the step on it, and discards it when the run ends.
 - **A specialist hands off part of its own work.** While working, a specialist can call a `delegate` tool. A fresh agent does the side job in a clean context and a short summary comes back, so the specialist's own context stays small.

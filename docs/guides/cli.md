@@ -19,7 +19,7 @@ Windows PowerShell: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`.
 
 Claude also needs its SDK: `pip install "agentx-dev[anthropic]"`. The OpenAI provider is in the base install. `python -m agentx_dev` starts the same program.
 
-The first time you start `agentx` in a folder it asks whether you trust it, like Claude Code:
+The first time you start `agentx` in a folder it asks whether you trust it:
 
 ```
 Accessing workspace:
@@ -488,7 +488,7 @@ Answering `a` ("don't ask again: all edits this session") at a helper's edit pro
 
 ### Helpers the supervisor makes
 
-Like Claude Code's agents, the supervisor may make a helper for one step when the step needs a focused role: a name for its job (`security-reviewer`, `payments-auditor`, `test-writer`), instructions saying what to find and report, and the tools it needs. The plan shows it before anything runs:
+The supervisor may make a helper for one step when the step needs a focused role: a name for its job (`security-reviewer`, `payments-auditor`, `test-writer`), instructions saying what to find and report, and the tools it needs. The plan shows it before anything runs:
 
 ```text
 Team plan:
@@ -520,7 +520,7 @@ Every helper has the `use_skill` tool and the list of the [skills](#skills) that
 
 ### What you see
 
-The helpers work in the background, the way Claude Code's agents do: their individual tool calls are not printed.
+The helpers work in the background: their individual tool calls are not printed.
 
 - The plan: `Team plan:` and a numbered list of the steps, each with the helper it is for and a short name (the step's id in words, such as `security audit`, or the first words of its task).
 - While steps run, a block above the spinner, redrawn in place, with one line per running step: who, which step, what it has done so far, how long it has run and the tokens its model replies have used.
