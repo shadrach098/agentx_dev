@@ -48,6 +48,7 @@ def _format_tool_for_prompt(tool) -> str:
 from agentx_dev.AutoSetup import get_auto_setup, ensure_initialized
 from agentx_dev.Config import config
 from agentx_dev.Observability import observability, EventType
+from agentx_dev.RunLog import RunLog
 
 _auto_setup = None  # populated lazily by _ensure_auto_setup()
 
@@ -128,6 +129,7 @@ class AsyncAgentRunner(PersistenceMixin):
         delegation: Optional[Any] = None,
         skills: Optional[Any] = None,
         trim_results: Optional[Any] = None,
+        log: Any = None,
     ):
         """Construct an ``AsyncAgentRunner``. Parameters mirror
         :class:`AgentRunner` -- see that docstring for the full details;
@@ -288,6 +290,8 @@ class AsyncAgentRunner(PersistenceMixin):
         # iteration cap and suspend the tool-result cache (see PersistenceMixin).
         self.persistence = persistence
         self._trim_policy = _coerce_trim_policy(trim_results)
+        self.log = RunLog.to(log)          # the run log (``log=``, as on AgentRunner); None: nothing is logged
+        self._log_run = None
         self.func: Dict[str, Callable] = self.registry.sync_std
         self.args: Dict[str, Dict] = self.registry.sync_struct
         self.async_func: Dict[str, Callable] = self.registry.async_std
@@ -519,15 +523,30 @@ class AsyncAgentRunner(PersistenceMixin):
         _budget: Optional[RunBudget] = None,
     ) -> AgentCompletion:
         self._begin_delegation_run()
-        if self.persistence is None:
-            return await self._initialize_core(
-                user_input, ChatHistory, stream, chat_history=chat_history,
-                output_schema=output_schema, media=media, state=None)
-        return await run_persistent_async(
-            self, user_input, _budget,
-            lambda state: self._initialize_core(
-                user_input, ChatHistory, stream, chat_history=chat_history,
-                output_schema=output_schema, media=media, state=state))
+        record = self.log.begin(user_input, model=self.model, agent=getattr(self, "agent_type", None)) \
+            if self.log is not None else None
+        self._log_run = record
+        try:
+            if self.persistence is None:
+                completion = await self._initialize_core(
+                    user_input, ChatHistory, stream, chat_history=chat_history,
+                    output_schema=output_schema, media=media, state=None)
+            else:
+                completion = await run_persistent_async(
+                    self, user_input, _budget,
+                    lambda state: self._initialize_core(
+                        user_input, ChatHistory, stream, chat_history=chat_history,
+                        output_schema=output_schema, media=media, state=state))
+        except BaseException as e:
+            if record is not None:
+                record.fail(e)
+            raise
+        finally:
+            if self._log_run is record:
+                self._log_run = None
+        if record is not None:
+            record.end(completion)
+        return completion
 
     async def _initialize_core(
         self,
@@ -659,8 +678,12 @@ class AsyncAgentRunner(PersistenceMixin):
         async def _model_call(factory):
             # Persistent runs wait out transient provider errors (429/5xx/timeouts).
             if state is None:
-                return await factory()
-            return await state.apatient(factory)
+                call = factory
+            else:
+                async def call():
+                    return await state.apatient(factory)
+            record = self._log_run
+            return await record.amodel_call(call) if record is not None else await call()
 
         # Remaining re-prompts for turns that produce prose but no action.
         nudge_budget = self.text_turn_nudges
@@ -780,6 +803,8 @@ class AsyncAgentRunner(PersistenceMixin):
                             cause=result,
                         )
                     is_error = isinstance(result, ToolError)
+                    if self._log_run is not None:
+                        self._log_run.tool(call["name"], call["input"], result, is_error)
                     # Verbose trace parity with text/FC mode — see sync
                     # AgentRunner for the rationale. Without these
                     # prints, bind_tools_natively runs show blank
@@ -1056,6 +1081,8 @@ class AsyncAgentRunner(PersistenceMixin):
                 logger.info(f"tool invoke: {action}({action_input})")
 
             tool_response = await self.Tool_Runner(action, action_input)
+            if self._log_run is not None:
+                self._log_run.tool(action, action_input, tool_response, isinstance(tool_response, ToolError))
             if self.verbose:
                 print(f"\x1B[32m[tool] Response: {str(tool_response)[:300]}\x1B[0m")
             else:

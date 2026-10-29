@@ -1,8 +1,10 @@
-# Evals harness *(3.1)*
+# Evals harness
 
 Regression tests for agents. Define input + assertions, run them
 through a runner factory, get a pass/fail report with per-case latency,
-tokens, tool errors, and cost.
+tokens, model calls and failed tool calls. It runs an `AgentRunner`, an
+`AsyncAgentRunner`, a `Supervisor` or an `AsyncSupervisor`, can run every
+case several times (models vary), and compares two saved reports.
 
 
 > **Both providers work.** Every `Claude()` in this page also works
@@ -48,12 +50,22 @@ print(report.summary())
 1. Calls `build_runner()` (the factory) to get a **fresh** runner —
    state doesn't leak between cases (auto_cache, memory, session
    counters).
-2. Snapshots `model.usage` before the run.
-3. Calls `runner.invoke(case.input)`.
-4. Runs each assertion callable; collects pass/fail + message.
-5. Computes deltas: `input_tokens`, `output_tokens`, `cache_read_tokens`.
-6. Counts tool errors from the completion's `tool_calls`.
-7. Records duration.
+2. Adds its own listener to the runner's [log](../concepts/observability.md#watching-one-runner-log)
+   (and to each specialist's, for a Supervisor), so it sees every model
+   call and every tool result, including tool calls that failed and that
+   the agent recovered from.
+3. Snapshots `usage` on every model involved (a Supervisor's planner and
+   its specialists').
+4. Runs the case: `runner.invoke(input)` for an `AgentRunner`,
+   `await runner.ainvoke(input)` for an `AsyncAgentRunner`,
+   `supervisor.run(input)` (awaited for an `AsyncSupervisor`). Async ones
+   run on their own event loop, in a worker thread when the caller already
+   has one running (a notebook).
+5. Runs each assertion callable; collects pass/fail + message.
+6. Computes deltas: `input_tokens`, `output_tokens`, `cache_read_tokens`,
+   and `counted_tokens` (cached input counted as a tenth, about what it is
+   billed at, as `agentx` and its benchmark count).
+7. Records duration, model calls and the failed tool calls.
 
 ## Assertion helpers
 
@@ -68,6 +80,25 @@ Every helper returns a callable `(AgentCompletion) -> (passed, message)`:
 | `tool_count(*, min=0, max=None)` | Tool call count within bounds |
 | `max_iterations(limit)` | Total steps `<=` limit |
 | `llm_judge(model, criterion)` | Judge model grades yes/no |
+| `outcome_is(*outcomes)` | The run ended one of these ways: `"done"` (the default), `"stuck"`, `"out_of_time"`, `"out_of_budget"`, `"iteration_limit"`; a Supervisor also has `"partial"` |
+| `output_field(name, expected=..., check=fn)` | The structured output (`output_schema=`) has the field, equal to `expected` and passing `check(value)` when given |
+| `used_skill(name)` | The agent opened that skill (`use_skill`) |
+| `used_agent(name)` | A Supervisor ran a step on that specialist |
+| `subtasks_ok()` | Every step a Supervisor ran finished without an error |
+
+`EvalCase(..., max_tool_errors=0)` also fails a case with more failed tool
+calls than that. It counts every failed call from the run log, so a run
+that hit errors and recovered still shows them; `called_tool` and
+`tool_count` see only the calls that worked.
+
+```python
+from agentx_dev import EvalCase, Supervisor, contains, used_agent, subtasks_ok, outcome_is
+
+cases = [EvalCase(name="research", input="Compare the three pricing pages",
+                  assertions=[used_agent("web"), subtasks_ok(), outcome_is("done"), contains("$")],
+                  max_tool_errors=2, tags=["supervisor"])]
+report = EvalRunner(lambda: Supervisor(model=Claude(), agents=my_agents, verbose=False)).run(cases)
+```
 
 ### `llm_judge` — open-ended quality checks
 
@@ -153,8 +184,9 @@ with open("eval-report.json", "w") as f:
 for result in report.results:
     print(result.case.name, result.passed, result.duration_sec)
     print(f"  tokens in/out: {result.input_tokens}/{result.output_tokens}")
-    print(f"  cache reads: {result.cache_read_tokens}")
-    print(f"  tool errors: {result.tool_error_count}")
+    print(f"  cache reads: {result.cache_read_tokens}, counted: {result.counted_tokens}")
+    print(f"  model calls: {result.model_calls}")
+    print(f"  failed tool calls: {result.tool_errors}")   # the tool names, one per failure
     if not result.passed:
         for line in result.assertion_lines:
             print(f"    - {line}")
@@ -172,9 +204,16 @@ Cases can live in disk files for version control:
   "expected_substrings": ["Paris"],
   "forbidden_substrings": ["Berlin"],
   "must_call_tools": [],
-  "max_iterations": 3
+  "max_iterations": 3,
+  "outcome": "done",
+  "max_tool_errors": 0,
+  "used_skills": [],
+  "output_fields": {"city": "Paris"},
+  "tags": ["smoke"]
 }
 ```
+
+For a Supervisor, `"used_agents": ["web"]` and `"subtasks_ok": true`.
 
 Multiple cases per file:
 
@@ -196,10 +235,35 @@ from agentx_dev import load_case_from_dict, load_cases_from_dir
 cases = load_cases_from_dir("tests/evals/")   # walks recursively
 ```
 
+## Repeats, tags and comparing
+
+Models vary from run to run, so one pass or fail is weak evidence. `repeat=3` runs every case three times; the
+summary shows each case's pass count (`[2/3] capital`) and its average time and counted tokens. `tags=` (on
+`EvalRunner` or `run`) keeps only the cases with one of those tags.
+
+```python
+report = EvalRunner(build_runner, repeat=3, tags=["smoke"]).run(cases)
+```
+
+Save reports with `report.to_dict()` (or `--json-out`) and compare two, before and after a change:
+
+```python
+from agentx_dev import compare_reports
+print(compare_reports(json.load(open("before.json")), json.load(open("after.json"))))
+```
+
+```text
+case      passed        counted tokens a run
+capital    3/3 -> 3/3       9400 -> 4700     -50%
+research   2/3 -> 3/3      84000 -> 61000    -27%
+all        5/6 -> 6/6
+```
+
 ## CLI
 
 ```bash
-python -m agentx_dev.Evals run tests/evals/ --config agent.yaml
+python -m agentx_dev.Evals run tests/evals/ --config agent.yaml --repeat 3 --tag smoke --json-out after.json
+python -m agentx_dev.Evals compare before.json after.json
 ```
 
 - Walks the directory for `*.eval.json` files.
@@ -208,6 +272,9 @@ python -m agentx_dev.Evals run tests/evals/ --config agent.yaml
 - Exits `0` on all-pass, `1` on any failure.
 - `--json-out report.json` writes structured output for CI.
 - `--pattern '*.regression.json'` overrides the glob.
+- `--repeat N` runs every case N times; `--tag T` (repeatable) keeps the cases with that tag.
+- `--log runs.jsonl` also writes every run's log there (see [the run log](../concepts/observability.md#watching-one-runner-log)).
+- `compare A.json B.json` shows two saved reports side by side.
 
 ## Wire into CI
 

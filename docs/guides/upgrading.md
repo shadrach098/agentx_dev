@@ -21,6 +21,11 @@ module stays imported until you do, which shows up as errors like
   4096: Opus 5.5 always thinks, and thinking counts toward the limit). Code that passes `model=` is unaffected. To
   keep the old behaviour, pass `Claude(model="claude-sonnet-4-6", max_tokens=4096)`. Opus 5.5 costs $4 / $20 per
   million tokens in / out (Sonnet 4.6: $3 / $15). `agentx` with only an Anthropic key and no model set now uses it.
+- **New:** `AgentRunner(..., log=True)` (or a file path, a `logging.Logger`, a function) logs each run step by
+  step; the default `log=None` changes nothing. The eval harness runs async runners and Supervisors, has new checks
+  (`outcome_is`, `output_field`, `used_skill`, `used_agent`, `subtasks_ok`, `max_tool_errors`), `repeat=`, `tags=`
+  and `compare_reports`. Existing eval code runs unchanged; `EvalReport.summary()` gains a `counted:` line, and
+  `tool_error_count` now counts failed tool calls (it was always 0).
 - **Fixed for the newest Claude models:** Opus 5.5, Sonnet 5.5 and Fable 5.1 refuse a forced tool choice, which
   structured output (`output_schema`, the answer parser) used. On those models the call is now sent with
   `tool_choice: auto` and a line asking for the tool; other models that refuse it are found from the error, once.

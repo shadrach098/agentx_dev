@@ -8,6 +8,20 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **`log=` on `AgentRunner` and `AsyncAgentRunner`: watch a run as it goes.** `log=True` prints one short line per
+  step to stderr; a file path appends JSON lines (`.jsonl`) or readable lines; a `logging.Logger` sends them to your
+  logging setup; a function receives each event. Lines: the start, each model call (time, tokens in, cached and
+  out), each tool result (ok or error, arguments and result cut short), and the end (outcome and totals) or the
+  error. Secrets are redacted, and a log that cannot be written never stops the run. New `RunLog` class
+  (`RunLog.chain` writes to several). See "Watching one runner" in the observability guide.
+- **The eval harness catches up.** `EvalRunner` runs an `AsyncAgentRunner`, a `Supervisor` or an `AsyncSupervisor`
+  as well as an `AgentRunner` (async ones from a notebook too); new checks `outcome_is`, `output_field`,
+  `used_skill`, `used_agent`, `subtasks_ok` and `EvalCase(max_tool_errors=)`, with the same fields in JSON cases;
+  `repeat=` runs each case several times (the summary shows `[2/3]`), `tags=` picks cases; results carry
+  `counted_tokens` (cached input as a tenth), `model_calls` and the failed tools; `compare_reports` and
+  `python -m agentx_dev.Evals compare a.json b.json` put two reports side by side; the CLI takes `--repeat`,
+  `--tag` and `--log`.
+
 - **Public extension points on `Supervisor` and `AsyncSupervisor`:** `prepare_plan(plan)` (change a plan before it
   runs), `run_step(agent_name, query, run)` (wrap or skip every step), `spawn_specialist(spec)` (build the helpers a
   plan defines your own way) and `planner_note` (text added to the planner's list of specialists). A planned helper's
@@ -45,6 +59,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **Evals: failed tool calls were never counted.** The count looked for results starting with "ToolError" in
+  `completion.tool_calls`, which lists only the calls that worked, so it was always 0. It now counts them from the
+  run log, recovered ones included.
 - **`agentx`: `/skills install` handles repositories with big demo files.** Only the folders holding a `SKILL.md`
   (or the folder the link names) are unpacked, so a repository's videos and docs no longer count: the download may
   be up to 100 MB, and a skill's own files up to 10 MB each (music, fonts), 50 MB in all.

@@ -1363,6 +1363,7 @@ class ToolRegistry:
 from agentx_dev.AutoSetup import get_auto_setup, ensure_initialized
 from agentx_dev.Config import config
 from agentx_dev.Observability import observability, EventType
+from agentx_dev.RunLog import RunLog
 
 _auto_setup = None  # populated lazily by _ensure_auto_setup()
 
@@ -1458,6 +1459,7 @@ class AgentRunner(PersistenceMixin):
         delegation: Optional[Any] = None,
         skills: Optional[Any] = None,
         trim_results: Optional[Any] = None,
+        log: Any = None,
     ):
         """Construct an ``AgentRunner``.
 
@@ -1630,6 +1632,16 @@ class AgentRunner(PersistenceMixin):
                 stubbed; an older word-for-word copy of a later result
                 is stubbed too). The saved history is not
                 changed. Default ``None``: nothing is trimmed.
+            log: See what the runner does while it runs. ``True``
+                prints one short line per step to stderr; a file path
+                appends to that file (JSON lines for ``.jsonl`` /
+                ``.json``, readable lines otherwise); a
+                ``logging.Logger`` sends readable lines to your logging
+                setup; a function receives each event as a dict. Lines:
+                the start, each model call (time, tokens), each tool
+                result (ok or error), and the end (outcome, totals).
+                Secrets are redacted and long text is cut. See
+                ``agentx_dev.RunLog``. Default ``None``: nothing.
 
         Raises:
             TypeError: If both ``Agent`` and ``agent`` are passed, if
@@ -1788,6 +1800,8 @@ class AgentRunner(PersistenceMixin):
         # iteration cap and suspend the tool-result cache (see PersistenceMixin).
         self.persistence = persistence
         self._trim_policy = _coerce_trim_policy(trim_results)
+        self.log = RunLog.to(log)          # the run log (``log=``); None: nothing is logged
+        self._log_run = None               # the run in progress, for the model-call lines
         self.func: Dict[str, Callable] = self.registry.sync_std
         self.args: Dict[str, Dict] = self.registry.sync_struct
         self._tool_prompt_block = self.registry.prompt_block()
@@ -1985,9 +1999,20 @@ class AgentRunner(PersistenceMixin):
         ``outcome`` says why."""
         self._begin_delegation_run()
         if self.persistence is None:
-            yield from self._iter_run_core(user_input, chat_history, stream_tokens, media, None)
+            events = self._iter_run_core(user_input, chat_history, stream_tokens, media, None)
+        else:
+            events = run_persistent(self, user_input, chat_history, stream_tokens, media, _budget)
+        log = self.log
+        if log is None:
+            yield from events
             return
-        yield from run_persistent(self, user_input, chat_history, stream_tokens, media, _budget)
+        record = log.begin(user_input, model=self.model, agent=getattr(self, "agent_type", None))
+        self._log_run = record
+        try:
+            yield from record.follow(events)
+        finally:
+            if self._log_run is record:
+                self._log_run = None
 
     def _iter_run_core(
         self,
@@ -2151,7 +2176,9 @@ class AgentRunner(PersistenceMixin):
 
         def _model_call(fn):
             # Persistent runs wait out transient provider errors (429/5xx/timeouts).
-            return state.patient(fn) if state is not None else fn()
+            call = (lambda: state.patient(fn)) if state is not None else fn
+            record = self._log_run
+            return record.model_call(call) if record is not None else call()
 
         # Loop-level circuit breaker. The tool-layer dup-guard refuses
         # on the 5th identical call, but a stubborn model (gpt-4o-mini

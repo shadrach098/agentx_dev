@@ -3,6 +3,53 @@
 The framework emits structured events for every meaningful step so you
 can trace, log, monitor, or replay agent runs.
 
+## Watching one runner: `log=`
+
+The quickest way to see what a runner does, in development, tests or production, is `log=` on the runner. No
+global switch, no hooks to register:
+
+```python
+from agentx_dev import AgentRunner, AgentType, Claude
+import logging
+
+runner = AgentRunner(model=Claude(), agent=AgentType.ReAct, tools=tools, log=True)        # readable lines on stderr
+runner = AgentRunner(..., log="logs/agent.jsonl")                                        # one JSON object per event
+runner = AgentRunner(..., log=logging.getLogger("myapp.agent"))                          # your logging setup
+runner = AgentRunner(..., log=lambda event: metrics.send(event))                         # anything else
+```
+
+`AsyncAgentRunner` takes the same. A file path that does not end in `.jsonl` or `.json` gets the readable lines.
+`runner.log` can also be set or changed later.
+
+```text
+14:02:11 run 3f2a1c9d  start claude-opus-5-5: Find the failing test and fix it
+14:02:14 run 3f2a1c9d  model call 1 2,871 ms, 4,120 in, 380 out
+14:02:14 run 3f2a1c9d  tool run_shell ok {"command": "pytest -q"} -> 1 failed, 5 passed ...
+14:02:19 run 3f2a1c9d  model call 2 4,402 ms, 5,034 in, 3,900 cached, 612 out
+14:02:19 run 3f2a1c9d  tool edit_file ERROR {"path": "shop/pricing.py", ...} -> old text not found
+...
+14:02:31 run 3f2a1c9d  end done in 20,114 ms, 4 model calls, 3 tool calls (1 failed), 18,442 in / 1,930 out: Fixed ...
+```
+
+| Event | Fields (besides `event`, `time`, `run`) |
+|---|---|
+| `run.start` | `query`, `model` |
+| `model.call` | `call`, `ms`, `tokens_in`, `tokens_out`, `cached` (`error` when it failed) |
+| `tool` | `tool`, `args`, `ok`, `result` |
+| `run.end` | `outcome`, `ms`, `model_calls`, `tool_calls`, `tool_errors`, `tokens_in`, `tokens_out`, `cached`, `answer` |
+| `run.error` | `ms`, `error` (the exception still reaches your code) |
+
+Text (the query, tool arguments and results, the answer) is cut to 300 characters (`RunLog(target, preview=...)`
+sets another length) and likely secrets (API keys, tokens, passwords) are replaced with `[REDACTED]`. A log
+that fails to write is reported once and never stops the run. With a `logging.Logger`, failed tools and errors
+are logged at WARNING and the rest at INFO, and each record carries the event as `record.agentx` for structured
+handlers. `RunLog.chain(a, b)` writes to both. The [eval harness](../advanced/evals.md) uses the same log to
+count failed tool calls.
+
+The rest of this page is the older, global event system: one switch for every runner in the process, and hooks
+such as `FileHook` for the [trace viewer](../advanced/trace-viewer.md). It emits the agent's start and end and each
+tool call; the model-call events below are not emitted by the runners yet, which is what `log=` is for.
+
 ## Event types
 
 | Event | Fired when |

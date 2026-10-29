@@ -43,8 +43,10 @@ from .Evals import (
     EvalCase, EvalResult, EvalReport, EvalRunner,
     contains, not_contains, matches_regex,
     called_tool, tool_count, max_iterations, llm_judge,
+    outcome_is, output_field, used_skill, used_agent, subtasks_ok, compare_reports,
     load_case_from_dict, load_cases_from_dir,
 )
+from .RunLog import RunLog
 from .Compiler import Compiled, CompileResult
 # Vector store adapters -- imported lazily to keep the SDK deps optional.
 try:
@@ -188,8 +190,17 @@ __all__ = [
     "tool_count",
     "max_iterations",
     "llm_judge",
+    "outcome_is",
+    "output_field",
+    "used_skill",
+    "used_agent",
+    "subtasks_ok",
+    "compare_reports",
     "load_case_from_dict",
     "load_cases_from_dir",
+
+    # A runner's log (log=)
+    "RunLog",
 
     # Prompt optimization (3.1.1)
     "Compiled",
