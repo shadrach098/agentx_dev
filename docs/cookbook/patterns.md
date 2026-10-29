@@ -1429,6 +1429,9 @@ print(result.content, llm.usage.total_cache_read_tokens, "input tokens came from
 - `shrink_exempt_at` (60,000 characters by default) turns older skill texts into a note once the conversation is
   long; the newest stays whole.
 - Keep the system prompt the same from run to run (no timestamps in it): a changed start cannot come from the cache.
+- **On Claude, turn the cache on:** `Claude(model="claude-opus-5-5", enable_prompt_cache=True)`. OpenAI caches by
+  itself; Anthropic caches only what the request marks, and without it every step of a long run is billed in full
+  (one 50-step run sent 3 million input tokens). `agentx` turns it on for every Claude model it builds.
 - See [Keeping requests small](../guides/cli.md#keeping-requests-small) for how the terminal app sets this up.
 
 ## 39. Give `agentx` an MCP server *(next release)*
@@ -1465,20 +1468,23 @@ Independent pieces of a job should not wait for each other. Both halves of the p
 ```text
 Team plan:
   1. security-reviewer (new helper; tools: read_path, grep, find_files) · auth routes: ...
-  2. explorer · payments: ...
-  3. explorer · admin pages: ...
+  2. payments-reader · payments: ...
+  3. admin-pages-reader · admin pages: ...
 ● Team · 3 running · 0 of 3 done
-  ├ security-reviewer · auth routes   Read 14 files · Searched 6 patterns   1m 12s · 180k tokens, 82% cached
-  ├ explorer · payments               Read 9 files · Ran 2 commands         58s · 150k tokens, 79% cached
-  └ explorer · admin pages            Fetched 1 page · Read 6 files         40s · 90k tokens, 75% cached
+  ├ security-reviewer · auth routes    Read 14 files · Searched 6 patterns   1m 12s · 180k tokens, 82% cached
+  ├ payments-reader · payments         Read 9 files · Ran 2 commands         58s · 150k tokens, 79% cached
+  └ admin-pages-reader · admin pages   Fetched 1 page · Read 6 files         40s · 90k tokens, 75% cached
 ```
 
 - Steps whose helpers only read, search or fetch run side by side, up to three. A step that edits files or runs
   commands waits for them and runs alone, and no reading step starts while it runs.
 - The supervisor may make a helper for a step: a name, instructions, and tools from agentx's own gated set (never
   delete, move or another team), on the chat's model or one you allow with `/team-models`.
+- Every step is shown by a role name the planner gives it (`payments-reader`, `migration-verifier`), with its
+  model when you allow several (`payments-reader@claude-sonnet-5-5`); it still runs on the built-in helper.
 - Approvals still come one at a time, each naming the helper; Ctrl+C stops the whole job.
-- `/team log` lists every call each helper made. See [Team jobs](../guides/cli.md#team-jobs).
+- `/team log` lists every call each helper made, and `.agentx/team/` keeps each helper's whole report (pattern 44).
+  See [Team jobs](../guides/cli.md#team-jobs).
 
 **In your own code,** declare which steps depend on which, and `AsyncSupervisor` runs the rest concurrently:
 
@@ -1500,3 +1506,115 @@ result = asyncio.run(supervisor.run("Compare the pricing of three vector databas
 - `max_parallel=N` caps the concurrency; `sequential=True` is `max_parallel=1`.
 - A specialist that runs a blocking `AgentRunner` is moved to a worker thread, so sync and async runners mix.
 - See [How do I run multiple agents in parallel?](faq.md#how-do-i-run-multiple-agents-in-parallel).
+
+---
+
+## 41. Watch a run while it goes *(next release)*
+
+In production or in a test you want to see what the agent is doing, step by step, without turning on the global
+event system. Give the runner a `log`:
+
+```python
+import logging
+from agentx_dev import AgentRunner, AgentType, Claude
+
+runner = AgentRunner(model=Claude(model="claude-opus-5-5", enable_prompt_cache=True), agent=AgentType.ReAct,
+                     tools=tools, log=True)                                   # readable lines on stderr
+runner = AgentRunner(..., log="logs/agent.jsonl")                             # one JSON object per event
+runner = AgentRunner(..., log=logging.getLogger("myapp.agent"))               # your logging setup
+runner = AgentRunner(..., log=lambda event: metrics.send(event))              # anything else
+```
+
+```text
+14:02:11 run 3f2a1c9d  start claude-opus-5-5: Find the failing test and fix it
+14:02:14 run 3f2a1c9d  model call 1 2,871 ms, 4,120 in, 380 out
+14:02:14 run 3f2a1c9d  tool run_shell ok {"command": "pytest -q"} -> 1 failed, 5 passed ...
+14:02:19 run 3f2a1c9d  model call 2 4,402 ms, 5,034 in, 3,900 cached, 612 out
+14:02:31 run 3f2a1c9d  end done in 20,114 ms, 4 model calls, 3 tool calls (1 failed), 18,442 in / 1,930 out: Fixed ...
+```
+
+- Events: `run.start`, `model.call` (time and tokens), `tool` (ok or error, arguments and result cut short),
+  `run.end` (outcome and totals) or `run.error`. `AsyncAgentRunner` takes the same `log=`.
+- Secrets in the text are replaced with `[REDACTED]`; a log that cannot be written never stops the run.
+- A model that declines a request now raises `ModelDeclined` with the provider's reason, and the log shows it,
+  instead of an empty answer (see [troubleshooting](troubleshooting.md#claude-models-opus-5-5-sonnet-5-5-fable-5-1)).
+- See [Watching one runner](../concepts/observability.md#watching-one-runner-log).
+
+## 42. Regression-test an agent or a team *(next release)*
+
+Before a prompt change or a model switch goes out, run the same cases on the old and the new setup and compare:
+
+```python
+import json
+from agentx_dev import (EvalCase, EvalRunner, Supervisor, compare_reports, contains, outcome_is, subtasks_ok,
+                        used_agent, used_skill)
+
+cases = [
+    EvalCase(name="capital", input="Capital of France?", assertions=[contains("Paris"), outcome_is("done")],
+             tags=["smoke"]),
+    EvalCase(name="audit", input="Audit ./shop", assertions=[used_skill("auditing-a-project")], max_tool_errors=2),
+    EvalCase(name="research", input="Compare three vector databases",
+             assertions=[used_agent("web"), subtasks_ok()], tags=["team"]),
+]
+report = EvalRunner(build_runner_or_supervisor, repeat=3).run(cases)      # models vary: three runs each
+json.dump(report.to_dict(), open("after.json", "w"))
+print(compare_reports(json.load(open("before.json")), report.to_dict()))
+```
+
+```text
+case      passed        counted tokens a run
+capital    3/3 -> 3/3       9400 -> 4700     -50%
+audit      2/3 -> 3/3      84000 -> 61000    -27%
+```
+
+- The factory may build an `AgentRunner`, an `AsyncAgentRunner`, a `Supervisor` or an `AsyncSupervisor`.
+- `max_tool_errors` counts every failed tool call, including ones the agent recovered from.
+- "Counted tokens" count cached input as a tenth, about what it is billed at.
+- From the command line: `python -m agentx_dev.Evals run cases/ --config agent.yaml --repeat 3 --json-out after.json`,
+  then `python -m agentx_dev.Evals compare before.json after.json`. See [Evals](../advanced/evals.md).
+
+## 43. Move `agentx` from GPT to Claude *(next release)*
+
+Remove `OPENAI_API_KEY`, set `ANTHROPIC_API_KEY`, and start `agentx`. When your saved model is a GPT one, it does not
+stop: it lists the Claude models, uses the one you pick, and offers to save it.
+
+```text
+No API key for gpt: set the OPENAI_API_KEY environment variable. The model name 'gpt-6.1-sol' comes from
+C:\Users\you\.agentx\settings.json.
+ANTHROPIC_API_KEY is set, so you can use a Claude model instead.
+> 1. claude-opus-5-5  (strong at coding and agent work)
+  2. claude-sonnet-5-5  (fast and capable, about half the price of Opus)
+  3. claude-haiku-5-5  (the cheapest and fastest, for simple work)
+  4. claude-fable-5-1  (the most capable, and the most expensive)
+Save claude-opus-5-5 in C:\Users\you\.agentx\settings.json in place of gpt-6.1-sol? [y/N] y
+```
+
+Then give the team helpers Claude models too (a GPT one is skipped without its key):
+
+```text
+/team-models claude-sonnet-5-5="fast and capable: reading, searching, everyday edits" claude-haiku-5-5="cheapest: simple lookups" --folder
+```
+
+- `agentx` builds Claude models with prompt caching on, so a long job is billed mostly at the cached rate.
+- A message may take 300 steps (`"maxSteps"` in your settings, or `--max-steps`); one that stops there shows what
+  it did, and a short `continue` carries on from the last step.
+- See [Switching providers](../guides/cli.md#settings) and [Helper models](../guides/cli.md#helper-models).
+
+## 44. Keep what the helpers found *(next release)*
+
+Research a team job does is written to disk as it happens, so a closed terminal does not lose it:
+
+```text
+.agentx/team/2026-10-29-031200-fix-the-issues-from-the-latest/
+  job.md                          the task, the plan, and the team's result
+  01-git-checker.md               what it was asked, its whole report, the files it touched, its tool calls
+  02-payments-fixer.md
+  03-migration-verifier.md        "running" until it finishes
+```
+
+- The main agent is told the folder, and the finished reports join the project's `recall` index (the same vector
+  index as the turn notes in `.agentx/notes`), so the next conversation finds that research instead of redoing it:
+  `recall("stripe fees for european cards")`.
+- Search uses OpenAI embeddings when `OPENAI_API_KEY` is set, and a local similarity search otherwise.
+- In your own code, keep a `SupervisorResult`: `result.subtasks` holds each step's whole `content`, and
+  `result.model_dump_json()` saves it. See [Team jobs](../guides/cli.md#every-helper-report-is-saved).

@@ -652,6 +652,47 @@ non-JSON-serializable dataclasses (`SupervisorResult`,
 `.hops` fields explicitly before yielding to SSE / websockets.
 See patterns §21.
 
+## Claude models (Opus 5.5, Sonnet 5.5, Fable 5.1)
+
+**`ModelDeclined: claude-opus-5-5 declined this request (reasoning_extraction)`**
+The request asked the model to write out its reasoning, which these models decline. The framework's own step tool
+no longer does (its `Thought` field is left out for Claude). If you see it, look for your own tool or schema that
+asks for "reasoning", "thoughts" or "chain of thought" as a field, and remove it. Before this release the decline
+came back as an empty answer and `agentx` showed nothing.
+
+**`ModelDeclined: ... used its whole max_tokens (...) thinking, before writing an answer`**
+These models always think, and the thinking counts toward `max_tokens`. `Claude()` now defaults to 16,000; raise it
+(`Claude(max_tokens=32000)`) for long answers.
+
+**`400 tool_choice: type "tool" and "any" are not supported for this model`**
+Handled: for these models a call that must use one tool (structured output, the answer parser) is sent with
+`tool_choice: auto` and a line naming the tool. Another model that refuses it is found from the error once.
+
+**A long run on Claude costs far more than on GPT**
+Turn on caching: `Claude(enable_prompt_cache=True)`. Anthropic caches only what a request marks; without it every
+step is billed in full. `agentx` does this for you.
+
+## The `agentx` terminal app
+
+**`agentx` printed nothing after a long run**
+It reached the step limit. It now shows the summary and says so; type `continue`. The limit is 300 steps a message
+(`"maxSteps"` in `~/.agentx/settings.json`, or `--max-steps`).
+
+**`/skills install`: "The archive has too many files" or "bigger than the limit"**
+Fixed: only the skill folders' files are fetched now, so a big repository costs what its skills weigh. Skills in
+hidden folders (`.agentx/skills`, `.agents/skills`) are found, and a `/blob/.../SKILL.md` link installs that skill.
+
+**`No API key for gpt` after moving to Claude**
+Start `agentx` with `ANTHROPIC_API_KEY` set: it offers the Claude models and saves the one you pick (pattern 43).
+
+## Evals
+
+**`tool_error_count` is always 0**
+Fixed: failed tool calls are counted from the run log, including ones the agent recovered from.
+
+**`TypeError: AsyncAgentRunner has no invoke`**
+`EvalRunner` runs async runners and Supervisors now (`ainvoke`, `run`), from a notebook too.
+
 ## Prompt caching *(3.1)*
 
 **`cache_hit_ratio` stays at 0.0**

@@ -9,9 +9,13 @@
 > `OPENAI_API_KEY` for GPT) and swap the constructor. See
 > [chat models](../concepts/models.md) for adding other providers.
 
-- **`claude-sonnet-4-6`** — best general-purpose. Strong tool use,
-  reasonable cost, prompt caching cuts input costs 90% on repeated
-  system prompts.
+- **`claude-opus-5-5`** — the `Claude()` default: strong at coding and agent
+  work ($4 / $20 per million tokens in / out). Use `enable_prompt_cache=True`.
+- **`claude-sonnet-5-5`** — fast and capable at about half the price ($2 / $10).
+- **`claude-haiku-5-5`** — the cheapest ($0.10 / $0.50): lookups, `llm_judge`.
+- **`claude-fable-5-1`** — the most capable and the most expensive ($10 / $50).
+- **`claude-sonnet-4-6`** — the previous default; still a good general-purpose
+  model, and prompt caching cuts input costs 90% on repeated system prompts.
 - **`claude-haiku-4-5`** — cheapest. Fine for simple tool-using agents
   and `llm_judge` evals.
 - **`claude-opus-4-6`** — deepest reasoning. Use when quality matters
@@ -734,7 +738,8 @@ nothing else changes.
 
 ## When should I turn on prompt caching? *(3.1)*
 
-Turn it on for any Claude runner with:
+For any agent run on Claude: every step sends the conversation again, and only a marked request is cached
+(`agentx` turns it on for you). Turn it on for any Claude runner with:
 - A system prompt > 500 tokens
 - Multiple tools registered (schemas add up fast)
 - Long-running sessions (chatbots, batch runs)
@@ -753,6 +758,24 @@ only difference is whether events are yielded incrementally or
 absorbed silently. `.run()` and `.arun()` are now thin wrappers over
 `.stream()` / `.astream()`, so there's zero overhead choosing one
 or the other.
+
+## How do I see what my agent does in production? *(next release)*
+
+`AgentRunner(..., log=logging.getLogger("myapp.agent"))`: one line per model call and tool result, the start and the
+end, with secrets redacted. `log=True` prints to stderr, `log="agent.jsonl"` writes JSON lines. See
+[pattern 41](patterns.md#41-watch-a-run-while-it-goes-next-release).
+
+## Where does `agentx` keep what its team helpers found? *(next release)*
+
+In `<project>/.agentx/team/<date>-<task>/`: `job.md` and one file per step with the helper's whole report, written as
+each step ends. The finished reports are searched by `recall` with the project's notes. See
+[pattern 44](patterns.md#44-keep-what-the-helpers-found-next-release).
+
+## How do I give `agentx`'s team helpers other models? *(next release)*
+
+`/team-models claude-sonnet-5-5="reading and search" claude-haiku-5-5="simple lookups" --folder` (or `"teamModels"` in
+`~/.agentx/settings.json`). The planner reads the notes when it picks a model for each step. See
+[pattern 36](patterns.md) and [pattern 43](patterns.md#43-move-agentx-from-gpt-to-claude-next-release).
 
 ## Where's the source of truth for each feature?
 

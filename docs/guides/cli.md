@@ -520,7 +520,7 @@ Each helper works in a thread of its own, but every approval, team question and 
 - **A token share.** One step may use as many tokens as your [token limit](#the-token-limit) for a message, counted the same way (cached input as a tenth), and at least 100,000). Past that its tools answer `Not run: this step has used its share of the token limit (...). Stop calling tools and write your report now: what you found, with file paths, and what is left undone.`, so the helper reports what it has instead of going on. With `/limit 0` there is no share.
 - Helpers keep the newest 20,000 to 40,000 characters of tool results whole, like the chat (see [Keeping requests small](#keeping-requests-small)).
 
-### Every helper's work is saved
+### Every helper report is saved
 
 A team job writes itself to `<project>/.agentx/team/<date>-<time>-<task>/` as it goes: `job.md` with the task, the
 plan and, at the end, the team's result, and one file per step (`01-git-checker.md`, ...) written when the step
