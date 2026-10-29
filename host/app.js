@@ -440,6 +440,10 @@ result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"
       <h2 class="section-title">What's new</h2>
       <ul class="whats-new-list">
         <li>
+          <strong>Next</strong>
+          <div class="desc">In <code>agentx</code>: skills, MCP servers, agents that look at screenshots, <code>/voice</code> to speak instead of typing, and typing while it works. <a href="#whats-new">See what's new</a>.</div>
+        </li>
+        <li>
           <strong>3.7</strong>
           <div class="desc">The <code>agentx</code> terminal assistant: approvals and modes, team jobs with helpers on the models you choose, and project memory. <a href="#whats-new">See what's new</a>.</div>
         </li>
