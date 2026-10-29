@@ -875,12 +875,23 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
     # -- skills ---------------------------------------------------------------
 
     def install_skills(self, link: str) -> None:
-        """``/skills install <link>``. Only the user can start this (no tool does), and nothing is saved until
-        they have seen what was found and said yes."""
+        """``/skills install [name ...] <link>``. Only the user can start this (no tool does), and nothing is saved
+        until they have seen what was found and said yes. Names before a github.com link pick those skills only."""
+        wanted: List[str] = []
+        words = link.split()
+        if len(words) > 1 and "github.com" in words[-1].lower() and "github.com" not in " ".join(words[:-1]).lower():
+            link, wanted = words[-1], [w.strip(",").lower() for w in words[:-1] if w.strip(",")]
         self.notice("Downloading...")
         try:
             with open_source(link) as fetched:
                 found, problems = discover(fetched.root, fetched.subpath)
+                if found and wanted:
+                    picked = [c for c in found if c.name.lower() in wanted]
+                    if not picked:
+                        self.error(f"No skill named {', '.join(self._safe(w, 40) for w in wanted)} there. It has: "
+                                   + ", ".join(c.name for c in found) + ".")
+                        return
+                    found = picked
                 if not found:
                     skipped = "".join(f"\n  {self._safe(p, 160)}" for p in problems[:5])
                     self.error("No skills found there (a skill is a folder with a SKILL.md file)." + skipped)

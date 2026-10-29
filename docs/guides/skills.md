@@ -16,7 +16,7 @@ explicit cache, OpenAI's automatic prefix cache) reuse it.
 | `/skills` | List the skills found, each with the `/name` that runs it, where it came from (`bundled`, `own`, `installed`, `project`), and the folder they live in. A skill this conversation's agent does not have is marked `[not active in this conversation]`. |
 | `/<skill> [what you want]` | Use a skill now. Typing `/` shows the commands and then the skills in the pop-up; pick one, add your request, send. The agent reads the skill with `use_skill` and then does the task. |
 | `/skills use <name> [what you want]` | The same, for a skill whose name is also a command (`/model`, `/help`, ...). |
-| `/skills install <link>` | Install skills from `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>`) or from a folder on your computer. You are shown what was found and asked before anything is saved. |
+| `/skills install [name ...] <link>` | Install skills from `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>`) or from a folder on your computer; names before a GitHub link pick those skills only. You are shown what was found and asked before anything is saved. |
 | `/skills remove <name>` | Delete a skill from `~/.agentx/skills/` after a yes. |
 
 A new conversation (`/clear`) picks up added or removed skills. The `/` pop-up and `/<skill>` only offer skills the
@@ -137,5 +137,5 @@ Skill text is cut at 20,000 characters, descriptions at 300 (200 in the prompt),
 6,000 characters in all (the last line says how many were left out). With trimming on (`trim_results=True`, and
 always in the terminal app), once a conversation passes about 60,000 characters every skill text except the
 newest is sent as a note that the skill still applies and how to open it again
-(`use_skill(name="...", file="SKILL.md")`); `TrimPolicy(shrink_exempt_at=0)` keeps them all. A download may be at most 20 MB, 3,000 files
+(`use_skill(name="...", file="SKILL.md")`); `TrimPolicy(shrink_exempt_at=0)` keeps them all. A download may be at most 100 MB and 3,000 files (only the folders holding a `SKILL.md`, or the folder the link names, are unpacked: 10 MB a file, 50 MB in all)
 and 50 skills.

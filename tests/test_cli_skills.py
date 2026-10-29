@@ -120,6 +120,28 @@ class TestSkillsCommand:
         run_command(app, "/skills install https://github.com/o/r")
         assert not (skills_dir(home) / "pdf-notes").exists() and "Nothing was installed" in out.getvalue()
 
+    def test_names_before_the_link_pick_those_skills_only(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path / "repo")
+        links = []
+
+        @contextmanager
+        def fake_open(link):
+            links.append(link)
+            yield Fetched(repo, "https://github.com/o/r", "b" * 40)
+        monkeypatch.setattr(app_module, "open_source", fake_open)
+        lines = Lines("y")
+        app, out, cwd, home = make_app(tmp_path, lines, MockModel())
+        run_command(app, "/skills install pdf-notes https://github.com/o/r.git")
+        assert links == ["https://github.com/o/r.git"] and "Install 1 skill into" in lines.prompts[-1]
+        assert (skills_dir(home) / "pdf-notes").is_dir() and not (skills_dir(home) / "tidy-code").exists()
+        run_command(app, "/skills install nope https://github.com/o/r")
+        assert "No skill named nope there. It has: pdf-notes, tidy-code." in out.getvalue()
+
+    def test_a_misspelt_subcommand_gets_a_suggestion(self, tmp_path):
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel())
+        run_command(app, "/skills intall https://github.com/o/r")
+        assert "Did you mean /skills install?" in out.getvalue()
+
     def test_a_link_with_no_skills_in_it_says_so(self, tmp_path, monkeypatch):
         (tmp_path / "empty").mkdir()
         self.patch_source(monkeypatch, tmp_path / "empty")

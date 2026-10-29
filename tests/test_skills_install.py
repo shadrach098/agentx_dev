@@ -155,6 +155,60 @@ class TestOpenSource:
         assert calls == ["https://api.github.com/repos/o/r/commits/main", f"https://codeload.github.com/o/r/zip/{SHA}"]
         assert not root.exists()                       # the download is removed afterwards
 
+    def test_only_the_skill_folders_are_unpacked_and_a_skills_assets_come_along(self):
+        # like latent-spaces/brag: demo videos next to the skills, music files of a few megabytes inside one
+        seen = []
+
+        def get(url, limit, accept=None):
+            if url.startswith("https://api.github.com/"):
+                return SHA.encode()
+            return make_zip([(f"repo-{SHA}/examples/demo/brag.mp4", b"v" * (MAX_FILE_BYTES + 5)),
+                             (f"repo-{SHA}/docs/readme.md", "docs"),
+                             (f"repo-{SHA}/skills/brag/SKILL.md", skill_text("brag")),
+                             (f"repo-{SHA}/skills/brag/assets/music.mp3", b"m" * (3 * 1024 * 1024)),
+                             (f"repo-{SHA}/skills/brag-slim/SKILL.md", skill_text("brag-slim"))])
+        with open_source("https://github.com/o/r", get=get) as fetched:
+            seen = sorted(p.relative_to(fetched.root).as_posix() for p in fetched.root.rglob("*") if p.is_file())
+            found, problems = discover(fetched.root, fetched.subpath)
+        assert seen == ["skills/brag-slim/SKILL.md", "skills/brag/SKILL.md", "skills/brag/assets/music.mp3"]
+        assert [c.name for c in found] == ["brag", "brag-slim"] and problems == []
+        assert "assets/music.mp3" in found[0].files
+
+    def test_a_folder_link_unpacks_only_that_folder(self):
+        def get(url, limit, accept=None):
+            if url.startswith("https://api.github.com/"):
+                return SHA.encode()
+            return make_zip([(f"repo-{SHA}/skills/a/SKILL.md", skill_text("a")),
+                             (f"repo-{SHA}/skills/b/SKILL.md", skill_text("b"))])
+        with open_source("https://github.com/o/r/tree/main/skills/b", get=get) as fetched:
+            assert not (fetched.root / "skills" / "a").exists()
+            assert [c.name for c in discover(fetched.root, fetched.subpath)[0]] == ["b"]
+
+    def test_a_download_over_the_limit_says_what_the_limit_is(self):
+        from agentx_dev.Skills.Install import http_get
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n):
+                return b"x" * n
+
+        class Opener:
+            def open(self, request, timeout):
+                return Response()
+        import agentx_dev.Skills.Install as module
+        original = module.urllib.request.build_opener
+        module.urllib.request.build_opener = lambda *a: Opener()
+        try:
+            with pytest.raises(SkillInstallError, match="over the 2 MB limit"):
+                http_get("https://codeload.github.com/o/r/zip/x", 2 * 1024 * 1024)
+        finally:
+            module.urllib.request.build_opener = original
+
     def test_a_reply_that_is_not_a_commit_stops_it(self):
         with pytest.raises(SkillInstallError):
             with open_source("https://github.com/o/r", get=lambda url, limit, accept=None: b"<html>no</html>"):

@@ -169,7 +169,7 @@ def _team_models(ctx: Any, arg: str) -> None:
     ctx.set_team_models(names, folder=folder)
 
 
-SKILLS_USAGE = ("Usage: /skills | /skills install <github link or folder> | /skills remove <name> | "
+SKILLS_USAGE = ("Usage: /skills | /skills install [name ...] <github link or folder> | /skills remove <name> | "
                 "/skills use <name> [what you want]")
 
 
@@ -197,7 +197,12 @@ def _skills(ctx: Any, arg: str) -> None:
             ctx.error(f"No skill named {shown(name, 60)!r} in this conversation. /skills lists them; "
                       "ones added since it began load after /clear.")
     else:
-        ctx.error(SKILLS_USAGE)
+        import difflib
+        close = difflib.get_close_matches(word.lower(), ["install", "remove", "use"], n=1, cutoff=0.6)
+        if close and word.lower() not in ("install", "remove", "use"):
+            ctx.error(f"Unknown /skills command {shown(word, 30)!r}. Did you mean /skills {close[0]}?\n{SKILLS_USAGE}")
+        else:
+            ctx.error(SKILLS_USAGE)
 
 
 def _memory(ctx: Any, arg: str) -> None:

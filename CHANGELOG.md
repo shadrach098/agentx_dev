@@ -45,6 +45,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **`agentx`: `/skills install` handles repositories with big demo files.** Only the folders holding a `SKILL.md`
+  (or the folder the link names) are unpacked, so a repository's videos and docs no longer count: the download may
+  be up to 100 MB, and a skill's own files up to 10 MB each (music, fonts), 50 MB in all.
+  `latent-spaces/brag` (65 MB, mostly demo videos) was refused as "bigger than the limit". Names before the link
+  install only those skills (`/skills install brag <link>`), a misspelt subcommand gets "Did you mean /skills
+  install?", and an over-limit download says what the limit is.
 - **Structured output on Opus 5.5, Sonnet 5.5 and Fable 5.1.** These models answer a forced tool choice with a
   400, which `output_schema` and the answer parser used. The call now goes with `tool_choice: auto` and a line
   asking for the tool; another model that refuses it is found from the error and remembered.

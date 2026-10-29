@@ -319,10 +319,10 @@ Accepts `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>
 | `/skills` | Lists every skill found: the `/name` that runs it, where it came from (`bundled`, `own`, `installed` or `project`), its description, and `[not active in this conversation]` for one this agent does not have (a skill for tools it lacks, or one added since the conversation began). Also lists any that were skipped and why, and the folder they live in. |
 | `/<skill> [what you want]` | Use a skill now: see above. Also in the `/` pop-up. |
 | `/skills use <name> [what you want]` | The same, for a skill whose name is also a command. |
-| `/skills install <link or folder>` | As above. |
+| `/skills install [name ...] <link or folder>` | As above. Names before a GitHub link install only those skills: `/skills install brag https://github.com/latent-spaces/brag`. |
 | `/skills remove <name>` | Asks, then deletes the skill's folder from `~/.agentx/skills/`. A project skill is not removed by this: it belongs to the project. |
 
-**Only you can install.** The agent has no tool to install or remove a skill, and its file tools can never write to `.agentx` or `~/.agentx` (see [Default protections](#default-protections)). A skill is instructions the agent will follow, so install only skills you trust. A skill from a link or a project is shown to the model with a note that it cannot override the rules or the approval prompts. An archive is unpacked with limits (20 MB, 3,000 files, 1 MB a file, 50 skills), paths that leave the folder and links are refused, and a downloaded skill cannot take the name of a built-in one.
+**Only you can install.** The agent has no tool to install or remove a skill, and its file tools can never write to `.agentx` or `~/.agentx` (see [Default protections](#default-protections)). A skill is instructions the agent will follow, so install only skills you trust. A skill from a link or a project is shown to the model with a note that it cannot override the rules or the approval prompts. A download may be up to 100 MB, but only the skill folders in it are unpacked (a repository's demo videos and docs never reach the disk), with limits (3,000 files, 10 MB a file, 50 MB in all, 50 skills), paths that leave the folder and links are refused, and a downloaded skill cannot take the name of a built-in one.
 
 ## MCP servers
 

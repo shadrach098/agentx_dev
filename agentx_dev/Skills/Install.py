@@ -30,10 +30,12 @@ from .Store import (
     NAME_RE, SIDECAR, SKILL_FILE, SkillFormatError, _is_link, load_skill, one_line,
 )
 
-MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
+# A repository can carry demo videos and docs next to its skills: the download may be large, but only the skill
+# folders are unpacked (``skill_parts``), and those are held to the file and total limits.
+MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
 MAX_ARCHIVE_FILES = 3000
-MAX_FILE_BYTES = 1024 * 1024
-MAX_TOTAL_BYTES = 30 * 1024 * 1024
+MAX_FILE_BYTES = 10 * 1024 * 1024          # a skill's assets (music, fonts, images) can be a few megabytes each
+MAX_TOTAL_BYTES = 50 * 1024 * 1024
 MAX_SKILLS = 50
 MAX_DEPTH = 5
 PRUNE = {".git", "node_modules", "__pycache__", ".venv", "venv"}
@@ -131,13 +133,33 @@ def http_get(url: str, limit: int, accept: Optional[str] = None) -> bytes:
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise SkillInstallError(f"The download failed ({type(e).__name__}).") from None
     if len(data) > limit:
-        raise SkillInstallError("The download is bigger than the limit, so it was stopped.")
+        raise SkillInstallError(f"The download is over the {_size(limit)} limit, so it was stopped.")
     return data
 
 
-def extract_zip(data: bytes, dest: Path) -> Path:
+def _size(n: int) -> str:
+    return f"{n // (1024 * 1024)} MB" if n >= 1024 * 1024 else f"{n} bytes"
+
+
+def skill_parts(names: Sequence[str], subpath: str = "") -> Callable[[Tuple[str, ...]], bool]:
+    """Which entries of a GitHub archive to unpack (``parts`` includes the archive's top folder): the folder the
+    link names, or else every folder that holds a ``SKILL.md``, with everything in it. The rest of the repository
+    (demo videos, docs) is never written to disk and does not count toward the limits."""
+    if subpath:
+        wanted = tuple(PurePosixPath(subpath.replace("\\", "/")).parts)
+        return lambda parts: tuple(parts[1:1 + len(wanted)]) == wanted
+    roots = set()
+    for name in names:
+        path = PurePosixPath(name.replace("\\", "/"))
+        if path.name == SKILL_FILE and len(path.parts) >= 2:
+            roots.add(tuple(path.parts[1:-1]))
+    return lambda parts: any(tuple(parts[1:1 + len(root)]) == root for root in roots)
+
+
+def extract_zip(data: bytes, dest: Path, keep: Optional[Callable[[Tuple[str, ...]], bool]] = None) -> Path:
     """Unpack a GitHub archive into ``dest`` and return the repository root inside it. Refuses absolute paths,
-    ``..``, drive letters, too many or too big files; skips links."""
+    ``..``, drive letters, too many or too big files; skips links. With ``keep`` only the entries it accepts are
+    written (every entry's path is still checked)."""
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile:
@@ -157,6 +179,8 @@ def extract_zip(data: bytes, dest: Path) -> Path:
             parts = PurePosixPath(name.replace("\\", "/")).parts
             if (not parts or name.startswith(("/", "\\")) or ".." in parts or ":" in parts[0]):
                 raise SkillInstallError("The archive has an unsafe path, so nothing was installed.")
+            if keep is not None and not keep(parts):
+                continue                                   # not part of a skill: never written to disk
             if info.file_size > MAX_FILE_BYTES:
                 continue                                   # one huge file is skipped, not unpacked
             if any(_DEVICE_NAME.match(part) for part in parts):
@@ -200,8 +224,13 @@ def open_source(text: str, *, get: HttpGet = http_get) -> Iterator[Fetched]:
     if not _SHA.match(sha):
         raise SkillInstallError("GitHub did not return a commit for that link.")
     data = get(f"https://codeload.github.com/{source.owner}/{source.repo}/zip/{sha}", MAX_ARCHIVE_BYTES, None)
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            names = archive.namelist()
+    except zipfile.BadZipFile:
+        raise SkillInstallError("The download is not a valid archive.") from None
     with tempfile.TemporaryDirectory(prefix="agentx-skills-") as tmp:
-        root = extract_zip(data, Path(tmp))
+        root = extract_zip(data, Path(tmp), keep=skill_parts(names, source.subpath or ""))
         yield Fetched(root, f"https://github.com/{source.owner}/{source.repo}", sha, source.subpath)
 
 
