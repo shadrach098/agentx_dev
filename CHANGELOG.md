@@ -71,6 +71,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **A helper that calls a tool it does not have is told so and carries on.** A "final checks" step that also had to
+  fix what failed went to the runner (it runs commands but cannot edit); its call to `edit_file` ended the step with
+  "(agent emitted an unrecognized action and no answer text)", shown as Done. agentx's agent and helpers now get the
+  framework's `strict_tool_dispatch` reply (the tool is not theirs, here are the ones they have), a step that still
+  ends with no report is marked failed, and the planner is told to give a step only to a helper with every tool it
+  needs.
 - **A team job uses the GPT models in `teamModels` too.** With a Claude chat model and `gpt-6-luna` in the list
   (its key found), every step of every job ran on a Claude model: the planner was told "no model is preferred" and
   picked its own provider. It is now told the user listed these models so the work is shared among them, and, when

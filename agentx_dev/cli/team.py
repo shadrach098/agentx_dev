@@ -64,6 +64,11 @@ USER_NOTES = ("The user wrote this while the team worked (helpers that were runn
 STEP_BUDGET_NOTE = ("Not run: this step has used its share of the token limit ({used:,} of {share:,} tokens). Stop "
                     "calling tools and write your report now: what you found, with file paths, and what is left "
                     "undone.")
+# How the runner ends a run whose last reply had no tool call and no answer. A helper's step that ends so failed, but
+# was shown "Done" with that text as its report.
+NO_ANSWER_START = "(agent emitted an unrecognized action and no answer text"
+NO_REPORT = ("the helper stopped without a report: its model's last reply had no tool call and no answer. Check "
+             "what it changed, and run the step again")
 OUT_OF_STEPS_NOTE = ("(This helper ran out of steps before finishing, so this is partial work: check what it "
                      "changed before relying on it.)\n")
 MAX_SUBTASKS = 6
@@ -96,6 +101,11 @@ ROLE_NAME_NOTE = (
     '\n\nGive every step an "as" field: a short name for what its helper does in this job, lowercase words joined '
     'by hyphens, for example "git-checker", "payments-fixer", "migration-verifier", "test-runner". It is the name '
     "the user sees for that step; it does not change which helper runs it. Do not reuse one name for two steps.")
+# A "final checks" step that also had to fix what failed went to the runner, which cannot edit: it ended with no report.
+TOOLS_FIT_NOTE = (
+    "\n\nGive a step only to a helper that has every tool the step needs. A step that runs checks and also fixes what "
+    "fails needs both running commands and editing files: the runner cannot edit and the coder cannot run commands, "
+    "so make a helper with both, or split it into a run step and a fix step.")
 _ROLE_NAME = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 MAX_ROLE_NAME_CHARS = 32
 
@@ -595,6 +605,8 @@ class _HelperRunner(AgentRunner):
             raise RuntimeError(text) from None
         finally:
             _local.step = previous
+        if str(getattr(completion, "content", "") or "").startswith(NO_ANSWER_START):
+            raise RuntimeError(NO_REPORT)
         return _partial_if_out_of_steps(completion)
 
 
@@ -609,7 +621,7 @@ def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
                          system_addendum=(addendum or "") + role_prompt(role),
                          max_iterations=HELPER_STEPS, auto_cache=False, verbose=False,
                          parallel_tool_workers=1, describe_error=describe_error, skills=skills,
-                         trim_results=HELPER_TRIM, helper_name=name or role.name)
+                         trim_results=HELPER_TRIM, helper_name=name or role.name, strict_tool_dispatch=True)
 
 
 def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
@@ -822,7 +834,7 @@ class TeamSupervisor(AsyncSupervisor):
                 note += NEW_HELPER_MODELS_NOTE.format(models=listed, chat=self._models[0][0])
                 note += _each_provider_note([name for name, _ in self._models])
             self.planner_note = (self.planner_note or "") + note
-        self.planner_note = (self.planner_note or "") + ROLE_NAME_NOTE
+        self.planner_note = (self.planner_note or "") + ROLE_NAME_NOTE + TOOLS_FIT_NOTE
 
     # -- names and models -------------------------------------------------------------------------------------
 

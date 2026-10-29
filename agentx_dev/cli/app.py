@@ -478,7 +478,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         # One tool call at a time: one approval prompt open, on the main thread, and edits made in order.
         runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=self.tools, system_addendum=self.addendum,
                              max_iterations=self.max_steps, auto_cache=False, verbose=False, parallel_tool_workers=1,
-                             skills=self.skills, trim_results=True)
+                             skills=self.skills, trim_results=True, strict_tool_dispatch=True)
         # The skills THIS conversation's agent can open (what /<skill> and the `/` pop-up offer): taken from the
         # runner itself, so it is exactly what use_skill can read, and it follows /clear, /resume and a new model.
         tool = next((t for t in runner.tools if t.name == "use_skill"), None)

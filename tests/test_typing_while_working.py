@@ -328,3 +328,38 @@ def test_the_spinner_shows_minutes_after_a_minute():
         assert "Team is working... 11m 23s" in shown.get()
     finally:
         progress.stop()
+
+
+class TestAToolTheHelperDoesNotHave:
+    def test_the_helper_is_told_and_carries_on(self, tmp_path):
+        calls = []
+
+        def work(messages):
+            calls.append(str(messages))
+            if len(calls) == 1:                      # the runner cannot edit: it tries anyway
+                return make_react_response("edit_file", {"path": "a.txt", "old": "x", "new": "y"})
+            return make_final("checks ran; a.txt needs x changed to y")
+        result, seen = team_job(tmp_path, [step("s1", "runner", "run the checks and fix what fails")], work)
+        assert "is not a registered tool" in calls[1]
+        done = [data for kind, data in seen if kind == "result"][0]
+        assert done["ok"] and "a.txt needs x changed to y" in str(done.get("text"))
+
+    def test_a_helper_with_no_answer_is_a_failed_step_not_done(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+        from agentx_dev import AgentRunner
+        from agentx_dev.cli.team import NO_REPORT
+        ended = SimpleNamespace(content="(agent emitted an unrecognized action and no answer text - try rephrasing "
+                                        "or re-run)", outcome="done", tool_calls=[])
+        monkeypatch.setattr(AgentRunner, "Initialize", lambda self, *args, **kwargs: ended)
+        result, seen = team_job(tmp_path, [step("s1", "runner", "run the checks")], lambda messages: "")
+        done = [data for kind, data in seen if kind == "result"][-1]
+        assert not done["ok"]
+        assert NO_REPORT.split(":")[0] in str(done.get("text")) + result
+        assert "unrecognized action" not in str(done.get("text"))
+
+    def test_the_planner_is_told_to_match_tools_to_the_step(self, tmp_path):
+        model = router(plans=[plan_json(step("s1", "explorer", "look"))], synth="Done.",
+                       agent=lambda messages: make_final("looked"))
+        run_team_job("the job", model=model, tools=build_tools(tmp_path, [], Gate(mode="auto", cwd=tmp_path)),
+                     addendum="", notify=lambda kind, data: None)
+        assert "Give a step only to a helper that has every tool the step needs" in model.planner_prompts()[0]
