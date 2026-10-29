@@ -779,11 +779,19 @@ each step ends. The finished reports are searched by `recall` with the project's
 
 ## Can I add to the task while `agentx` is working? *(next release)*
 
-Yes. Type while the spinner runs and press Enter: the agent reads the message at its next step. During a team job
-the message goes to the helpers (the running ones at their next step, later steps from the start) and to the main
-agent in the job's result, so work you add gets done; `/skip 3` (or `/skip <helper>`) skips a step not started yet.
-A command typed then (`/model ...`) runs when the agent is done. See
-[Typing while it works](../guides/cli.md#typing-while-it-works).
+Yes. Type while the spinner runs (it says `type to add to the task`) and press Enter: the agent reads the message at
+its next step. Until then it waits under the spinner as `◌ your message · waiting for the agent's next step`; once
+read, one line is left: `❯ your message  ✓ read by the agent`. During a team job the message goes to the helpers
+(the running ones at their next step, later steps from the start; the line names the first helper that read it) and
+to the main agent in the job's result, so work you add gets done; `/skip 3` (or `/skip <helper>`) skips a step not
+started yet. A command typed then (`/model ...`) runs when the agent is done. A note does not change a plan already
+made. See [Typing while it works](../guides/cli.md#typing-while-it-works).
+
+## Why does a team job not use my GPT model? *(next release)*
+
+It now does: when `teamModels` lists both Claude and GPT models, the planner is told to give at least one step to each
+provider and to share the steps by each model's note. Before, a Claude planner kept every step on Claude. If a model
+is listed under `Not used:` above the plan, its key is missing (see troubleshooting).
 
 ## Where's the source of truth for each feature?
 

@@ -260,9 +260,25 @@ set it in the terminal that runs `agentx`, or save it with `setx`. Or `/team-mod
 `/team-models` shows the same thing as `Not used now: ...`.
 
 **`(agent emitted an unrecognized action and no answer text - try rephrasing or re-run)`**
-The model's last step had neither a tool call nor an answer, usually a long final report cut off
-by the output limit. The runner now asks the model again (up to twice per run) before giving up;
-if you still see it, ask for a shorter report or raise the model's `max_tokens`.
+Two causes. (1) The model's last step had neither a tool call nor an answer, usually a long final
+report cut off by the output limit: the runner now asks the model again (up to twice per run); if
+you still see it, ask for a shorter report or raise the model's `max_tokens`. (2) A helper called a
+tool it does not have, often the runner (it runs commands but cannot edit) told to "fix what fails":
+in `agentx` it is now told the tool is not one of its own and carries on (`strict_tool_dispatch`),
+and the planner is told to give a step only to a helper with every tool it needs. A team step that
+still ends with no report shows as failed ("the helper stopped without a report"), not Done.
+
+**A team job never uses the GPT models in `teamModels`** *(fixed)*
+With a Claude chat model the planner kept every step on Claude: it was told no model is preferred,
+and notes like "fast, cheap: reading" fit a Claude model as well. It is now told you listed the
+models so the work is shared among them, and, with both Claude and GPT models listed, to give at
+least one step to each. A note typed during a job does not change its plan (the plan is made
+first); the next job follows the rule. Check that the model is not under `Not used:` above the plan.
+
+**Team steps ran out of order (step 3 before step 2)** *(fixed)*
+Step 3 needed nothing from step 1 and was already waiting when step 1 ended, so it went before
+step 2, which needed step 1. Steps ready at the same time now start in plan order; a step that
+waits for an unfinished one still lets later steps go first.
 
 **`Not used: claude-opus-5-5 (No module named 'anthropic' - install agentx-dev[anthropic])` or `Not used: gpt-5.5 (could not be set up: ValueError)`**
 The key is set but the model could not be built. For a Claude model with a GPT chat the usual
@@ -692,6 +708,24 @@ hidden folders (`.agentx/skills`, `.agents/skills`) are found, and a `/blob/.../
 
 **`No API key for gpt` after moving to Claude**
 Start `agentx` with `ANTHROPIC_API_KEY` set: it offers the Claude models and saves the one you pick (pattern 43).
+
+**`404 ... model: claude-opus-5.5 was not found. Did you mean claude-opus-5-5?`** *(fixed)*
+Claude model ids use dashes. `--model claude-opus-5.5` is now read as `claude-opus-5-5`; GPT names
+such as `gpt-5.5` keep their dot.
+
+**`'teamModels': the note for 'claude-opus-5-5' is not plain text of at most 80 characters; ignored`** *(fixed)*
+A note may now be 200 characters, and a longer one is shortened with a warning instead of dropped.
+A note with control characters is still dropped.
+
+**Typing while it works does nothing**
+The `agentx` window was started before the version that reads keys while it works: `/exit` and start
+it again. The spinner line ends with `type to add to the task` when typing is read. A message you
+send waits under the spinner (`◌ ... · waiting for the agent's next step`) and is replaced by
+`❯ ... ✓ read by the agent` (or by a helper) once read. Approval prompts and questions get the keys
+while they are open, and nothing is read on a pipe.
+
+**The spinner showed `683s`** *(fixed)*
+It shows minutes and hours now: `11m 23s`, `1h 02m`.
 
 ## Evals
 
