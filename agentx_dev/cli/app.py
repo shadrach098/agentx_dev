@@ -27,11 +27,13 @@ from agentx_dev.cli.models import (ModelError, build_team_models, choose_model)
 from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.models import provider_for
 from agentx_dev.cli.safepaths import safe_location
-from agentx_dev.cli.sessions import SessionInfo, find_session, latest_session, list_sessions, new_session_path
-from agentx_dev.cli.settings import (DEFAULT_TOKEN_LIMIT, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
+from agentx_dev.cli.sessions import (SessionInfo, find_session, latest_session, list_sessions, new_session_path,
+                                     sessions_dir)
+from agentx_dev.cli.settings import (DEFAULT_MAX_STEPS, DEFAULT_TOKEN_LIMIT, MAX_MAX_STEPS, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
                                      read_user_fullscreen, write_user_fullscreen)
 from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, counted_tokens, current_helper, make_team_tool, note_usage, on_main, run_team_job, step_token_share)
+from agentx_dev.cli.team_record import TeamRecord
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker, status_line
@@ -183,7 +185,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
                  model_source: Optional[Path] = None, team_models: Optional[Sequence[str]] = None,
                  team_models_source: Optional[Path] = None,
                  team_model_uses: Optional[Mapping[str, str]] = None,
-                 token_limit: int = DEFAULT_TOKEN_LIMIT) -> None:
+                 token_limit: int = DEFAULT_TOKEN_LIMIT, max_steps: int = DEFAULT_MAX_STEPS) -> None:
         self.cwd = Path(cwd).resolve()
         self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
@@ -263,6 +265,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         # (requests, input, output, cached input) of the last turn
         self._last_turn_usage: Optional[Tuple[int, int, int, int]] = None
         self.token_limit = max(0, int(token_limit or 0))   # tokens one message may use before asking; 0 is off
+        self.max_steps = max(1, int(max_steps or DEFAULT_MAX_STEPS))   # steps the agent may take for one message
         self._limit_lock = threading.Lock()
         self._turn_start: Optional[int] = None    # tokens used before the running turn; None outside a turn
         self._turn_start_sent = 0                  # the same, every input token counted in full
@@ -398,6 +401,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
             f"Model: {self.model_label}\n"
             f"Mode: {self.gate.mode}\n"
             f"Rules: {allow}\n"
+            f"Steps a message may take: {self.max_steps} (maxSteps in your settings file, or --max-steps)\n"
             f"Extra folders: {', '.join(str(d) for d in self.add_dirs) or 'none'}\n"
             f"Helper models: {self._safe(self._listed_with_uses(), 800) or 'none (helpers use the chat model)'}\n"
             f"Your settings file ({state(user)}): {user}\n"
@@ -420,7 +424,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         # effects. No timeout is set anywhere: an approval prompt waits for the user as long as it takes.
         # One tool call at a time: one approval prompt open, on the main thread, and edits made in order.
         runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=self.tools, system_addendum=self.addendum,
-                             max_iterations=50, auto_cache=False, verbose=False, parallel_tool_workers=1,
+                             max_iterations=self.max_steps, auto_cache=False, verbose=False, parallel_tool_workers=1,
                              skills=self.skills, trim_results=True)
         # The skills THIS conversation's agent can open (what /<skill> and the `/` pop-up offer): taken from the
         # runner itself, so it is exactly what use_skill can read, and it follows /clear, /resume and a new model.
@@ -508,6 +512,36 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         finally:
             if self.mcp is not None:
                 self.mcp.close()
+
+    def _team_record(self, task: str) -> Any:
+        """Where this team job's plan and every helper's whole report are written as they come: the project's
+        ``.agentx/team`` (the agent can read it later, after the terminal closed say), or, for the home folder or
+        a drive root, ``~/.agentx/team/<folder>``. None when nothing can be written."""
+        try:
+            if self._memory_on:
+                return TeamRecord.for_project(self.cwd, task, redact=self._hide)
+            record = TeamRecord(self.home / ".agentx" / "team" / sessions_dir(self.home, self.cwd).name, task,
+                                redact=self._hide)
+            return record if record.folder is not None else None
+        except Exception:                             # a record must never stop a team job
+            return None
+
+    def _show_unanswered(self, completion: Any, answered: bool) -> None:
+        """A run that ended without a final answer (the step limit, say) still shows what it has: its summary, and
+        how to carry on. Before, the turn just ended with nothing on the screen."""
+        if completion is None:
+            return
+        outcome = str(getattr(completion, "outcome", "done") or "done")
+        content = str(getattr(completion, "content", "") or "")
+        if not answered and content.strip():
+            self.screen.show_event({"type": "final", "content": content})
+        if outcome == "iteration_limit":
+            limit = getattr(getattr(self.session, "runner", None), "max_iterations", None)
+            steps = f" ({limit} steps)" if isinstance(limit, int) else ""
+            self.notice(f"Stopped at the step limit{steps} before finishing. Type \"continue\" to carry on from "
+                        "here; what was done so far is kept.")
+        elif outcome not in ("done", "") and not answered:
+            self.notice(f"The run ended without finishing (outcome: {self._safe(outcome, 40)}).")
 
     def _create_user_settings(self, model: Optional[str]) -> None:
         """Write ``~/.agentx/settings.json`` if there is none yet (``model`` only when it is a real name)."""
@@ -609,10 +643,14 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
                 self._recall_next = False
                 if self.project_memory is not None:
                     sent = text + auto_block(self.project_memory, text)
+            answered = False
             for event in self.session.stream(sent):
                 self.progress.stop()                       # erase the spinner, then print
-                self.screen.show_event(event)
                 kind = event.get("type") if isinstance(event, dict) else None
+                if kind == "completion":
+                    self._show_unanswered(event.get("completion"), answered)
+                self.screen.show_event(event)
+                answered = answered or kind == "final"
                 if kind in ("tool_call", "tool_result", "final"):
                     events.append(event)
                 if kind == "tool_call":                    # an open look-around flow is drawn above the spinner
@@ -934,7 +972,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
                                 notify=self._team_notify, ask_user=self._team_question,
                                 describe_error=self._safe, extra_models=extras,
                                 chat_use=self._use_of(self.model_label), skills=self.skills,
-                                step_tokens=step_token_share(self.token_limit), closed=lambda: self.gate.closed)
+                                step_tokens=step_token_share(self.token_limit), closed=lambda: self.gate.closed,
+                                record=self._team_record(task))
         finally:
             self._team_running = []
             self._team_rows = {}
@@ -954,6 +993,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agentx", description="A terminal coding assistant built on agentx-dev.")
     parser.add_argument("--version", action="version", version=f"agentx {_version()}")
     parser.add_argument("--model", metavar="NAME", help="model to use, for example claude-opus-5-5 or gpt-6.1-sol")
+    parser.add_argument("--max-steps", type=int, metavar="N", default=None,
+                        help=f"steps the agent may take for one message (default {DEFAULT_MAX_STEPS}, or maxSteps "
+                             "in the settings)")
     parser.add_argument("--mode", choices=MODES, help="default, accept-edits (edits run without asking), plan "
                                                        "(read-only) or auto (edits, commands and Python run "
                                                        "without asking; delete and move still ask)")
@@ -1097,7 +1139,8 @@ def _run(args: argparse.Namespace, home: Path, console: Console, read: Callable[
                       project_allow=settings.project_allow, newly_trusted=not was_trusted,
                       model_source=None if args.model else settings.model_source,
                       team_models=settings.team_models, team_models_source=settings.team_models_source,
-                      team_model_uses=settings.team_model_uses, token_limit=settings.token_limit)
+                      team_model_uses=settings.team_model_uses, token_limit=settings.token_limit,
+                      max_steps=min(max(1, args.max_steps), MAX_MAX_STEPS) if args.max_steps else settings.max_steps)
         if wire is not None:
             wire(app)
         holder.append(app)

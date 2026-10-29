@@ -1516,3 +1516,42 @@ def test_cancelling_the_resume_list_resumes_nothing(tmp_path):
     app2, out, _, _ = make_app(tmp_path, Lines("/resume", "/exit"), model, select=lambda options, default=0, hotkeys=None: len(options) - 1)
     app2.start()
     assert "Resumed" not in out.getvalue()
+
+
+class TestARunThatEndsWithoutAnAnswer:
+    """The main agent hit its step limit and the turn ended with nothing on the screen; the summary was saved but
+    never shown."""
+
+    def test_the_step_limit_shows_the_summary_and_how_to_go_on(self, tmp_path):
+        from types import SimpleNamespace
+        app, out, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]))
+        app._show_unanswered(SimpleNamespace(outcome="iteration_limit", content="Did A and B; C is left."), False)
+        text = out.getvalue()
+        assert "Did A and B; C is left." in text and "step limit" in text and "continue" in text
+
+    def test_a_normal_answer_is_not_shown_twice(self, tmp_path):
+        from types import SimpleNamespace
+        app, out, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]))
+        app._show_unanswered(SimpleNamespace(outcome="done", content="the answer"), True)
+        assert out.getvalue() == ""
+
+    def test_a_whole_turn_at_the_step_limit_ends_with_the_summary(self, tmp_path):
+        steps = [make_react_response("list_directory", {"path": f"d{i}"}) for i in range(60)]
+        app, out, cwd, _ = make_app(tmp_path, Lines("look around", "/exit"), MockModel(script=steps), max_steps=5)
+        for i in range(60):
+            (cwd / f"d{i}").mkdir()
+        app.start()
+        assert "step limit" in out.getvalue() and "Steps taken" in out.getvalue()
+
+
+def test_claude_models_are_built_with_prompt_caching_on():
+    from agentx_dev.cli.models import choose_model
+    for name in ("claude-opus-5-5", None):
+        model = choose_model(name, {"ANTHROPIC_API_KEY": "k"})
+        assert model._enable_prompt_cache is True
+
+
+def test_the_runner_takes_the_step_limit(tmp_path):
+    app, out, _, _ = make_app(tmp_path, Lines("/settings", "/exit"), MockModel(script=[]), max_steps=77)
+    app.start()
+    assert app.session.runner.max_iterations == 77 and "Steps a message may take: 77" in out.getvalue()

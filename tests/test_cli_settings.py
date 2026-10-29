@@ -180,7 +180,7 @@ def test_settings_field_order_ends_with_problems_then_project_allow():
     from agentx_dev.cli.settings import Settings
     names = [f.name for f in dataclasses.fields(Settings)]
     assert names == ["model", "mode", "add_dirs", "allow", "deny", "problems", "project_allow", "model_source",
-                     "team_models", "team_models_source", "team_model_uses", "token_limit"]
+                     "team_models", "team_models_source", "team_model_uses", "token_limit", "max_steps"]
     assert Settings(None, None, [], [], [], ["p"]).project_allow == []
 
 
@@ -563,3 +563,17 @@ def test_write_project_team_models_saves_notes_as_objects(tmp_path):
     assert json.loads(path.read_text(encoding="utf-8"))["teamModels"] == [
         {"model": "gpt-6.1-sol", "use": "hard coding"}, "gpt-5.5"]
     assert "helper models gpt-6.1-sol, gpt-5.5" in message
+
+
+def test_max_steps_is_read_and_checked(tmp_path):
+    import json
+    from agentx_dev.cli.settings import DEFAULT_MAX_STEPS, load_settings
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    (home / ".agentx").mkdir(parents=True)
+    cwd.mkdir()
+    assert load_settings(cwd, home).max_steps == DEFAULT_MAX_STEPS == 300
+    (home / ".agentx" / "settings.json").write_text(json.dumps({"maxSteps": 120}), encoding="utf-8")
+    assert load_settings(cwd, home).max_steps == 120
+    (home / ".agentx" / "settings.json").write_text(json.dumps({"maxSteps": "lots"}), encoding="utf-8")
+    settings = load_settings(cwd, home)
+    assert settings.max_steps == 300 and any("maxSteps" in p for p in settings.problems)

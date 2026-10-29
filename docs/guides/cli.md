@@ -520,6 +520,16 @@ Each helper works in a thread of its own, but every approval, team question and 
 - **A token share.** One step may use as many tokens as your [token limit](#the-token-limit) for a message, counted the same way (cached input as a tenth), and at least 100,000). Past that its tools answer `Not run: this step has used its share of the token limit (...). Stop calling tools and write your report now: what you found, with file paths, and what is left undone.`, so the helper reports what it has instead of going on. With `/limit 0` there is no share.
 - Helpers keep the newest 20,000 to 40,000 characters of tool results whole, like the chat (see [Keeping requests small](#keeping-requests-small)).
 
+### Every helper's work is saved
+
+A team job writes itself to `<project>/.agentx/team/<date>-<time>-<task>/` as it goes: `job.md` with the task, the
+plan and, at the end, the team's result, and one file per step (`01-git-checker.md`, ...) written when the step
+starts and rewritten when it ends with the helper's **whole** report (the screen shows one line of it), the files it
+touched and its tool calls. If the terminal closes in the middle of a job, the finished steps are on disk and a step
+that was running says what it was asked. The main agent is told where the folder is, and the finished reports join
+the project's notes in the [recall](#notes-and-recall) index, so a later conversation finds that research again instead of
+doing it twice. For your home folder or a drive root the records go to `~/.agentx/team/` instead.
+
 ### Skills in a team job
 
 Every helper has the `use_skill` tool and the list of the [skills](#skills) that fit its tools: the explorer sees `exploring-a-project`, the coder adds `changing-files`, the runner adds `running-code`, and any skill you installed that is not tied to tools is offered to all three. So `/team brainstorm this repo with the brainstorming skill` works: the supervisor puts the skill in a step's task and the helper opens it with `use_skill`. Reading a skill is read-only and does not ask, and it is named on the step's line (`Read 3 files · Skills brainstorming`) and in `/team log`, so you can see which skills a helper opened. Before this, a helper had no skills, and a step that said "use the X skill" sent it searching the disk with `run_python`.
@@ -707,6 +717,13 @@ Every request sends the whole conversation again, so a file read at step 2 is pa
 - **Summarising starts sooner**, at about 15,000 tokens of what is sent (below).
 
 On a measured turn that read 15 files of 6 KB each, the input sent went from about 231,000 tokens to about 136,000, and the last request from about 25,600 to about 9,700. `/usage` shows what your own sessions use.
+
+### The step limit
+
+One message may take 300 steps (model calls by the main agent; team helpers have their own limit). The token
+limit is what guards the cost; the step limit only stops a run that goes round in circles. `"maxSteps"` in
+`~/.agentx/settings.json` (1 to 2,000) or `--max-steps N` changes it, and `/settings` shows it. A run that reaches
+it shows what it did so far and says so: type `continue` to carry on from there.
 
 ### The token limit
 

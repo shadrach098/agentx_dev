@@ -72,6 +72,15 @@ MODEL_TIMEOUT_SEC = 300.0
 CLIENT_RETRIES = 0
 
 
+def _claude(name: Optional[str], key: str) -> Any:
+    """A Claude model as agentx uses it: with prompt caching on (the system prompt, the tools and the conversation
+    so far are read from Anthropic's cache on the next step, billed at about a tenth). Without it every step of a
+    long run sent the whole conversation again at full price: one helper used 229k tokens on 8 tool calls."""
+    kwargs: Dict[str, Any] = {"model": name} if name else {}
+    return Claude(api_key=key, timeout=MODEL_TIMEOUT_SEC, max_retries=CLIENT_RETRIES, enable_prompt_cache=True,
+                  **kwargs)
+
+
 def choose_model(name: Optional[str], env: Mapping[str, str]) -> Any:
     """Build the chat model. With ``name`` the provider follows the name; without it the first key found
     (Anthropic, then OpenAI) decides and the class's own default model is used."""
@@ -85,11 +94,12 @@ def choose_model(name: Optional[str], env: Mapping[str, str]) -> Any:
             key = _key(env, ANTHROPIC_KEY if provider == "claude" else OPENAI_KEY)
             if not key:
                 raise _no_key(provider)
-            return (Claude if provider == "claude" else GPT)(model=name, api_key=key, timeout=MODEL_TIMEOUT_SEC,
-                                                             max_retries=CLIENT_RETRIES)
+            if provider == "claude":
+                return _claude(name, key)
+            return GPT(model=name, api_key=key, timeout=MODEL_TIMEOUT_SEC, max_retries=CLIENT_RETRIES)
         anthropic_key = _key(env, ANTHROPIC_KEY)
         if anthropic_key:
-            return Claude(api_key=anthropic_key, timeout=MODEL_TIMEOUT_SEC, max_retries=CLIENT_RETRIES)
+            return _claude(None, anthropic_key)
         openai_key = _key(env, OPENAI_KEY)
         if openai_key:
             return GPT(api_key=openai_key, timeout=MODEL_TIMEOUT_SEC, max_retries=CLIENT_RETRIES)

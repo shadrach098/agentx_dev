@@ -33,6 +33,8 @@ from agentx_dev.cli.safepaths import FOLDER, replace_file, safe_location
 logger = logging.getLogger(__name__)
 
 NOTES = "notes"
+TEAM = "team"                         # team job records (team_record.py): each finished helper report is indexed too
+UNFINISHED = ("Status: **running**", "(The job has not finished")
 MEMORY = "memory"
 VECTORS = "vectors.json"
 META = "meta.json"
@@ -135,6 +137,39 @@ class ProjectMemory:
     def memory_dir(self) -> Path:
         return self.cwd / FOLDER / MEMORY
 
+    def team_reports(self) -> List[Path]:
+        """The team job records whose step has finished (a running step's file is left out until it is final)."""
+        folder = self.cwd / FOLDER / TEAM
+        try:
+            if not safe_location(self.cwd, TEAM) or not folder.is_dir():
+                return []
+            out = []
+            for path in sorted(folder.glob("*/*.md")):
+                if not path.is_file() or path.is_symlink() or path.parent.is_symlink():
+                    continue
+                head = path.read_text(encoding="utf-8", errors="replace")[:800]
+                if not any(mark in head for mark in UNFINISHED):
+                    out.append(path)
+            return out
+        except OSError:
+            return []
+
+    def documents(self) -> List[Path]:
+        """Everything ``recall`` searches: the notes, then the finished team reports."""
+        return self.notes() + self.team_reports()
+
+    def _id_of(self, path: Path) -> str:
+        """A document's id in the index: a note's file name (as before), a team report's path inside .agentx."""
+        if path.parent == self.notes_dir:
+            return path.name
+        try:
+            return path.relative_to(self.cwd / FOLDER).as_posix()
+        except ValueError:
+            return path.name
+
+    def _shown(self, path: Path) -> str:
+        return f"{FOLDER}/{NOTES}/{path.name}" if path.parent == self.notes_dir else f"{FOLDER}/{self._id_of(path)}"
+
     def notes(self) -> List[Path]:
         """The note files, oldest first (their names start with the date and time)."""
         try:
@@ -146,13 +181,15 @@ class ProjectMemory:
 
     def describe(self) -> str:
         count = len(self.notes())
+        reports = len(self.team_reports())
         if self._broken or self.embedder_id == "none":
             how = "keyword matching (the embeddings could not be used)"
         elif self.embedder_id == "hash":
             how = "local similarity search (no embeddings API: set OPENAI_API_KEY for better matches)"
         else:
             how = f"embeddings ({self.embedder_id})"
-        return (f"{count} note{'s' if count != 1 else ''} in {FOLDER}/{NOTES}; search: {how}. "
+        extra = f" and {reports} team report{'s' if reports != 1 else ''} in {FOLDER}/{TEAM}" if reports else ""
+        return (f"{count} note{'s' if count != 1 else ''} in {FOLDER}/{NOTES}{extra}; search: {how}. "
                 f"The index is in {FOLDER}/{MEMORY}.")
 
     # -- writing --------------------------------------------------------------
@@ -192,8 +229,8 @@ class ProjectMemory:
             return None
         # Every time: a note another session (or an earlier failure) left out of the index is added now, and a
         # note that was deleted is dropped (the note files are the source of truth).
-        on_disk = self.notes()
-        names = {p.name for p in on_disk}
+        on_disk = self.documents()
+        names = {self._id_of(p) for p in on_disk}
         known = set(getattr(store, "_ids", []))
         gone = [name for name in known if name not in names]
         if gone:
@@ -201,7 +238,7 @@ class ProjectMemory:
                 store.delete(gone)
             except Exception as e:
                 logger.warning("Could not drop deleted notes from the index: %s", e)
-        missing = [p for p in on_disk if p.name not in known]
+        missing = [p for p in on_disk if self._id_of(p) not in known]
         if missing:
             self._index(missing)
         elif gone:
@@ -236,8 +273,8 @@ class ProjectMemory:
                 continue
             title, when = _title_and_date(text)
             texts.append(text)
-            ids.append(path.name)
-            metadata.append({"path": f"{FOLDER}/{NOTES}/{path.name}", "title": title, "when": when})
+            ids.append(self._id_of(path))
+            metadata.append({"path": self._shown(path), "title": title, "when": when})
         if not texts:
             return
         try:
@@ -281,7 +318,7 @@ class ProjectMemory:
         if not words:
             return []
         scored = []
-        for path in self.notes():
+        for path in self.documents():
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -290,7 +327,7 @@ class ProjectMemory:
             score = sum(1 for word in words if word in lower) / len(words)
             if score > 0 and score >= min_score:
                 title, when = _title_and_date(text)
-                scored.append(Hit(f"{FOLDER}/{NOTES}/{path.name}", title, when, _snippet(text), score))
+                scored.append(Hit(self._shown(path), title, when, _snippet(text), score))
         scored.sort(key=lambda hit: (hit.score, hit.path), reverse=True)
         return scored[:k]
 

@@ -899,11 +899,12 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                  ask_user: Optional[Callable[[str], Optional[str]]] = None,
                  describe_error: Callable[[BaseException], str] = str,
                  extra_models: Sequence[HelperModel] = (), chat_use: str = "", skills: Any = None,
-                 step_tokens: int = 0, closed: Optional[Callable[[], Any]] = None) -> str:
+                 step_tokens: int = 0, closed: Optional[Callable[[], Any]] = None, record: Any = None) -> str:
     """Plan ``task``, run the helpers (read-only steps side by side, any other step alone) and return the result
     text. Progress goes to ``notify`` and questions to ``ask_user``, both on the calling thread. ``extra_models``
     adds the roles on other models (see ``build_helpers``); the planner stays on ``model``. ``step_tokens`` is each
     step's token share (see ``step_token_share``; 0 is none). Once ``closed()`` is true no further step starts.
+    ``record`` (a ``TeamRecord``) writes the plan and each helper's whole report to disk as they happen.
 
     Ctrl+C (``KeyboardInterrupt``) and ``SystemExit`` propagate, with the Supervisor's stream closed; any other
     error becomes a short failure result for the main agent to read."""
@@ -944,8 +945,10 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             model=model, agents=helpers, max_subtasks=MAX_SUBTASKS, verbose=False, max_subtask_retries=0,
             max_plan_retries=1, ask_user=asker, max_questions=MAX_QUESTIONS, spawn_config=spawning,
             max_parallel=PARALLEL_HELPERS, closed=closed, make_helper=make_helper, models=offered,
-            on_start=lambda agent, query, status: tell("dispatch", {"agent": str(agent), "query": str(query),
-                                                                    "label": status.label, "status": status}))
+            on_start=lambda agent, query, status: (
+                record.started(status) if record is not None else None,
+                tell("dispatch", {"agent": str(agent), "query": str(query), "label": status.label,
+                                  "status": status})))
         result = None
         async with aclosing(supervisor.astream(task)) as events:
             async for event in events:
@@ -955,11 +958,15 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                 if kind == "plan":
                     steps = [_plan_step(step, getattr(supervisor, "shown_step_name", None))
                              for step in (event.get("plan") or []) if isinstance(step, dict)]
+                    if record is not None:
+                        record.plan(steps)
                     tell("plan", {"steps": steps})
                 elif kind == "subtask_result":
                     sub = event.get("result")
                     if sub is not None and getattr(sub, "agent", "") != "__spawn__":
                         failed = bool(getattr(sub, "skipped", False)) or _result_failed(sub)
+                        if record is not None:
+                            record.finished(supervisor.status_of(sub), sub, ok=not failed)
                         text = getattr(sub, "error", "") or getattr(sub, "content", "")
                         tell("result", {"agent": str(sub.agent), "ok": not failed, "text": _first_line(text),
                                         "partial": not failed and _ran_out_of_steps(sub),
@@ -973,10 +980,19 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
     try:
         result = _run_on_loop(consume, job, pump)
     except Exception as error:                     # KeyboardInterrupt and SystemExit are not Exceptions
-        return _failure(error, describe_error)
+        return _recorded(record, _failure(error, describe_error))
     if result is None:
-        return f"Team job ended without a result. {MAY_HAVE_CHANGED}"
-    return format_result(result)
+        return _recorded(record, f"Team job ended without a result. {MAY_HAVE_CHANGED}")
+    return _recorded(record, format_result(result))
+
+
+def _recorded(record: Any, text: str) -> str:
+    """``text`` written to the job's record, with where the helpers' whole reports are for the main agent."""
+    if record is None or not getattr(record, "folder", None):
+        return text
+    record.done(text)
+    return (f"{text}\nEvery helper's whole report is saved in {record.shown_path}/ (job.md, then one file per "
+            "step): read those files rather than redoing the work.")
 
 
 def _failure(error: BaseException, describe_error: Callable[[BaseException], str]) -> str:

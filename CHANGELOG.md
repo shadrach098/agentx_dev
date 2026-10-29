@@ -68,6 +68,16 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **Evals: failed tool calls were never counted.** The count looked for results starting with "ToolError" in
   `completion.tool_calls`, which lists only the calls that worked, so it was always 0. It now counts them from the
   run log, recovered ones included.
+- **`agentx`: Claude models use prompt caching.** `agentx` built Claude models without it, so every step of a long
+  run sent the whole conversation again at full price and counted it in full against the token limit (one helper
+  used 229k tokens on 8 tool calls and stopped part-way). The system prompt, the tools and the conversation so far
+  are now read from Anthropic's cache on the next step, billed and counted at about a tenth.
+- **`agentx`: a run that hits the step limit shows what it did.** It ended with nothing on the screen; it now shows
+  the summary and says to type `continue`. The limit is 300 steps a message (was 50): `"maxSteps"` in your settings
+  or `--max-steps` changes it.
+- **`agentx`: a team job saves every helper's work as it goes**, in `.agentx/team/<date>-<task>/` (`job.md` and one
+  file per step with the helper's whole report), and the finished reports join the project's `recall` index: a
+  closed terminal no longer loses the research.
 - **`agentx`: team steps are shown by role.** The planner gives every step a name for what its helper does
   (`git-checker`, `payments-fixer`, `migration-verifier`), shown in the plan, the live block, the done lines and
   `/team log` in place of `runner` / `coder` (`git-checker@claude-sonnet-5-5`). The step still runs on the

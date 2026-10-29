@@ -15,6 +15,10 @@ from agentx_dev.cli.safepaths import FOLDER, replace_file, safe_location
 SETTINGS_NAME = "settings.json"
 PLACEHOLDER_MODEL = "(no model)"           # what the status bar shows before a model is built; never a setting
 DEFAULT_TOKEN_LIMIT = 200_000              # tokens one message may use before agentx stops and asks; 0 is off
+# Steps (model calls) the main agent may take for one message. The token limit is what guards cost; this only stops
+# a run that goes round in circles. 50 cut real jobs off part-way ("fix all that" on a whole audit).
+DEFAULT_MAX_STEPS = 300
+MAX_MAX_STEPS = 2000
 
 
 @dataclass
@@ -31,6 +35,7 @@ class Settings:
     team_models_source: Optional[Path] = None              # the file the list was read from
     team_model_uses: Dict[str, str] = field(default_factory=dict)   # notes on what a listed model is for
     token_limit: int = DEFAULT_TOKEN_LIMIT                 # "tokenLimit": tokens a message may use; 0 is off
+    max_steps: int = DEFAULT_MAX_STEPS                     # "maxSteps": steps the agent may take for one message
 
 
 def user_settings_path(home: Path) -> Path:
@@ -236,6 +241,15 @@ def _absolute(entry: str, base: Path, home: Path) -> Path:
     return _resolve(target)
 
 
+def _read_max_steps(value: Any, path: Path, settings: Settings) -> None:
+    """``"maxSteps"``: a whole number from 1 to ``MAX_MAX_STEPS``."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_MAX_STEPS:
+        settings.problems.append(f"settings file {path}: 'maxSteps' must be a whole number from 1 to "
+                                 f"{MAX_MAX_STEPS}; ignored")
+        return
+    settings.max_steps = value
+
+
 def _read_token_limit(value: Any, path: Path, is_project: bool, settings: Settings) -> None:
     """``"tokenLimit"``: a whole number of tokens (0 turns the limit off). A project's file may only lower it: a
     cloned repository must not let a message spend more of the user's money."""
@@ -279,6 +293,8 @@ def load_settings(cwd: Path, home: Path) -> Settings:
                 settings.team_models_source = path
         if "tokenLimit" in data:
             _read_token_limit(data.get("tokenLimit"), path, is_project, settings)
+        if "maxSteps" in data:
+            _read_max_steps(data.get("maxSteps"), path, settings)
         mode = data.get("mode")
         if mode is not None:
             if is_project and mode in ("accept-edits", "auto"):

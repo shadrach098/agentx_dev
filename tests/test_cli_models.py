@@ -32,7 +32,8 @@ def test_provider_for(name, provider):
 
 def test_a_named_claude_model(fakes):
     m = choose_model("claude-sonnet-5-5", {**ANT, **OAI})
-    assert type(m).__name__ == "Claude" and m.kw == {"model": "claude-sonnet-5-5", "api_key": "ak", "timeout": 300.0, "max_retries": 0}
+    assert type(m).__name__ == "Claude" and m.kw == {"model": "claude-sonnet-5-5", "api_key": "ak", "timeout": 300.0, "max_retries": 0,
+                                                  "enable_prompt_cache": True}
 
 
 def test_a_named_gpt_model(fakes):
@@ -52,7 +53,8 @@ def test_an_unknown_provider_name():
 
 def test_no_name_prefers_anthropic_then_openai_and_uses_the_class_default():
     both = choose_model(None, {**ANT, **OAI})
-    assert type(both).__name__ == "Claude" and both.kw == {"api_key": "ak", "timeout": 300.0, "max_retries": 0}
+    assert type(both).__name__ == "Claude" and both.kw == {"api_key": "ak", "timeout": 300.0, "max_retries": 0,
+                                                     "enable_prompt_cache": True}
     only_oai = choose_model(None, OAI)
     assert type(only_oai).__name__ == "GPT" and only_oai.kw == {"api_key": "ok", "timeout": 300.0, "max_retries": 0}
 
