@@ -237,23 +237,21 @@ class TestSkillsAsCommands:
         run_command(app, "/skills use model tidy up")
         assert '"model"' in sent[0][0] and sent[0][0].endswith("tidy up")
 
-    def test_a_skill_installed_after_the_conversation_began_waits_for_a_new_one(self, tmp_path):
+    def test_a_skill_copied_in_by_hand_waits_for_skills_reload(self, tmp_path):
         app, out, cwd, home, sent = self.app_with_sends(tmp_path)
         (skills_dir(home) / "late-one").mkdir(parents=True)
         (skills_dir(home) / "late-one" / "SKILL.md").write_text(skill_text("late-one"), encoding="utf-8")
         run_command(app, "/late-one")
         assert sent == [] and "late-one" not in app.skill_entries()
         run_command(app, "/skills")
-        assert "late-one" in out.getvalue() and "not active in this conversation" in out.getvalue()
-        runner_of(app)                                             # what /clear does
-        assert "/late-one" in app.skill_entries()
+        assert "late-one" in out.getvalue() and "/skills reload" in out.getvalue()    # reload: see the class below
 
     def test_the_list_shows_how_to_use_each_skill(self, tmp_path):
         app, out, cwd, home, sent = self.app_with_sends(tmp_path)
         run_command(app, "/skills")
         text = out.getvalue()
         assert "/running-code (bundled)" in text and "/web-research (bundled)" in text
-        assert "not active in this conversation" in text.split("gui-testing")[1].split("\n")[0]
+        assert "not in this conversation yet" in text.split("gui-testing")[1].split("\n")[0]
         assert "/<skill> [what you want]" in text
 
 

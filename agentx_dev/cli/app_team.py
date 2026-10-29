@@ -148,8 +148,8 @@ class TeamCommands:
         self.notice(f"Skills (the agent reads one when its work matches):\n{shown}\n"
                     "Use one with /<skill> [what you want] (type / to pick from the list). "
                     f"They live in {self._safe(self.skills.dir, 300)}. /skills install <github link or folder> adds "
-                    "more; /skills remove <name> deletes one. A new conversation (/clear) picks up changes, and "
-                    "skills for tools this agent does not have stay inactive.")
+                    "more and /skills remove <name> deletes one, both at once in this conversation; /skills reload "
+                    "picks up a folder copied in by hand. Skills for tools this agent does not have stay inactive.")
 
     def skill_entries(self) -> Dict[str, str]:
         """``{"/name": "(skill) description"}`` for the `/` pop-up: the skills this conversation's agent has, except
