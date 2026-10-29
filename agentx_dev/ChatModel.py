@@ -926,6 +926,52 @@ def _stamp_cache_on_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     return msg
 
 
+class ModelDeclined(RuntimeError):
+    """The model stopped without an answer: it declined the request (``stop_reason: "refusal"``, from the
+    provider's safety classifiers) or used its whole ``max_tokens`` before writing anything. Raised instead of
+    returning an empty answer, so the caller sees why. ``reason`` is ``"refusal"`` or ``"max_tokens"``;
+    ``category`` and ``explanation`` come from the provider's ``stop_details`` when it sends them."""
+
+    def __init__(self, message: str, *, reason: str, category: Optional[str] = None,
+                 explanation: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.category = category
+        self.explanation = explanation
+
+
+def _answer_blocks(response: Any) -> bool:
+    """Whether a Messages response has anything to use: text with content, or a tool call."""
+    for block in getattr(response, "content", None) or []:
+        kind = getattr(block, "type", None)
+        if kind == "tool_use" or (kind == "text" and str(getattr(block, "text", "") or "").strip()):
+            return True
+    return False
+
+
+def _check_stop(model_name: str, max_tokens: Any, response: Any) -> None:
+    """Raise ``ModelDeclined`` for a response that ended with a refusal, or that hit ``max_tokens`` with nothing
+    to use; log it either way (a decline is easy to miss: the answer is just empty)."""
+    reason = getattr(response, "stop_reason", None)
+    if reason == "refusal":
+        details = getattr(response, "stop_details", None)
+        category = getattr(details, "category", None) if details is not None else None
+        explanation = getattr(details, "explanation", None) if details is not None else None
+        if isinstance(details, dict):
+            category, explanation = details.get("category"), details.get("explanation")
+        shown = f" ({category})" if category else ""
+        why = f": {explanation}" if explanation else ""
+        message = (f"{model_name} declined this request{shown}{why}. Rephrasing it, or another model, may help.")
+        logger.warning(f"Claude model {model_name!r} declined a request: stop_reason=refusal, "
+                       f"category={category!r}, explanation={str(explanation or '')[:300]!r}")
+        raise ModelDeclined(message, reason="refusal", category=category, explanation=explanation)
+    if reason == "max_tokens" and not _answer_blocks(response):
+        logger.warning(f"Claude model {model_name!r} used its whole max_tokens ({max_tokens}) before answering")
+        raise ModelDeclined(f"{model_name} used its whole max_tokens ({max_tokens}) thinking, before writing an "
+                            "answer. Raise max_tokens (Claude(max_tokens=...)) or ask for less at once.",
+                            reason="max_tokens")
+
+
 # Claude models that refuse a forced tool choice (``tool_choice`` ``tool`` / ``any``: a 400); for them a call that
 # must use one tool is sent with ``auto`` and a line asking for that tool. Others are learned from the 400.
 _NO_FORCED_TOOL_CHOICE = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1")
@@ -940,6 +986,37 @@ def _refuses_forced_tool_choice(model: str) -> bool:
 def _is_forced_tool_choice_refusal(exc: Exception) -> bool:
     text = _error_text(exc).lower()
     return getattr(exc, "status_code", None) == 400 and "tool_choice" in text and "not supported" in text
+
+
+STEP_TOOL_DESCRIPTION = "One step: a tool to call, or the final answer."
+
+
+def _without_thought(tools: List[Dict[str, Any]], step_tool: Optional[str]) -> List[Dict[str, Any]]:
+    """The agent's step tool (``step_tool``, the one a forced or requested call names) without its ``Thought``
+    field. Claude models decline a request whose tool asks them to write out their reasoning
+    (``stop_reason: "refusal"``, category ``reasoning_extraction``): tested on claude-opus-5 and claude-opus-5-5,
+    every request was declined with the field and none without it. The runner reads a missing ``Thought`` as "".
+    Other tools are left alone; ``tools`` itself is not changed."""
+    if not step_tool:
+        return tools
+    out = []
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("name") != step_tool:
+            out.append(tool)
+            continue
+        key = "input_schema" if "input_schema" in tool else "parameters"
+        schema = dict(tool.get(key) or {})
+        properties = dict(schema.get("properties") or {})
+        if "Thought" not in properties:
+            out.append(tool)
+            continue
+        properties.pop("Thought")
+        schema["properties"] = properties
+        if isinstance(schema.get("required"), list):
+            schema["required"] = [name for name in schema["required"] if name != "Thought"]
+        schema["description"] = STEP_TOOL_DESCRIPTION
+        out.append({**tool, key: schema, "description": STEP_TOOL_DESCRIPTION})
+    return out
 
 
 def _ask_for_tool(conversation: List[Dict[str, Any]], tool: str) -> List[Dict[str, Any]]:
@@ -2102,6 +2179,7 @@ class Claude(BaseChatModel):
                 cache_read_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
                 cache_creation_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
             )
+        _check_stop(str(self.model_name), self.max_tokens, response)
 
     def Initialize(self, messages) -> str:
         system_prompt, conversation = self._split_messages(messages)
@@ -2191,7 +2269,7 @@ class Claude(BaseChatModel):
         *,
         force_tool: Optional[str] = None,
     ) -> Dict[str, Any]:
-        normalized = [_normalize_tool_spec_for_anthropic(t) for t in tools]
+        normalized = [_normalize_tool_spec_for_anthropic(t) for t in _without_thought(tools, force_tool)]
         normalized = self._prepare_tools_for_cache(normalized)
         system_prompt, conversation = self._split_messages(messages)
         system_prompt = self._prepare_system_for_cache(system_prompt)
@@ -2250,7 +2328,7 @@ class Claude(BaseChatModel):
             api_key=self._api_key,
             timeout=self._timeout,
         )
-        normalized = [_normalize_tool_spec_for_anthropic(t) for t in tools]
+        normalized = [_normalize_tool_spec_for_anthropic(t) for t in _without_thought(tools, force_tool)]
         normalized = self._prepare_tools_for_cache(normalized)
         system_prompt, conversation = self._split_messages(messages)
         system_prompt = self._prepare_system_for_cache(system_prompt)

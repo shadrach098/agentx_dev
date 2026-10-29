@@ -10,7 +10,7 @@ from .Runner.Persistence import Persistence
 from .ChatModel import (
     BaseChatModel, GPT, Claude,
     StructuredOutputRunnable,
-    TokenBucket, TokenUsage, RetryBudgetExceeded, CostBudgetExceeded,
+    TokenBucket, TokenUsage, RetryBudgetExceeded, CostBudgetExceeded, ModelDeclined,
 )
 from .Tools import StandardTool, StructuredTool
 from .Config import config, get_config, set_config
@@ -121,6 +121,7 @@ __all__ = [
     "TokenUsage",
     "RetryBudgetExceeded",
     "CostBudgetExceeded",
+    "ModelDeclined",
 
     # Configuration
     "config",

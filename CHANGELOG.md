@@ -59,6 +59,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **Claude: every agent request was declined on claude-opus-5 and claude-opus-5-5.** The agent's step tool asked
+  for a `Thought` (the model's reasoning, written out), and these models decline a request that asks for their
+  reasoning (`stop_reason: "refusal"`, category `reasoning_extraction`) before writing anything: `agentx` showed
+  nothing at all, or "unrecognized action". The step tool is now sent to Claude without its `Thought` field
+  (GPT keeps it). And a decline, or `max_tokens` used up with nothing written, now raises `ModelDeclined` with the
+  provider's reason (also in `agentx.log`) instead of returning an empty answer.
 - **Evals: failed tool calls were never counted.** The count looked for results starting with "ToolError" in
   `completion.tool_calls`, which lists only the calls that worked, so it was always 0. It now counts them from the
   run log, recovered ones included.
