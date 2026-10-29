@@ -1555,3 +1555,15 @@ def test_the_runner_takes_the_step_limit(tmp_path):
     app, out, _, _ = make_app(tmp_path, Lines("/settings", "/exit"), MockModel(script=[]), max_steps=77)
     app.start()
     assert app.session.runner.max_iterations == 77 and "Steps a message may take: 77" in out.getvalue()
+
+
+def test_continue_after_the_step_limit_picks_up_where_it_stopped(tmp_path):
+    from agentx_dev.cli.app import CARRY_ON_NOTE, _is_carry_on
+    steps = [make_react_response("list_directory", {"path": "."}) for _ in range(3)] + [make_final("finished")]
+    model = MockModel(script=steps)
+    app, out, cwd, _ = make_app(tmp_path, Lines("look around", "continue", "continue", "/exit"), model, max_steps=2)
+    app.start()
+    sent = [str(call) for call in model.calls]
+    assert any("Carry on from its last step" in s for s in sent)               # the "continue" after the stop
+    assert _is_carry_on("Continue.") and _is_carry_on("go on please") and not _is_carry_on("continue the docs work but first explain why the tests fail and what you plan to change in every file you touched")
+    assert not _is_carry_on("why did it stop?") and CARRY_ON_NOTE.startswith("\n\n[agentx]")

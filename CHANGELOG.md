@@ -74,7 +74,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   are now read from Anthropic's cache on the next step, billed and counted at about a tenth.
 - **`agentx`: a run that hits the step limit shows what it did.** It ended with nothing on the screen; it now shows
   the summary and says to type `continue`. The limit is 300 steps a message (was 50): `"maxSteps"` in your settings
-  or `--max-steps` changes it.
+  or `--max-steps` changes it. A short "continue" (or "go on", "carry on", "keep going") right after that stop
+  tells the agent to pick up from its last step instead of re-running the checks already in the conversation.
 - **`agentx`: a team job saves every helper's work as it goes**, in `.agentx/team/<date>-<task>/` (`job.md` and one
   file per step with the helper's whole report), and the finished reports join the project's `recall` index: a
   closed terminal no longer loses the research.

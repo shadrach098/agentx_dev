@@ -51,6 +51,20 @@ INIT_PROMPT = (
     "already exists, tell me instead of overwriting it."
 )
 
+# After a turn that stopped at the step limit, "continue" re-ran checks whose results were already in the conversation
+# (git status, the typecheck) before going on, at the price of a whole conversation's worth of tokens each time.
+CARRY_ON_WORDS = ("continue", "go on", "carry on", "keep going", "resume", "proceed", "go ahead")
+CARRY_ON_NOTE = ("\n\n[agentx] Your last turn stopped at the step limit. Everything it did is above in this "
+                 "conversation. Carry on from its last step: do not re-run checks or re-read files whose results are "
+                 "already above unless something changed them since; run checks again only once you have changed "
+                 "something.")
+
+
+def _is_carry_on(text: str) -> bool:
+    words = " ".join(str(text or "").lower().replace(",", " ").replace(".", " ").replace("!", " ").split())
+    return bool(words) and len(words) <= 40 and any(words == w or words.startswith(w + " ") for w in CARRY_ON_WORDS)
+
+
 NOT_A_TERMINAL = "agentx needs an interactive terminal (headless mode is not available yet)."
 # The "What's new" lines of the start screen: the newest changes a user would notice, kept to three.
 WHATS_NEW = (
@@ -266,6 +280,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         self._last_turn_usage: Optional[Tuple[int, int, int, int]] = None
         self.token_limit = max(0, int(token_limit or 0))   # tokens one message may use before asking; 0 is off
         self.max_steps = max(1, int(max_steps or DEFAULT_MAX_STEPS))   # steps the agent may take for one message
+        self._stopped_at_step_limit = False        # the last turn ended at the step limit (see CARRY_ON_NOTE)
         self._limit_lock = threading.Lock()
         self._turn_start: Optional[int] = None    # tokens used before the running turn; None outside a turn
         self._turn_start_sent = 0                  # the same, every input token counted in full
@@ -536,6 +551,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         if not answered and content.strip():
             self.screen.show_event({"type": "final", "content": content})
         if outcome == "iteration_limit":
+            self._stopped_at_step_limit = True
             limit = getattr(getattr(self.session, "runner", None), "max_iterations", None)
             steps = f" ({limit} steps)" if isinstance(limit, int) else ""
             self.notice(f"Stopped at the step limit{steps} before finishing. Type \"continue\" to carry on from "
@@ -639,6 +655,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
             self._maybe_compact()
             self.progress.start("Thinking")
             sent = text
+            if self._stopped_at_step_limit and _is_carry_on(text):
+                sent = text + CARRY_ON_NOTE
+            self._stopped_at_step_limit = False
             if self._recall_next:                      # the first message of a fresh conversation: add close notes
                 self._recall_next = False
                 if self.project_memory is not None:
