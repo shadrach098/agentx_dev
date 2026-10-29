@@ -185,6 +185,24 @@ The prompt prints exactly what `a` will remember.
 - During a turn, Ctrl+C aborts the turn. Changes already made in that turn stay on disk; they are not undone. The interrupted turn is not recorded in the conversation, so the model will not remember it. Earlier turns are kept.
 - At an idle prompt, Ctrl+C prints a reminder. Use `/exit` or Ctrl+D to leave.
 
+### Typing while it works
+
+You do not have to wait for the agent to finish. While the spinner runs, type and press Enter:
+
+- **A message** goes to the agent at its next step (after the tool call it is making), so it can change course: "also
+  check the footer", "use the existing button style", "stop after the server part". The line being typed shows under
+  the spinner; `the agent read your message` is printed when it gets it. A message the agent did not get before it
+  finished becomes your next message.
+- **During a team job** a message goes to the team instead: each running helper reads it at its next step, steps not
+  started yet begin with it, and the main agent reads it in the job's result, so work the team did not do (a step
+  you want added) is done next by the agent or another team job.
+- **`/skip <step>`** during a team job skips a step that has not started: its number in `Team plan:` (`/skip 3`) or its
+  helper's name (`/skip account-ui-builder`). A running step finishes; Ctrl+C stops the whole job.
+- **Another command** (`/model`, `/settings`, ...) is kept and runs when the agent is done.
+
+Backspace, Esc (clears the line), Ctrl+U and Ctrl+W work while typing. Approval prompts and questions get the keys as
+before: nothing is read from the keyboard while one is open. On a pipe (not a terminal) nothing is read.
+
 ## Default protections
 
 These deny rules are always on, in every mode, `accept-edits` included. They refuse writing, editing, deleting and moving (a move is refused when either side matches, and when the destination is an existing folder, when the final path `folder/<name>` matches) and they are not asked about:
@@ -551,6 +569,7 @@ The helpers work in the background: their individual tool calls are not printed.
 
 - When a step ends, its line is printed for good, with the start of its report (up to 160 characters) under it: `✓ explorer · security audit  Done (20 tool uses · 41k tokens · 1m 30s)`, `◐ ... Partial (ran out of steps)`, `✗ ... Failed` with the error, or `– ... Skipped` (a step whose dependency failed, or one not started because you said to wrap up). An empty report shows `(no report)`.
 - Approvals still appear when a helper needs one, one at a time, with a `Helper:` line naming who asks; the block steps aside for the prompt and comes back after it.
+- You can type while the team works: a note reaches the running helpers at their next step, and `/skip 3` skips step 3 if it has not started (see "Typing while it works").
 - **`/team log`** lists every call each step of the last team job made, with a one-line result under each (`read_path  src/app.ts` / `⎿ Read 120 lines`). It covers the last job of this session; it is not saved with the conversation.
 
 The planner or a helper may need a fact only you have. It is asked as `Team question: ...` (a long question is cut at 12 lines and 1,500 characters) with `Answer (Enter to skip):`. Enter, Ctrl+D or Ctrl+C at that question skips it, and the team goes on without the answer; at most 3 questions are asked per job.
@@ -635,7 +654,7 @@ The agent is then refused every time it tries, in every mode, `auto` included. T
 - There is no memory between jobs. Each step is a fresh helper (the supervisor passes earlier results along), built for the job from the model in use at that moment (and from the helper models list at that moment), so `/model` and `/team-models` apply from the next job.
 - A failed step is not retried, because a retry would repeat what the helper already did. A step that depends on the failed one is skipped, and the result lists each step as done, partial (ran out of steps), failed or skipped.
 - A step is at most 100 model steps for the helper, and a job at most 6 plan steps. A helper that runs out of steps does not fail its step: what it did is handed on marked partial (`partial (ran out of steps)` in the result, `(This helper ran out of steps before finishing, so this is partial work ...)` in its report), and the steps after it, such as the runner that tests the coder's edits, still run. The live line reads `partial (coder): (This helper ran out of steps ...`.
-- The task the agent passes is at most 4,000 characters and its reason at 500; longer text is refused with a message, not cut.
+- The task the agent passes is at most 12,000 characters and its reason at 500; longer text is refused with a message, not cut.
 - A team job makes many model calls: expect it to cost much more than a normal turn, and more still when a step runs on a pricier model.
 - At most 4 extra models; the planner always runs on the chat's model.
 
@@ -777,7 +796,8 @@ the status line stay at the bottom, while only the conversation between them scr
 - To select text with the mouse, hold **Shift** while you drag (the mouse wheel belongs to agentx in this mode).
 - Questions (approvals, the token limit, pick-lists) are asked in the fixed area above the input, so they never
   scroll away; the keys are the same as on the normal screen.
-- You can type while the agent works: a message sent then is kept and sent when the agent is done.
+- You can type while the agent works: a message reaches the agent at its next step, or the team during a team job,
+  and `/skip <step>` skips a team step, as on the normal screen (see "Typing while it works").
 - Ctrl+C stops the agent as before; Ctrl+D on an empty input leaves.
 - When agentx exits the window goes back to what it was, and the whole conversation is written to the terminal
   once, so it is in the terminal's scrollback.

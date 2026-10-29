@@ -85,7 +85,11 @@ class TeamCommands:
         if kind == "plan":
             steps = data.get("steps") or []
             self._team_steps = (0, len(steps))
+            self._team_plan = [step for step in steps if isinstance(step, dict)]
             self.screen.team_plan(steps)
+            if getattr(self.progress, "typeahead", None) is not None or self.fullscreen:
+                self.notice("Type while the team works: a note reaches the helpers at their next step; /skip <step> "
+                            "drops a step not started yet.")
             self.progress.start("Starting the team")
         elif kind == "dispatch":
             self._team_running.append(str(data.get("agent", "")))

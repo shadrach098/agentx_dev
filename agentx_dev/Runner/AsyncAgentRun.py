@@ -22,6 +22,10 @@ from agentx_dev.Runner.AgentRun import (
     AgentRunner,
     ToolRegistry,
     _is_terminal_action,
+    _is_empty_step,
+    _take_interjections,
+    EMPTY_STEP_NOTE,
+    EMPTY_STEP_RETRIES,
     _coerce_runner_input,
     _coerce_runner_input_media,
     _text_turn_nudge_message,
@@ -30,7 +34,7 @@ from agentx_dev.Runner.AgentRun import (
     _ParserRecoverableError,
     _salvage_react_json,
 )
-from typing import Dict, Callable, List, Type, Optional, Any, AsyncIterator
+from typing import Dict, Callable, List, Type, Optional, Any, AsyncIterator, Sequence
 from pydantic import BaseModel, Field
 import asyncio
 import json
@@ -105,6 +109,9 @@ class AsyncAgentRunner(PersistenceMixin):
     for the modern "parallel tool calls per turn" pattern where every
     tool_use block in one assistant response is dispatched concurrently.
     """
+
+    #: See ``AgentRunner.interjections``: messages the user sent while the run was going, added before each step.
+    interjections: Optional[Callable[[], Sequence[str]]] = None
 
     def __init__(
         self,
@@ -687,8 +694,10 @@ class AsyncAgentRunner(PersistenceMixin):
 
         # Remaining re-prompts for turns that produce prose but no action.
         nudge_budget = self.text_turn_nudges
+        empty_steps = 0
 
         while count <= self.max_iterations:
+            _take_interjections(self, working_history)      # see AgentRunner.interjections
             if state is not None:
                 await state.abefore_turn(self.model)
                 state.drain()          # the async runner has no event stream; drop them
@@ -1046,6 +1055,17 @@ class AsyncAgentRunner(PersistenceMixin):
                         # model that keeps calling it would retry until the turn limit.
                         state.after_turn(working_history, [(action, action_input, error_content, True)])
                         state.drain()
+                    count += 1
+                    continue
+
+                if _is_empty_step(action, action_input) and empty_steps < EMPTY_STEP_RETRIES \
+                        and count < self.max_iterations:
+                    empty_steps += 1
+                    tc_id = getattr(self, "_last_function_call_id", None) if self.use_function_calling else None
+                    working_history.append(_tool_observation_message(
+                        EMPTY_STEP_NOTE, tool_call_id=tc_id, name="tool_call_error",
+                    ))
+                    self._last_function_call_id = None
                     count += 1
                     continue
 

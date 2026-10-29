@@ -35,7 +35,7 @@ from agentx_dev.Supervisor import Specialist, SubtaskResult, _plan_uses_deps, _r
 from agentx_dev.Tools import StructuredTool
 
 TEAM_TOOL_NAME = "start_team_job"
-MAX_TASK_CHARS = 4000
+MAX_TASK_CHARS = 12_000             # a job with the findings it builds on (at 4,000 a real job was refused twice)
 MAX_WHY_CHARS = 500
 MAX_RESULT_CHARS = 20_000            # the whole report reaches the chat (at 6,000 an audit lost most findings)
 HELPER_STEPS = 100                   # a coder on a real change needs room (50 ran out mid-change)
@@ -55,6 +55,10 @@ REPEAT_READ_NOTE = ("Not read again: {path} was already read in full {count} tim
                     "changed since. Use what you found in it, grep it for the part you need, or read a part with "
                     "offset and limit.")
 NOT_STARTED = "not started: the user chose to wrap up at the token limit"
+SKIPPED_BY_USER = "skipped: the user asked to skip this step while the team worked"
+USER_NOTES = ("The user wrote this while the team worked (helpers that were running read it at their next step; "
+              "steps that started later had it from the start):\n{notes}\nIf it asks for something the team did not "
+              "do, do it yourself or start another team job.")
 STEP_BUDGET_NOTE = ("Not run: this step has used its share of the token limit ({used:,} of {share:,} tokens). Stop "
                     "calling tools and write your report now: what you found, with file paths, and what is left "
                     "undone.")
@@ -114,11 +118,40 @@ class JobStopped(KeyboardInterrupt):
 
 
 class _Job:
-    """What every step of one team job shares: whether the job is over, and each step's token share."""
+    """What every step of one team job shares: whether the job is over, each step's token share, the notes the user
+    typed while it ran (``add_note``) and the steps they asked to skip (``skip``)."""
 
     def __init__(self, step_tokens: int = 0) -> None:
         self.stopped = False
         self.step_tokens = max(0, int(step_tokens or 0))
+        self.notes: List[str] = []
+        self.skips: set = set()
+        self._lock = threading.Lock()
+
+    def add_note(self, text: str) -> None:
+        with self._lock:
+            self.notes.append(str(text))
+
+    def new_notes(self) -> List[str]:
+        """The notes the running step's helper has not been given yet (all of them for a step that just started):
+        a helper's ``interjections``, so a running helper reads a note at its next step."""
+        status = _running_status.get()
+        if status is None:
+            return []
+        with self._lock:
+            fresh = self.notes[status.notes_seen:]
+            status.notes_seen = len(self.notes)
+        return fresh
+
+    def skip(self, which: str) -> None:
+        with self._lock:
+            self.skips.add(str(which).strip().lower())
+
+    def skipped(self, number: Optional[int], names: Sequence[str]) -> bool:
+        with self._lock:
+            if number is not None and str(number) in self.skips:
+                return True
+            return any(str(name).strip().lower() in self.skips for name in names if name)
 
 
 class StepStatus:
@@ -141,6 +174,7 @@ class StepStatus:
         self.files: Dict[str, None] = {}
         self.skills: Dict[str, None] = {}
         self.log: List[Tuple[str, Dict[str, Any], str, bool]] = []
+        self.notes_seen = 0                          # how many of the user's notes this step's helper was given
         self._lock = threading.Lock()
 
     def note_call(self, name: str, args: Dict[str, Any], result: Any) -> None:
@@ -374,6 +408,30 @@ class _Pump:
 
 _active: Optional[_Pump] = None
 _active_lock = threading.Lock()
+_active_job: Optional[_Job] = None
+
+
+def team_note(text: str) -> bool:
+    """Hand ``text`` (typed by the user while a team job runs) to that job: each running helper reads it at its next
+    step, a step that starts later is given it at once, and the main agent reads it in the job's result. False when
+    no team job is running."""
+    with _active_lock:
+        job = _active_job
+    if job is None or job.stopped:
+        return False
+    job.add_note(text)
+    return True
+
+
+def skip_team_step(which: str) -> bool:
+    """Skip the running job's step ``which`` (its number in the plan, or its helper's or role's name) if it has not
+    started. False when no team job is running."""
+    with _active_lock:
+        job = _active_job
+    if job is None or job.stopped:
+        return False
+    job.skip(which)
+    return True
 
 
 def on_main(fn: Callable[..., Any], *args: Any, wait: bool = True) -> Any:
@@ -499,6 +557,7 @@ class _HelperRunner(AgentRunner):
         try:
             runner = AgentRunner(*settings_args, **{**settings, "tools": [_step_tool(tool, step) for tool in
                                                                            settings.get("tools") or []]})
+            runner.interjections = self.interjections        # the user's notes, typed while the team works
             completion = runner.Initialize(*args, **kwargs)
         except Exception as error:
             try:
@@ -703,10 +762,14 @@ class TeamSupervisor(AsyncSupervisor):
     def __init__(self, *args: Any, on_start: Optional[Callable[[str, str, StepStatus], None]] = None,
                  closed: Optional[Callable[[], Any]] = None,
                  make_helper: Optional[Callable[[str, str, List[str], str], Any]] = None,
-                 models: Sequence[Tuple[str, str]] = (), **kwargs: Any) -> None:
+                 models: Sequence[Tuple[str, str]] = (),
+                 skipped: Optional[Callable[[Optional[int], Sequence[str]], bool]] = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._on_start = on_start
         self._closed = closed
+        # skipped(number, names): whether the user asked to skip a step (its number on the screen, its names)
+        self._skipped = skipped
+        self._numbers: Dict[Tuple[str, str], int] = {}    # (agent, query) -> the step's number in the shown plan
         # make_helper(name, instructions, tool names, model) builds a helper the planner defined; None: no new helpers
         self._make_helper = make_helper
         # (model, what it is good for) a new helper may run on, the chat's first; one model: no choice offered
@@ -784,7 +847,21 @@ class TeamSupervisor(AsyncSupervisor):
                 tools = spec.get("tools") or []
                 if isinstance(tools, list) and all(tool in READING_TOOLS for tool in tools):
                     self._planned_readers.add(spec["name"])
-        return _ordered(plan, self._reads_only)
+        ordered = _ordered(plan, self._reads_only)
+        steps = [item for item in ordered if isinstance(item, dict)]
+        for number, item in enumerate(steps, 1):              # numbered as the plan on the screen is
+            self._numbers.setdefault((str(_step_agent_name(item) or ""), str(item.get("query", ""))), number)
+        return ordered
+
+    def _user_skipped(self, agent_name: str, query: str) -> bool:
+        if self._skipped is None:
+            return False
+        key = (str(agent_name), str(query))
+        names = [str(agent_name), self._roles.get(key, ""), self.shown_for(agent_name, query)]
+        try:
+            return bool(self._skipped(self._numbers.get(key), names))
+        except Exception:                           # a broken check must not stop the job
+            return False
 
     def spawn_specialist(self, spec: AgentSpec) -> Tuple[Optional[str], str]:
         """A helper the planner defined: built the way the built-in ones are (the same gated tools, step wrapping,
@@ -821,6 +898,8 @@ class TeamSupervisor(AsyncSupervisor):
         async with self._step_lock.hold(alone=not self._reads_only(agent_name)):
             if self._wrapping_up():
                 return SubtaskResult(agent=agent_name, query=query, content="", error=NOT_STARTED, skipped=True)
+            if self._user_skipped(agent_name, query):
+                return SubtaskResult(agent=agent_name, query=query, content="", error=SKIPPED_BY_USER, skipped=True)
             status = StepStatus(next(self._slots), self.shown_for(agent_name, query), self.label_of(agent_name, query),
                                 query)
             _running_status.set(status)             # this task's context: asyncio.to_thread hands it to the helper
@@ -908,6 +987,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
 
     Ctrl+C (``KeyboardInterrupt``) and ``SystemExit`` propagate, with the Supervisor's stream closed; any other
     error becomes a short failure result for the main agent to read."""
+    global _active_job
     job = _Job(step_tokens)
     pump = _Pump()
 
@@ -921,6 +1001,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                                 chat_use=chat_use, skills=skills)
         for _, runner in helpers.values():
             runner.job = job
+            runner.interjections = job.new_notes
         by_name = {tool.name: tool for tool in tools}
         pool = [tool for tool in tools if tool.name not in NOT_FOR_NEW_HELPERS]
 
@@ -936,6 +1017,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             runner = _helper(role, models.get(model_name, model), by_name, addendum, describe_error, skills, shown,
                              every_mcp_tool=False)
             runner.job = job
+            runner.interjections = job.new_notes
             return runner
 
         # New helpers pick their tools from the same gated tools (no delete, move, team or delegate); max_depth=0
@@ -945,6 +1027,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             model=model, agents=helpers, max_subtasks=MAX_SUBTASKS, verbose=False, max_subtask_retries=0,
             max_plan_retries=1, ask_user=asker, max_questions=MAX_QUESTIONS, spawn_config=spawning,
             max_parallel=PARALLEL_HELPERS, closed=closed, make_helper=make_helper, models=offered,
+            skipped=job.skipped,
             on_start=lambda agent, query, status: (
                 record.started(status) if record is not None else None,
                 tell("dispatch", {"agent": str(agent), "query": str(query), "label": status.label,
@@ -977,13 +1060,26 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                     result = event.get("result")
         return result
 
+    with _active_lock:
+        _active_job = job
     try:
         result = _run_on_loop(consume, job, pump)
     except Exception as error:                     # KeyboardInterrupt and SystemExit are not Exceptions
-        return _recorded(record, _failure(error, describe_error))
+        return _recorded(record, _with_notes(_failure(error, describe_error), job))
+    finally:
+        with _active_lock:
+            if _active_job is job:
+                _active_job = None
     if result is None:
-        return _recorded(record, f"Team job ended without a result. {MAY_HAVE_CHANGED}")
-    return _recorded(record, format_result(result))
+        return _recorded(record, _with_notes(f"Team job ended without a result. {MAY_HAVE_CHANGED}", job))
+    return _recorded(record, _with_notes(format_result(result), job))
+
+
+def _with_notes(text: str, job: _Job) -> str:
+    """The job's result, then what the user typed while it ran, so the main agent acts on it."""
+    if not job.notes:
+        return text
+    return f"{text}\n\n" + USER_NOTES.format(notes="\n".join(f"- {note}" for note in job.notes))
 
 
 def _recorded(record: Any, text: str) -> str:

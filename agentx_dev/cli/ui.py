@@ -88,6 +88,8 @@ class Progress:
         # ``drawn_by()`` so the screen redraws.
         self.drawn_by: Optional[Callable[[], None]] = None
         self._shown = False
+        # A ``TypeAhead`` (normal screen only): it reads keys while the spinner runs and its line is drawn below it
+        self.typeahead: Any = None
 
     @property
     def enabled(self) -> bool:
@@ -105,7 +107,23 @@ class Progress:
                 extra = self.board()
             except Exception:                        # the block is a help: a drawing error must not stop the spinner
                 extra = None
+        typed = self._typed_line()
+        if typed is not None and self._spinner is not None:
+            return Group(*([extra] if extra is not None else []), self._spinner, typed)
         return Group(extra, self._spinner) if extra is not None and self._spinner is not None else self._spinner
+
+    def _typed_line(self) -> Any:
+        """The message being typed while the agent works (None when nothing is typed)."""
+        try:
+            text = self.typeahead.line() if self.typeahead is not None else ""
+        except Exception:
+            return None
+        if not text:
+            return None
+        line = Text("❯ ", style=f"bold {ACCENT}")
+        line.append(plain(text)[-300:])
+        line.append("▌  Enter sends it to the agent at its next step · Esc clears", style="dim")
+        return line
 
     def renderable(self) -> Any:
         """What full-screen mode draws for the spinner (with its block), or None when it is not running."""
@@ -130,6 +148,8 @@ class Progress:
             self._live.start()
         except Exception:
             self._live = None
+        if self._live is not None and self.typeahead is not None:
+            self.typeahead.resume()
 
     def _redraw(self) -> None:
         try:
@@ -138,6 +158,8 @@ class Progress:
             pass
 
     def stop(self) -> None:
+        if self.typeahead is not None:
+            self.typeahead.pause()                   # before any prompt: it must get every key
         if self._shown:
             self._shown = False
             self._redraw()

@@ -7,7 +7,7 @@ from agentx_dev.Runner.Persistence import (
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Runner.Trim import coerce_trim_policy as _coerce_trim_policy, trim_tool_results
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
-from typing import Dict, Callable, List, Type, Optional, Any
+from typing import Dict, Callable, List, Type, Optional, Any, Sequence
 from pydantic import BaseModel, Field
 
 import asyncio
@@ -342,6 +342,42 @@ def _is_terminal_action(action: str) -> bool:
         return False
     normalized = action.strip().lower().replace(" ", "_").replace("-", "_")
     return normalized in _TERMINAL_ACTION_VARIANTS
+
+
+# A step with no action and no answer (often a reply cut off by the output limit) is asked for again this many
+# times in a run before the run ends with "unrecognized action".
+EMPTY_STEP_RETRIES = 2
+EMPTY_STEP_NOTE = (
+    "[framework] error: your last step had no action and no answer; it may have been cut off by the output limit. "
+    "Call a tool, or give action=\"Final_Answer\" with your answer in action_input. If the answer was long, give a "
+    "shorter one."
+)
+
+
+# How a message the user typed while the agent worked is put into the run (see ``AgentRunner.interjections``).
+INTERJECTION_PREFIX = "[The user wrote this while you were working; take it into account from now on]\n"
+
+
+def _take_interjections(runner: Any, history: List[Dict[str, Any]]) -> List[str]:
+    """The messages ``runner.interjections()`` hands over, each added to ``history`` as a user message. A broken
+    source gives none: it must never stop the run."""
+    source = getattr(runner, "interjections", None)
+    if source is None:
+        return []
+    try:
+        texts = [str(text).strip() for text in (source() or [])]
+    except Exception:
+        logger.warning("interjections source raised; ignored", exc_info=True)
+        return []
+    texts = [text for text in texts if text]
+    for text in texts:
+        history.append({"role": "user", "content": INTERJECTION_PREFIX + text})
+    return texts
+
+
+def _is_empty_step(action: Any, action_input: Any) -> bool:
+    """True for a step with neither an action nor any answer text."""
+    return not str(action or "").strip() and (not action_input or not str(action_input).strip())
 
 
 # Proactive counterpart to the text-turn nudge. The nudge REACTS after a
@@ -1435,6 +1471,11 @@ class AgentRunner(PersistenceMixin):
     For the async equivalent, see :class:`AsyncAgentRunner`.
     """
 
+    #: ``interjections()``, when set, returns the messages the user sent while the run was going (an empty list
+    #: when there are none). It is called before every step; each message is added to the run as
+    #: a user message, and ``stream`` yields ``{"type": "interjection", "content": text}`` for it.
+    interjections: Optional[Callable[[], Sequence[str]]] = None
+
     def __init__(
         self,
         model: BaseChatModel,
@@ -2197,8 +2238,11 @@ class AgentRunner(PersistenceMixin):
 
         # Remaining re-prompts for turns that produce prose but no action.
         nudge_budget = self.text_turn_nudges
+        empty_steps = 0
 
         while count <= self.max_iterations:
+            for text in _take_interjections(self, working_history):
+                yield {"type": "interjection", "content": text}
             if state is not None:
                 state.before_turn(self.model)
                 yield from state.drain()
@@ -2745,6 +2789,17 @@ class AgentRunner(PersistenceMixin):
                         # model that keeps calling it would retry until the turn limit.
                         state.after_turn(working_history, [(action, action_input, error_content, True)])
                         yield from state.drain()
+                    count += 1
+                    continue
+
+                if _is_empty_step(action, action_input) and empty_steps < EMPTY_STEP_RETRIES \
+                        and count < self.max_iterations:
+                    empty_steps += 1
+                    tc_id = getattr(self, "_last_function_call_id", None) if self.use_function_calling else None
+                    working_history.append(_tool_observation_message(
+                        EMPTY_STEP_NOTE, tool_call_id=tc_id, name="tool_call_error",
+                    ))
+                    self._last_function_call_id = None
                     count += 1
                     continue
 

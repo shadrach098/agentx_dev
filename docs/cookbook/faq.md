@@ -777,6 +777,14 @@ each step ends. The finished reports are searched by `recall` with the project's
 `~/.agentx/settings.json`). The planner reads the notes when it picks a model for each step. See
 [pattern 36](patterns.md) and [pattern 43](patterns.md#43-move-agentx-from-gpt-to-claude-next-release).
 
+## Can I add to the task while `agentx` is working? *(next release)*
+
+Yes. Type while the spinner runs and press Enter: the agent reads the message at its next step. During a team job
+the message goes to the helpers (the running ones at their next step, later steps from the start) and to the main
+agent in the job's result, so work you add gets done; `/skip 3` (or `/skip <helper>`) skips a step not started yet.
+A command typed then (`/model ...`) runs when the agent is done. See
+[Typing while it works](../guides/cli.md#typing-while-it-works).
+
 ## Where's the source of truth for each feature?
 
 Every feature has its own module under `agentx_dev/`. The docs cross-

@@ -514,12 +514,24 @@ def windows_user_env() -> Dict[str, str]:
     """The environment variables saved for the user on Windows (``setx``, the Environment Variables dialog). A
     running program does not see one saved after it started; ``/mcp reload`` reads them here. Empty elsewhere, or
     when they cannot be read."""
+    return _windows_env(machine=False)
+
+
+def windows_system_env() -> Dict[str, str]:
+    """The system-wide environment variables saved on Windows (the "System variables" list). Empty elsewhere, or
+    when they cannot be read."""
+    return _windows_env(machine=True)
+
+
+def _windows_env(machine: bool) -> Dict[str, str]:
     if sys.platform != "win32":
         return {}
     try:
         import winreg
         found: Dict[str, str] = {}
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+        root = winreg.HKEY_LOCAL_MACHINE if machine else winreg.HKEY_CURRENT_USER
+        path = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment" if machine else "Environment"
+        with winreg.OpenKey(root, path) as key:
             index = 0
             while True:
                 try:

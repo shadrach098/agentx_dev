@@ -121,6 +121,8 @@ class FullScreen:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._closed = False
         self.progress: Any = None
+        # on_typed(text): a message typed while the agent works, handed to the app (set by agentx's main)
+        self.on_typed: Optional[Callable[[str], Any]] = None
         self._toolbar = safe_toolbar(toolbar)
         self._cycle_mode = cycle_mode
         self.console = Console(file=_Sink(self._append), force_terminal=True, color_system="truecolor",
@@ -375,10 +377,24 @@ class FullScreen:
         if self.kind() == "chat":
             self._echo_message(text)
             self._answer(text)
+        elif self.on_typed is not None and self.kind() == "" and self._hand_over(text):
+            pass                                    # the app took it (to the agent at its next step, or the team)
         else:                                       # the agent is working: sent when it next asks for a message
             with self._lock:
                 self._queued = text if self._queued is None else self._queued + "\n" + text
             self.console.print(Text("(kept: sent when the agent is done)", style="dim"))
+
+    def _hand_over(self, text: str) -> bool:
+        """``on_typed(text)`` on a worker thread (it prints, and the screen's own thread must stay free)."""
+        handler = self.on_typed
+
+        def run() -> None:
+            try:
+                handler(text)                       # type: ignore[misc]
+            except Exception:
+                pass
+        threading.Thread(target=run, name="agentx-typed", daemon=True).start()
+        return True
 
     def submit_short(self) -> None:
         text = self.short_buffer.text

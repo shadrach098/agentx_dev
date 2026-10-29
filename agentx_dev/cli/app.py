@@ -14,16 +14,17 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rich.console import Console
+from rich.text import Text
 
 from agentx_dev import AgentRunner, AgentType, Session
 from agentx_dev.cli.approval import MODES, Gate
 from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
                                      shown)
 from agentx_dev.cli.context import build_addendum
-from agentx_dev.cli.mcp import (MCPManager, windows_user_env)
+from agentx_dev.cli.mcp import (MCPManager, windows_system_env, windows_user_env)
 from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events
 from agentx_dev.cli.recall import ProjectMemory, auto_block, choose_embeddings, make_recall_tool, worth_a_note
-from agentx_dev.cli.models import (ModelError, build_team_models, choose_model)
+from agentx_dev.cli.models import (ANTHROPIC_KEY, OPENAI_KEY, ModelError, build_team_models, choose_model)
 from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.models import provider_for
 from agentx_dev.cli.safepaths import safe_location
@@ -32,7 +33,9 @@ from agentx_dev.cli.sessions import (SessionInfo, find_session, latest_session, 
 from agentx_dev.cli.settings import (DEFAULT_MAX_STEPS, DEFAULT_TOKEN_LIMIT, MAX_MAX_STEPS, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
                                      read_user_fullscreen, write_user_fullscreen)
-from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, counted_tokens, current_helper, make_team_tool, note_usage, on_main, run_team_job, step_token_share)
+from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, counted_tokens, current_helper, make_team_tool, note_usage, on_main, run_team_job, skip_team_step, step_token_share, team_note)
+from agentx_dev.cli.typeahead import TypeAhead
+from agentx_dev.cli.ui_text import elbow, plain
 from agentx_dev.cli.team_record import TeamRecord
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
@@ -53,6 +56,25 @@ INIT_PROMPT = (
 
 # After a turn that stopped at the step limit, "continue" re-ran checks whose results were already in the conversation
 # (git status, the typecheck) before going on, at the price of a whole conversation's worth of tokens each time.
+KEY_NAMES = (ANTHROPIC_KEY, OPENAI_KEY)
+
+
+def _held(typeahead: TypeAhead, ask: Callable[..., Any]) -> Callable[..., Any]:
+    """``ask`` with the type-ahead reader held off, so the prompt gets every key."""
+    def held(*args: Any, **kwargs: Any) -> Any:
+        with typeahead.hold():
+            return ask(*args, **kwargs)
+    return held
+
+
+def saved_keys() -> Dict[str, str]:
+    """The API keys saved in Windows: the system variables, then the user's own (which win). Empty elsewhere."""
+    found: Dict[str, str] = {}
+    for reader in (windows_system_env, windows_user_env):
+        found.update({name: value for name, value in reader().items() if name in KEY_NAMES})
+    return found
+
+
 CARRY_ON_WORDS = ("continue", "go on", "carry on", "keep going", "resume", "proceed", "go ahead")
 CARRY_ON_NOTE = ("\n\n[agentx] Your last turn stopped at the step limit. Everything it did is above in this "
                  "conversation. Carry on from its last step: do not re-run checks or re-read files whose results are "
@@ -229,6 +251,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         self.progress = Progress(console)
         self.fullscreen = False                    # set by main when agentx runs in full-screen mode
         self._user_env_reader: Callable[[], Mapping[str, str]] = windows_user_env     # for /mcp reload
+        # Keys saved in Windows after this terminal opened; only read when the variables came from this process.
+        self._saved_key_reader: Callable[[], Mapping[str, str]] = saved_keys if env is None else (lambda: {})
         self.progress.board = self._board
         self._team_running: List[str] = []   # the helpers whose steps are running (several when they only read)
         self._team_rows: Dict[int, Any] = {}  # slot -> StepStatus of each running step, drawn above the spinner
@@ -294,6 +318,11 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         self._exit = False
         self._exit_code = 0
         self._plain_input = False          # True once the input line failed and the plain prompt took over
+        # What the user typed while the agent worked (``typed_while_working``), in order: a message is handed to the
+        # agent at its next step (``_take_typed``); a command, and a message the agent did not get, run after.
+        self._typed_lock = threading.Lock()
+        self._typed: List[str] = []
+        self._team_plan: List[Dict[str, Any]] = []   # the running team job's plan, as shown (for /skip)
 
     def _remembering(self, ask: Callable[..., Any]) -> Callable[..., Any]:
         """``ask`` that notes when the user answers "a" at an edit prompt: the gate then switches itself to
@@ -445,6 +474,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         # runner itself, so it is exactly what use_skill can read, and it follows /clear, /resume and a new model.
         tool = next((t for t in runner.tools if t.name == "use_skill"), None)
         self._runner_skills = dict(getattr(tool, "skill_descriptions", None) or {})
+        runner.interjections = self._take_typed
         return runner
 
     def _new_conversation_state(self) -> None:
@@ -481,6 +511,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
     def start(self, resume: Optional[str] = None) -> int:
         """Build the model and the session, then run the chat loop. Returns the exit code."""
         self._show_startup_warnings()
+        self.pick_up_saved_keys()
         try:
             self.model = self.model_factory(self.requested_model, self.env)
         except ModelError as e:
@@ -522,11 +553,86 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         if self.project_settings_created is not None:
             self.notice(f"Created {self._safe(self.project_settings_created, 400)} with this folder's model. "
                         "/model <name> --folder changes it.")
+        self._start_typeahead()
         try:
             return self.loop()
         finally:
+            if getattr(self.progress, "typeahead", None) is not None:
+                self.progress.typeahead.close()
             if self.mcp is not None:
                 self.mcp.close()
+
+    # -- typing while the agent works ----------------------------------------------------------------------
+
+    def _start_typeahead(self) -> None:
+        """On the normal screen, read what is typed while the spinner runs (full-screen mode has its own input)."""
+        if self.fullscreen or not getattr(self.progress, "enabled", False):
+            return
+        typeahead = TypeAhead(self.typed_while_working)
+        if not typeahead.available:
+            return
+        self.progress.typeahead = typeahead
+        for name in ("read_short", "select"):        # a question asked while it works gets every key
+            ask = getattr(self, name)
+            if callable(ask):
+                setattr(self, name, _held(typeahead, ask))
+
+    def typed_while_working(self, text: str) -> bool:
+        """A line typed while the agent worked: ``/skip <step>`` skips a team step at once; another command runs
+        when the agent is done; a message goes to the running team job, else to the agent at its next step."""
+        text = str(text or "").strip()
+        if not text:
+            return True
+        echo = Text("❯ ", style="bold")
+        echo.append(plain(text, keep_newlines=True))
+        self.console.print(echo)
+        word = text.split(None, 1)[0].lower()
+        if word == "/skip":
+            self.notice(self._skip_step(text[len(word):].strip()))
+            return True
+        if text.startswith("/"):
+            with self._typed_lock:
+                self._typed.append(text)
+            self.notice(f"Kept: {self._safe(word, 40)} runs when the agent is done.")
+            return True
+        if team_note(text):
+            self.notice("Sent to the team: running helpers read it at their next step, steps not started yet begin "
+                        "with it, and the agent reads it when the job ends. /skip <step> drops a step.")
+            return True
+        with self._typed_lock:
+            self._typed.append(text)
+        self.notice("Queued: the agent reads it at its next step.")
+        return True
+
+    def _skip_step(self, which: str) -> str:
+        if not which:
+            return "Usage: /skip <step number or helper name>, while a team job runs."
+        steps = list(self._team_plan)
+        number = int(which) if which.isdigit() else None
+        if number is not None and not 1 <= number <= len(steps):
+            return f"No step {number}: the plan has {len(steps)} steps." if steps else "No team job is running."
+        if number is None:
+            wanted = which.lower()
+            if not any(wanted in (str(step.get("agent", "")).lower(), str(step.get("agent", "")).split("@")[0].lower())
+                       for step in steps):
+                return f"No step run by {self._safe(which, 60)!r} in the plan." if steps else "No team job is running."
+        if not skip_team_step(which):
+            return "No team job is running: nothing to skip."
+        shown = f"Step {number}" if number is not None else f"The steps of {self._safe(which, 60)}"
+        return f"{shown} will be skipped if not started yet (a running step finishes)."
+
+    def _take_typed(self) -> List[str]:
+        """The messages typed for the agent since its last step (the main runner's ``interjections``)."""
+        with self._typed_lock:
+            messages = [text for text in self._typed if not text.startswith("/")]
+            self._typed = [text for text in self._typed if text.startswith("/")]
+        return messages
+
+    def _next_typed(self) -> Optional[str]:
+        """The first line typed during the last turn that is still waiting (a command, or a message the agent
+        finished before reading), or None."""
+        with self._typed_lock:
+            return self._typed.pop(0) if self._typed else None
 
     def _team_record(self, task: str) -> Any:
         """Where this team job's plan and every helper's whole report are written as they come: the project's
@@ -589,7 +695,11 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
     def loop(self) -> int:
         while not self._exit:
             try:
-                line = self.read_line("> ")
+                line = self._next_typed()
+                if line is None:
+                    line = self.read_line("> ")
+                else:
+                    self.notice(f"Running what you typed while the agent worked: {self._safe(line, 200)}")
             except EOFError:
                 break
             except KeyboardInterrupt:
@@ -666,6 +776,11 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
             for event in self.session.stream(sent):
                 self.progress.stop()                       # erase the spinner, then print
                 kind = event.get("type") if isinstance(event, dict) else None
+                if kind == "interjection":                 # a message typed while it worked reached the agent
+                    self.screen.flush()
+                    self.console.print(Text(f"  {elbow(self.console)} the agent read your message", style="dim"))
+                    self.progress.start("Thinking")
+                    continue
                 if kind == "completion":
                     self._show_unanswered(event.get("completion"), answered)
                 self.screen.show_event(event)
@@ -981,6 +1096,24 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
             parts = ([f"added {', '.join(added)}"] if added else []) + ([f"removed {', '.join(gone)}"] if gone else [])
             self.notice("Skills reloaded: " + ("; ".join(parts) if parts else "no change") + ".")
 
+    def pick_up_saved_keys(self) -> List[str]:
+        """Add the API keys this run does not have but Windows has saved (``setx``, the Environment Variables
+        dialog): a terminal opened before a key was saved does not pass it on. Says which ones, never the values."""
+        missing = [name for name in KEY_NAMES if not str(self.env.get(name) or "").strip()]
+        if not missing:
+            return []
+        try:
+            saved = self._saved_key_reader() or {}
+        except Exception:
+            return []
+        added = [name for name in missing if str(saved.get(name) or "").strip()]
+        for name in added:
+            self.env[name] = str(saved[name]).strip()
+        if added:
+            self.notice(f"Using {' and '.join(added)} from your saved Windows variables (this terminal was opened "
+                        "before it was set).")
+        return added
+
     def _start_team_job(self, task: str, why: str) -> str:
         """The ``start_team_job`` tool: run the team and hand the result text back to the main agent."""
         refusal = self._team_refusal()
@@ -989,6 +1122,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         if self.model is None:
             return "Refused: no model is available for a team job."
         self._team_jobs += 1
+        self.progress.stop()
+        self.pick_up_saved_keys()                 # a key saved in Windows since agentx started
         if self.team_models:
             self._describe_models()               # a list loaded from settings gets its notes at the first job
         extras, notes = build_team_models(self.team_models, self.env, chat_label=self.model_label,
@@ -1140,6 +1275,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 app.screen.header = screen.set_header
                 app.progress.drawn_by = screen.invalidate
                 screen.progress = app.progress
+                screen.on_typed = app.typed_while_working
 
             return screen.run(lambda: _run(args, home, screen.console, screen.read, screen.read_short, screen.select,
                                            holder, wire))

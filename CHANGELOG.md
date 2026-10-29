@@ -8,6 +8,16 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **`agentx`: type while the agent works.** On the normal screen what you type while the spinner runs shows under it,
+  and Enter sends it to the agent at its next step, so it can change course without waiting. During a team job a
+  message goes to the team: running helpers read it at their next step, later steps start with it, and the main
+  agent reads it in the job's result (to add work). `/skip <step number or helper>` skips a team step not started
+  yet. Another command typed then runs when the agent is done. Full-screen mode does the same (a message typed
+  there used to wait for the end of the turn). Approval prompts still get every key.
+- **`AgentRunner.interjections` and `AsyncAgentRunner.interjections`.** Set it to a function that returns the messages
+  a user sent while the run was going; each is added to the run before the next step, and `stream` yields
+  `{"type": "interjection", "content": ...}` for it.
+
 - **`log=` on `AgentRunner` and `AsyncAgentRunner`: watch a run as it goes.** `log=True` prints one short line per
   step to stderr; a file path appends JSON lines (`.jsonl`) or readable lines; a `logging.Logger` sends them to your
   logging setup; a function receives each event. Lines: the start, each model call (time, tokens in, cached and
@@ -59,6 +69,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **A step with no action and no answer no longer ends the run.** A reply cut off by the output limit (seen with a
+  Claude Sonnet 5.5 helper after 20 tool calls) came back empty and the run ended with "(agent emitted an
+  unrecognized action and no answer text)". The model is now asked again, up to twice per run.
+- **`agentx` finds an API key saved in Windows after the terminal was opened.** A team model on the other provider
+  showed `Not used: gpt-... (no OPENAI_API_KEY)` when the key was set with `setx` or the Environment Variables dialog
+  after the terminal started. agentx now reads a missing `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` from the saved user
+  (then system) variables at start, before each team job and on `/model`, and says which it used (never the value).
+- **A team job's task may be 12,000 characters** (was 4,000): the main agent's detailed tasks were refused twice in
+  one job.
 - **Claude: every agent request was declined on claude-opus-5 and claude-opus-5-5.** The agent's step tool asked
   for a `Thought` (the model's reasoning, written out), and these models decline a request that asks for their
   reasoning (`stop_reason: "refusal"`, category `reasoning_extraction`) before writing anything: `agentx` showed

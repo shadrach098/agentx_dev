@@ -37,6 +37,7 @@ class ModelCommands:
     def switch_model(self, name: str) -> None:
         """Switch the model, keeping the conversation. A model that cannot be built raises (``ModelError``)
         before anything changes, so the old model stays."""
+        self.pick_up_saved_keys()
         model = self.model_factory(name, self.env)
         self.model = model
         self._track_usage_model(self.model_label, model, "chat")

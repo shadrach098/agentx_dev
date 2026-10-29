@@ -253,8 +253,16 @@ again.
 **`Not used: gpt-5.5 (no OPENAI_API_KEY)`**
 A model in `teamModels` has no key in the environment (`ANTHROPIC_API_KEY` for a Claude model).
 It is reported once above the plan and the job runs on the rest; the chat's model is always
-there. Set the key and start `agentx` again, or `/team-models clear`. `/team-models` shows the
-same thing as `Not used now: ...`.
+there. A key saved in Windows (`setx`, or the Environment Variables dialog) after the terminal
+was opened is picked up by itself before the next team job (`Using OPENAI_API_KEY from your saved
+Windows variables`). A key set with `$env:OPENAI_API_KEY = ...` in another terminal is not seen:
+set it in the terminal that runs `agentx`, or save it with `setx`. Or `/team-models clear`.
+`/team-models` shows the same thing as `Not used now: ...`.
+
+**`(agent emitted an unrecognized action and no answer text - try rephrasing or re-run)`**
+The model's last step had neither a tool call nor an answer, usually a long final report cut off
+by the output limit. The runner now asks the model again (up to twice per run) before giving up;
+if you still see it, ask for a shorter report or raise the model's `max_tokens`.
 
 **`Not used: claude-opus-5-5 (No module named 'anthropic' - install agentx-dev[anthropic])` or `Not used: gpt-5.5 (could not be set up: ValueError)`**
 The key is set but the model could not be built. For a Claude model with a GPT chat the usual
