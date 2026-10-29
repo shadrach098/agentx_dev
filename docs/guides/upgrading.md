@@ -15,7 +15,15 @@ module stays imported until you do, which shows up as errors like
 
 ## Upgrading to the release after 3.7.0 (skills)
 
-**One install change; no changed or removed API.**
+**One install change and one new default; no removed API.**
+
+- **Changed: `Claude()` defaults to `claude-opus-5-5`** (was `claude-sonnet-4-6`) **with `max_tokens=16000`** (was
+  4096: Opus 5.5 always thinks, and thinking counts toward the limit). Code that passes `model=` is unaffected. To
+  keep the old behaviour, pass `Claude(model="claude-sonnet-4-6", max_tokens=4096)`. Opus 5.5 costs $4 / $20 per
+  million tokens in / out (Sonnet 4.6: $3 / $15). `agentx` with only an Anthropic key and no model set now uses it.
+- **Fixed for the newest Claude models:** Opus 5.5, Sonnet 5.5 and Fable 5.1 refuse a forced tool choice, which
+  structured output (`output_schema`, the answer parser) used. On those models the call is now sent with
+  `tool_choice: auto` and a line asking for the tool; other models that refuse it are found from the error, once.
 
 - **Changed: a smaller base install.** `chromadb`, `qdrant-client`, `psycopg`, `pandas` and `openpyxl` are no
   longer installed by `pip install agentx-dev` (chromadb alone is hundreds of megabytes). If you use

@@ -87,7 +87,7 @@ def _model(ctx: Any, arg: str) -> None:
             ctx.error("Usage: /model <name> --folder")
             return
         ctx.notice(f"Model: {shown(ctx.model_label)}. Switch for this session with /model <name>, for example "
-                   f"/model gpt-4o-mini or /model claude-sonnet-4-6.{default_hint}")
+                   f"/model claude-opus-5-5 or /model gpt-6.1-sol.{default_hint}")
         return
     try:
         ctx.switch_model(name)

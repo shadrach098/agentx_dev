@@ -64,8 +64,8 @@ take the parameter at all; see [Old and new models](#old-and-new-models).
 from agentx_dev import Claude
 
 llm = Claude(
-    model="claude-sonnet-4-6",   # or claude-opus-4-6, claude-haiku-4-5
-    max_tokens=4096,
+    model="claude-opus-5-5",     # the default; or claude-sonnet-5-5, claude-haiku-5-5, claude-fable-5-1
+    max_tokens=16000,            # the default; thinking counts toward it on models that always think
     enable_prompt_cache=True,    # 3.1: mark system + tools as cacheable
     cache_history_after=4,       # 3.1: cache long histories after N turns
     # 3.4, all optional and only sent when set:

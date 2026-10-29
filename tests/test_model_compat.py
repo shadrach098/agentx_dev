@@ -184,6 +184,50 @@ def claude(rule, content=None, **kw):
     return c, fake
 
 
+FORCED_MSG = 'tool_choice: type "tool" and "any" are not supported for this model.'
+TOOL = [{"name": "Answer", "description": "The answer.",
+         "parameters": {"type": "object", "properties": {"value": {"type": "string"}}}}]
+
+
+class TestForcedToolChoice:
+    """Opus 5.5, Sonnet 5.5 and Fable 5.1 refuse a forced tool choice (a 400): a call that must use one tool is
+    sent with auto and a line asking for it."""
+
+    @staticmethod
+    def refuse_forced(kw):
+        if (kw.get("tool_choice") or {}).get("type") in ("tool", "any"):
+            return anthropic_400(FORCED_MSG)
+
+    def test_the_new_default_model_is_opus_5_5_with_room_for_thinking(self):
+        c, _ = claude(lambda kw: None)
+        assert c.model_name == "claude-opus-5-5" and c.max_tokens == 16000
+
+    def test_a_known_model_is_never_sent_a_forced_choice(self):
+        from agentx_dev.ChatModel import _FORCED_TOOL_CHOICE_REFUSED
+        _FORCED_TOOL_CHOICE_REFUSED.clear()
+        c, fake = claude(self.refuse_forced, model="claude-opus-5-5")
+        c.call_with_tools([{"role": "user", "content": "hi"}], TOOL, force_tool="Answer")
+        assert len(fake.calls) == 1 and fake.calls[0]["tool_choice"] == {"type": "auto"}
+        assert "`Answer` tool" in str(fake.calls[0]["messages"][-1]["content"])
+
+    def test_another_model_learns_it_from_the_400_once(self):
+        from agentx_dev.ChatModel import _FORCED_TOOL_CHOICE_REFUSED
+        _FORCED_TOOL_CHOICE_REFUSED.clear()
+        c, fake = claude(self.refuse_forced, model="claude-new-9")
+        messages = [{"role": "user", "content": "hi"}]
+        c.call_with_tools(messages, TOOL, force_tool="Answer")
+        assert [call["tool_choice"]["type"] for call in fake.calls] == ["tool", "auto"]
+        assert messages == [{"role": "user", "content": "hi"}]          # the caller's list is left alone
+        c.call_with_tools(messages, TOOL, force_tool="Answer")
+        assert fake.calls[-1]["tool_choice"] == {"type": "auto"} and len(fake.calls) == 3
+        _FORCED_TOOL_CHOICE_REFUSED.clear()
+
+    def test_a_model_that_accepts_it_still_gets_the_forced_choice(self):
+        c, fake = claude(lambda kw: None, model="claude-opus-5")
+        c.call_with_tools([{"role": "user", "content": "hi"}], TOOL, force_tool="Answer")
+        assert fake.calls[0]["tool_choice"] == {"type": "tool", "name": "Answer"}
+
+
 class TestClaude:
     def test_default_sends_no_temperature(self):
         c, fake = claude(lambda kw: None)

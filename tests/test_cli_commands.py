@@ -305,7 +305,7 @@ def test_model_tells_where_to_change_the_default():
     ctx = Ctx()
     ctx.user_settings_file = "C:/Users/me/.agentx/settings.json"
     run_command(ctx, "/model")
-    assert "settings.json" in ctx.said[-1] and "gpt-4o-mini" in ctx.said[-1]
+    assert "settings.json" in ctx.said[-1] and "claude-opus-5-5" in ctx.said[-1]
     run_command(ctx, "/model gpt-4o-mini")
     assert "this session only" in ctx.said[-1] and "settings.json" in ctx.said[-1]
 

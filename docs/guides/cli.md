@@ -75,7 +75,7 @@ Keys are read from the environment only. With no `--model`, the first key found 
 
 | Flag | Does |
 |---|---|
-| `--model NAME` | Model to use, for example `claude-sonnet-4-6` or `gpt-4o`. Overrides `model` in the settings files. |
+| `--model NAME` | Model to use, for example `claude-opus-5-5` or `gpt-6.1-sol`. Overrides `model` in the settings files. |
 | `--mode MODE` | `default`, `accept-edits`, `plan` or `auto`. Overrides `mode` in the settings files. |
 | `--add-dir PATH` | Let the tools work in this extra folder as well. Repeatable. A relative path starts at the current folder. |
 | `--continue` | Resume the latest conversation for this folder. With none saved, it says so and starts a new one. |

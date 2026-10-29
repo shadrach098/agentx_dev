@@ -926,6 +926,38 @@ def _stamp_cache_on_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     return msg
 
 
+# Claude models that refuse a forced tool choice (``tool_choice`` ``tool`` / ``any``: a 400); for them a call that
+# must use one tool is sent with ``auto`` and a line asking for that tool. Others are learned from the 400.
+_NO_FORCED_TOOL_CHOICE = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1")
+_FORCED_TOOL_CHOICE_REFUSED: set = set()      # model names that answered a forced tool choice with that 400
+
+
+def _refuses_forced_tool_choice(model: str) -> bool:
+    name = str(model or "").lower()
+    return name.startswith(_NO_FORCED_TOOL_CHOICE) or name in _FORCED_TOOL_CHOICE_REFUSED
+
+
+def _is_forced_tool_choice_refusal(exc: Exception) -> bool:
+    text = _error_text(exc).lower()
+    return getattr(exc, "status_code", None) == 400 and "tool_choice" in text and "not supported" in text
+
+
+def _ask_for_tool(conversation: List[Dict[str, Any]], tool: str) -> List[Dict[str, Any]]:
+    """``conversation`` with a line after the last user message asking for ``tool`` (the copy is new; the
+    caller's messages are left alone)."""
+    note = {"type": "text", "text": f"Respond by calling the `{tool}` tool."}
+    out = list(conversation)
+    for i in range(len(out) - 1, -1, -1):
+        message = out[i]
+        if message.get("role") == "user":
+            content = message.get("content")
+            blocks = ([{"type": "text", "text": content}] if isinstance(content, str)
+                      else list(content or []))
+            out[i] = {**message, "content": blocks + [note]}
+            return out
+    return out + [{"role": "user", "content": [note]}]
+
+
 def _normalize_tool_spec_for_anthropic(spec: Dict[str, Any]) -> Dict[str, Any]:
     """Accept either a generic ``to_tool_spec`` dict or a pre-built Anthropic tool dict."""
     if "input_schema" in spec and "name" in spec:
@@ -1850,15 +1882,15 @@ class Claude(BaseChatModel):
     Chat model wrapper for Anthropic's Claude API.
 
     Usage:
-        model = Claude(model="claude-sonnet-4-6")
+        model = Claude(model="claude-opus-5-5")
         response = model.Initialize([{"role": "user", "content": "Hello"}])
     """
 
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "claude-sonnet-4-6",
-        max_tokens: int = 4096,
+        model: str = "claude-opus-5-5",
+        max_tokens: int = 16000,
         temperature: Optional[float] = None,
         timeout: float = 60.0,
         max_retries: int = 3,
@@ -1932,6 +1964,12 @@ class Claude(BaseChatModel):
             max_retries=max_retries,
         )
 
+
+    @staticmethod
+    def _unforced(kwargs: Dict[str, Any], tool: str) -> Dict[str, Any]:
+        """For a model that refuses a forced tool choice: ``auto``, and the last user message asks for ``tool``.
+        Only one tool is offered on these calls (a parser or a schema), so the model calls it."""
+        return {**kwargs, "tool_choice": {"type": "auto"}, "messages": _ask_for_tool(kwargs["messages"], tool)}
 
     def _request_kwargs(self, **extra) -> Dict[str, Any]:
         """Base Messages kwargs: only parameters that are actually set, so
@@ -2162,10 +2200,22 @@ class Claude(BaseChatModel):
         kwargs: Dict[str, Any] = self._request_kwargs(
             system=system_prompt, messages=conversation, tools=normalized,
         )
-        if force_tool:
+        if force_tool and _refuses_forced_tool_choice(self.model_name):
+            kwargs = self._unforced(kwargs, force_tool)
+        elif force_tool:
             kwargs["tool_choice"] = {"type": "tool", "name": force_tool}
 
-        response = self._create(self.client, **kwargs)
+        try:
+            response = self._create(self.client, **kwargs)
+        except Exception as e:
+            if not (force_tool and kwargs.get("tool_choice", {}).get("type") == "tool"
+                    and _is_forced_tool_choice_refusal(e)):
+                raise
+            _FORCED_TOOL_CHOICE_REFUSED.add(str(self.model_name).lower())
+            logger.warning(f"Claude model {self.model_name!r} refuses a forced tool choice; asking for "
+                           f"{force_tool!r} in the prompt instead (tool_choice auto). Remembered for this model.")
+            kwargs = self._unforced(kwargs, force_tool)
+            response = self._create(self.client, **kwargs)
         self._record_usage(response)
 
         tool_calls = [
@@ -2209,10 +2259,22 @@ class Claude(BaseChatModel):
         kwargs: Dict[str, Any] = self._request_kwargs(
             system=system_prompt, messages=conversation, tools=normalized,
         )
-        if force_tool:
+        if force_tool and _refuses_forced_tool_choice(self.model_name):
+            kwargs = self._unforced(kwargs, force_tool)
+        elif force_tool:
             kwargs["tool_choice"] = {"type": "tool", "name": force_tool}
 
-        response = await self._acreate(async_client, **kwargs)
+        try:
+            response = await self._acreate(async_client, **kwargs)
+        except Exception as e:
+            if not (force_tool and kwargs.get("tool_choice", {}).get("type") == "tool"
+                    and _is_forced_tool_choice_refusal(e)):
+                raise
+            _FORCED_TOOL_CHOICE_REFUSED.add(str(self.model_name).lower())
+            logger.warning(f"Claude model {self.model_name!r} refuses a forced tool choice; asking for "
+                           f"{force_tool!r} in the prompt instead (tool_choice auto). Remembered for this model.")
+            kwargs = self._unforced(kwargs, force_tool)
+            response = await self._acreate(async_client, **kwargs)
         self._record_usage(response)
 
         tool_calls = [

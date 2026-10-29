@@ -16,6 +16,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Changed
 
+- **`Claude()` defaults to `claude-opus-5-5` with `max_tokens=16000`** (was `claude-sonnet-4-6`, 4096). Opus 5.5
+  always thinks and the thinking counts toward the limit, so 4096 could cut answers short. `agentx`'s help text and
+  hints name `claude-opus-5-5` and `gpt-6.1-sol`. See Upgrading.
+
 - **`Supervisor` and `AsyncSupervisor` share one core.** Planning, replanning, synthesis, a step's retries and the
   rounds of a session are written once (they were two copies that had to be fixed twice). `AsyncSupervisor` awaits
   real work; `Supervisor` runs the same code with sync calls, still in your thread, with no event loop, so it keeps
@@ -41,6 +45,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **Structured output on Opus 5.5, Sonnet 5.5 and Fable 5.1.** These models answer a forced tool choice with a
+  400, which `output_schema` and the answer parser used. The call now goes with `tool_choice: auto` and a line
+  asking for the tool; another model that refuses it is found from the error and remembered.
 - **`agentx`: a saved model whose key is gone no longer stops the start.** When the other provider's key is set
   (you moved from GPT to Claude, say), `agentx` lists that provider's models (Claude: `claude-opus-5-5`,
   `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-1`) or asks for a name, uses the one picked, and offers

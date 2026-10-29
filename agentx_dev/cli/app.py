@@ -942,7 +942,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agentx", description="A terminal coding assistant built on agentx-dev.")
     parser.add_argument("--version", action="version", version=f"agentx {_version()}")
-    parser.add_argument("--model", metavar="NAME", help="model to use, for example claude-sonnet-4-6 or gpt-4o")
+    parser.add_argument("--model", metavar="NAME", help="model to use, for example claude-opus-5-5 or gpt-6.1-sol")
     parser.add_argument("--mode", choices=MODES, help="default, accept-edits (edits run without asking), plan "
                                                        "(read-only) or auto (edits, commands and Python run "
                                                        "without asking; delete and move still ask)")
