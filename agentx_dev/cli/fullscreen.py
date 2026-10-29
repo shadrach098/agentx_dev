@@ -138,14 +138,21 @@ class FullScreen:
             self._header_cache = (None, [])
         self.invalidate()
 
-    def read(self, prompt: str = "> ") -> str:
-        """The next message: one typed while the agent worked, or the next one sent."""
+    def read(self, prompt: str = "> ", default: str = "") -> str:
+        """The next message: one typed while the agent worked, or the next one sent. ``default`` is text the input
+        line starts with (the words from /voice)."""
         with self._lock:
             queued, self._queued = self._queued, None
         if queued is not None:
             self._echo_message(queued)
             return queued
+        if default:
+            self._on_ui(lambda: self._fill_chat(default))
         return self._wait("chat")
+
+    def _fill_chat(self, text: str) -> None:
+        from prompt_toolkit.document import Document
+        self.chat_buffer.document = Document(text, len(text))
 
     def read_short(self, prompt: str = "") -> str:
         return self._wait("short", prompt=plain(prompt))

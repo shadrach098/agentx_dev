@@ -44,6 +44,7 @@ from agentx_dev.cli.app_mcp import McpCommands
 from agentx_dev.cli.app_models import ModelCommands
 from agentx_dev.cli.app_usage import UsageCommands
 from agentx_dev.cli.app_team import TeamCommands
+from agentx_dev.cli.app_voice import VoiceCommands
 from agentx_dev.cli.app_team import TEAM_LIMIT_REACHED, TEAM_STALLED  # noqa: F401  (re-exported)
 from agentx_dev.Skills import (SkillInstallError, Skills, discover, install, open_source, preview_text)
 
@@ -206,7 +207,7 @@ def _version() -> str:
         return "unknown"
 
 
-class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
+class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceCommands):
     """One interactive session. All terminal I/O comes in through ``console``, ``read_line`` (the chat prompt)
     and ``read_short`` (approvals and choices), so it runs the same in tests.
 
@@ -746,7 +747,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
             try:
                 line = self._next_typed()
                 if line is None:
-                    line = self.read_line("> ")
+                    line = self._read_chat()
                 else:                                  # typed while it worked: now the next message
                     self._echo(line, "running it now" if line.startswith("/") else "sent now")
             except EOFError:

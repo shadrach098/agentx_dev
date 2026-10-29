@@ -316,6 +316,13 @@ def _exit(ctx: Any, arg: str) -> None:
     ctx.request_exit()
 
 
+def _voice(ctx: Any, arg: str) -> None:
+    if arg.strip():
+        ctx.error("/voice takes nothing after it: type /voice, speak, then press Enter.")
+        return
+    ctx.voice()
+
+
 @dataclass(frozen=True)
 class Command:
     name: str
@@ -342,6 +349,7 @@ COMMANDS = (
     Command("limit", "Show or set how many tokens one message may use before agentx asks: /limit [tokens]", _limit),
     Command("fullscreen", "Keep the header and input fixed while the conversation scrolls: /fullscreen [on|off]",
             _fullscreen),
+    Command("voice", "Speak instead of typing: records until Enter, then puts the words in the input line", _voice),
     Command("exit", "Leave", _exit),
 )
 _BY_NAME = {command.name: command for command in COMMANDS}

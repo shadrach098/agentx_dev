@@ -8,6 +8,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **`agentx`: `/voice`.** Records from the default microphone until Enter (Ctrl+C cancels), writes out what was said
+  with OpenAI's speech-to-text (`gpt-4o-transcribe`, falling back to `whisper-1`; `AGENTX_VOICE_MODEL` picks another)
+  and puts the words in the next input line to check before sending, in the normal and the full-screen screen.
+  Claude models take no audio, so it needs `OPENAI_API_KEY` whatever the chat model. The microphone is read with
+  `sounddevice`: new extra `agentx-dev[voice]`. A recording stops by itself at 10 minutes; a microphone that cannot
+  record at 16 kHz records at its own rate.
 - **Agents can look at pictures.** `read_path` on a PNG, JPEG, GIF or WebP file hands the model the picture itself
   (it used to answer `file is not utf-8 text`), so an agent or a team helper that takes a screenshot can see it. It
   works on Claude (inside the `tool_result`) and GPT (Chat Completions and Responses: the tool message gets the text,

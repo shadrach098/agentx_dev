@@ -468,7 +468,17 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/mcp` | List your MCP servers and their state; `/mcp add <name> <url>`, `/mcp add <name> -- <command> [args]`, `/mcp remove`, `/mcp login`, `/mcp logout <name>`, `/mcp reload [name]`. See [MCP servers](#mcp-servers). | `/mcp add flightclaw https://mcp.flightclaw.com/mcp` |
 | `/fullscreen [on\|off]` | Show whether full-screen mode is on, or turn it on or off from the next start (saved as `"fullscreen"` in `~/.agentx/settings.json`). See [Full-screen mode](#full-screen-mode). | `/fullscreen on` |
 | `/limit [tokens]` | Show or set how many tokens one message may use before agentx asks whether to go on (`0` for no limit). See [The token limit](#the-token-limit). | `/limit 300k` |
+| `/voice` | Speak instead of typing. It records from your default microphone until you press Enter (Ctrl+C cancels), writes out what you said, and puts the words in the input line: check or change them, then press Enter to send. Nothing is sent by itself. See [Voice](#voice). | `/voice` |
 | `/exit` | Save the conversation and leave (Ctrl+D does the same). | `/exit` |
+
+### Voice
+
+`/voice` records until Enter, then sends the recording to OpenAI's speech-to-text (`gpt-4o-transcribe`, about $0.006 a minute; `whisper-1` when your account does not have it) and starts the next input line with the words. Claude models take no audio, so this needs `OPENAI_API_KEY` even when you chat with Claude; the chat model is not changed. Choose another speech-to-text model with the `AGENTX_VOICE_MODEL` variable.
+
+- The microphone is read with the `sounddevice` package: `python -m pip install "agentx-dev[voice]"`. Without it, `/voice` says what to install.
+- One recording is at most 10 minutes; it stops by itself then. A microphone that cannot record at 16 kHz records at its own rate.
+- On Windows, a microphone that cannot be opened is often blocked in Settings > Privacy > Microphone ("Let desktop apps access your microphone").
+- There is no key for it: Ctrl+M is the same key as Enter in a terminal.
 
 ## Team jobs
 

@@ -1000,9 +1000,14 @@ class PromptInput:
         short = build(multiline=False, bottom_toolbar=toolbar, style=input_style())
         return chat, short
 
-    def read(self, prompt: str = "> ") -> str:
+    def read(self, prompt: str = "> ", default: str = "") -> str:
+        """The next message; ``default`` is text the line starts with (the words from /voice)."""
         if self._chat is None:
+            if default:
+                print(f"You said: {plain(default)}  (type or paste it)")
             return input(prompt)
+        if default:
+            return self._chat.prompt(prompt_message, default=default)
         return self._chat.prompt(prompt_message)        # a rule across the screen, then the mark: your turn
 
     def read_short(self, prompt: str = "") -> str:
