@@ -68,6 +68,25 @@ class TestTypeAhead:
         assert keys.left >= 1
         typed.close()
 
+    def test_the_spinner_says_you_can_type_and_shows_the_line(self):
+        import io
+        from rich.console import Console
+        from agentx_dev.cli.ui import Progress
+        console = Console(file=io.StringIO(), force_terminal=True, width=120, color_system=None)
+        progress = Progress(console)
+        progress.typeahead = TypeAhead(lambda text: None, keys=FakeKeys())
+        progress.start("Thinking")
+        try:
+            with console.capture() as shown:
+                console.print(progress)
+            assert "type to add to the task" in shown.get()
+            progress.typeahead.feed("use gold")
+            with console.capture() as shown:
+                console.print(progress)
+            assert "❯ use gold" in shown.get() and "Enter sends it" in shown.get()
+        finally:
+            progress.stop()
+
     def test_unavailable_without_a_terminal(self):
         assert TypeAhead(lambda text: None).available is False        # pytest's stdin is not a terminal
 
@@ -133,8 +152,10 @@ class TestTheApp:
         app, out, cwd, home = make_app(tmp_path, Lines("hello", "/exit"), model)
         app.start()
         text = out.getvalue()
-        assert "also check the footer" in all_seen_by(model) and "Queued" in text
-        assert "the agent read your message" in text
+        assert "also check the footer" in all_seen_by(model)
+        assert "also check the footer  ✓ read by the agent" in text
+        assert "Queued" not in text and "Sent to the team" not in text
+        assert app._waiting_shown() == []
 
     def test_a_command_typed_during_a_turn_runs_after_it(self, tmp_path):
         def script(messages):
@@ -143,8 +164,8 @@ class TestTheApp:
         app, out, cwd, home = make_app(tmp_path, Lines("hello", "/exit"), MockModel(script=script))
         app.start()
         text = out.getvalue()
-        assert "Kept: /settings runs when the agent is done." in text
-        assert "Running what you typed while the agent worked: /settings" in text
+        assert "/settings  ✓ running it now" in text and "Kept:" not in text
+        assert app._waiting_shown() == []
 
     def test_a_message_the_agent_did_not_read_is_the_next_message(self, tmp_path):
         seen = []
@@ -157,6 +178,67 @@ class TestTheApp:
         app, out, cwd, home = make_app(tmp_path, Lines("hello", "/exit"), MockModel(script=script))
         app.start()
         assert len(seen) == 2 and "and the header" in seen[1]
+
+    def test_a_message_waits_under_the_spinner_until_it_is_read(self, tmp_path):
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel())
+        app.typed_while_working("use gold buttons")
+        app.typed_while_working("/model claude-haiku-5-5")
+        assert app._waiting_shown() == [("use gold buttons", "waiting for the agent's next step"),
+                                        ("/model claude-haiku-5-5", "runs when the agent is done")]
+        assert out.getvalue() == ""                                    # nothing printed until it is read
+        assert app._take_typed() == ["use gold buttons"]
+        app._read_by_agent("use gold buttons")
+        assert app._waiting_shown() == [("/model claude-haiku-5-5", "runs when the agent is done")]
+        assert out.getvalue().count("use gold buttons  ✓ read by the agent") == 1
+
+    def test_a_team_note_is_marked_read_by_the_first_helper_only(self, tmp_path):
+        import agentx_dev.cli.team as team
+        from agentx_dev.cli.team import _Job, StepStatus, _running_status
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel())
+        job = _Job()
+        team._active_job = job
+        try:
+            app.typed_while_working("add a wishlist")
+            assert app._waiting_shown() == [("add a wishlist", "waiting for a helper's next step")]
+            for helper in ("bag-flow-tracer", "account-ui-builder"):
+                token = _running_status.set(StepStatus(1, helper))
+                try:
+                    assert job.new_notes() == ["add a wishlist"]
+                finally:
+                    _running_status.reset(token)
+        finally:
+            team._active_job = None
+        text = out.getvalue()
+        assert text.count("add a wishlist  ✓ read by bag-flow-tracer") == 1 and "account-ui-builder" not in text
+        assert app._waiting_shown() == []
+
+    def test_a_team_note_no_helper_read_goes_to_the_agent_when_the_job_ends(self, tmp_path):
+        import agentx_dev.cli.team as team
+        from agentx_dev.cli.team import _Job
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel())
+        team._active_job = _Job()
+        try:
+            app.typed_while_working("no delivery as a gift")
+        finally:
+            team._active_job = None
+        app._team_notes_to_agent()
+        assert "no delivery as a gift  ✓ read by the agent" in out.getvalue()
+        assert app._waiting_shown() == []
+
+    def test_the_spinner_draws_the_waiting_messages(self):
+        import io
+        from rich.console import Console
+        from agentx_dev.cli.ui import Progress
+        console = Console(file=io.StringIO(), force_terminal=True, width=120, color_system=None)
+        progress = Progress(console)
+        progress.waiting = lambda: [("add a wishlist", "waiting for a helper's next step")]
+        progress.start("Team is working")
+        try:
+            with console.capture() as shown:
+                console.print(progress)
+            assert "◌ add a wishlist  · waiting for a helper's next step" in shown.get()
+        finally:
+            progress.stop()
 
     def test_skip_without_a_team_job(self, tmp_path):
         app, out, cwd, home = make_app(tmp_path, Lines(), MockModel())

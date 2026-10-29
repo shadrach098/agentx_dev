@@ -187,12 +187,13 @@ The prompt prints exactly what `a` will remember.
 
 ### Typing while it works
 
-You do not have to wait for the agent to finish. While the spinner runs, type and press Enter:
+You do not have to wait for the agent to finish. While the spinner runs (it says `type to add to the task`), type and press Enter:
 
 - **A message** goes to the agent at its next step (after the tool call it is making), so it can change course: "also
   check the footer", "use the existing button style", "stop after the server part". The line being typed shows under
-  the spinner; `the agent read your message` is printed when it gets it. A message the agent did not get before it
-  finished becomes your next message.
+  the spinner; after Enter it waits there (`◌ also check the footer · waiting for the agent's next step`) until it is
+  read, then one line is left in its place: `❯ also check the footer  ✓ read by the agent` (or by the helper that read
+  it first, during a team job). A message the agent did not get before it finished becomes your next message.
 - **During a team job** a message goes to the team instead: each running helper reads it at its next step, steps not
   started yet begin with it, and the main agent reads it in the job's result, so work the team did not do (a step
   you want added) is done next by the agent or another team job.

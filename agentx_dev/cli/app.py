@@ -35,7 +35,7 @@ from agentx_dev.cli.settings import (DEFAULT_MAX_STEPS, DEFAULT_TOKEN_LIMIT, MAX
                                      read_user_fullscreen, write_user_fullscreen)
 from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, counted_tokens, current_helper, make_team_tool, note_usage, on_main, run_team_job, skip_team_step, step_token_share, team_note)
 from agentx_dev.cli.typeahead import TypeAhead
-from agentx_dev.cli.ui_text import elbow, plain
+from agentx_dev.cli.ui_text import plain
 from agentx_dev.cli.team_record import TeamRecord
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
@@ -57,6 +57,9 @@ INIT_PROMPT = (
 # After a turn that stopped at the step limit, "continue" re-ran checks whose results were already in the conversation
 # (git status, the typecheck) before going on, at the price of a whole conversation's worth of tokens each time.
 KEY_NAMES = (ANTHROPIC_KEY, OPENAI_KEY)
+
+
+SKIP_DONE = " (a running step finishes)."
 
 
 def _held(typeahead: TypeAhead, ask: Callable[..., Any]) -> Callable[..., Any]:
@@ -322,7 +325,13 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         # agent at its next step (``_take_typed``); a command, and a message the agent did not get, run after.
         self._typed_lock = threading.Lock()
         self._typed: List[str] = []
+        # The ones nobody has read yet, drawn under the spinner: ``{"text", "for": "agent" | "team" | "later"}``
+        self._waiting: List[Dict[str, str]] = []
         self._team_plan: List[Dict[str, Any]] = []   # the running team job's plan, as shown (for /skip)
+        try:
+            self.progress.waiting = self._waiting_shown
+        except Exception:
+            pass
 
     def _remembering(self, ask: Callable[..., Any]) -> Callable[..., Any]:
         """``ask`` that notes when the user answers "a" at an edit prompt: the gate then switches itself to
@@ -583,26 +592,59 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         text = str(text or "").strip()
         if not text:
             return True
-        echo = Text("❯ ", style="bold")
-        echo.append(plain(text, keep_newlines=True))
-        self.console.print(echo)
         word = text.split(None, 1)[0].lower()
         if word == "/skip":
-            self.notice(self._skip_step(text[len(word):].strip()))
+            outcome = self._skip_step(text[len(word):].strip())
+            self._echo(text, outcome, done=outcome.endswith(SKIP_DONE))
             return True
-        if text.startswith("/"):
-            with self._typed_lock:
-                self._typed.append(text)
-            self.notice(f"Kept: {self._safe(word, 40)} runs when the agent is done.")
+        entry = {"text": text, "for": "later" if text.startswith("/") else "team"}
+        with self._typed_lock:
+            self._waiting.append(entry)
+        if entry["for"] == "team" and team_note(text, on_read=lambda who: self._read_by(entry, who)):
             return True
-        if team_note(text):
-            self.notice("Sent to the team: running helpers read it at their next step, steps not started yet begin "
-                        "with it, and the agent reads it when the job ends. /skip <step> drops a step.")
-            return True
+        entry["for"] = "later" if text.startswith("/") else "agent"
         with self._typed_lock:
             self._typed.append(text)
-        self.notice("Queued: the agent reads it at its next step.")
         return True
+
+    WAITING_FOR = {"agent": "waiting for the agent's next step", "team": "waiting for a helper's next step",
+                   "later": "runs when the agent is done"}
+
+    def _waiting_shown(self) -> List[Tuple[str, str]]:
+        """What the spinner draws under itself: each message typed while it works that nobody has read yet."""
+        with self._typed_lock:
+            return [(entry["text"], self.WAITING_FOR.get(entry["for"], "waiting")) for entry in self._waiting]
+
+    def _read_by(self, entry: Dict[str, str], who: str) -> None:
+        """``entry`` was read (by a helper, or by the agent): it leaves the waiting lines and is printed once, with
+        who read it. Later reads of the same note (another helper) print nothing."""
+        with self._typed_lock:
+            if not any(waiting is entry for waiting in self._waiting):
+                return
+            self._waiting = [waiting for waiting in self._waiting if waiting is not entry]
+        self._echo(entry["text"], f"read by {who}")
+
+    def _echo(self, text: str, outcome: str, done: bool = True) -> None:
+        """A typed line in the scrollback: ``❯ text  ✓ outcome`` (``✗`` when it could not be done)."""
+        echo = Text("❯ ", style="bold")
+        echo.append(plain(text, keep_newlines=True))
+        echo.append(f"  {'✓' if done else '✗'} {plain(outcome)}", style="dim")
+        self.console.print(echo)
+
+    def _read_by_agent(self, text: str) -> None:
+        """A message the agent just read (its ``interjection`` event)."""
+        with self._typed_lock:
+            entry = next((waiting for waiting in self._waiting
+                          if waiting["for"] == "agent" and waiting["text"] == text), None)
+        if entry is not None:
+            self._read_by(entry, "the agent")
+
+    def _team_notes_to_agent(self) -> None:
+        """When a team job ends, the notes no helper read go to the main agent in the job's result."""
+        with self._typed_lock:
+            left = [waiting for waiting in self._waiting if waiting["for"] == "team"]
+        for entry in left:
+            self._read_by(entry, "the agent")
 
     def _skip_step(self, which: str) -> str:
         if not which:
@@ -619,7 +661,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         if not skip_team_step(which):
             return "No team job is running: nothing to skip."
         shown = f"Step {number}" if number is not None else f"The steps of {self._safe(which, 60)}"
-        return f"{shown} will be skipped if not started yet (a running step finishes)."
+        return f"{shown} will be skipped if not started yet{SKIP_DONE}"
 
     def _take_typed(self) -> List[str]:
         """The messages typed for the agent since its last step (the main runner's ``interjections``)."""
@@ -632,7 +674,14 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         """The first line typed during the last turn that is still waiting (a command, or a message the agent
         finished before reading), or None."""
         with self._typed_lock:
-            return self._typed.pop(0) if self._typed else None
+            if not self._typed:
+                return None
+            line = self._typed.pop(0)
+            for index, waiting in enumerate(self._waiting):
+                if waiting["text"] == line and waiting["for"] in ("agent", "later"):
+                    del self._waiting[index]
+                    break
+            return line
 
     def _team_record(self, task: str) -> Any:
         """Where this team job's plan and every helper's whole report are written as they come: the project's
@@ -698,8 +747,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
                 line = self._next_typed()
                 if line is None:
                     line = self.read_line("> ")
-                else:
-                    self.notice(f"Running what you typed while the agent worked: {self._safe(line, 200)}")
+                else:                                  # typed while it worked: now the next message
+                    self._echo(line, "running it now" if line.startswith("/") else "sent now")
             except EOFError:
                 break
             except KeyboardInterrupt:
@@ -778,7 +827,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
                 kind = event.get("type") if isinstance(event, dict) else None
                 if kind == "interjection":                 # a message typed while it worked reached the agent
                     self.screen.flush()
-                    self.console.print(Text(f"  {elbow(self.console)} the agent read your message", style="dim"))
+                    self._read_by_agent(str(event.get("content") or ""))
                     self.progress.start("Thinking")
                     continue
                 if kind == "completion":
@@ -1149,6 +1198,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
             self._team_rows = {}
             self.progress.stop()
             self.screen.flush_helpers()                # what a helper did before an error or Ctrl+C
+            self._team_notes_to_agent()
             self.progress.start("Thinking")
         # A job in which no step got anywhere would most likely fail the same way again: stop the batches.
         # (A failed job, one that ended without a result, and outcome "stuck" - no step finished - all count.)

@@ -125,22 +125,33 @@ class _Job:
         self.stopped = False
         self.step_tokens = max(0, int(step_tokens or 0))
         self.notes: List[str] = []
+        self._readers: List[Optional[Callable[[str], None]]] = []    # per note: told the helper that read it
         self.skips: set = set()
         self._lock = threading.Lock()
 
-    def add_note(self, text: str) -> None:
+    def add_note(self, text: str, on_read: Optional[Callable[[str], None]] = None) -> None:
         with self._lock:
             self.notes.append(str(text))
+            self._readers.append(on_read)
 
     def new_notes(self) -> List[str]:
         """The notes the running step's helper has not been given yet (all of them for a step that just started):
-        a helper's ``interjections``, so a running helper reads a note at its next step."""
+        a helper's ``interjections``, so a running helper reads a note at its next step. Each note's ``on_read`` is
+        called with the helper's name."""
         status = _running_status.get()
         if status is None:
             return []
         with self._lock:
-            fresh = self.notes[status.notes_seen:]
+            first = status.notes_seen
+            fresh = self.notes[first:]
+            readers = self._readers[first:]
             status.notes_seen = len(self.notes)
+        for on_read in readers:
+            if on_read is not None:
+                try:
+                    on_read(str(getattr(status, "helper", "") or "a helper"))
+                except Exception:                        # the screen's bookkeeping must never stop a helper
+                    pass
         return fresh
 
     def skip(self, which: str) -> None:
@@ -411,15 +422,15 @@ _active_lock = threading.Lock()
 _active_job: Optional[_Job] = None
 
 
-def team_note(text: str) -> bool:
+def team_note(text: str, on_read: Optional[Callable[[str], None]] = None) -> bool:
     """Hand ``text`` (typed by the user while a team job runs) to that job: each running helper reads it at its next
-    step, a step that starts later is given it at once, and the main agent reads it in the job's result. False when
-    no team job is running."""
+    step, a step that starts later is given it at once, and the main agent reads it in the job's result. ``on_read``
+    is called with a helper's name each time one reads it. False when no team job is running."""
     with _active_lock:
         job = _active_job
     if job is None or job.stopped:
         return False
-    job.add_note(text)
+    job.add_note(text, on_read)
     return True
 
 

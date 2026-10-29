@@ -90,6 +90,8 @@ class Progress:
         self._shown = False
         # A ``TypeAhead`` (normal screen only): it reads keys while the spinner runs and its line is drawn below it
         self.typeahead: Any = None
+        # ``waiting()``, when set, returns ``(text, what it waits for)`` per message typed that nobody has read yet
+        self.waiting: Optional[Callable[[], Sequence[Tuple[str, str]]]] = None
 
     @property
     def enabled(self) -> bool:
@@ -100,17 +102,38 @@ class Progress:
 
     def __rich__(self):
         if self._spinner is not None:
-            self._spinner.update(text=Text(f"{self._label}... {int(time.monotonic() - self._since)}s", style="dim"))
+            words = Text(f"{self._label}... {int(time.monotonic() - self._since)}s", style="dim")
+            if self.typeahead is not None and not self.drawn_by:
+                words.append("  · type to add to the task", style="dim italic")
+            self._spinner.update(text=words)
         extra = None
         if self.board is not None:
             try:
                 extra = self.board()
             except Exception:                        # the block is a help: a drawing error must not stop the spinner
                 extra = None
+        below = [*self._waiting_lines()]
         typed = self._typed_line()
-        if typed is not None and self._spinner is not None:
-            return Group(*([extra] if extra is not None else []), self._spinner, typed)
+        if typed is not None:
+            below.append(typed)
+        if below and self._spinner is not None:
+            return Group(*([extra] if extra is not None else []), self._spinner, *below)
         return Group(extra, self._spinner) if extra is not None and self._spinner is not None else self._spinner
+
+    def _waiting_lines(self) -> List[Any]:
+        """One dim line per message typed while it works that nobody has read yet: ``◌ text · who it waits for``."""
+        try:
+            waiting = list(self.waiting()) if self.waiting is not None else []
+        except Exception:
+            return []
+        lines = []
+        for text, where in waiting[-5:]:
+            shown = " ".join(plain(str(text)).split())
+            line = Text("◌ ", style=f"bold {ACCENT}")
+            line.append(shown if len(shown) <= 90 else shown[:87] + "...", style="dim")
+            line.append(f"  · {where}", style="dim italic")
+            lines.append(line)
+        return lines
 
     def _typed_line(self) -> Any:
         """The message being typed while the agent works (None when nothing is typed)."""
