@@ -69,6 +69,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **`agentx --model claude-opus-5.5` works.** A Claude name written with a dot got a 404 ("model: claude-opus-5.5
+  was not found") on the first message; it is now read as the dashed id (`claude-opus-5-5`). GPT names keep their dot.
+- **A `teamModels` note may be 200 characters** (was 80, and a longer one was dropped at every start). A note past
+  200 is now shortened, with a warning, instead of dropped.
 - **A step with no action and no answer no longer ends the run.** A reply cut off by the output limit (seen with a
   Claude Sonnet 5.5 helper after 20 tool calls) came back empty and the run ended with "(agent emitted an
   unrecognized action and no answer text)". The model is now asked again, up to twice per run.

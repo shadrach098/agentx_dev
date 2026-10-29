@@ -183,12 +183,22 @@ def test_entries_may_carry_a_note_as_name_equals_text_or_as_an_object():
 
 
 def test_a_bad_note_is_dropped_but_the_model_is_kept():
-    from agentx_dev.cli.models import MAX_USE_CHARS, parse_team_models
+    from agentx_dev.cli.models import parse_team_models
     names, uses, problems = parse_team_models(
-        ["gpt-5.5=" + "x" * (MAX_USE_CHARS + 1), {"model": "gpt-6-luna", "use": "line\x1b[2J"},
-         {"model": "gpt-6-astra", "use": 7}])
-    assert names == ["gpt-5.5", "gpt-6-luna", "gpt-6-astra"] and uses == {}
-    assert len(problems) == 3 and all("\x1b" not in p and len(p) < 300 for p in problems)
+        [{"model": "gpt-6-luna", "use": "line\x1b[2J"}, {"model": "gpt-6-astra", "use": 7}])
+    assert names == ["gpt-6-luna", "gpt-6-astra"] and uses == {}
+    assert len(problems) == 2 and all("\x1b" not in p and len(p) < 300 for p in problems)
+
+
+def test_a_long_note_is_kept_up_to_the_limit_and_shortened_past_it():
+    from agentx_dev.cli.models import MAX_USE_CHARS, parse_team_models
+    opus = "Complex agentic coding, large code refactors, deep research, and multi-step enterprise analysis."
+    names, uses, problems = parse_team_models(
+        [{"model": "claude-opus-5-5", "use": opus}, "gpt-5.5=" + "word " * 60])
+    assert names == ["claude-opus-5-5", "gpt-5.5"]
+    assert uses["claude-opus-5-5"] == opus                     # 96 characters: kept whole, no warning
+    assert len(uses["gpt-5.5"]) <= MAX_USE_CHARS and uses["gpt-5.5"].endswith("word...")
+    assert problems == ["'teamModels': the note for 'gpt-5.5' is longer than 200 characters; shortened"]
 
 
 def test_an_object_without_a_usable_model_is_skipped():

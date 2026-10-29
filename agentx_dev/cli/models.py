@@ -15,7 +15,7 @@ OPENAI_KEY = "OPENAI_API_KEY"
 MAX_TEAM_MODELS = 4                  # extra models a team job may use, the chat's own not counted
 MAX_LISTED_MODELS = MAX_TEAM_MODELS + 1   # a list may also name the chat's own model (to give it a note)
 MAX_ERROR_NOTE_CHARS = 160            # a ModelError's message, as shown in a "Not used" line
-MAX_USE_CHARS = 80                   # a note on what a helper model is for
+MAX_USE_CHARS = 200                  # a note on what a helper model is for (a longer one is shortened)
 
 
 # Offered when the saved model's provider has no key but this provider's key is set (the first is suggested).
@@ -72,6 +72,12 @@ MODEL_TIMEOUT_SEC = 300.0
 CLIENT_RETRIES = 0
 
 
+def claude_model_id(name: str) -> str:
+    """A Claude model name as the API knows it: a version written with a dot (``claude-opus-5.5``) becomes the
+    dashed id (``claude-opus-5-5``), which is the only form the API accepts. A dated or dashed name is unchanged."""
+    return re.sub(r"(?<=\d)\.(?=\d)", "-", name.strip())
+
+
 def _claude(name: Optional[str], key: str) -> Any:
     """A Claude model as agentx uses it: with prompt caching on (the system prompt, the tools and the conversation
     so far are read from Anthropic's cache on the next step, billed at about a tenth). Without it every step of a
@@ -95,7 +101,7 @@ def choose_model(name: Optional[str], env: Mapping[str, str]) -> Any:
             if not key:
                 raise _no_key(provider)
             if provider == "claude":
-                return _claude(name, key)
+                return _claude(claude_model_id(name), key)
             return GPT(model=name, api_key=key, timeout=MODEL_TIMEOUT_SEC, max_retries=CLIENT_RETRIES)
         anthropic_key = _key(env, ANTHROPIC_KEY)
         if anthropic_key:
@@ -155,14 +161,18 @@ def _shown_name(name: str) -> str:
     return repr(name if len(name) <= 40 else name[:40] + "...")
 
 
-def _acceptable_use(text: str) -> bool:
-    """A note on what a model is for: plain printable text (spaces allowed), at most ``MAX_USE_CHARS``."""
-    return len(text) <= MAX_USE_CHARS and text.isprintable()
+def _shortened_use(text: str) -> str:
+    """A note cut to ``MAX_USE_CHARS``, at the last space when there is one, ending in "..."."""
+    cut = text[:MAX_USE_CHARS - 3]
+    if " " in cut:
+        cut = cut[:cut.rindex(" ")]
+    return cut.rstrip(" ,;:.") + "..."
 
 
 def _split_entry(value: Any, problems: List[str]) -> Tuple[Any, str]:
     """``(name, note)`` from a ``teamModels`` entry: ``"name"``, ``"name=note"`` or ``{"model": ..., "use": ...}``.
-    A note that is not plain text up to ``MAX_USE_CHARS`` is dropped with a problem line; the name is kept."""
+    A note with control characters is dropped and one longer than ``MAX_USE_CHARS`` is shortened, each with a
+    problem line; the name is kept."""
     if isinstance(value, dict):
         name, use = value.get("model"), value.get("use") or ""          # "use": null means no note
     elif isinstance(value, str) and "=" in value:
@@ -173,10 +183,13 @@ def _split_entry(value: Any, problems: List[str]) -> Tuple[Any, str]:
         problems.append(f"'teamModels': the note for {_shown_name(str(name))} is not text; ignored")
         return name, ""
     use = use.strip()
-    if use and not _acceptable_use(use):
-        problems.append(f"'teamModels': the note for {_shown_name(str(name))} is not plain text of at most "
-                        f"{MAX_USE_CHARS} characters; ignored")
+    if use and not use.isprintable():
+        problems.append(f"'teamModels': the note for {_shown_name(str(name))} has control characters; ignored")
         return name, ""
+    if len(use) > MAX_USE_CHARS:
+        problems.append(f"'teamModels': the note for {_shown_name(str(name))} is longer than {MAX_USE_CHARS} "
+                        "characters; shortened")
+        use = _shortened_use(use)
     return name, use
 
 
@@ -287,7 +300,7 @@ def build_team_models(names: Sequence[str], env: Mapping[str, str], *, chat_labe
 # -- notes written by the chat model ---------------------------------------------------------------------------
 
 AUTO_PREFIX = "auto: "                  # marks a note the chat model wrote; one the user wrote is never replaced
-MAX_AUTO_CHARS = MAX_USE_CHARS - len(AUTO_PREFIX)
+MAX_AUTO_CHARS = 80 - len(AUTO_PREFIX)    # the chat model is asked for 60
 
 
 def is_auto_note(note: str) -> bool:

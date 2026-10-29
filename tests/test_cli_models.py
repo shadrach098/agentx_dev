@@ -36,6 +36,16 @@ def test_a_named_claude_model(fakes):
                                                   "enable_prompt_cache": True}
 
 
+def test_a_claude_name_written_with_a_dot_is_the_dashed_id(fakes):
+    from agentx_dev.cli.models import claude_model_id
+    assert claude_model_id("claude-opus-5.5") == "claude-opus-5-5"
+    assert claude_model_id(" claude-sonnet-5.5 ") == "claude-sonnet-5-5"
+    assert claude_model_id("claude-opus-5-5") == "claude-opus-5-5"
+    assert claude_model_id("claude-3-5-sonnet-20241022") == "claude-3-5-sonnet-20241022"
+    assert model_label(choose_model("claude-opus-5.5", ANT)) == "claude-opus-5-5"
+    assert choose_model("gpt-5.5", OAI).kw["model"] == "gpt-5.5"           # GPT names keep their dot
+
+
 def test_a_named_gpt_model(fakes):
     m = choose_model("gpt-4o", OAI)
     assert type(m).__name__ == "GPT" and m.kw == {"model": "gpt-4o", "api_key": "ok", "timeout": 300.0, "max_retries": 0}
