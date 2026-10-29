@@ -506,6 +506,7 @@ Team plan:
 - One whose tools only read, search or fetch (`read_path`, `list_directory`, `find_files`, `grep`, `web_search`, `web_fetch`, `recall`) runs beside other reading steps; one that can edit files or run commands runs alone.
 - At most 6 per job. A later step can use it again by name; a name of a built-in helper is refused.
 - With [helper models](#helper-models) set, the supervisor may put it on any of them (it is told the list, with your notes on what each is for) and its name shows the model: `security-reviewer@gpt-6-luna`. A model that is not on your list is not used; it runs on the chat's model instead. Without helper models it runs on the chat's model.
+- **Every step has a role name.** The planner names each step's helper for what it does in this job (`git-checker`, `payments-fixer`, `migration-verifier`), and that name is shown in the plan, the live block, the done lines and `/team log` instead of `runner` or `coder`: `git-checker@claude-sonnet-5-5`. It is only a name: the step still runs on the built-in helper with its rules and tools.
 
 ### Steps side by side
 

@@ -475,3 +475,30 @@ class TestANewHelperOnAnotherModel:
                      notify=lambda kind, data: seen.append((kind, data)))
         assert "To run it on another model" not in chat.planner_prompts()[0]
         assert dict(seen)["plan"]["steps"][0]["agent"] == "reviewer"
+
+
+class TestRoleNames:
+    """Every step gets a role name from the planner ("as"), shown in place of the built-in helper's name, so the
+    screen says what each helper is doing (git-checker@..., not runner@...)."""
+
+    def test_the_plan_and_the_running_steps_show_the_role(self, tmp_path):
+        plan = [{**step("a", "explorer", "look at git"), "as": "git-checker"},
+                {**step("b", "coder", "fix payments", deps=["a"]), "as": "Payments Fixer!"},
+                step("c", "explorer", "look again", deps=["b"])]
+        result, seen = job(tmp_path, plan, lambda messages: make_final("done"))
+        shown = [s["agent"] for kind, data, _ in seen if kind == "plan" for s in data["steps"]]
+        assert shown == ["git-checker", "payments-fixer", "explorer"]          # cleaned; a step without one keeps it
+        started = [data["status"].helper for kind, data, _ in seen if kind == "dispatch" and data.get("status")]
+        assert started == ["git-checker", "payments-fixer", "explorer"]
+
+    def test_the_planner_is_asked_for_them(self, tmp_path):
+        model = router(plans=[plan_json(step("a", "explorer", "look"))], synth="ok")
+        tools = build_tools(tmp_path, [], Gate(mode="auto", cwd=tmp_path))
+        run_team_job("the job", model=model, tools=tools, addendum="", notify=lambda kind, data: None)
+        assert '"as" field' in model.planner_prompts()[0]
+
+    def test_the_model_part_is_kept(self):
+        assert team._with_role("runner@claude-sonnet-5-5", "git-checker") == "git-checker@claude-sonnet-5-5"
+        assert team._with_role("runner", "") == "runner"
+        assert team.role_name("  ../Weird Name__") == "weird-name" and team.role_name("!!!") == ""
+        assert len(team.role_name("x" * 100)) == team.MAX_ROLE_NAME_CHARS

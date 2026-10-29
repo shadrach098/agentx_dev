@@ -15,6 +15,7 @@ import contextvars
 import itertools
 import os
 import queue
+import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -83,6 +84,23 @@ NEW_HELPERS_NOTE = (
     "instructions that say what it must find and report, and only the tools it needs from the menu. A helper whose "
     "tools only read, search or fetch runs beside other reading steps; one that edits files or runs commands runs "
     "alone. Its tool calls go through the same approvals as every other helper's.")
+# Every step gets a role name for the screen: "git-checker@claude-sonnet-5-5" says what the helper is doing, where
+# "runner@claude-sonnet-5-5" only said which built-in helper ran it.
+ROLE_NAME_NOTE = (
+    '\n\nGive every step an "as" field: a short name for what its helper does in this job, lowercase words joined '
+    'by hyphens, for example "git-checker", "payments-fixer", "migration-verifier", "test-runner". It is the name '
+    "the user sees for that step; it does not change which helper runs it. Do not reuse one name for two steps.")
+_ROLE_NAME = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+MAX_ROLE_NAME_CHARS = 32
+
+
+def role_name(value: Any) -> str:
+    """A step's ``as`` name, made safe for the screen: lowercase letters, digits and hyphens, at most
+    ``MAX_ROLE_NAME_CHARS``; "" when nothing usable is left."""
+    text = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")[:MAX_ROLE_NAME_CHARS].strip("-")
+    return text if _ROLE_NAME.match(text) else ""
+
+
 NEW_HELPER_MODELS_NOTE = (
     ' To run it on another model, add "model" to its new_agent, one of: {models}. Without "model" it runs on '
     "{chat}. Pick by what the step needs; no model is preferred.")
@@ -590,6 +608,14 @@ def step_label(step: Dict[str, Any]) -> str:
     return (query[:40] + "…") if len(query) > 40 else (query or raw or "step")
 
 
+def _with_role(shown: str, role: str) -> str:
+    """``runner@claude-sonnet-5-5`` with role ``git-checker``: ``git-checker@claude-sonnet-5-5``."""
+    if not role:
+        return shown
+    _, at, model = shown.partition("@")
+    return f"{role}{at}{model}"
+
+
 def _plan_step(step: Dict[str, Any], shown_name: Optional[Callable[[Dict[str, Any]], str]] = None) -> Dict[str, Any]:
     """A plan step for the screen: who runs it (a new helper with its model, ``shown_name(step)``), what it is
     asked, its short name, and for a helper the planner made, the tools it asked for (``new``)."""
@@ -690,6 +716,7 @@ class TeamSupervisor(AsyncSupervisor):
         self._planned_readers: set = set()
         self._step_lock: Optional[_StepLock] = None
         self._labels: Dict[Tuple[str, str], str] = {}
+        self._roles: Dict[Tuple[str, str], str] = {}      # (agent, query) -> the role name the plan gave its step
         self._slots = itertools.count(1)
         self._statuses: Dict[int, StepStatus] = {}        # id(SubtaskResult) -> the status of the step that made it
         if self._make_helper is not None and self.spawn_config.enabled:
@@ -698,6 +725,7 @@ class TeamSupervisor(AsyncSupervisor):
                 listed = ", ".join(f'"{name}"' + (f" (good for: {use})" if use else "") for name, use in self._models)
                 note += NEW_HELPER_MODELS_NOTE.format(models=listed, chat=self._models[0][0])
             self.planner_note = (self.planner_note or "") + note
+        self.planner_note = (self.planner_note or "") + ROLE_NAME_NOTE
 
     # -- names and models -------------------------------------------------------------------------------------
 
@@ -723,12 +751,17 @@ class TeamSupervisor(AsyncSupervisor):
         return f"{name}@{self.model_for(name)}" if name in self._new_helpers and len(self._models) > 1 else name
 
     def shown_step_name(self, step: Dict[str, Any]) -> str:
-        """Who runs a plan step, for the plan on the screen (shown before the plan runs)."""
+        """Who runs a plan step, for the plan on the screen (shown before the plan runs): its role name when the plan
+        gave one (``git-checker@claude-sonnet-5-5``), else the helper's."""
         name = str(_step_agent_name(step) or "")
         spec = step.get("new_agent")
         if isinstance(spec, dict) and len(self._models) > 1:
-            return f"{name}@{self._allowed_model(spec.get('model'))}"
-        return name
+            name = f"{name}@{self._allowed_model(spec.get('model'))}"
+        return _with_role(name, role_name(step.get("as")))
+
+    def shown_for(self, agent: Any, query: Any) -> str:
+        """A running step's name: its role name, with the helper's model when there is one to tell."""
+        return _with_role(self.shown_name(agent), self._roles.get((str(agent), str(query)), ""))
 
     def label_of(self, agent: Any, query: Any) -> str:
         return self._labels.get((str(agent), str(query))) or step_label({"query": query})
@@ -742,7 +775,10 @@ class TeamSupervisor(AsyncSupervisor):
         for item in plan:
             if not isinstance(item, dict):
                 continue
-            self._labels[(str(_step_agent_name(item) or ""), str(item.get("query", "")))] = step_label(item)
+            key = (str(_step_agent_name(item) or ""), str(item.get("query", "")))
+            self._labels[key] = step_label(item)
+            if role_name(item.get("as")):
+                self._roles[key] = role_name(item.get("as"))
             spec = item.get("new_agent")
             if isinstance(spec, dict) and isinstance(spec.get("name"), str):
                 tools = spec.get("tools") or []
@@ -785,7 +821,7 @@ class TeamSupervisor(AsyncSupervisor):
         async with self._step_lock.hold(alone=not self._reads_only(agent_name)):
             if self._wrapping_up():
                 return SubtaskResult(agent=agent_name, query=query, content="", error=NOT_STARTED, skipped=True)
-            status = StepStatus(next(self._slots), self.shown_name(agent_name), self.label_of(agent_name, query),
+            status = StepStatus(next(self._slots), self.shown_for(agent_name, query), self.label_of(agent_name, query),
                                 query)
             _running_status.set(status)             # this task's context: asyncio.to_thread hands it to the helper
             if self._on_start is not None:

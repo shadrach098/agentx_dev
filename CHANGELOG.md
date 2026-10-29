@@ -68,6 +68,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **Evals: failed tool calls were never counted.** The count looked for results starting with "ToolError" in
   `completion.tool_calls`, which lists only the calls that worked, so it was always 0. It now counts them from the
   run log, recovered ones included.
+- **`agentx`: team steps are shown by role.** The planner gives every step a name for what its helper does
+  (`git-checker`, `payments-fixer`, `migration-verifier`), shown in the plan, the live block, the done lines and
+  `/team log` in place of `runner` / `coder` (`git-checker@claude-sonnet-5-5`). The step still runs on the
+  built-in helper; a step without a name shows the helper's as before.
 - **`agentx`: `/skills install` fetches only the skill files.** It asks GitHub for the repository's file list and
   downloads just the skill folders' files, so a big repository costs what its skills weigh (`morluto/rea`, 6,677
   files and 130 MB, was refused as "too many files"; its skill is 8 files). Skills in hidden folders such as
