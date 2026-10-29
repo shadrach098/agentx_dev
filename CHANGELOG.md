@@ -68,6 +68,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **Evals: failed tool calls were never counted.** The count looked for results starting with "ToolError" in
   `completion.tool_calls`, which lists only the calls that worked, so it was always 0. It now counts them from the
   run log, recovered ones included.
+- **`agentx`: an installed skill is ready at once.** `/skills install` and `/skills remove` used to wait for a new
+  conversation (`/clear`, or a restart); now the conversation you are in gets the change, with its history kept.
+  `/skills reload` does the same for a skill folder copied in by hand.
 - **`agentx`: Claude models use prompt caching.** `agentx` built Claude models without it, so every step of a long
   run sent the whole conversation again at full price and counted it in full against the token limit (one helper
   used 229k tokens on 8 tool calls and stopped part-way). The system prompt, the tools and the conversation so far

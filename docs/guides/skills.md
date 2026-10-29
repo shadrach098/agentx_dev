@@ -18,11 +18,12 @@ explicit cache, OpenAI's automatic prefix cache) reuse it.
 | `/skills use <name> [what you want]` | The same, for a skill whose name is also a command (`/model`, `/help`, ...). |
 | `/skills install [name ...] <link>` | Install skills from `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>`) or from a folder on your computer; names before a GitHub link pick those skills only. You are shown what was found and asked before anything is saved. |
 | `/skills remove <name>` | Delete a skill from `~/.agentx/skills/` after a yes. |
+| `/skills reload` | Give this conversation the skills on disk now, for a skill folder you copied in by hand. |
 
-A new conversation (`/clear`) picks up added or removed skills. The `/` pop-up and `/<skill>` only offer skills the
-current conversation's agent has, so a skill for tools it does not have and a skill added since the conversation
-began are not offered until
-`/clear`.
+An installed or removed skill takes effect in the conversation you are in: no restart, no `/clear`. The conversation
+is kept; the skill list is part of the system prompt, so the next request starts the prompt cache again once. A
+skill folder you copy into `~/.agentx/skills/` yourself arrives with `/skills reload`. The `/` pop-up and `/<skill>`
+offer the skills the conversation's agent has; one for tools it does not have is not offered.
 
 Only you can install a skill: the agent has no tool for it, and it cannot write to `~/.agentx` or to a project's
 `.agentx` (those are always refused). A skill is instructions the agent will follow, so install only skills you

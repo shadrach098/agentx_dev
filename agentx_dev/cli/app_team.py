@@ -141,7 +141,7 @@ class TeamCommands:
             return f"/{skill.name}" if f"/{skill.name}" not in taken else f"/skills use {skill.name}"
 
         lines = [f"  {label(s)} ({s.source}) - {self._safe(s.description, 100)}"
-                 + ("" if s.name in self._runner_skills else "  [not active in this conversation]")
+                 + ("" if s.name in self._runner_skills else "  [not in this conversation yet: /skills reload]")
                  for s in store.all()]
         lines += [f"  Skipped: {self._safe(problem, 160)}" for problem in store.problems[:5]]
         shown = "\n".join(lines) if lines else "  none yet; the built-in ones are created when a conversation starts"
@@ -184,4 +184,5 @@ class TeamCommands:
         except SkillInstallError as e:
             self.error(self._safe(e, 400))
             return
+        self.reload_skills()
         self.notice(f"Removed {skill.name}.")

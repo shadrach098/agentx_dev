@@ -302,7 +302,7 @@ A skill is a short guide for a kind of work ("how to explore a project", "how to
 /exploring-a-project
 ```
 
-The agent is told to read that skill with `use_skill` first and then do what you wrote. With nothing after the name, it reads the skill and asks what you want to apply it to. This is the same thing the agent does on its own when its work matches a skill; the slash form just makes sure it does. A skill named like a built-in command (`/model`, `/help`, ...) is reached with `/skills use <name> [what you want]`, because the command wins. The pop-up only offers skills this conversation's agent has: one for a tool it does not have, or one you added since the conversation began, appears after `/clear`.
+The agent is told to read that skill with `use_skill` first and then do what you wrote. With nothing after the name, it reads the skill and asks what you want to apply it to. This is the same thing the agent does on its own when its work matches a skill; the slash form just makes sure it does. A skill named like a built-in command (`/model`, `/help`, ...) is reached with `/skills use <name> [what you want]`, because the command wins. The pop-up only offers skills this conversation's agent has: one for a tool it does not have is not offered, and one you copied into the skills folder by hand arrives with `/skills reload`.
 
 **Installing from a link.**
 
@@ -310,7 +310,7 @@ The agent is told to read that skill with `use_skill` first and then do what you
 /skills install https://github.com/obra/superpowers
 ```
 
-Accepts `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>`) or the path of a folder on your computer. `agentx` looks up the exact commit, downloads that commit, finds every folder with a `SKILL.md`, and shows you the names, the descriptions, the number of files and any program files (`.py`, `.sh`, ...) before it asks `Install 15 skills into ...? [y/N]`. Nothing is saved without a clear yes. Installing does not run anything; a skill's files can only be read by the agent, and anything it then runs goes through the normal approval prompts. A new conversation (`/clear`) uses what you installed. Skills do not update by themselves: to update one, `/skills remove <name>` and install it again.
+Accepts `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>`) or the path of a folder on your computer. `agentx` looks up the exact commit, downloads that commit, finds every folder with a `SKILL.md`, and shows you the names, the descriptions, the number of files and any program files (`.py`, `.sh`, ...) before it asks `Install 15 skills into ...? [y/N]`. Nothing is saved without a clear yes. Installing does not run anything; a skill's files can only be read by the agent, and anything it then runs goes through the normal approval prompts. What you install is ready in the conversation you are in (`/skills remove` takes effect at once too); no restart. Skills do not update by themselves: to update one, `/skills remove <name>` and install it again.
 
 **What `/skills` does.**
 

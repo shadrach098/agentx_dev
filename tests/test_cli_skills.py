@@ -424,3 +424,44 @@ class TestHelperSkillReadsAreVisible:
         use_skill = next(t for t in runner_of(app).tools if t.name == "use_skill")
         use_skill.func("exploring-a-project")
         assert "use_skill" not in out.getvalue()
+
+
+class TestSkillsAreLiveWithoutARestart:
+    """An installed skill used to wait for /clear (or a restart); now this conversation gets it at once."""
+
+    def patch_source(self, monkeypatch, repo):
+        @contextmanager
+        def fake_open(link):
+            yield Fetched(repo, "https://github.com/o/r", "b" * 40)
+        monkeypatch.setattr(app_module, "open_source", fake_open)
+
+    def test_an_installed_skill_is_ready_in_the_same_conversation(self, tmp_path, monkeypatch):
+        self.patch_source(monkeypatch, make_repo(tmp_path / "repo"))
+        model = MockModel(script=[make_final("first"), make_final("second")])
+        app, out, cwd, home = make_app(tmp_path, Lines("hello", "/exit"), model)
+        app.start()                                  # one turn, then the commands are run by hand
+        app.read_short = Lines("y")
+        run_command(app, "/skills install https://github.com/o/r")
+        assert "ready in this conversation: /pdf-notes, /tidy-code" in out.getvalue()
+        assert "pdf-notes" in runner_of(app).system_addendum and "pdf-notes" in app._runner_skills
+        assert any(m.get("content") == "hello" for m in app.session.history)          # the conversation is kept
+
+    def test_skills_reload_picks_up_a_folder_copied_by_hand(self, tmp_path):
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(script=[]))
+        app.start()
+        folder = skills_dir(home) / "hand-made"
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text("---\nname: hand-made\ndescription: Copied in by hand\n---\nBody\n",
+                                         encoding="utf-8")
+        assert "hand-made" not in app._runner_skills
+        run_command(app, "/skills reload")
+        assert "hand-made" in app._runner_skills and "Skills reloaded: added hand-made." in out.getvalue()
+
+    def test_a_removed_skill_leaves_the_conversation_too(self, tmp_path, monkeypatch):
+        self.patch_source(monkeypatch, make_repo(tmp_path / "repo"))
+        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(script=[]))
+        app.start()
+        app.read_short = Lines("y", "y")
+        run_command(app, "/skills install https://github.com/o/r")
+        run_command(app, "/skills remove pdf-notes")
+        assert "pdf-notes" not in app._runner_skills and "tidy-code" in app._runner_skills

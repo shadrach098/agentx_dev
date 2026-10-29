@@ -962,8 +962,24 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         except SkillInstallError as e:
             self.error(self._safe(e, 400))
             return
-        self.notice("Installed: " + ", ".join(names) + ". Start a new conversation (/clear) to use "
-                    + ("them." if len(names) != 1 else "it."))
+        self.reload_skills()
+        self.notice("Installed: " + ", ".join(names) + ". " + ("They are" if len(names) != 1 else "It is")
+                    + " ready in this conversation: " + ", ".join(f"/{name}" for name in names)
+                    + " or ask for it by name.")
+
+    def reload_skills(self, say: bool = False) -> None:
+        """Give this conversation the skills on disk now (after an install or a removal, or ``/skills reload``):
+        the runner is built again with the conversation kept, as ``/model`` does. The skill list sits in the system
+        prompt, so the next request starts the prompt cache again once."""
+        if self.session is None:
+            return
+        before = set(self._runner_skills)
+        self.session.attach(self._make_runner(self.model))
+        if say:
+            added = sorted(set(self._runner_skills) - before)
+            gone = sorted(before - set(self._runner_skills))
+            parts = ([f"added {', '.join(added)}"] if added else []) + ([f"removed {', '.join(gone)}"] if gone else [])
+            self.notice("Skills reloaded: " + ("; ".join(parts) if parts else "no change") + ".")
 
     def _start_team_job(self, task: str, why: str) -> str:
         """The ``start_team_job`` tool: run the team and hand the result text back to the main agent."""
