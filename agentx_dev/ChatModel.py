@@ -1,4 +1,4 @@
-from typing import Optional, Union, Dict, List, Iterable, Literal, Any, Type, Iterator, AsyncIterator
+from typing import Optional, Union, Dict, List, Iterable, Literal, Any, Type, Iterator, AsyncIterator, Callable
 from openai import OpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 from openai.types.chat.completion_create_params import (
@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from agentx_dev.Media import (
     content_for_openai, content_for_anthropic, content_for_openai_responses,
 )
+from agentx_dev.Pictures import content_text, has_pictures, picture_parts
 import asyncio
 import json
 import re
@@ -733,11 +734,15 @@ def _messages_for_openai_responses(messages: List[Dict[str, Any]]) -> List[Dict[
     which a stateless client doesn't keep. ``call_id`` alone pairs each
     call with its output."""
     items: List[Dict[str, Any]] = []
+    pictures: List[Dict[str, Any]] = []        # tool results' pictures, sent after the run of tool outputs
     for m in messages:
         if not isinstance(m, dict):
             continue
         role = m.get("role")
         content = m.get("content")
+        if pictures and not (role in ("tool", "function") and m.get("tool_call_id")):
+            items.append(_pictures_message(pictures, content_for_openai_responses))
+            pictures = []
         if role == "assistant" and m.get("tool_calls"):
             text = _system_text(content) if isinstance(content, list) else (content or "")
             if text:
@@ -750,6 +755,11 @@ def _messages_for_openai_responses(messages: List[Dict[str, Any]]) -> List[Dict[
                     "name": fn.get("name", ""),
                     "arguments": fn.get("arguments") or "{}",
                 })
+            continue
+        if role in ("tool", "function") and m.get("tool_call_id") and has_pictures(content):
+            items.append({"type": "function_call_output", "call_id": m["tool_call_id"],
+                          "output": content_text(content)})
+            pictures.extend(picture_parts(content))
             continue
         if role in ("tool", "function") and m.get("tool_call_id"):
             items.append({"type": "function_call_output",
@@ -769,7 +779,17 @@ def _messages_for_openai_responses(messages: List[Dict[str, Any]]) -> List[Dict[
         if content is None or content == "":
             continue
         items.append({"role": role, "content": content_for_openai_responses(content)})
+    if pictures:
+        items.append(_pictures_message(pictures, content_for_openai_responses))
     return items
+
+
+def _pictures_message(pictures: List[Dict[str, Any]], render: Callable[[Any], Any]) -> Dict[str, Any]:
+    """The user message that carries tool results' pictures to GPT, whose tool messages take text only."""
+    word = "picture" if len(pictures) == 1 else "pictures"
+    return {"role": "user", "content": render([
+        {"type": "text", "text": f"[framework] The {word} from the tool result above (not a message from the user):"},
+        *pictures])}
 
 
 def _parse_responses_output(response: Any) -> Dict[str, Any]:
@@ -823,9 +843,19 @@ def _messages_for_openai(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     unchanged too — the OpenAI API accepts both.
     """
     out = []
+    pictures: List[Dict[str, Any]] = []        # tool results' pictures, sent after the run of tool messages
     for m in messages:
+        if pictures and not (isinstance(m, dict) and m.get("role") == "tool"):
+            out.append(_pictures_message(pictures, content_for_openai))
+            pictures = []
         if not isinstance(m, dict):
             out.append(m)
+            continue
+        if m.get("role") == "tool" and has_pictures(m.get("content")):
+            # A tool message takes text only: its text here, its pictures in a user message after the tool
+            # messages (a user message between them would break the call/result pairing).
+            out.append({**m, "content": content_text(m["content"])})
+            pictures.extend(picture_parts(m["content"]))
             continue
         # Defensive copy so the runner's history isn't mutated by the SDK.
         copy = {k: v for k, v in m.items()}
@@ -835,6 +865,8 @@ def _messages_for_openai(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 copy.get("content"), (str, type(None))):
             copy["content"] = content_for_openai(copy["content"])
         out.append(copy)
+    if pictures:
+        out.append(_pictures_message(pictures, content_for_openai))
     return out
 
 
@@ -885,7 +917,8 @@ def _messages_for_anthropic(messages: List[Dict[str, Any]]) -> List[Dict[str, An
                 "content": [{
                     "type": "tool_result",
                     "tool_use_id": m["tool_call_id"],
-                    "content": str(m.get("content", "")),
+                    "content": (content_for_anthropic(list(m["content"])) if has_pictures(m.get("content"))
+                                else str(m.get("content", ""))),
                 }],
             })
             continue

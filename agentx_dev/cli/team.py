@@ -106,6 +106,10 @@ TOOLS_FIT_NOTE = (
     "\n\nGive a step only to a helper that has every tool the step needs. A step that runs checks and also fixes what "
     "fails needs both running commands and editing files: the runner cannot edit and the coder cannot run commands, "
     "so make a helper with both, or split it into a run step and a fix step.")
+PICTURES_NOTE = (
+    "\n\nEvery helper can look at pictures: read_path on a PNG, JPEG, GIF or WebP file shows it the picture itself. "
+    "A step that checks how a page or screen looks should take a screenshot (Playwright, say) and open it with "
+    "read_path, not judge the look from the code.")
 _ROLE_NAME = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 MAX_ROLE_NAME_CHARS = 32
 
@@ -834,7 +838,7 @@ class TeamSupervisor(AsyncSupervisor):
                 note += NEW_HELPER_MODELS_NOTE.format(models=listed, chat=self._models[0][0])
                 note += _each_provider_note([name for name, _ in self._models])
             self.planner_note = (self.planner_note or "") + note
-        self.planner_note = (self.planner_note or "") + ROLE_NAME_NOTE + TOOLS_FIT_NOTE
+        self.planner_note = (self.planner_note or "") + ROLE_NAME_NOTE + TOOLS_FIT_NOTE + PICTURES_NOTE
 
     # -- names and models -------------------------------------------------------------------------------------
 

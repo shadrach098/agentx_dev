@@ -6,6 +6,7 @@ from agentx_dev.Runner.Persistence import (
 )
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Runner.Trim import coerce_trim_policy as _coerce_trim_policy, trim_tool_results
+from agentx_dev.Pictures import ToolContent, content_text, has_pictures, picture_parts, stub_old_pictures
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
 from typing import Dict, Callable, List, Type, Optional, Any, Sequence
 from pydantic import BaseModel, Field
@@ -396,8 +397,14 @@ _ACT_DONT_ANNOUNCE = (
 )
 
 
+def _observation_content(result: Any) -> Any:
+    """What goes in the history for a tool result: its text, or (a result with a picture) its content parts, so
+    the model is sent the picture itself."""
+    return result if has_pictures(result) else str(result)
+
+
 def _tool_observation_message(
-    content: str,
+    content: Any,
     *,
     tool_call_id: Optional[str],
     name: str,
@@ -427,6 +434,9 @@ def _tool_observation_message(
             "content": content,
             "tool_call_id": tool_call_id,
         }
+    if has_pictures(content):
+        return {"role": "user", "content": [{"type": "text", "text": f"Observation: {content_text(content)}"},
+                                            *picture_parts(content)]}
     return {"role": "user", "content": f"Observation: {content}"}
 
 
@@ -1258,7 +1268,8 @@ class ToolRegistry:
             # went wrong" and the model shouldn't be confused about which
             # message applies.
             if dup_verdict == "warn" and not isinstance(result, ToolError):
-                result = dup_payload + str(result)
+                result = (ToolContent([{"type": "text", "text": dup_payload}, *result]) if has_pictures(result)
+                          else dup_payload + str(result))
             return result
         finally:
             self._obs_end(event, result)
@@ -1387,7 +1398,8 @@ class ToolRegistry:
                 else:
                     breaker.record_success()
             if dup_verdict == "warn" and not isinstance(result, ToolError):
-                result = dup_payload + str(result)
+                result = (ToolContent([{"type": "text", "text": dup_payload}, *result]) if has_pictures(result)
+                          else dup_payload + str(result))
             return result
         finally:
             self._obs_end(event, result)
@@ -2006,7 +2018,8 @@ class AgentRunner(PersistenceMixin):
     def _model_view(self, messages):
         """What the model is sent for ``messages``: the same list, or (``trim_results=``) a copy in which old big
         tool results are stubs. The history itself is never changed."""
-        return trim_tool_results(messages, self._trim_policy) if self._trim_policy is not None else messages
+        trimmed = trim_tool_results(messages, self._trim_policy) if self._trim_policy is not None else messages
+        return stub_old_pictures(trimmed)
 
     def add_tool(self, tool) -> None:
         """Register ``tool`` on a built runner (used to attach ``delegate`` for the
@@ -2473,7 +2486,7 @@ class AgentRunner(PersistenceMixin):
                         "role": "tool",
                         "name": call["name"],
                         "tool_call_id": call["id"],
-                        "content": f"Error: {result}" if is_error else str(result),
+                        "content": f"Error: {result}" if is_error else _observation_content(result),
                     })
                     turn_obs.append((call["name"], call["input"], str(result), is_error))
                 if state is not None:
@@ -2862,7 +2875,7 @@ class AgentRunner(PersistenceMixin):
                 ))
             else:
                 working_history.append(_tool_observation_message(
-                    str(tool_response), tool_call_id=tool_call_id, name=action,
+                    _observation_content(tool_response), tool_call_id=tool_call_id, name=action,
                 ))
                 tool_calls.append(ToolCall(
                     name=action,

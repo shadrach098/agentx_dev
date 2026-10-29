@@ -8,6 +8,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **Agents can look at pictures.** `read_path` on a PNG, JPEG, GIF or WebP file hands the model the picture itself
+  (it used to answer `file is not utf-8 text`), so an agent or a team helper that takes a screenshot can see it. It
+  works on Claude (inside the `tool_result`) and GPT (Chat Completions and Responses: the tool message gets the text,
+  and a message right after the tool results carries the picture). The type comes from the file's contents; a
+  picture over 5 MB or 8,000 pixels is made smaller with Pillow when it is installed, and refused otherwise. Each
+  request carries the newest three pictures from tool results; older ones become a note naming the file (the history
+  keeps them). Logs, the screen and team summaries show one line (`Picture shot.png: PNG, 1440x900, 245 KB.`); in
+  `agentx` the tool line reads `Picture, 1440x900`. The agent and the team planner are told they can do this. New
+  module `agentx_dev.Pictures` (`picture_result`, `ToolContent`) for tools of your own.
 - **`agentx`: type while the agent works.** On the normal screen what you type while the spinner runs shows under it,
   and Enter sends it to the agent at its next step, so it can change course without waiting. During a team job a
   message goes to the team: running helpers read it at their next step, later steps start with it, and the main

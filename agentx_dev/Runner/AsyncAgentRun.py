@@ -11,6 +11,7 @@ Set ``use_function_calling=True`` to route the AgentType parser through
 from agentx_dev.Agents import AgentFormattor, AgentCompletion, AgentPrompt
 from agentx_dev.ChatModel import BaseChatModel
 from agentx_dev.Runner.Trim import coerce_trim_policy as _coerce_trim_policy, trim_tool_results
+from agentx_dev.Pictures import stub_old_pictures
 from agentx_dev.Runner.Persistence import (
     OUTCOME_ITERATION_LIMIT, OUTCOME_STUCK, Persistence, PersistenceMixin, RunBudget,
     budget_event, run_persistent_async, unrecognized_action_headline,
@@ -30,6 +31,7 @@ from agentx_dev.Runner.AgentRun import (
     _coerce_runner_input_media,
     _text_turn_nudge_message,
     _tool_observation_message,
+    _observation_content,
     _ACT_DONT_ANNOUNCE,
     _ParserRecoverableError,
     _salvage_react_json,
@@ -500,7 +502,8 @@ class AsyncAgentRunner(PersistenceMixin):
 
     def _model_view(self, messages):
         """What the model is sent for ``messages`` (see ``AgentRunner._model_view``)."""
-        return trim_tool_results(messages, self._trim_policy) if self._trim_policy is not None else messages
+        trimmed = trim_tool_results(messages, self._trim_policy) if self._trim_policy is not None else messages
+        return stub_old_pictures(trimmed)
 
     def add_tool(self, tool) -> None:
         """Register ``tool`` on a built runner. See ``AgentRunner.add_tool``."""
@@ -842,7 +845,7 @@ class AsyncAgentRunner(PersistenceMixin):
                         "role": "tool",
                         "name": call["name"],
                         "tool_call_id": call["id"],
-                        "content": f"Error: {result}" if is_error else str(result),
+                        "content": f"Error: {result}" if is_error else _observation_content(result),
                     })
                     turn_obs.append((call["name"], call["input"], str(result), is_error))
 
@@ -1116,7 +1119,7 @@ class AsyncAgentRunner(PersistenceMixin):
                 ))
             else:
                 working_history.append(_tool_observation_message(
-                    str(tool_response), tool_call_id=tool_call_id, name=action,
+                    _observation_content(tool_response), tool_call_id=tool_call_id, name=action,
                 ))
 
                 tool_calls.append(ToolCall(

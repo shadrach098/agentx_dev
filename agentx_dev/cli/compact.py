@@ -6,6 +6,8 @@ replaces it. If the call fails nothing is changed. No terminal output and no I/O
 
 from __future__ import annotations
 
+from agentx_dev.Pictures import content_text
+
 import json
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
@@ -44,7 +46,7 @@ class Compaction:
 
 def _text(value: Any) -> str:
     try:
-        return value if isinstance(value, str) else ("" if value is None else str(value))
+        return value if isinstance(value, str) else content_text(value)      # a picture: its text only
     except Exception:
         return ""
 

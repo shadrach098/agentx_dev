@@ -62,6 +62,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from agentx_dev.Pictures import is_picture_path, picture_result
 from agentx_dev.Tools import StructuredTool
 
 logger = logging.getLogger(__name__)
@@ -1127,7 +1128,7 @@ _PRINT_LESS = (" Print only what you need: a filter, a count, or a few lines (re
 # --- Tool implementations (closures over Permissions) ------------------------
 
 def _build_read_path(perms: Permissions, tracker: _ReadTracker) -> StructuredTool:
-    def read_path(path: str, offset: Optional[int] = None, limit: Optional[int] = None) -> str:
+    def read_path(path: str, offset: Optional[int] = None, limit: Optional[int] = None):
         if not perms.read_files:
             raise PermissionError("access denied: read_files capability not granted")
         resolved = _resolve_for_ops(path, perms)
@@ -1135,10 +1136,14 @@ def _build_read_path(perms: Permissions, tracker: _ReadTracker) -> StructuredToo
             return f"ERROR: path does not exist: {path}"
         if resolved.is_dir():
             return f"ERROR: {path} is a directory; use list_directory instead"
+        if is_picture_path(resolved):
+            # The model is sent the picture itself; offset and limit mean nothing for one.
+            return picture_result(resolved, shown_as=path)
         try:
             text = resolved.read_text(encoding="utf-8")
         except UnicodeDecodeError:
-            return f"ERROR: file is not utf-8 text: {path}"
+            return (f"ERROR: file is not utf-8 text: {path} (read_path opens text files and PNG, JPEG, GIF and "
+                    "WebP pictures)")
 
         # ANY successful read counts — the agent has "seen" this file
         # so write_file / edit_file will now permit changes.
@@ -1178,7 +1183,9 @@ def _build_read_path(perms: Permissions, tracker: _ReadTracker) -> StructuredToo
         func=read_path, args_schema=_ReadPathArgs,
         name="read_path",
         description=(
-            "Read a file's contents. Returns the FULL text when called with "
+            "Read a file's contents, or look at a picture: for a PNG, JPEG, GIF "
+            "or WebP file (a screenshot, say) you are shown the picture itself. "
+            "Returns the FULL text when called with "
             "just a path; add offset (1-indexed line number) and/or limit "
             "(max lines) to read a slice — the output is then line-numbered "
             "(like cat -n) so you can navigate. IMPORTANT: reading a file "

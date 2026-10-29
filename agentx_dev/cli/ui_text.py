@@ -97,6 +97,9 @@ _OF_TOTAL = re.compile(r"\[Showing lines (\d+)-(\d+) of (\d+)")
 _EXIT = re.compile(r"^\(exit code (-?\d+)\)$")
 
 
+_PICTURE = re.compile(r"^Picture .*?: (?:PNG|JPEG|GIF|WebP)(?:, (\d+x\d+))?, ")
+
+
 _CAUTIONS = ("[Web content:", "[MCP result from", "These notes were written by agentx", "[This skill came from")
 
 
@@ -142,6 +145,9 @@ def summarize_result(name: str, text: str) -> Tuple[str, bool]:
         return "No output", False
     first = raw[0].strip()
     if name == "read_path":
+        picture = _PICTURE.match(first)
+        if picture:
+            return "Picture" + (f", {picture.group(1)}" if picture.group(1) else ""), False
         shown = _OF_TOTAL.search(text)
         if shown:
             return f"Read lines {int(shown.group(1)):,}-{int(shown.group(2)):,} of {int(shown.group(3)):,}", False

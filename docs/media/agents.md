@@ -78,18 +78,33 @@ prints: a total, a grouped summary, a chart path — not every row.
 
 ## Files in the agent's workspace
 
-The model sees a file only when it's **attached**. Mentioning a path in
-the task, or letting the agent call `read_path`, doesn't show it
-anything — `read_path` is a text reader and returns
-`file is not utf-8 text` for an image.
+The model sees a file when it's **attached**, or when the agent opens a
+picture with `read_path`. `read_path` on a PNG, JPEG, GIF or WebP file
+hands the model the picture itself (with a line saying its type and size),
+so an agent that takes a screenshot can look at it. Other binary files
+(and PDFs) still come back as `file is not utf-8 text`; attach those.
 
 ```python
-# The model can see it:
+# The model sees it from the start:
 runner.invoke("Describe the photo", media=["./my_workspace/bruce.jpeg"])
 
-# The model can't — it only gets the file name:
+# The model sees it once the agent opens it (it needs read_path):
 runner.invoke("Describe the photo at /bruce.jpeg")
 ```
+
+A picture opened with `read_path` must be at most 5 MB and 8,000 pixels on
+its longest side. A bigger one is made smaller first when Pillow is
+installed (`pip install pillow`) and refused otherwise. The type is read
+from the file's contents, not its name. Each request carries only the
+newest three pictures from tool results; older ones are replaced by a
+note naming the file, so the agent can open one again (the history keeps
+them all). Claude gets the picture inside the tool result; GPT, whose
+tool messages take text only, gets it in a message right after the tool
+results.
+
+A tool of your own can do the same: return
+`agentx_dev.Pictures.picture_result(path)`, or a `ToolContent` list of
+text and image parts.
 
 Media paths are relative to where your program runs, so include the
 workspace folder (`./my_workspace/bruce.jpeg`). Inside the workspace, the
@@ -140,8 +155,9 @@ runner.invoke([{"role": "user", "content": ["Read this receipt", Media.image("r.
 
 ## Limits
 
-- Tools return text. A tool can't hand the model an image to look at
-  mid-run — attach what the model needs up front.
+- A tool can hand the model a picture mid-run (`read_path` on an image,
+  or your own tool returning `ToolContent`), but not a PDF or audio:
+  attach those up front.
 - `Supervisor` and `HandoffCoordinator` don't forward media to
   specialists yet. Call the specialist runner directly with `media=`.
 - Memory (`auto_memory`) keeps the text of each turn, not the media.
