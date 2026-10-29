@@ -106,9 +106,28 @@ Media paths are relative to where your program runs, **not** the
 agent's workspace. Use `./my_workspace/bruce.jpeg` or an absolute path.
 
 **The model says it can't see the image**
-The image was never attached. Naming a path in the prompt, or having the
-agent call `read_path` (a text reader), doesn't show the model anything.
-Pass the file with `media=`.
+It was never shown one. Attach the file with `media=`, or let the agent
+open it with `read_path`: since the release after 3.7.0, `read_path` on a
+PNG, JPEG, GIF or WebP file hands the model the picture itself. The
+agent needs `read_path` (`Permissions` with `read_files`) and the file
+inside its allowed folders. A PDF or other binary file still comes back
+as `file is not utf-8 text`; attach those.
+
+**`ERROR: shot.png is not a PNG, JPEG, GIF or WebP picture`**
+The name says picture but the contents are something else (a text file,
+an HTML error page saved as `.png`). `read_path` goes by the contents.
+Check the file the screenshot tool really wrote.
+
+**`ERROR: shot.png is too big to show (...)`**
+A picture must be at most 5 MB and 8,000 pixels on its longest side.
+With Pillow installed (`pip install pillow`) a bigger one is made
+smaller first; without it, it is refused. Take a smaller screenshot (a
+part of the page, or a smaller window).
+
+**The agent looked at a picture earlier but now says it can't see it**
+Each request carries only the newest three pictures from tool results;
+older ones become `[The picture was shown earlier and is left out ...]`
+to save tokens. The agent can open the file again with `read_path`.
 
 **`ValueError: sales.csv is 1,234,567 characters as text, over max_chars=100,000`**
 Too big to send as text. Pass `Media.text(path, truncate=True)` to send
@@ -132,8 +151,9 @@ with the old shape are converted automatically.
 
 **A provider `400` about image size or format**
 Providers cap image size (about 5 MB for Claude, 20 MB for GPT) and
-accept a set of formats (PNG, JPEG, GIF, WebP). The framework doesn't
-resize; shrink or convert the image first.
+accept a set of formats (PNG, JPEG, GIF, WebP). `media=` attachments are
+not resized; shrink or convert the image first. (A picture opened with
+`read_path` is checked, and made smaller with Pillow when it can be.)
 
 ## Runner errors
 
@@ -399,6 +419,24 @@ conversation, makes each request faster.
 **`... (truncated at 30000 bytes. Print only what you need ...)` in a `run_python` or `run_shell` result**
 The output passed 30,000 characters and was cut. The agent is told to print less (a filter, a count, a few lines)
 and to read part of a file with `read_path` and `offset`/`limit`.
+
+**`/voice writes out what you say with OpenAI's speech-to-text ... which needs OPENAI_API_KEY`**
+Claude models take no audio, so `/voice` always uses OpenAI to write out the words, even when you chat with Claude.
+Set `OPENAI_API_KEY` and start `agentx` again; the chat model does not change.
+
+**`/voice needs the sounddevice package to use the microphone`**
+Run `python -m pip install "agentx-dev[voice]"` in the Python that runs `agentx`, then start it again.
+
+**`No microphone could be opened (...)`**
+No microphone is connected, or Windows blocks it: Settings > Privacy & security > Microphone, turn on "Let desktop
+apps access your microphone". Check the default recording device in the Sound settings.
+
+**`No words were heard`** or `Nothing was recorded`
+The recording was silent or shorter than a third of a second: the wrong microphone is the default, it is muted, or
+Enter was pressed straight away. Speak after the `● Recording…` line shows, then press Enter.
+
+**Ctrl+M does nothing for voice**
+There is no voice key: a terminal sends Ctrl+M as Enter, so it cannot be told apart. Type `/voice`.
 
 **`project settings asked for a higher token limit (...); ignored`**
 A project's `.agentx/settings.json` may lower `"tokenLimit"` but not raise it or turn it off: a cloned repository

@@ -793,6 +793,23 @@ It now does: when `teamModels` lists both Claude and GPT models, the planner is 
 provider and to share the steps by each model's note. Before, a Claude planner kept every step on Claude. If a model
 is listed under `Not used:` above the plan, its key is missing (see troubleshooting).
 
+## Can the agent look at screenshots? *(next release)*
+
+Yes. `read_path` on a PNG, JPEG, GIF or WebP file shows the model the picture itself, on Claude and GPT. In `agentx`,
+point it at one by its location (`look at playwright-tests/artifacts/after-account.png`), or let it, or a team helper,
+take a screenshot with Playwright and open it; the tool line reads `⎿ Picture, 1440x900`. The team planner is told
+helpers can do this, so a "check the page" step looks at a screenshot instead of judging the look from the code. A
+screenshot costs about 1,500 to 4,800 tokens each time it is sent, so only the newest three go with each request. In
+your own code, a tool can return `agentx_dev.Pictures.picture_result(path)`. See
+[Pictures](../guides/cli.md#what-it-can-do) and [Media in agents](../media/agents.md).
+
+## Can I talk to `agentx` instead of typing? *(next release)*
+
+Yes: type `/voice`, speak, press Enter. The words land in the input line for you to check or change, then Enter sends
+them; nothing is sent by itself. OpenAI's speech-to-text writes them out (about $0.006 a minute), because Claude
+models take no audio, so it needs `OPENAI_API_KEY` whatever model you chat with. The microphone needs
+`pip install "agentx-dev[voice]"`. See [Voice](../guides/cli.md#voice).
+
 ## Where's the source of truth for each feature?
 
 Every feature has its own module under `agentx_dev/`. The docs cross-

@@ -750,10 +750,11 @@ print(result.content)
 
 Why it's built this way:
 
-- **The model sees files through `media=`, not `read_path`.**
-  `read_path` is a text reader. Pointing the agent at a JPEG path in the
-  prompt gets you "file is not utf-8 text" — attaching it gets you an
-  answer.
+- **Attach what the model needs from the start.** `media=` shows it the
+  PDF and the photo in the first request. The agent could also open
+  `receipt.jpg` itself with `read_path`, which shows pictures (PNG, JPEG,
+  GIF, WebP) since the release after 3.7.0, but not the PDF: for that
+  it answers "file is not utf-8 text". Attaching costs no extra step.
 - **Media paths are relative to your program**, not the workspace — hence
   `./inbox/receipt.jpg`, not `receipt.jpg`.
 - **Writes land in the workspace.** `mismatches.md` goes to
