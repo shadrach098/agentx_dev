@@ -68,6 +68,11 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **Evals: failed tool calls were never counted.** The count looked for results starting with "ToolError" in
   `completion.tool_calls`, which lists only the calls that worked, so it was always 0. It now counts them from the
   run log, recovered ones included.
+- **`agentx`: `/skills install` fetches only the skill files.** It asks GitHub for the repository's file list and
+  downloads just the skill folders' files, so a big repository costs what its skills weigh (`morluto/rea`, 6,677
+  files and 130 MB, was refused as "too many files"; its skill is 8 files). Skills in hidden folders such as
+  `.agents/skills` are found (they were skipped), a `/blob/.../SKILL.md` link installs that skill, and the archive
+  fallback counts only the files it unpacks.
 - **`agentx`: `/skills install` handles repositories with big demo files.** Only the folders holding a `SKILL.md`
   (or the folder the link names) are unpacked, so a repository's videos and docs no longer count: the download may
   be up to 100 MB, and a skill's own files up to 10 MB each (music, fonts), 50 MB in all.

@@ -2,6 +2,7 @@
 
 import io
 import json
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -152,7 +153,10 @@ class TestOpenSource:
             assert [c.name for c in found] == ["a", "b"] and problems == []
             assert fetched.commit == SHA and fetched.label == "https://github.com/o/r"
             root = fetched.root
-        assert calls == ["https://api.github.com/repos/o/r/commits/main", f"https://codeload.github.com/o/r/zip/{SHA}"]
+        # the file list is asked for first; this fake has none, so the archive is downloaded instead
+        assert calls == ["https://api.github.com/repos/o/r/commits/main",
+                         f"https://api.github.com/repos/o/r/git/trees/{SHA}?recursive=1",
+                         f"https://codeload.github.com/o/r/zip/{SHA}"]
         assert not root.exists()                       # the download is removed afterwards
 
     def test_only_the_skill_folders_are_unpacked_and_a_skills_assets_come_along(self):
@@ -208,6 +212,67 @@ class TestOpenSource:
                 http_get("https://codeload.github.com/o/r/zip/x", 2 * 1024 * 1024)
         finally:
             module.urllib.request.build_opener = original
+
+    def tree_get(self, files, calls=None, truncated=False):
+        """GitHub as it is: a commit, the file list, and each file from raw.githubusercontent.com."""
+        def get(url, limit, accept=None):
+            if calls is not None:
+                calls.append(url)
+            if "/commits/" in url:
+                return SHA.encode()
+            if "/git/trees/" in url:
+                return json.dumps({"truncated": truncated, "tree": [
+                    {"path": p, "type": "blob", "mode": "100644", "size": len(d)} for p, d in files.items()]}).encode()
+            if url.startswith("https://raw.githubusercontent.com/o/r/" + SHA + "/"):
+                path = url.split(SHA + "/", 1)[1]
+                return files[urllib.parse.unquote(path)].encode() if isinstance(files[urllib.parse.unquote(path)], str)                     else files[urllib.parse.unquote(path)]
+            raise AssertionError(f"unexpected download: {url}")
+        return get
+
+    def test_only_the_skill_files_are_fetched_from_a_big_repository(self):
+        # like morluto/rea: thousands of source files, a few skills under .agents/skills
+        files = {f"src/module_{i}.py": "x" for i in range(5000)}
+        files[".agents/skills/reverse-engineer-anything/SKILL.md"] = skill_text("reverse-engineer-anything")
+        files[".agents/skills/reverse-engineer-anything/references/tools.md"] = "notes"
+        files[".agents/skills/other/SKILL.md"] = skill_text("other")
+        calls = []
+        with open_source("https://github.com/o/r", get=self.tree_get(files, calls)) as fetched:
+            found, problems = discover(fetched.root, fetched.subpath)
+            assert sorted(c.name for c in found) == ["other", "reverse-engineer-anything"] and problems == []
+            assert "references/tools.md" in [c for c in found if c.name != "other"][0].files
+        assert not any("codeload" in url for url in calls)                     # no archive
+        assert sum("raw.githubusercontent.com" in url for url in calls) == 3     # the three skill files only
+
+    def test_a_blob_link_to_a_skill_file_installs_that_skill(self):
+        files = {".agents/skills/a/SKILL.md": skill_text("a"), ".agents/skills/b/SKILL.md": skill_text("b")}
+        link = "https://github.com/o/r/blob/main/.agents/skills/a/SKILL.md"
+        with open_source(link, get=self.tree_get(files)) as fetched:
+            assert fetched.subpath == ".agents/skills/a"
+            assert [c.name for c in discover(fetched.root, fetched.subpath)[0]] == ["a"]
+
+    def test_a_list_cut_short_by_github_falls_back_to_the_archive(self):
+        calls = []
+        tree = self.tree_get({"s/SKILL.md": skill_text("s")}, calls, truncated=True)
+
+        def get(url, limit, accept=None):
+            if "codeload" in url:
+                calls.append(url)
+                return make_zip([(f"r-{SHA}/s/SKILL.md", skill_text("s"))])
+            return tree(url, limit, accept)
+        with open_source("https://github.com/o/r", get=get) as fetched:
+            assert [c.name for c in discover(fetched.root)[0]] == ["s"]
+        assert any("codeload" in url for url in calls)
+
+    def test_an_archive_counts_only_the_files_it_unpacks(self):
+        def get(url, limit, accept=None):
+            if "/commits/" in url:
+                return SHA.encode()
+            if "/git/trees/" in url:
+                raise SkillInstallError("GitHub answered HTTP 403.")         # no list: the archive is used
+            return make_zip([(f"r-{SHA}/src/f{i}.py", "x") for i in range(MAX_ARCHIVE_FILES + 50)]
+                            + [(f"r-{SHA}/skills/a/SKILL.md", skill_text("a"))])
+        with open_source("https://github.com/o/r", get=get) as fetched:
+            assert [c.name for c in discover(fetched.root)[0]] == ["a"]
 
     def test_a_reply_that_is_not_a_commit_stops_it(self):
         with pytest.raises(SkillInstallError):

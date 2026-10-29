@@ -33,7 +33,11 @@ from .Store import (
 # A repository can carry demo videos and docs next to its skills: the download may be large, but only the skill
 # folders are unpacked (``skill_parts``), and those are held to the file and total limits.
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
-MAX_ARCHIVE_FILES = 3000
+MAX_ARCHIVE_FILES = 3000                   # files unpacked (only the skill folders' files count)
+MAX_ARCHIVE_ENTRIES = 200_000              # entries a downloaded archive may list at all
+MAX_TREE_BYTES = 20 * 1024 * 1024          # GitHub's list of a repository's files
+MAX_DIRECT_FILES = 500                     # skill files fetched one by one; more, and the archive is downloaded
+DOWNLOAD_WORKERS = 8
 MAX_FILE_BYTES = 10 * 1024 * 1024          # a skill's assets (music, fonts, images) can be a few megabytes each
 MAX_TOTAL_BYTES = 50 * 1024 * 1024
 MAX_SKILLS = 50
@@ -41,9 +45,10 @@ MAX_DEPTH = 5
 PRUNE = {".git", "node_modules", "__pycache__", ".venv", "venv"}
 SCRIPT_SUFFIXES = {".py", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".js", ".mjs", ".ts", ".rb", ".pl",
                    ".exe", ".dll", ".so"}
-ALLOWED_HOSTS = {"api.github.com", "codeload.github.com", "github.com"}
+ALLOWED_HOSTS = {"api.github.com", "codeload.github.com", "github.com", "raw.githubusercontent.com"}
 _GITHUB = re.compile(
-    r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?(?:/tree/([^/]+)(?:/(.+?))?)?/?$")
+    r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?(?:/(tree|blob)/([^/]+)(?:/(.+?))?)?/?$")
+_FILE_NAME = re.compile(r"\.[A-Za-z0-9]{1,8}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 # Windows treats these names (with or without an extension) as devices in every folder.
 _DEVICE_NAME = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", re.IGNORECASE)
@@ -83,8 +88,9 @@ class Candidate:
 
 
 def parse_source(text: str) -> Source:
-    """``https://github.com/<owner>/<repo>`` (optionally ``/tree/<branch>/<folder>``) or a folder on this computer.
-    Branch names that contain ``/`` cannot be written in the link form: use a folder link on the default branch."""
+    """``https://github.com/<owner>/<repo>`` (optionally ``/tree/<branch>/<folder>``, or ``/blob/<branch>/<path>`` as
+    GitHub shows a file: a link to a file means its folder) or a folder on this computer. Branch names that contain
+    ``/`` cannot be written in the link form: use a folder link on the default branch."""
     text = (text or "").strip().strip('"').strip("'")
     if not text:
         raise SkillInstallError("Give a github.com link or the path of a folder.")
@@ -92,9 +98,11 @@ def parse_source(text: str) -> Source:
         match = _GITHUB.match(text)
         if match is None:
             raise SkillInstallError("Only https://github.com/<owner>/<repo> links (optionally followed by "
-                                    "/tree/<branch>/<folder>) can be installed.")
-        owner, repo, ref, subpath = match.groups()
+                                    "/tree/<branch>/<folder>, or a /blob/ link to a skill's file) can be installed.")
+        owner, repo, kind, ref, subpath = match.groups()
         subpath = (subpath or "").strip("/")
+        if kind == "blob" and subpath and _FILE_NAME.search(subpath.rsplit("/", 1)[-1]):
+            subpath = subpath.rsplit("/", 1)[0] if "/" in subpath else ""      # a file: install its folder
         if subpath and any(part in ("", ".", "..") for part in subpath.split("/")):
             raise SkillInstallError("That folder path is not valid.")
         return Source("github", owner, repo, ref or "", subpath)
@@ -166,8 +174,9 @@ def extract_zip(data: bytes, dest: Path, keep: Optional[Callable[[Tuple[str, ...
         raise SkillInstallError("The download is not a valid archive.") from None
     with archive:
         infos = archive.infolist()
-        if len(infos) > MAX_ARCHIVE_FILES:
+        if len(infos) > (MAX_ARCHIVE_FILES if keep is None else MAX_ARCHIVE_ENTRIES):
             raise SkillInstallError("The archive has too many files.")
+        unpacked = 0
         total = 0
         base = dest.resolve()
         for info in infos:
@@ -181,6 +190,9 @@ def extract_zip(data: bytes, dest: Path, keep: Optional[Callable[[Tuple[str, ...
                 raise SkillInstallError("The archive has an unsafe path, so nothing was installed.")
             if keep is not None and not keep(parts):
                 continue                                   # not part of a skill: never written to disk
+            unpacked += 1
+            if unpacked > MAX_ARCHIVE_FILES:
+                raise SkillInstallError("The skill folders have too many files.")
             if info.file_size > MAX_FILE_BYTES:
                 continue                                   # one huge file is skipped, not unpacked
             if any(_DEVICE_NAME.match(part) for part in parts):
@@ -223,6 +235,11 @@ def open_source(text: str, *, get: HttpGet = http_get) -> Iterator[Fetched]:
               "application/vnd.github.sha").decode("ascii", errors="replace").strip()
     if not _SHA.match(sha):
         raise SkillInstallError("GitHub did not return a commit for that link.")
+    with tempfile.TemporaryDirectory(prefix="agentx-skills-") as tmp:
+        root = _skill_files_only(source, sha, get, Path(tmp))
+        if root is not None:
+            yield Fetched(root, f"https://github.com/{source.owner}/{source.repo}", sha, source.subpath)
+            return
     data = get(f"https://codeload.github.com/{source.owner}/{source.repo}/zip/{sha}", MAX_ARCHIVE_BYTES, None)
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -232,6 +249,58 @@ def open_source(text: str, *, get: HttpGet = http_get) -> Iterator[Fetched]:
     with tempfile.TemporaryDirectory(prefix="agentx-skills-") as tmp:
         root = extract_zip(data, Path(tmp), keep=skill_parts(names, source.subpath or ""))
         yield Fetched(root, f"https://github.com/{source.owner}/{source.repo}", sha, source.subpath)
+
+
+def _skill_files_only(source: Source, sha: str, get: HttpGet, dest: Path) -> Optional[Path]:
+    """Fetch only the skill folders' files (or the linked folder's) of commit ``sha``, one by one, using GitHub's
+    list of the repository's files, so a big repository (demo videos, thousands of source files) costs only what
+    its skills weigh. Returns the folder they were written to, or None when the list could not be had, was cut
+    short by GitHub, or names more than ``MAX_DIRECT_FILES`` files: the caller then downloads the archive."""
+    try:
+        listing = json.loads(get(f"https://api.github.com/repos/{source.owner}/{source.repo}/git/trees/{sha}"
+                                 "?recursive=1", MAX_TREE_BYTES, "application/vnd.github+json").decode("utf-8"))
+    except (SkillInstallError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(listing, dict) or listing.get("truncated") or not isinstance(listing.get("tree"), list):
+        return None
+    blobs = [(entry["path"], int(entry.get("size") or 0)) for entry in listing["tree"]
+             if isinstance(entry, dict) and entry.get("type") == "blob" and entry.get("mode") != "120000"
+             and isinstance(entry.get("path"), str)]
+    keep = skill_parts([f"top/{path}" for path, _ in blobs], source.subpath or "")
+    chosen = []
+    total = 0
+    for path, size in blobs:
+        parts = PurePosixPath(path).parts
+        if not keep(("top",) + parts):
+            continue
+        if not parts or path.startswith("/") or ".." in parts or ":" in parts[0] or "\\" in path:
+            raise SkillInstallError("The repository has an unsafe path, so nothing was installed.")
+        if size > MAX_FILE_BYTES or any(_DEVICE_NAME.match(part) for part in parts):
+            continue                                       # skipped, as in an archive
+        total += size
+        chosen.append(path)
+    if len(chosen) > MAX_DIRECT_FILES:
+        return None
+    if total > MAX_TOTAL_BYTES:
+        raise SkillInstallError("The skill folders are bigger than the limit, so nothing was installed.")
+    root = dest / source.repo
+    root.mkdir(parents=True, exist_ok=True)
+
+    def fetch(path: str) -> None:
+        data = get(f"https://raw.githubusercontent.com/{source.owner}/{source.repo}/{sha}/"
+                   + urllib.parse.quote(path), MAX_FILE_BYTES, None)
+        target = root.joinpath(*PurePosixPath(path).parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:
+        for future in [pool.submit(fetch, path) for path in chosen]:
+            try:
+                future.result()
+            except OSError as e:
+                raise SkillInstallError(f"A skill file could not be written ({type(e).__name__}).") from None
+    return root
 
 
 # -- finding and showing --------------------------------------------------------
@@ -275,7 +344,8 @@ def discover(root: Path, subpath: str = "") -> Tuple[List[Candidate], List[str]]
     names = set()
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         here = Path(dirpath)
-        dirnames[:] = sorted(d for d in dirnames if d not in PRUNE and not d.startswith(".") and not _is_link(here / d))
+        # hidden folders are searched too: skills often live in .agents/skills or .claude/skills
+        dirnames[:] = sorted(d for d in dirnames if d not in PRUNE and not _is_link(here / d))
         shown = here.relative_to(base).as_posix() or "."
         if SKILL_FILE in filenames:
             dirnames[:] = []                               # a skill's sub-folders are its files, not more skills
