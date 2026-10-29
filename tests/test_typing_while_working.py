@@ -284,3 +284,47 @@ class TestTeam:
         assert [r["agent"] for r in results] == ["explorer", "coder"]
         assert results[0]["ok"] and results[1]["skipped"]
         assert "skipped" in result
+
+
+class TestStepOrder:
+    def test_steps_ready_at_once_start_in_plan_order(self, tmp_path):
+        import time as clock
+        started = []
+
+        def work(messages):
+            text = str(messages)
+            for name in ("one", "two", "three", "four"):
+                if f"do {name}" in text and name not in started:
+                    started.append(name)
+            clock.sleep(0.2)
+            return make_final("done")
+        plan = [step("s1", "coder", "do one"), step("s2", "coder", "do two", deps=["s1"]),
+                step("s3", "coder", "do three"), step("s4", "explorer", "do four", deps=["s2", "s3"])]
+        result, seen = team_job(tmp_path, plan, work)
+        dispatched = [data["query"] for kind, data in seen if kind == "dispatch"]
+        assert dispatched == ["do one", "do two", "do three", "do four"]
+
+    def test_a_step_does_not_wait_for_an_earlier_one_that_is_not_ready(self, tmp_path):
+        def work(messages):
+            return make_final("done")
+        plan = [step("s1", "coder", "do one", deps=["s2"]), step("s2", "coder", "do two")]
+        result, seen = team_job(tmp_path, plan, work)
+        assert [data["query"] for kind, data in seen if kind == "dispatch"] == ["do two", "do one"]
+
+
+def test_the_spinner_shows_minutes_after_a_minute():
+    import io
+    from rich.console import Console
+    from agentx_dev.cli.ui import Progress
+    from agentx_dev.cli.ui_text import short_time
+    assert [short_time(s) for s in (45, 60, 683, 3725)] == ["45s", "1m 00s", "11m 23s", "1h 02m"]
+    console = Console(file=io.StringIO(), force_terminal=True, width=120, color_system=None)
+    progress = Progress(console)
+    progress.start("Team is working")
+    try:
+        progress._since -= 683
+        with console.capture() as shown:
+            console.print(progress)
+        assert "Team is working... 11m 23s" in shown.get()
+    finally:
+        progress.stop()

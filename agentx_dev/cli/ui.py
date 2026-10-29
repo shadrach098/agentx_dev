@@ -102,7 +102,7 @@ class Progress:
 
     def __rich__(self):
         if self._spinner is not None:
-            words = Text(f"{self._label}... {int(time.monotonic() - self._since)}s", style="dim")
+            words = Text(f"{self._label}... {short_time(int(time.monotonic() - self._since))}", style="dim")
             if self.typeahead is not None and not self.drawn_by:
                 words.append("  · type to add to the task", style="dim italic")
             self._spinner.update(text=words)

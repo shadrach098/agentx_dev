@@ -44,6 +44,8 @@ HELPER_STEPS = 100                   # a coder on a real change needs room (50 r
 # lost the files they had read and read them again, eight to ten times each.)
 HELPER_TRIM = TrimPolicy(keep_last=1, keep_chars=40_000, step_chars=20_000)
 PARALLEL_HELPERS = 3                 # read-only steps running at once
+ORDER_WAIT_SEC = 3.0                 # how long a step gives way to an earlier step that is ready too
+ORDER_POLL_SEC = 0.05
 READ_ONLY_ROLES = ("explorer",)      # their steps may run side by side; every other step runs alone
 FULL_READS_PER_FILE = 2              # whole reads of one unchanged file in a step; the next one is answered instead
 MIN_STEP_TOKENS = 100_000            # a step's token share is the message's limit, and never less than this
@@ -781,6 +783,11 @@ class TeamSupervisor(AsyncSupervisor):
         # skipped(number, names): whether the user asked to skip a step (its number on the screen, its names)
         self._skipped = skipped
         self._numbers: Dict[Tuple[str, str], int] = {}    # (agent, query) -> the step's number in the shown plan
+        # The shown plan's steps by number (id, depends_on, agent), which have started, and which have ended (ok?):
+        # a step gives way to an earlier step that is ready at the same time, so the steps start in plan order.
+        self._order: Dict[int, Tuple[str, List[str], str]] = {}
+        self._started: set = set()
+        self._ended: Dict[str, bool] = {}
         # make_helper(name, instructions, tool names, model) builds a helper the planner defined; None: no new helpers
         self._make_helper = make_helper
         # (model, what it is good for) a new helper may run on, the chat's first; one model: no choice offered
@@ -860,9 +867,29 @@ class TeamSupervisor(AsyncSupervisor):
                     self._planned_readers.add(spec["name"])
         ordered = _ordered(plan, self._reads_only)
         steps = [item for item in ordered if isinstance(item, dict)]
+        self._order, self._started, self._ended = {}, set(), {}
         for number, item in enumerate(steps, 1):              # numbered as the plan on the screen is
             self._numbers.setdefault((str(_step_agent_name(item) or ""), str(item.get("query", ""))), number)
+            deps = item.get("depends_on")
+            self._order[number] = (str(item.get("id") or f"step_{number}"),
+                                   [str(d) for d in deps] if isinstance(deps, list) else [],
+                                   str(_step_agent_name(item) or ""))
         return ordered
+
+    def _earlier_is_ready(self, number: int, reads: bool) -> bool:
+        """Whether a step before ``number`` in the plan is ready to start too (its dependencies have ended well) but
+        has not started. Two reading steps run side by side, so a reading step does not wait for another."""
+        ids = {step_id for step_id, _, _ in self._order.values()}
+        for other, (step_id, deps, agent) in self._order.items():
+            if other >= number or other in self._started or step_id in self._ended:
+                continue
+            known = [dep for dep in deps if dep in ids]
+            if not all(self._ended.get(dep) for dep in known):          # waiting, or skipped after a failed one
+                continue
+            if reads and self._reads_only(agent):
+                continue
+            return True
+        return False
 
     def _user_skipped(self, agent_name: str, query: str) -> bool:
         if self._skipped is None:
@@ -906,25 +933,53 @@ class TeamSupervisor(AsyncSupervisor):
     async def run_step(self, agent_name: str, query: str, run: Callable[[], Any]) -> Any:
         if self._step_lock is None:
             self._step_lock = _StepLock()
-        async with self._step_lock.hold(alone=not self._reads_only(agent_name)):
-            if self._wrapping_up():
-                return SubtaskResult(agent=agent_name, query=query, content="", error=NOT_STARTED, skipped=True)
-            if self._user_skipped(agent_name, query):
-                return SubtaskResult(agent=agent_name, query=query, content="", error=SKIPPED_BY_USER, skipped=True)
-            status = StepStatus(next(self._slots), self.shown_for(agent_name, query), self.label_of(agent_name, query),
-                                query)
-            _running_status.set(status)             # this task's context: asyncio.to_thread hands it to the helper
-            if self._on_start is not None:
-                try:
-                    self._on_start(agent_name, query, status)
-                except Exception:                   # a display error must never stop the step
-                    pass
-            try:
-                result = await run()
-            finally:
-                status.ended = time.monotonic()
-            self._statuses[id(result)] = status
+        reads = self._reads_only(agent_name)
+        number = self._numbers.get((str(agent_name), str(query)))
+        deadline: Optional[float] = None
+        while True:
+            async with self._step_lock.hold(alone=not reads):
+                # Steps start in plan order: a step whose turn comes while an earlier step is ready too gives the
+                # lock to that step. For at most ORDER_WAIT_SEC from the first time it gives way, so a step the
+                # framework never starts cannot hold up the rest.
+                if (number is None or (deadline is not None and time.monotonic() >= deadline)
+                        or not self._earlier_is_ready(number, reads)):
+                    return await self._run_numbered(agent_name, query, run, number)
+                if deadline is None:
+                    deadline = time.monotonic() + ORDER_WAIT_SEC
+            await asyncio.sleep(ORDER_POLL_SEC)
+
+    async def _run_numbered(self, agent_name: str, query: str, run: Callable[[], Any],
+                            number: Optional[int]) -> Any:
+        if number is not None:
+            self._started.add(number)
+        result = None
+        try:
+            result = await self._run_held(agent_name, query, run)
             return result
+        finally:
+            if number is not None and number in self._order:
+                self._ended[self._order[number][0]] = bool(
+                    result is not None and not getattr(result, "error", None) and not getattr(result, "skipped", False))
+
+    async def _run_held(self, agent_name: str, query: str, run: Callable[[], Any]) -> Any:
+        if self._wrapping_up():
+            return SubtaskResult(agent=agent_name, query=query, content="", error=NOT_STARTED, skipped=True)
+        if self._user_skipped(agent_name, query):
+            return SubtaskResult(agent=agent_name, query=query, content="", error=SKIPPED_BY_USER, skipped=True)
+        status = StepStatus(next(self._slots), self.shown_for(agent_name, query), self.label_of(agent_name, query),
+                            query)
+        _running_status.set(status)             # this task's context: asyncio.to_thread hands it to the helper
+        if self._on_start is not None:
+            try:
+                self._on_start(agent_name, query, status)
+            except Exception:                   # a display error must never stop the step
+                pass
+        try:
+            result = await run()
+        finally:
+            status.ended = time.monotonic()
+        self._statuses[id(result)] = status
+        return result
 
 
 def _run_on_loop(make: Callable[[], Any], job: _Job, pump: _Pump) -> Any:

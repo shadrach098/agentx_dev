@@ -71,6 +71,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **Team steps start in plan order.** When a step finished and freed two steps at once, the one that had been waiting
+  longer went first: step 3 ran before step 2. A step now gives way to an earlier step that is ready at the same
+  time (for at most 3 seconds, so a step that never starts cannot hold up the rest).
+- **The spinner shows minutes**: `Team is working... 11m 23s`, not `683s` (and `1h 02m` past an hour).
 - **`agentx --model claude-opus-5.5` works.** A Claude name written with a dot got a 404 ("model: claude-opus-5.5
   was not found") on the first message; it is now read as the dashed id (`claude-opus-5-5`). GPT names keep their dot.
 - **A `teamModels` note may be 200 characters** (was 80, and a longer one was dropped at every start). A note past
