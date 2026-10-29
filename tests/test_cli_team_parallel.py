@@ -453,6 +453,21 @@ class TestANewHelperOnAnotherModel:
         result, seen, chat, luna, _ = self.run(tmp_path, None)
         prompt = chat.planner_prompts()[0]
         assert 'one of: "chat-m", "luna-m" (good for: fast reading)' in prompt and "it runs on chat-m" in prompt
+        assert "shared among them" in prompt and "no model is preferred" not in prompt
+        assert "from each provider" not in prompt                  # neither name is a Claude or GPT model
+
+    def test_models_from_two_providers_each_get_a_step(self, tmp_path):
+        from agentx_dev.cli.models import HelperModel
+        chat = router(plans=[plan_json({"id": "s1", "agent": "explorer", "query": "look"})], synth="Done.",
+                      agent=lambda messages: make_final("looked"))
+        chat.model_name = "claude-opus-5-5"
+        luna = MockModel(script=lambda messages: make_final("luna report"))
+        luna.model_name = "gpt-6-luna"
+        run_team_job("the job", model=chat, tools=build_tools(tmp_path, [], Gate(cwd=tmp_path)), addendum="",
+                     notify=lambda kind, data: None, extra_models=[HelperModel("gpt-6-luna", luna, "fast reading")])
+        prompt = chat.planner_prompts()[0]
+        assert ("give at least one step to a model from each provider: Claude (claude-opus-5-5); GPT (gpt-6-luna)"
+                in prompt)
 
     def test_it_runs_on_the_model_asked_for_and_the_screen_says_so(self, tmp_path):
         result, seen, chat, luna, chat_helper_calls = self.run(tmp_path, "LUNA-M")

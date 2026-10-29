@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 
 from agentx_dev import AgentRunner, AgentType, AsyncSupervisor, SpawnConfig
 from agentx_dev.cli.memory import CHANGING_TOOLS, REFUSAL_STARTS
-from agentx_dev.cli.models import HelperModel, model_label, without_auto_prefix
+from agentx_dev.cli.models import HelperModel, model_label, provider_for, without_auto_prefix
 from agentx_dev.cli.ui import summarize_result
 from agentx_dev.Runner.Trim import TrimPolicy
 from agentx_dev.SubAgents import AgentSpec
@@ -109,9 +109,24 @@ def role_name(value: Any) -> str:
 
 NEW_HELPER_MODELS_NOTE = (
     ' To run it on another model, add "model" to its new_agent, one of: {models}. Without "model" it runs on '
-    "{chat}. Pick by what the step needs; no model is preferred.")
+    "{chat}. The user listed these models so the team's work is shared among them: give each step the model whose "
+    "note fits it best, and when two fit about as well, the one fewer steps use so far.")
+# Added when the listed models come from more than one provider: a Claude planner kept every step on Claude models.
+EACH_PROVIDER_NOTE = (" In a plan of two or more steps, give at least one step to a model from each provider: {groups}.")
 
 Notify = Callable[[str, Dict[str, Any]], None]
+
+
+def _each_provider_note(names: Sequence[str]) -> str:
+    """``EACH_PROVIDER_NOTE`` naming the models of each provider, or "" when they all come from one."""
+    groups: Dict[str, List[str]] = {}
+    for name in names:
+        groups.setdefault(provider_for(name) or "other", []).append(name)
+    if len(groups) < 2:
+        return ""
+    shown = {"claude": "Claude", "gpt": "GPT", "other": "other"}
+    return EACH_PROVIDER_NOTE.format(groups="; ".join(
+        f"{shown.get(provider, provider)} ({', '.join(models)})" for provider, models in groups.items()))
 
 
 class JobStopped(KeyboardInterrupt):
@@ -605,7 +620,7 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
     ``coder``, ``runner`` with the roles' own descriptions. With extra models every copy names its model, the
     chat's own included (``coder@<model>``), and every description says the same thing apart from the model and
     the user's note on what it is for (``chat_use`` for ``model``, ``HelperModel.use`` for the others), so the
-    planner is steered to no model in particular. Each helper holds only its slice of ``tools`` (the already gated
+    planner is not steered by the wording itself. Each helper holds only its slice of ``tools`` (the already gated
     tools, picked by name), so every call goes through the same gate as the main chat. ``addendum`` is the chat's
     own system addendum; the role text follows it. ``skills`` (a ``Skills``) gives every helper ``use_skill`` and the
     list of the skills that fit its role's tools, so a step that says "use the X skill" can be done. An error a
@@ -805,6 +820,7 @@ class TeamSupervisor(AsyncSupervisor):
             if len(self._models) > 1:
                 listed = ", ".join(f'"{name}"' + (f" (good for: {use})" if use else "") for name, use in self._models)
                 note += NEW_HELPER_MODELS_NOTE.format(models=listed, chat=self._models[0][0])
+                note += _each_provider_note([name for name, _ in self._models])
             self.planner_note = (self.planner_note or "") + note
         self.planner_note = (self.planner_note or "") + ROLE_NAME_NOTE
 

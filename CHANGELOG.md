@@ -71,6 +71,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **A team job uses the GPT models in `teamModels` too.** With a Claude chat model and `gpt-6-luna` in the list
+  (its key found), every step of every job ran on a Claude model: the planner was told "no model is preferred" and
+  picked its own provider. It is now told the user listed these models so the work is shared among them, and, when
+  the list has both Claude and GPT models, to give at least one step to each provider.
 - **Team steps start in plan order.** When a step finished and freed two steps at once, the one that had been waiting
   longer went first: step 3 ran before step 2. A step now gives way to an earlier step that is ready at the same
   time (for at most 3 seconds, so a step that never starts cannot hold up the rest).
