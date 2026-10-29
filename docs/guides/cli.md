@@ -221,6 +221,11 @@ Two optional files, both JSON:
   folder `agentx` writes it for you with the model in use, and `/model <name> --folder` changes it (see
   [Project memory](#project-memory)).
 
+**Switching providers.** If the saved model's key is gone but the other provider's key is set (you moved from GPT
+to Claude, say), `agentx` does not just stop: it lists that provider's models (for Claude: `claude-opus-5-5`,
+`claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-1`), or asks you to type a name, uses the one you pick,
+and offers to save it in the settings file the old name came from.
+
 ```json
 {
   "model": "claude-sonnet-4-6",

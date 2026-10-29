@@ -18,6 +18,18 @@ MAX_ERROR_NOTE_CHARS = 160            # a ModelError's message, as shown in a "N
 MAX_USE_CHARS = 80                   # a note on what a helper model is for
 
 
+# Offered when the saved model's provider has no key but this provider's key is set (the first is suggested).
+SUGGESTED_MODELS: Dict[str, Tuple[Tuple[str, str], ...]] = {
+    "claude": (
+        ("claude-opus-5-5", "strong at coding and agent work"),
+        ("claude-sonnet-5-5", "fast and capable, about half the price of Opus"),
+        ("claude-haiku-5-5", "the cheapest and fastest, for simple work"),
+        ("claude-fable-5-1", "the most capable, and the most expensive"),
+    ),
+    "gpt": (),                       # GPT model names change often: the user types one
+}
+
+
 class ModelError(Exception):
     """The model cannot be built; the message says what to do."""
 
@@ -30,6 +42,16 @@ def provider_for(name: str) -> Optional[str]:
     if lowered.startswith("gpt") or re.match(r"o\d", lowered):
         return "gpt"
     return None
+
+
+def other_provider(name: Optional[str], env: Mapping[str, str]) -> Optional[str]:
+    """When ``name``'s provider has no key but the other provider's key is set: that other provider (``"claude"``
+    or ``"gpt"``). Otherwise None, and the missing key is simply an error."""
+    provider = provider_for(name or "")
+    if provider is None or _key(env, key_variable(provider)):
+        return None
+    other = "gpt" if provider == "claude" else "claude"
+    return other if _key(env, key_variable(other)) else None
 
 
 def _no_key(provider: str) -> ModelError:

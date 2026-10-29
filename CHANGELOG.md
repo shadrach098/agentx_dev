@@ -41,6 +41,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **`agentx`: a saved model whose key is gone no longer stops the start.** When the other provider's key is set
+  (you moved from GPT to Claude, say), `agentx` lists that provider's models (Claude: `claude-opus-5-5`,
+  `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-1`) or asks for a name, uses the one picked, and offers
+  to save it in the settings file the old name came from.
 - **An OpenAI model that needs the Responses API for tool calls is found out once per program, not once per model
   object.** Each new `agentx` session, team helper and benchmark task used to send one chat-completions request that
   the provider rejected before switching. Now the switch is remembered for that model at that address until the

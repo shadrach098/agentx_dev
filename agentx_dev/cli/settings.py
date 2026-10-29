@@ -107,6 +107,11 @@ def write_user_fullscreen(home: Path, on: bool) -> Tuple[Optional[Path], str]:
     return _write_key(Path(home), "fullscreen", bool(on), f"fullscreen {'true' if on else 'false'}")
 
 
+def write_user_model(home: Path, model: str) -> Tuple[Optional[Path], str]:
+    """Save ``model`` as the default model in ``~/.agentx/settings.json``."""
+    return _write_key(Path(home), "model", str(model), f"model {model}")
+
+
 def write_user_token_limit(home: Path, limit: int) -> Tuple[Optional[Path], str]:
     """Save ``limit`` as ``tokenLimit`` in ``~/.agentx/settings.json`` (``/limit``). See ``_write_project_key``."""
     what = f"tokenLimit {limit}" if limit else "tokenLimit 0 (no limit)"

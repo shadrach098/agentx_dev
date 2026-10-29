@@ -5,11 +5,13 @@ A part of ``ChatApp`` (agentx_dev/cli/app.py), which inherits it."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, List, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
-from agentx_dev.cli.models import (describe_prompt, is_auto_note, parse_descriptions, parse_team_models,
+from agentx_dev.cli.models import (SUGGESTED_MODELS, ModelError, describe_prompt, is_auto_note, key_variable,
+                                   other_provider, parse_descriptions, parse_team_models, provider_for,
                                    team_models_line, usable_team_models)
-from agentx_dev.cli.settings import project_settings_path, write_project_model, write_project_team_models
+from agentx_dev.cli.settings import (project_settings_path, user_settings_path, write_project_model,
+                                     write_project_team_models, write_user_model)
 
 
 class ModelCommands:
@@ -199,3 +201,76 @@ class ModelCommands:
         if unknown:
             self.notice("No note for " + self._safe(", ".join(unknown), 400) + ": the chat model does not know "
                         'what they are good at. Add one with /team-models <name>="what it is for" if you know.')
+
+    # -- no key for the saved model ----------------------------------------------------------------------------
+
+    def model_from_the_other_key(self, error: Exception) -> Any:
+        """At start, the saved model could not be built (``error``). When its provider has no key but the other
+        provider's key is set (you moved from GPT to Claude, say), offer that provider's models, use the one
+        picked, and offer to save it where the old name came from. None: nothing was picked (the error stays)."""
+        self.error(self._safe(error) + self._model_source_note())
+        other = other_provider(self.requested_model, self.env)
+        if other is None:
+            return None
+        name = self._pick_model_of(other)
+        if not name:
+            return None
+        try:
+            model = self.model_factory(name, self.env)
+        except Exception as e:                      # never echo a constructor's message beyond ModelError's own
+            self.error(f"Could not use {name}: " + (self._safe(e) if isinstance(e, ModelError) else type(e).__name__))
+            return None
+        old, self.requested_model = self.requested_model, name
+        self._offer_to_save_model(old, name)
+        return model
+
+    def _pick_model_of(self, provider: str) -> Optional[str]:
+        maker = "Claude" if provider == "claude" else "GPT"
+        self.notice(f"{key_variable(provider)} is set, so you can use a {maker} model instead.")
+        options = SUGGESTED_MODELS.get(provider, ())
+        labels = [f"{name}  ({use})" if use else name for name, use in options]
+        if options and self.select is not None:                # arrow keys; None when there is no console
+            picked = self.select(labels + ["Type another name", "Quit"], 0)
+            if picked is None or picked == len(labels) + 1:
+                return None
+            if picked < len(labels):
+                return options[picked][0]
+        elif options:
+            self.notice("\n".join(f"  {number}. {label}" for number, label in enumerate(labels, 1)))
+        prompt = "Model (number or name, blank to quit): " if options else f"{maker} model name (blank to quit): "
+        try:
+            answer = str(self.read_short(prompt)).strip()
+        except (EOFError, KeyboardInterrupt, Exception):
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= len(options):
+            return options[int(answer) - 1][0]
+        if answer and provider_for(answer) == provider:
+            return answer[:80]
+        if answer:
+            self.error(f"{self._safe(answer, 60)!r} is not a {maker} model name.")
+        return None
+
+    def _offer_to_save_model(self, old: Optional[str], name: str) -> None:
+        """Save ``name`` in the settings file the old name came from, if the user says so (a --model name: no)."""
+        source = self.model_source
+        if source is None:
+            return
+        where = self._safe(source, 300)
+        if not self._yes(f"Save {name} in {where} in place of {self._safe(old, 60)}? [y/N] "):
+            self.notice(f"Using {name} for this session only.")
+            return
+
+        def same(a: Any, b: Any) -> bool:
+            try:
+                return Path(a).resolve() == Path(b).resolve()
+            except (OSError, ValueError, TypeError):
+                return False
+
+        if same(source, user_settings_path(self.home)):
+            path, message = write_user_model(self.home, name)
+        elif same(source, project_settings_path(self.cwd)):
+            path, message = write_project_model(self.cwd, name)
+        else:
+            self.notice(f"Using {name} for this session; change {where} yourself to keep it.")
+            return
+        (self.notice if path is not None else self.error)(self._safe(message, 400))

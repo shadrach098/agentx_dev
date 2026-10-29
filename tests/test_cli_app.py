@@ -569,6 +569,60 @@ def test_no_api_key_exits_one_with_the_instruction(tmp_path):
     assert app.start() == 1 and "ANTHROPIC_API_KEY" in out.getvalue()
 
 
+class TestNoKeyForTheSavedModel:
+    """You moved from GPT to Claude: the saved gpt-* model has no key now, but ANTHROPIC_API_KEY is set."""
+
+    @staticmethod
+    def factory(name, env):
+        from agentx_dev.cli.models import key_variable, provider_for
+        variable = key_variable(provider_for(name or "") or "gpt")
+        if not env.get(variable):
+            raise ModelError(f"No API key for {provider_for(name)}: set the {variable} environment variable.")
+        model = MockModel(script=[make_final(f"hello from {name}")])
+        model.model_name = name
+        return model
+
+    def setup(self, tmp_path, lines, short, **kw):
+        import json
+        settings = tmp_path / "home" / ".agentx" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({"model": "gpt-6.1-sol", "mode": "default"}), encoding="utf-8")
+        app, out, cwd, home = make_app(tmp_path, lines, None, model_factory=self.factory, model_name="gpt-6.1-sol",
+                                       model_source=settings, env={"ANTHROPIC_API_KEY": "k"}, read_short=short, **kw)
+        return app, out, settings
+
+    def test_a_claude_model_is_offered_used_and_saved(self, tmp_path):
+        import json
+        shown = []
+        app, out, settings = self.setup(tmp_path, Lines("hi", "/exit"), Lines("y"),
+                                        select=lambda options, default: shown.append(options) or 0)
+        assert app.start() == 0
+        assert "claude-opus-5-5" in shown[0][0] and shown[0][-1] == "Quit"
+        assert app.model_label == "claude-opus-5-5" and "hello from claude-opus-5-5" in out.getvalue()
+        data = json.loads(settings.read_text(encoding="utf-8"))
+        assert data == {"model": "claude-opus-5-5", "mode": "default"}       # only the model changed
+        assert "OPENAI_API_KEY" in out.getvalue() and "ANTHROPIC_API_KEY is set" in out.getvalue()
+
+    def test_without_a_menu_a_number_or_a_name_is_typed_and_a_no_keeps_the_file(self, tmp_path):
+        app, out, settings = self.setup(tmp_path, Lines("/exit"), Lines("claude-sonnet-5-5", "n"))
+        before = settings.read_text(encoding="utf-8")
+        assert app.start() == 0 and app.model_label == "claude-sonnet-5-5"
+        assert settings.read_text(encoding="utf-8") == before and "this session only" in out.getvalue()
+        app, out, _ = self.setup(tmp_path / "again", Lines("/exit"), Lines("3", "n"))
+        assert app.start() == 0 and app.model_label == "claude-haiku-5-5"
+
+    def test_quitting_or_a_gpt_name_exits_as_before(self, tmp_path):
+        app, out, _ = self.setup(tmp_path, Lines(), Lines(), select=lambda options, default: len(options) - 1)
+        assert app.start() == 1 and "OPENAI_API_KEY" in out.getvalue()
+        app, out, _ = self.setup(tmp_path / "again", Lines(), Lines("gpt-5.5"))
+        assert app.start() == 1 and "not a Claude model name" in out.getvalue()
+
+    def test_no_other_key_means_no_offer(self, tmp_path):
+        app, out, cwd, home = make_app(tmp_path, Lines(), None, model_factory=self.factory,
+                                       model_name="gpt-6.1-sol", env={}, read_short=Lines())
+        assert app.start() == 1 and "Claude model" not in out.getvalue()
+
+
 # -- models ---------------------------------------------------------------------------------------------------
 
 def test_model_command_switches_and_keeps_the_conversation(tmp_path):

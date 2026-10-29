@@ -464,17 +464,19 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands):
         self._show_startup_warnings()
         try:
             self.model = self.model_factory(self.requested_model, self.env)
-            self._track_usage_model(self.model_label, self.model, "chat")
         except ModelError as e:
-            self.error(self._safe(e) + self._model_source_note())
-            self._create_user_settings(None)
-            self._show_settings_created()
-            return 1
+            # no key for the saved model: when the other provider's key is set, offer its models instead
+            self.model = self.model_from_the_other_key(e)
+            if self.model is None:
+                self._create_user_settings(None)
+                self._show_settings_created()
+                return 1
         except Exception as e:
             self.error(f"Could not set up the model ({type(e).__name__}).{self._model_source_note()}")
             self._create_user_settings(None)
             self._show_settings_created()
             return 1
+        self._track_usage_model(self.model_label, self.model, "chat")
         # Only now is the model's real name known: the first settings file is written with it (never overwritten).
         self._create_user_settings(self.model_label)
         if self._newly_trusted and self._memory_on:         # never overwrites a file that is already there
