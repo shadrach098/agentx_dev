@@ -83,11 +83,49 @@ screen (the model, the folder, tips) and the input line:
 Pick the model with `--model` (`agentx --model claude-opus-5-5`, `agentx --model gpt-6.1-sol`), or switch later with
 `/model`. To leave, type `/exit` or press Ctrl+D; the conversation is saved.
 
+### 4. Run `/init`: tell it about your project
+
+Do this once per project, before anything else:
+
+```text
+❯ /init
+```
+
+`/init` asks the agent to study the project and write an **`AGENTX.md`** file in the folder: a short page of notes
+(under 60 lines) that the agent reads at the start of every conversation, so it does not have to rediscover your
+project each time. What happens:
+
+1. It looks around: the top-level files, the README and the main config files (`package.json`, `pyproject.toml`,
+   ...). Reading never asks.
+2. It writes `AGENTX.md` with `write_file`, so you see the whole file as a diff and approve it like any edit.
+3. If the folder already has an `AGENTX.md`, it tells you instead of overwriting it.
+
+A typical result:
+
+```markdown
+# AJ Style Gallery
+Online shop: React + Vite front end (src/), Hono API (server/), Supabase for login and data.
+
+## Run it
+- Website: npm run dev -- --port 5188
+- API: npm --prefix server run dev
+- Tests: npm test (website), npm --prefix server test (API)
+
+## Conventions
+- TypeScript strict; no new dependencies without asking.
+- Never commit .env files; secrets live on the server only.
+```
+
+Edit it by hand any time: add the rules you keep repeating ("always run the tests", "we use pnpm", "do not touch
+the payments code"). It is plain markdown, and short and true beats long. It is used from the next conversation
+(`/clear`) and every start after that. It can be committed, so your whole team shares it. Your own
+`~/.agentx/AGENTX.md` applies to every project (write your personal habits there).
+
 ---
 
 ## Part 2: everyday use
 
-### 4. Ask a question
+### 5. Ask a question
 
 Start with something that changes nothing:
 
@@ -106,7 +144,7 @@ The agent looks around and you see what it did, as a small tree:
 
 Reading, listing and searching never ask: they cannot change anything. Then the answer appears.
 
-### 5. Make your first change
+### 6. Make your first change
 
 ```text
 ❯ add a --verbose flag to the CLI
@@ -135,7 +173,7 @@ Do you want to proceed?
 Commands work the same way: `run_shell` shows the exact command, `run_python` shows the code. Delete and move
 always ask, whatever you answered before.
 
-### 6. Choose how much it asks: modes
+### 7. Choose how much it asks: modes
 
 Press **Shift+Tab** to cycle the mode; the line under the input shows the current one.
 
@@ -149,7 +187,7 @@ Press **Shift+Tab** to cycle the mode; the line under the input shows the curren
 `auto` is never reached with Shift+Tab: choose it on purpose with `/mode auto` or `agentx --mode auto`, in folders you
 trust. Some files are protected in every mode: `.git`, `.agentx` and your shell and git config are never edited.
 
-### 7. Talk to it while it works
+### 8. Talk to it while it works
 
 You do not have to wait. While the spinner runs (`type to add to the task`), type and press Enter:
 
@@ -160,11 +198,19 @@ You do not have to wait. While the spinner runs (`type to add to the task`), typ
 
 Your message reaches the agent at its next step; then one line is left: `❯ also check the footer  ✓ read by the agent`.
 
+- **Changed your mind?** `/unsend` takes back the newest waiting message before the agent reads it (`/unsend 2` the
+  second one listed, `/unsend all` all of them).
+- **Commands that only show something run at once** while it works: `/usage`, `/settings`, `/help`, `/team log`,
+  `/skills`, `/mcp` ... and `/mode plan` changes the mode at once. Commands that change things (`/model <name>`,
+  `/clear`, `/init`) wait until it is done.
+- **`/voice` works here too**: it starts recording at once; press Enter to stop, and the words appear in the line
+  you are typing, to check and send.
+
 - **Ctrl+C** stops the turn. Changes already made stay on disk; the stopped turn is not remembered.
 - At an approval prompt, Ctrl+C just says no to that one call.
 - A command that runs too long is stopped by itself: shell commands after 5 minutes, Python after 2.
 
-### 8. The commands you will use most
+### 9. The commands you will use most
 
 Type `/` to see them all in a pop-up.
 
@@ -178,6 +224,8 @@ Type `/` to see them all in a pop-up.
 | `/usage` | Tokens used this session and by the last message. |
 | `/limit [tokens]` | How many tokens one message may use before it asks (200,000 by default). |
 | `/settings` | What is in force, and where the settings files are. |
+| `/init` | Writes an `AGENTX.md` with notes about the project (step 4). |
+| `/unsend` | Take back a message you typed while it works, before it is read. |
 | `/exit` | Save and leave. |
 
 Keys: **Alt+Enter** for a new line, **Up** for earlier messages, **Tab** to complete a command or a file path.
@@ -185,17 +233,6 @@ Keys: **Alt+Enter** for a new line, **Up** for earlier messages, **Tab** to comp
 ---
 
 ## Part 3: make it yours
-
-### 9. Teach it your project: AGENTX.md
-
-An `AGENTX.md` file tells the agent how to work in your project: what it is, how to run the tests, the conventions.
-
-```text
-❯ /init
-```
-
-`/init` drafts one for you (you approve the file like any edit). Keep it short and true. Your own
-`~/.agentx/AGENTX.md` applies to every project. Both are read at start and on `/clear`.
 
 ### 10. Show it pictures
 
@@ -352,7 +389,7 @@ agentx                         start          agentx --continue        resume th
 agentx --model NAME            pick a model   agentx --mode plan       start in plan mode
 Shift+Tab   cycle modes        Alt+Enter  new line        Ctrl+C  stop the turn
 /help  /model  /mode  /clear  /resume  /usage  /limit  /settings  /exit
-/init  /voice  /team <task>  /team-models  /skip <step>  /skills  /mcp  /memory  /fullscreen
+/init  /voice  /unsend  /team <task>  /team-models  /skip <step>  /skills  /mcp  /memory  /fullscreen
 ```
 
 Next: the [full reference](../guides/cli.md) has every rule and limit, and

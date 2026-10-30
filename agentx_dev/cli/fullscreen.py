@@ -123,6 +123,7 @@ class FullScreen:
         self.progress: Any = None
         # on_typed(text): a message typed while the agent works, handed to the app (set by agentx's main)
         self.on_typed: Optional[Callable[[str], Any]] = None
+        self.submit_empty = False                  # set while /voice records: Enter on an empty line stops it
         self._toolbar = safe_toolbar(toolbar)
         self._cycle_mode = cycle_mode
         self.console = Console(file=_Sink(self._append), force_terminal=True, color_system="truecolor",
@@ -371,9 +372,22 @@ class FullScreen:
         line.append(plain(text, keep_newlines=True))
         self.console.print(line)
 
+    def insert(self, words: str) -> bool:
+        """Add ``words`` to the input line (the words ``/voice`` wrote out). False when the screen is not running."""
+        if self._loop is None or self._closed:
+            return False
+
+        def put() -> None:
+            from prompt_toolkit.document import Document
+            text = (self.chat_buffer.text.rstrip() + " " + str(words).strip()).strip()
+            self.chat_buffer.document = Document(text, len(text))
+            self.invalidate()
+        self._on_ui(put)
+        return True
+
     def submit_chat(self) -> None:
         text = self.chat_buffer.text
-        if not text.strip() and self.kind() != "chat":
+        if not text.strip() and self.kind() != "chat" and not (self.submit_empty and self.kind() == ""):
             return
         try:
             self.chat_buffer.append_to_history()

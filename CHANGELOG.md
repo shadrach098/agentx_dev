@@ -8,6 +8,14 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **`agentx`: commands while it works, and `/unsend`.** Commands that only show something (`/usage`, `/settings`,
+  `/help`, `/team log`, `/skills`, `/mcp`, `/memory`, `/sessions`, and `/model`, `/team-models`, `/limit`,
+  `/fullscreen` with nothing after them) run at once while the agent works, and `/mode` changes the mode at once;
+  they used to wait (`runs when the agent is done`). `/voice` starts recording at once: Enter stops it and the words
+  go into the line being typed, to check and send. `/unsend` takes back a waiting message (or a team note) before it
+  is read: the newest, `/unsend 2`, or `/unsend all`; the waiting lines are numbered. Commands that change the
+  conversation or the setup still wait. The agent and the team's runner are told not to wait inside a command
+  (`sleep`, `--watch`): they check CI or a deploy once and report. The zero-to-hero guide has `/init` as step 4.
 - **`agentx`: `/voice`.** Records from the default microphone until Enter (Ctrl+C cancels), writes out what was said
   with OpenAI's speech-to-text (`gpt-4o-transcribe`, falling back to `whisper-1`; `AGENTX_VOICE_MODEL` picks another)
   and puts the words in the next input line to check before sending, in the normal and the full-screen screen.

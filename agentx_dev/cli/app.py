@@ -19,6 +19,7 @@ from rich.text import Text
 from agentx_dev import AgentRunner, AgentType, Session
 from agentx_dev.cli.approval import MODES, Gate
 from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
+                                     runs_while_working,
                                      shown)
 from agentx_dev.cli.context import build_addendum
 from agentx_dev.cli.mcp import (MCPManager, windows_system_env, windows_user_env)
@@ -44,7 +45,7 @@ from agentx_dev.cli.app_mcp import McpCommands
 from agentx_dev.cli.app_models import ModelCommands
 from agentx_dev.cli.app_usage import UsageCommands
 from agentx_dev.cli.app_team import TeamCommands
-from agentx_dev.cli.app_voice import VoiceCommands
+from agentx_dev.cli.app_voice import LiveVoice, VoiceCommands
 from agentx_dev.cli.app_team import TEAM_LIMIT_REACHED, TEAM_STALLED  # noqa: F401  (re-exported)
 from agentx_dev.Skills import (SkillInstallError, Skills, discover, install, open_source, preview_text)
 
@@ -207,7 +208,7 @@ def _version() -> str:
         return "unknown"
 
 
-class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceCommands):
+class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceCommands, LiveVoice):
     """One interactive session. All terminal I/O comes in through ``console``, ``read_line`` (the chat prompt)
     and ``read_short`` (approvals and choices), so it runs the same in tests.
 
@@ -588,28 +589,96 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                 setattr(self, name, _held(typeahead, ask))
 
     def typed_while_working(self, text: str) -> bool:
-        """A line typed while the agent worked: ``/skip <step>`` skips a team step at once; another command runs
-        when the agent is done; a message goes to the running team job, else to the agent at its next step."""
+        """A line typed while the agent worked. Enter while ``/voice`` records stops it. Run at once: ``/skip``,
+        ``/unsend``, ``/voice`` (it starts recording) and the commands that only show something (see
+        ``runs_while_working``). Another command runs when the agent is done; a message goes to the running team
+        job, else to the agent at its next step."""
+        if self.recording() and not str(text or "").strip().lower().startswith("/unsend"):
+            self.stop_live_voice(str(text or "").strip())   # a line typed first goes in front of the words
+            return True
         text = str(text or "").strip()
         if not text:
             return True
-        word = text.split(None, 1)[0].lower()
+        word, _, rest = text.partition(" ")
+        word, rest = word.lower(), rest.strip()
         if word == "/skip":
-            outcome = self._skip_step(text[len(word):].strip())
+            outcome = self._skip_step(rest)
             self._echo(text, outcome, done=outcome.endswith(SKIP_DONE))
             return True
-        entry = {"text": text, "for": "later" if text.startswith("/") else "team"}
+        if word == "/unsend":
+            outcome, done = self._unsend(rest)
+            self._echo(text, outcome, done=done)
+            return True
+        if word == "/voice" and not rest:
+            self.start_live_voice()
+            return True
+        if runs_while_working(text):
+            self._echo(text, "ran now")
+            try:
+                run_command(self, text)
+            except Exception as error:                # a thread of its own: show it, never raise
+                self.error(self._failure(error))
+            return True
+        entry: Dict[str, Any] = {"text": text, "for": "later" if text.startswith("/") else "team"}
         with self._typed_lock:
             self._waiting.append(entry)
-        if entry["for"] == "team" and team_note(text, on_read=lambda who: self._read_by(entry, who)):
-            return True
+        if entry["for"] == "team":
+            withdraw = team_note(text, on_read=lambda who: self._read_by(entry, who))
+            if withdraw:
+                entry["withdraw"] = withdraw
+                return True
         entry["for"] = "later" if text.startswith("/") else "agent"
         with self._typed_lock:
             self._typed.append(text)
         return True
 
+    def _unsend(self, which: str) -> Tuple[str, bool]:
+        """``/unsend`` (the newest waiting line), ``/unsend <n>`` (the n-th listed) or ``/unsend all``: take back
+        what nobody has read yet. ``(what happened, whether anything was taken back)``."""
+        with self._typed_lock:
+            waiting = list(self._waiting)
+        if not waiting:
+            return "nothing is waiting", False
+        which = which.strip().lower()
+        if which == "all":
+            chosen = waiting
+        elif not which:
+            chosen = waiting[-1:]
+        elif which.isdigit() and 1 <= int(which) <= len(waiting):
+            chosen = [waiting[int(which) - 1]]
+        elif which.isdigit():
+            return f"there is no message {which}: {len(waiting)} waiting", False
+        else:
+            return "use /unsend, /unsend <number> or /unsend all", False
+        taken = [entry["text"] for entry in chosen if self._take_back(entry)]
+        if not taken:
+            return "already read: it cannot be taken back", False
+        if len(taken) == 1:
+            return f"unsent: {self._safe(taken[0], 60)}", True
+        return f"unsent {len(taken)} messages", True
+
+    def _take_back(self, entry: Dict[str, Any]) -> bool:
+        if entry.get("for") == "recording":
+            return self.cancel_live_voice()
+        with self._typed_lock:
+            if not any(waiting is entry for waiting in self._waiting):
+                return False                          # read (or run) meanwhile
+            if entry.get("for") == "team":
+                withdraw = entry.get("withdraw")
+                if withdraw is None or not withdraw():
+                    return False
+            elif entry.get("for") in ("agent", "later"):
+                if entry["text"] not in self._typed:
+                    return False
+                self._typed.remove(entry["text"])
+            else:                                     # being written out (/voice): it lands in the line soon
+                return False
+            self._waiting = [waiting for waiting in self._waiting if waiting is not entry]
+        return True
+
     WAITING_FOR = {"agent": "waiting for the agent's next step", "team": "waiting for a helper's next step",
-                   "later": "runs when the agent is done"}
+                   "later": "runs when the agent is done",
+                   "recording": "● recording… press Enter to stop", "transcribing": "writing out what you said"}
 
     def _waiting_shown(self) -> List[Tuple[str, str]]:
         """What the spinner draws under itself: each message typed while it works that nobody has read yet."""
@@ -753,6 +822,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             except EOFError:
                 break
             except KeyboardInterrupt:
+                if self.cancel_live_voice():
+                    self.notice("Recording cancelled.")
+                    continue
                 self.notice("(Ctrl+C) Type /exit or press Ctrl+D to leave.")
                 continue
             except Exception as e:
@@ -765,6 +837,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                 self._plain_input = True
                 self.notice("Using a plain prompt without history or completion.")
                 self.read_line = lambda prompt="": input(prompt)
+                continue
+            if self.recording():                       # /voice started while it worked: Enter stops it
+                self.stop_live_voice(str(line).strip())
                 continue
             line = str(line).strip()
             if not line:
@@ -1327,12 +1402,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 app.progress.drawn_by = screen.invalidate
                 screen.progress = app.progress
                 screen.on_typed = app.typed_while_working
+                app.insert_input = screen.insert
+                app.set_submit_empty = lambda on: setattr(screen, "submit_empty", on)
 
             return screen.run(lambda: _run(args, home, screen.console, screen.read, screen.read_short, screen.select,
                                            holder, wire))
     prompt = PromptInput(history_file=home / ".agentx" / "history", commands=command_names(),
                          descriptions=command_descriptions(), **hooks)
-    return _run(args, home, Console(), prompt.read, prompt.read_short, prompt.select, holder)
+    def wire_prompt(app: "ChatApp") -> None:
+        app.insert_input = getattr(prompt, "insert", None)     # /voice words that arrive after the turn
+
+    return _run(args, home, Console(), prompt.read, prompt.read_short, prompt.select, holder, wire_prompt)
 
 
 def _run(args: argparse.Namespace, home: Path, console: Console, read: Callable[..., str],

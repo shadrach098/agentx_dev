@@ -155,15 +155,30 @@ class _Job:
     def __init__(self, step_tokens: int = 0) -> None:
         self.stopped = False
         self.step_tokens = max(0, int(step_tokens or 0))
-        self.notes: List[str] = []
+        self.notes: List[Optional[str]] = []       # None: a note the user took back (/unsend) before anyone read it
         self._readers: List[Optional[Callable[[str], None]]] = []    # per note: told the helper that read it
+        self._read: List[bool] = []
         self.skips: set = set()
         self._lock = threading.Lock()
 
-    def add_note(self, text: str, on_read: Optional[Callable[[str], None]] = None) -> None:
+    def add_note(self, text: str, on_read: Optional[Callable[[str], None]] = None) -> int:
         with self._lock:
             self.notes.append(str(text))
             self._readers.append(on_read)
+            self._read.append(False)
+            return len(self.notes) - 1
+
+    def withdraw(self, index: int) -> bool:
+        """Take back note ``index`` (``/unsend``); False when a helper has already read it."""
+        with self._lock:
+            if not 0 <= index < len(self.notes) or self._read[index] or self.notes[index] is None:
+                return False
+            self.notes[index] = None
+            return True
+
+    def kept_notes(self) -> List[str]:
+        with self._lock:
+            return [note for note in self.notes if note is not None]
 
     def new_notes(self) -> List[str]:
         """The notes the running step's helper has not been given yet (all of them for a step that just started):
@@ -174,8 +189,11 @@ class _Job:
             return []
         with self._lock:
             first = status.notes_seen
-            fresh = self.notes[first:]
-            readers = self._readers[first:]
+            kept = [index for index in range(first, len(self.notes)) if self.notes[index] is not None]
+            fresh = [str(self.notes[index]) for index in kept]
+            readers = [self._readers[index] for index in kept]
+            for index in kept:
+                self._read[index] = True
             status.notes_seen = len(self.notes)
         for on_read in readers:
             if on_read is not None:
@@ -453,16 +471,17 @@ _active_lock = threading.Lock()
 _active_job: Optional[_Job] = None
 
 
-def team_note(text: str, on_read: Optional[Callable[[str], None]] = None) -> bool:
+def team_note(text: str, on_read: Optional[Callable[[str], None]] = None) -> Any:
     """Hand ``text`` (typed by the user while a team job runs) to that job: each running helper reads it at its next
     step, a step that starts later is given it at once, and the main agent reads it in the job's result. ``on_read``
-    is called with a helper's name each time one reads it. False when no team job is running."""
+    is called with a helper's name each time one reads it. Returns a function that takes the note back while no
+    helper has read it (``/unsend``; it returns whether it could), or False when no team job is running."""
     with _active_lock:
         job = _active_job
     if job is None or job.stopped:
         return False
-    job.add_note(text, on_read)
-    return True
+    index = job.add_note(text, on_read)
+    return lambda: job.withdraw(index)
 
 
 def skip_team_step(which: str) -> bool:
@@ -519,7 +538,8 @@ ROLES: Tuple[Role, ...] = (
          "You run commands and code and report exactly what they printed, including failures. Do not edit "
          "project files; report what needs changing instead. Read files with read_path and search with grep and "
          "find_files: do not print files with run_python or run_shell, which costs far more. Do not scrape web "
-         "pages with Python or the shell: web research is the explorer's step."),
+         "pages with Python or the shell: web research is the explorer's step. Do not wait inside a command (no "
+         "sleep, no --watch, no polling loops): check CI or a deploy once and report what it shows."),
 )
 
 
@@ -1175,9 +1195,10 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
 
 def _with_notes(text: str, job: _Job) -> str:
     """The job's result, then what the user typed while it ran, so the main agent acts on it."""
-    if not job.notes:
+    notes = job.kept_notes()
+    if not notes:
         return text
-    return f"{text}\n\n" + USER_NOTES.format(notes="\n".join(f"- {note}" for note in job.notes))
+    return f"{text}\n\n" + USER_NOTES.format(notes="\n".join(f"- {note}" for note in notes))
 
 
 def _recorded(record: Any, text: str) -> str:

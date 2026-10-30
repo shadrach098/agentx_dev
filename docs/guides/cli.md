@@ -201,7 +201,18 @@ You do not have to wait for the agent to finish. While the spinner runs (it says
   you want added) is done next by the agent or another team job.
 - **`/skip <step>`** during a team job skips a step that has not started: its number in `Team plan:` (`/skip 3`) or its
   helper's name (`/skip account-ui-builder`). A running step finishes; Ctrl+C stops the whole job.
-- **Another command** (`/model`, `/settings`, ...) is kept and runs when the agent is done.
+- **Commands that only show something run at once**: `/help`, `/usage`, `/settings`, `/sessions`, `/memory`,
+  `/team log`, `/skills`, `/mcp` (and `/mcp tools <name>`), and `/model`, `/team-models`, `/limit` and `/fullscreen`
+  with nothing after them. **`/mode`** changes the mode at once, like Shift+Tab. Each leaves `❯ /usage  ✓ ran now`.
+- **`/voice` starts recording at once**: the line under the spinner reads `◌ /voice · ● recording… press Enter to
+  stop`. Press Enter (on an empty line) to stop; the words are written out and put in the line you are typing, to
+  check and send with Enter (to the agent at its next step). If the agent finishes first, they land in the input line.
+- **`/unsend`** takes back a waiting message before it is read: `/unsend` the newest, `/unsend 2` the second one
+  listed (the waiting lines are numbered when there are two or more), `/unsend all` all of them. It also cancels a
+  recording. A message the agent or a helper has already read cannot be taken back.
+- **Commands that change the conversation or your setup wait** and run when the agent is done: `/model <name>`,
+  `/clear`, `/resume`, `/init`, `/team <task>`, `/exit`, installing or removing a skill or an MCP server, and setting
+  a value (`/limit 300k`, `/team-models ...`, `/fullscreen on`). They show `◌ /clear · runs when the agent is done`.
 
 Backspace, Esc (clears the line), Ctrl+U and Ctrl+W work while typing. Approval prompts and questions get the keys as
 before: nothing is read from the keyboard while one is open. On a pipe (not a terminal) nothing is read.
@@ -468,6 +479,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/mcp` | List your MCP servers and their state; `/mcp add <name> <url>`, `/mcp add <name> -- <command> [args]`, `/mcp remove`, `/mcp login`, `/mcp logout <name>`, `/mcp reload [name]`. See [MCP servers](#mcp-servers). | `/mcp add flightclaw https://mcp.flightclaw.com/mcp` |
 | `/fullscreen [on\|off]` | Show whether full-screen mode is on, or turn it on or off from the next start (saved as `"fullscreen"` in `~/.agentx/settings.json`). See [Full-screen mode](#full-screen-mode). | `/fullscreen on` |
 | `/limit [tokens]` | Show or set how many tokens one message may use before agentx asks whether to go on (`0` for no limit). See [The token limit](#the-token-limit). | `/limit 300k` |
+| `/unsend [n\|all]` | Take back a message typed while the agent works, before it is read: the newest, the n-th one listed, or all. See [Typing while it works](#typing-while-it-works). | `/unsend 2` |
 | `/voice` | Speak instead of typing. It records from your default microphone until you press Enter (Ctrl+C cancels), writes out what you said, and puts the words in the input line: check or change them, then press Enter to send. Nothing is sent by itself. See [Voice](#voice). | `/voice` |
 | `/exit` | Save the conversation and leave (Ctrl+D does the same). | `/exit` |
 

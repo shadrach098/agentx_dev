@@ -316,6 +316,11 @@ def _exit(ctx: Any, arg: str) -> None:
     ctx.request_exit()
 
 
+def _unsend(ctx: Any, arg: str) -> None:
+    ctx.notice("Nothing is waiting: /unsend takes back a message you typed while the agent works, before it is "
+               "read (/unsend for the newest, /unsend 2 for the second one listed, /unsend all).")
+
+
 def _voice(ctx: Any, arg: str) -> None:
     if arg.strip():
         ctx.error("/voice takes nothing after it: type /voice, speak, then press Enter.")
@@ -350,6 +355,8 @@ COMMANDS = (
     Command("fullscreen", "Keep the header and input fixed while the conversation scrolls: /fullscreen [on|off]",
             _fullscreen),
     Command("voice", "Speak instead of typing: records until Enter, then puts the words in the input line", _voice),
+    Command("unsend", "Take back a message waiting under the spinner: /unsend (the newest), /unsend 2, /unsend all",
+            _unsend),
     Command("exit", "Leave", _exit),
 )
 _BY_NAME = {command.name: command for command in COMMANDS}
@@ -363,6 +370,29 @@ def command_names() -> List[str]:
 def command_descriptions() -> dict:
     """``{"/name": one-line summary}`` for the pop-up list shown when the user types ``/``."""
     return {f"/{command.name}": command.summary for command in COMMANDS}
+
+
+def runs_while_working(line: str) -> bool:
+    """Whether a command typed while the agent works runs at once: the ones that only show something, and
+    ``/mode`` (like Shift+Tab). The ones that change the conversation or the setup (``/model <name>``, ``/clear``,
+    ``/resume``, ``/init``, ``/team <task>``, installing a skill or a server, a new limit, ``/exit``) wait until the
+    agent is done. ``/skip``, ``/unsend`` and ``/voice`` are handled by the app itself."""
+    parsed = parse_slash(line)
+    if parsed is None:
+        return False
+    name, arg = parsed
+    arg = arg.strip().lower()
+    if name in ("help", "usage", "settings", "sessions", "memory", "mode"):
+        return True
+    if name in ("model", "team-models", "limit", "fullscreen"):
+        return not arg                      # showing it; setting it waits
+    if name in ("skills", "skill"):
+        return not arg
+    if name == "mcp":
+        return not arg or (arg.startswith("tools ") and len(arg.split()) == 2)
+    if name == "team":
+        return arg == "log"
+    return False
 
 
 def _report(ctx: Any, text: str) -> None:

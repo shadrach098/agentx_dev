@@ -34,6 +34,8 @@ class TypeAhead:
         self._holds = 0
         self._closed = False
         self._thread: Optional[threading.Thread] = None
+        # While set (``/voice`` is recording), Enter on an empty line is handed over too, as "", to stop it.
+        self.submit_empty = False
 
     @property
     def available(self) -> bool:
@@ -41,6 +43,22 @@ class TypeAhead:
 
     def line(self) -> str:
         return self.text
+
+    @property
+    def active(self) -> bool:
+        """Whether keys are being read now (the spinner is on and no question is open)."""
+        with self._lock:
+            return self._active and self._holds == 0 and not self._closed
+
+    def insert(self, words: str) -> None:
+        """Add ``words`` to the line being typed (the words ``/voice`` wrote out), to check before Enter."""
+        with self._lock:
+            self.text = (self.text.rstrip() + " " + str(words).strip()).strip()[:MAX_CHARS]
+        if self.on_change is not None:
+            try:
+                self.on_change()
+            except Exception:
+                pass
 
     # -- on and off ------------------------------------------------------------------------------------------
 
@@ -110,7 +128,7 @@ class TypeAhead:
                     self.on_change()
                 except Exception:
                     pass
-            if submitted:
+            if submitted is not None:
                 try:
                     self.on_submit(submitted)
                 except Exception:                        # a broken handler must not stop the reader
@@ -121,7 +139,7 @@ class TypeAhead:
         """Apply typed characters (also used by tests); returns a submitted line, if Enter was pressed."""
         with self._lock:
             submitted, _ = self._feed(chunk)
-        if submitted:
+        if submitted is not None:
             self.on_submit(submitted)
         return submitted
 
@@ -132,6 +150,8 @@ class TypeAhead:
             if ch in ("\r", "\n"):
                 if self.text.strip():
                     submitted = (submitted + "\n" if submitted else "") + self.text.strip()
+                elif self.submit_empty and submitted is None:
+                    submitted = ""
                 self.text = ""
             elif ch in ("\x08", "\x7f"):
                 self.text = self.text[:-1]

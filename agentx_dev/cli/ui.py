@@ -127,9 +127,12 @@ class Progress:
         except Exception:
             return []
         lines = []
-        for text, where in waiting[-5:]:
+        first = max(0, len(waiting) - 5)
+        for number, (text, where) in enumerate(waiting[first:], start=first + 1):
             shown = " ".join(plain(str(text)).split())
             line = Text("◌ ", style=f"bold {ACCENT}")
+            if len(waiting) > 1:                     # numbered, for /unsend <n>
+                line.append(f"{number}. ", style="dim")
             line.append(shown if len(shown) <= 90 else shown[:87] + "...", style="dim")
             line.append(f"  · {where}", style="dim italic")
             lines.append(line)
@@ -999,6 +1002,27 @@ class PromptInput:
                      lexer=make_lexer(commands, extra), style=input_style())
         short = build(multiline=False, bottom_toolbar=toolbar, style=input_style())
         return chat, short
+
+    def insert(self, words: str) -> bool:
+        """Add ``words`` to the open input line (the words ``/voice`` wrote out after the turn ended). False when
+        no input line is open."""
+        session = self._chat
+        app = getattr(session, "app", None) if session is not None else None
+        loop = getattr(app, "loop", None) if app is not None else None
+        if app is None or loop is None or not getattr(app, "is_running", False):
+            return False
+
+        def put() -> None:
+            buffer = app.current_buffer
+            before = buffer.text.rstrip()
+            buffer.text = (before + " " + str(words).strip()).strip()
+            buffer.cursor_position = len(buffer.text)
+            app.invalidate()
+        try:
+            loop.call_soon_threadsafe(put)
+        except RuntimeError:
+            return False
+        return True
 
     def read(self, prompt: str = "> ", default: str = "") -> str:
         """The next message; ``default`` is text the line starts with (the words from /voice)."""

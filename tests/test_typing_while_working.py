@@ -159,12 +159,12 @@ class TestTheApp:
 
     def test_a_command_typed_during_a_turn_runs_after_it(self, tmp_path):
         def script(messages):
-            app.typed_while_working("/settings")
+            app.typed_while_working("/team-models clear")          # it changes a setting: it waits
             return make_final("done")
         app, out, cwd, home = make_app(tmp_path, Lines("hello", "/exit"), MockModel(script=script))
         app.start()
         text = out.getvalue()
-        assert "/settings  ✓ running it now" in text and "Kept:" not in text
+        assert "/team-models clear  ✓ running it now" in text and "Kept:" not in text
         assert app._waiting_shown() == []
 
     def test_a_message_the_agent_did_not_read_is_the_next_message(self, tmp_path):
