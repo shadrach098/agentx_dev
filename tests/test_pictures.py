@@ -255,3 +255,63 @@ class TestScreenAndCompact:
 
     def test_content_text_of_a_bare_picture(self):
         assert content_text([picture_result_from_bytes()[1]]) == "[picture]"
+
+
+class TestAPictureOutsideTheProject:
+    """A screenshot in the user's own Pictures folder: agentx asks, then opens it (it used to refuse outright)."""
+
+    def tools(self, tmp_path, answers, deny=()):
+        from agentx_dev.cli.approval import Answer, Gate
+        from agentx_dev.cli.tools import build_tools
+        project, pictures = tmp_path / "project", tmp_path / "Pictures"
+        project.mkdir(); pictures.mkdir()
+        asked = []
+
+        def ask(request):
+            asked.append(request)
+            return Answer(*answers.pop(0)) if answers else Answer("n")
+        gate = Gate(mode="default", deny=list(deny), ask=ask, cwd=project)
+        read = next(t for t in build_tools(project, [], gate) if t.name == "read_path")
+        return read, project, pictures, asked
+
+    def test_asks_then_shows_it(self, tmp_path):
+        read, project, pictures, asked = self.tools(tmp_path, [("y",)])
+        (pictures / "Screenshot 2026-10-29 194222.png").write_bytes(png_bytes())
+        result = read.func(path=str(pictures / "Screenshot 2026-10-29 194222.png"))
+        assert has_pictures(result)
+        assert len(asked) == 1 and asked[0].tool == "read_path" and not asked[0].remember
+        assert "Screenshot 2026-10-29 194222.png" in asked[0].subject
+
+    def test_a_no_opens_nothing(self, tmp_path):
+        read, project, pictures, asked = self.tools(tmp_path, [("n", "not that one")])
+        (pictures / "shot.png").write_bytes(png_bytes())
+        result = read.func(path=str(pictures / "shot.png"))
+        assert result == "The user declined: not that one"
+
+    def test_a_picture_inside_the_project_does_not_ask(self, tmp_path):
+        read, project, pictures, asked = self.tools(tmp_path, [])
+        (project / "shot.png").write_bytes(png_bytes())
+        assert has_pictures(read.func(path="shot.png")) and asked == []
+
+    def test_a_text_file_outside_is_still_refused_without_asking(self, tmp_path):
+        read, project, pictures, asked = self.tools(tmp_path, [("y",)])
+        (pictures / "notes.txt").write_text("secret", encoding="utf-8")
+        with pytest.raises(PermissionError):
+            read.func(path=str(pictures / "notes.txt"))
+        assert asked == []
+
+    def test_a_deny_rule_still_wins(self, tmp_path):
+        read, project, pictures, asked = self.tools(tmp_path, [("y",)], deny=["read_path:*Pictures*"])
+        (pictures / "shot.png").write_bytes(png_bytes())
+        result = read.func(path=str(pictures / "shot.png"))
+        assert "deny rule" in result and asked == []
+
+    def test_a_missing_file_says_so(self, tmp_path):
+        read, project, pictures, asked = self.tools(tmp_path, [("y",)])
+        result = read.func(path=str(pictures / "gone.png"))
+        assert "does not exist" in result
+
+    def test_the_prompt_says_what_it_opens(self, tmp_path):
+        from agentx_dev.cli.preview import preview_for
+        preview = preview_for("read_path", {"path": "C:/Users/me/Pictures/shot.png"}, tmp_path)
+        assert preview.title == "Open a picture outside the project: C:/Users/me/Pictures/shot.png"

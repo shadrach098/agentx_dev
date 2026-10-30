@@ -281,6 +281,8 @@ def _build(tool: str, args: Mapping[str, Any], cwd: Path, helper_models: str = "
         return _move_file(args, cwd)
     if tool == "start_team_job":
         return _team_job(args, helper_models)
+    if tool == "read_path":                # asked only for a picture outside the project
+        return Preview(f"Open a picture outside the project: {args.get('path', '')}", "", "text")
     if tool == "web_fetch":
         body, truncated = _whole(str(args.get("url", "")))
         return Preview("Fetch a web page", body, "text", truncated, COMMAND_TOO_LONG if truncated else "")

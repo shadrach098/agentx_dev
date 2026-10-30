@@ -11,7 +11,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from agentx_dev.DefaultTools import DefaultTools, Permissions, _is_inside_any, _resolve_for_ops
 from agentx_dev.Tools import StructuredTool
 from agentx_dev.WebTools import web_fetch_tool, web_search_tool
-from agentx_dev.cli.approval import UNSUPPORTED_PATH, Gate
+from agentx_dev.Pictures import is_picture_path, picture_result
+from agentx_dev.cli.approval import DECLINED, NO_WAY_TO_ASK, UNSUPPORTED_PATH, Answer, Gate, Request
 
 GATE_FAILED = "Refused: the approval check failed, so nothing was run."
 # How long a run_python / run_shell call may take (the framework's defaults, 10 s and 30 s, stop a web fetch or a
@@ -64,6 +65,46 @@ def _as_the_tool_will_see_paths(args: Dict[str, Any], permissions: Optional[Perm
             except Exception:                   # the tool rejects it (outside the sandbox): leave it as written
                 pass
     return rewritten
+
+
+def outside_picture(path: Any, permissions: Optional[Permissions]) -> Optional[Path]:
+    """The file a ``read_path`` call names when it is a picture outside the folders the tools may use, else None.
+    Such a picture is opened only after the user says yes (``gate_tool``): a screenshot is often saved in the
+    user's own Pictures folder, not in the project."""
+    if permissions is None or not isinstance(path, str) or not path or not is_picture_path(path):
+        return None
+    try:
+        _resolve_for_ops(path, permissions)
+        return None                                   # inside: the tool opens it as usual
+    except PermissionError:
+        pass
+    except Exception:
+        return None
+    try:
+        target = Path(path).expanduser()
+        if not target.is_absolute() and permissions.workspace:
+            target = Path(permissions.workspace) / target
+        return target.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _open_outside_picture(target: Path, args: Dict[str, Any], gate: Gate, approvals: Lock) -> Any:
+    """Ask the user about opening ``target``; the picture on a yes, the refusal text otherwise."""
+    if gate.ask is None:
+        return NO_WAY_TO_ASK
+    request = Request(tool="read_path", kind="read", subject=str(target), args=dict(args), remember=False)
+    try:
+        with approvals:
+            answer = gate.ask(request)
+    except Exception:                                 # asking failed: nothing is opened
+        return GATE_FAILED
+    if not isinstance(answer, Answer) or answer.choice not in ("y", "a"):
+        reason = getattr(answer, "reason", "") if isinstance(answer, Answer) else ""
+        return f"The user declined: {reason}" if reason else DECLINED
+    if not target.is_file():
+        return f"ERROR: path does not exist: {args.get('path')}"
+    return picture_result(target, shown_as=str(args.get("path")))
 
 
 _LOCKS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
@@ -128,6 +169,10 @@ def gate_tool(tool: StructuredTool, gate: Gate, *, permissions: Optional[Permiss
             return GATE_FAILED
         if refusal is not None:
             return refusal
+        if name == "read_path":
+            outside = outside_picture(args.get("path"), permissions)
+            if outside is not None:                 # a picture outside the project: only with the user's yes
+                return _open_outside_picture(outside, args, gate, approvals)
         return inner(**args)
 
     # The framework fingerprints a tool by its function's module and qualified name; give each its own.

@@ -124,6 +124,9 @@ With Pillow installed (`pip install pillow`) a bigger one is made
 smaller first; without it, it is refused. Take a smaller screenshot (a
 part of the page, or a smaller window).
 
+**`access denied` when you point `agentx` at a screenshot outside the project**
+Fixed: a picture outside the project folder (your Screenshots folder, say) now opens after an approval prompt, `Open a picture outside the project: ...`. Restart `agentx` to get it. Other files outside the project are still refused; add their folder with `--add-dir`.
+
 **The agent looked at a picture earlier but now says it can't see it**
 Each request carries only the newest three pictures from tool results;
 older ones become `[The picture was shown earlier and is left out ...]`
