@@ -1135,6 +1135,7 @@ a:hover { color: var(--text); }
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
+.hero-code.terminal::before { content: "terminal"; }
 .hero-code pre {
   margin: 0;
   padding: 0;

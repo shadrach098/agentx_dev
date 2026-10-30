@@ -21,9 +21,22 @@ The vector-store clients (Chroma, Qdrant, psycopg) come with `[rag]`, and pandas
 `VectorStore` needs nothing. Install into the same Python that runs your code (`python -m pip install
 "agentx-dev[rag]"`); `pip` and `python` can point at different installs on one machine.
 
-If you want a coding assistant in your terminal before you write any code, the install also gives you the
-`agentx` command: set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, `cd` into a project and run `agentx`. It asks
-before it edits a file or runs a command. See [the agentx command](guides/cli.md).
+## Or use the terminal app: `agentx`
+
+The same install gives you `agentx`, a coding assistant for your terminal. No code to write: run it in a project
+folder and ask for changes. It reads files, edits them and runs commands there, and asks you before it changes
+anything.
+
+```bash
+pip install "agentx-dev[anthropic]"     # the [anthropic] part is for Claude; GPT needs only agentx-dev
+export ANTHROPIC_API_KEY=sk-ant-...      # or OPENAI_API_KEY (Windows: setx ANTHROPIC_API_KEY sk-ant-...)
+cd my-project
+agentx                                   # or: agentx --model claude-opus-5-5
+```
+
+What it can do: approval prompts and modes, team jobs with helpers working in parallel on the models you choose,
+skills and MCP servers, project notes it remembers, pictures (it can look at screenshots), `/voice` to speak
+instead of typing, and typing while it works. Start with [agentx: zero to hero](agentx/zero-to-hero.md), a step-by-step guide; every detail is in [the full reference](guides/cli.md).
 
 ## Providers — you get both
 

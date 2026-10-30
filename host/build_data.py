@@ -26,6 +26,12 @@ NAV = [
         ("getting-started", DOCS_DIR / "getting-started.md", None),
         ("use-cases", DOCS_DIR / "use-cases.md", None),
     ]),
+    ("agentx terminal app", [
+        ("agentx/zero-to-hero", DOCS_DIR / "agentx" / "zero-to-hero.md", "Zero to hero"),
+        ("guides/cli", DOCS_DIR / "guides" / "cli.md", "Full reference"),
+        ("guides/skills", DOCS_DIR / "guides" / "skills.md", "Skills"),
+        ("guides/mcp", DOCS_DIR / "guides" / "mcp.md", "MCP servers"),
+    ]),
     ("Concepts", [
         ("concepts/models", DOCS_DIR / "concepts" / "models.md", None),
         ("concepts/tools", DOCS_DIR / "concepts" / "tools.md", None),
@@ -40,9 +46,6 @@ NAV = [
         ("guides/sessions", DOCS_DIR / "guides" / "sessions.md", None),
         ("guides/long-running-agents", DOCS_DIR / "guides" / "long-running-agents.md", "Long-running agents"),
         ("guides/sub-agents", DOCS_DIR / "guides" / "sub-agents.md", "Sub-agents"),
-        ("guides/cli", DOCS_DIR / "guides" / "cli.md", "The agentx command"),
-        ("guides/skills", DOCS_DIR / "guides" / "skills.md", "Skills"),
-        ("guides/mcp", DOCS_DIR / "guides" / "mcp.md", None),
         ("guides/yaml-config", DOCS_DIR / "guides" / "yaml-config.md", None),
         ("guides/custom-tools", DOCS_DIR / "guides" / "custom-tools.md", None),
         ("guides/upgrading", DOCS_DIR / "guides" / "upgrading.md", "Upgrading"),

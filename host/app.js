@@ -371,6 +371,10 @@
 
   function renderLanding(doc) {
     const cards = [
+      { slug: "agentx/zero-to-hero",      title: "agentx: zero to hero",    desc: "The terminal app, step by step: install, first change, modes, pictures, /voice, teams." },
+      { slug: "guides/cli",               title: "agentx reference",        desc: "Every command, mode, rule and limit of the terminal app." },
+      { slug: "guides/skills",            title: "skills",                   desc: "Guides the agent opens when a task needs one; install from GitHub." },
+      { slug: "guides/mcp",               title: "mcp-servers",              desc: "Connect MCP servers, in agentx (/mcp) or in your own code." },
       { slug: "getting-started",          title: "getting-started",         desc: "Install, first agent, mental model." },
       { slug: "use-cases",                title: "use-cases",               desc: "12 concrete scenarios with runnable code." },
       { slug: "concepts/models",          title: "chat-models",             desc: "GPT, Claude, retries, budgets, streaming." },
@@ -409,6 +413,10 @@ runner = <span class="fn">AgentRunner</span>(model=<span class="fn">Claude</span
 result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"</span>)
 <span class="fn">print</span>(result.content)`;
 
+    const terminalSnippet = `<span class="kw">$</span> pip install <span class="str">"agentx-dev[anthropic]"</span>
+<span class="kw">$</span> cd my-project
+<span class="kw">$</span> <span class="fn">agentx</span>          <span class="cm"># then ask: "fix the failing test"</span>`;
+
     doc.innerHTML = `
       <section class="hero">
         <div class="hero-mark" aria-hidden="true">
@@ -421,8 +429,11 @@ result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"
         <p class="hero-tagline">Build LLM agents in Python, and get agentx: a coding assistant for your terminal, with helpers that work in parallel.</p>
         <p class="hero-sub">// nothing sprawls</p>
         <div class="hero-code"><pre><code>${heroSnippet}</code></pre></div>
+        <p class="hero-sub">// or, with no code: the terminal app</p>
+        <div class="hero-code terminal"><pre><code>${terminalSnippet}</code></pre></div>
         <div class="hero-cta">
           <a href="#getting-started" class="primary">get started <span class="arrow">→</span></a>
+          <a href="#agentx/zero-to-hero">terminal app (agentx)</a>
           <a href="#reference/api-summary">api reference</a>
           <a href="https://github.com/shadrach098/agentx_dev">source</a>
         </div>
