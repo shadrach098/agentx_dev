@@ -56,9 +56,10 @@ import os
 import shutil
 import subprocess
 import sys
+import time as _time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -1125,6 +1126,120 @@ _PRINT_LESS = (" Print only what you need: a filter, a count, or a few lines (re
                "reads part of a file).")
 
 
+# --- Running a command within its time limit ----------------------------------
+
+# After the command itself has ended, how long to wait for programs it started to let go of its output.
+LINGER_SEC = 2.0
+# After the limit, how long to wait for the killed programs' last output.
+KILL_GRACE_SEC = 5.0
+_KEEP_BYTES = 4 * 1024 * 1024        # per stream; the tools cut far shorter anyway
+
+LEFT_RUNNING = ("(The command ended, but a program it started is still running and holds its output, so its "
+                "result was taken without waiting for it. To start something that keeps running, redirect its "
+                "output: nohup <command> > log.txt 2>&1 &)")
+
+
+def _output_before_the_limit(proc: "_Finished", cap: int) -> str:
+    """What a command printed before it was stopped (the end of it, cut to ``cap``), for the timeout message."""
+    shown = []
+    for label, text in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+        text = (text or "").rstrip()
+        if text:
+            shown.append(f"--- {label} before it was stopped ---\n{text[-cap:]}")
+    return ("\n" + "\n".join(shown)) if shown else ""
+
+
+@dataclass
+class _Finished:
+    returncode: Optional[int]
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+    left_running: bool = False
+
+
+def _drain(stream, sink: List[bytes]) -> None:
+    kept = 0
+    try:
+        while True:
+            chunk = os.read(stream.fileno(), 65536)
+            if not chunk:
+                break
+            if kept < _KEEP_BYTES:
+                sink.append(chunk)
+                kept += len(chunk)
+    except (OSError, ValueError):
+        pass
+
+
+def _kill_tree(proc: "subprocess.Popen") -> None:
+    """Stop ``proc`` and every program it started (Windows: ``taskkill /T``; elsewhere its process group)."""
+    if sys.platform == "win32":
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        except Exception:
+            pass
+    else:
+        try:
+            import signal
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
+def _text(chunks: List[bytes]) -> str:
+    return b"".join(chunks).decode("utf-8", errors="replace").replace("\r\n", "\n")
+
+
+def _run_bounded(argv: List[str], *, timeout: Optional[float], env: Optional[dict],
+                 cwd: Optional[str]) -> _Finished:
+    """Run ``argv`` and collect its output, never for longer than ``timeout`` (plus a few seconds).
+
+    ``subprocess.run(timeout=)`` is not enough: on Windows it kills only the direct child and then waits, with no
+    limit, for the output pipes to close, which a program the child started keeps open. Here the whole process
+    tree is stopped at the limit, and a command that ended but left a program holding its output is not waited
+    for. stdin is empty, so a command can never read the user's terminal."""
+    options: Dict[str, Any] = {}
+    if sys.platform != "win32":
+        options["start_new_session"] = True           # its own process group, so the whole group can be stopped
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            env=env, cwd=cwd, **options)
+    out: List[bytes] = []
+    err: List[bytes] = []
+    readers = [_threading.Thread(target=_drain, args=(proc.stdout, out), daemon=True),
+               _threading.Thread(target=_drain, args=(proc.stderr, err), daemon=True)]
+    for reader in readers:
+        reader.start()
+    deadline = None if not timeout else _time.monotonic() + float(timeout)
+    ended_at: Optional[float] = None
+    timed_out = left_running = False
+    while True:
+        code = proc.poll()
+        reading = any(reader.is_alive() for reader in readers)
+        if code is not None and not reading:
+            break
+        now = _time.monotonic()
+        if code is not None:
+            ended_at = ended_at if ended_at is not None else now
+            if now - ended_at >= LINGER_SEC:
+                left_running = True
+                break
+        elif deadline is not None and now >= deadline:
+            timed_out = True
+            _kill_tree(proc)
+            for reader in readers:
+                reader.join(KILL_GRACE_SEC)
+            break
+        for reader in readers:
+            reader.join(0.05)
+    return _Finished(proc.poll(), _text(out), _text(err), timed_out, left_running)
+
+
 # --- Tool implementations (closures over Permissions) ------------------------
 
 def _build_read_path(perms: Permissions, tracker: _ReadTracker) -> StructuredTool:
@@ -1711,16 +1826,13 @@ def _build_run_python(perms: Permissions) -> StructuredTool:
             # run_shell has always defaulted to the workspace; now both
             # tools agree.
             py_cwd = str(Path(perms.workspace).resolve()) if perms.workspace else None
-            proc = subprocess.run(
-                [sys.executable, "-c", code],
-                capture_output=True, text=True,
-                timeout=perms.python_timeout_sec,
-                encoding="utf-8", errors="replace",
-                env=child_env,
-                cwd=py_cwd,
-            )
-        except subprocess.TimeoutExpired:
-            return f"ERROR: code execution timed out after {perms.python_timeout_sec}s"
+            proc = _run_bounded([sys.executable, "-c", code], timeout=perms.python_timeout_sec,
+                                env=child_env, cwd=py_cwd)
+        except OSError as error:
+            return f"ERROR: could not start Python: {error}"
+        if proc.timed_out:
+            return (f"ERROR: code execution timed out after {perms.python_timeout_sec}s"
+                    + _output_before_the_limit(proc, perms.python_max_output_bytes))
 
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
@@ -1736,8 +1848,10 @@ def _build_run_python(perms: Permissions) -> StructuredTool:
             parts.append(f"--- stdout ---\n{stdout.rstrip()}")
         if stderr:
             parts.append(f"--- stderr ---\n{stderr.rstrip()}")
-        if proc.returncode != 0:
+        if proc.returncode not in (0, None):
             parts.append(f"(exit code {proc.returncode})")
+        if proc.left_running:
+            parts.append(LEFT_RUNNING)
         if parts:
             return "\n".join(parts)
         # The common failure mode: script ran fine, produced no output
@@ -2035,21 +2149,16 @@ def _build_run_shell(perms: Permissions) -> StructuredTool:
         child_env = _build_child_env(perms)
 
         try:
-            proc = subprocess.run(
-                interpreter + [command],
-                capture_output=True, text=True,
-                timeout=perms.shell_timeout_sec,
-                encoding="utf-8", errors="replace",
-                env=child_env,
-                cwd=cwd_str,
-            )
-        except subprocess.TimeoutExpired:
-            return (
-                f"ERROR: shell command timed out after {perms.shell_timeout_sec}s. "
-                "This tool is for one-shot commands only — long-running "
-                "processes (dev servers, watchers) will always hit the "
-                "timeout. Use a shorter check instead."
-            )
+            proc = _run_bounded(interpreter + [command], timeout=perms.shell_timeout_sec,
+                                env=child_env, cwd=cwd_str)
+            if proc.timed_out:
+                return (
+                    f"ERROR: shell command timed out after {perms.shell_timeout_sec}s. "
+                    "This tool is for one-shot commands only — long-running "
+                    "processes (dev servers, watchers) will always hit the "
+                    "timeout. Use a shorter check instead."
+                    + _output_before_the_limit(proc, perms.shell_max_output_bytes)
+                )
         except FileNotFoundError as e:
             return (
                 f"ERROR: shell interpreter not available: {e}. "
@@ -2074,10 +2183,12 @@ def _build_run_shell(perms: Permissions) -> StructuredTool:
             parts.append(f"--- stdout ---\n{stdout.rstrip()}")
         if stderr:
             parts.append(f"--- stderr ---\n{stderr.rstrip()}")
-        if proc.returncode != 0:
+        if proc.returncode not in (0, None):
             parts.append(f"(exit code {proc.returncode})")
         elif not stdout and not stderr:
             parts.append("(exit code 0, no output)")
+        if proc.left_running:
+            parts.append(LEFT_RUNNING)
         return "\n".join(parts)
 
     return StructuredTool(

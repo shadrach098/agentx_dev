@@ -86,6 +86,13 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **`run_shell` and `run_python` stop at their time limit.** On Windows the limit killed only the shell and then
+  waited, with no limit, for programs it had started (`ssh`, `sleep`, a dev server) to close the output, so a 5-minute
+  limit could run for as long as such a program did (`Running run_shell... 7m 28s`). The whole process tree is now
+  stopped at the limit, and the timeout message keeps what the command printed before it. A command that ends but
+  leaves a program running in the background without redirecting its output (`cmd &`) returns at once with a note
+  on how to start it (`nohup cmd > log.txt 2>&1 &`) instead of holding the tool until the limit. Commands get an
+  empty stdin, so none can read the terminal.
 - **A helper that calls a tool it does not have is told so and carries on.** A "final checks" step that also had to
   fix what failed went to the runner (it runs commands but cannot edit); its call to `edit_file` ended the step with
   "(agent emitted an unrecognized action and no answer text)", shown as Done. agentx's agent and helpers now get the

@@ -414,6 +414,12 @@ older build is used until it runs out; sign in once more then, and it renews fro
 **`MCP needs the mcp package: pip install "agentx-dev[mcp]"`**
 MCP support is an optional install; run that command.
 
+**`Running run_shell...` for longer than 5 minutes**
+Fixed: on Windows a command that started another program (`ssh`, `sleep`, a dev server) could run past the 5-minute
+limit for as long as that program did. Now the whole command is stopped at the limit and the agent is told what it
+printed before. Restart `agentx` to get it. A command that hangs on purpose (a dev server) should be started in the
+background with its output sent to a file: `nohup npm run dev > dev.log 2>&1 &`.
+
 **`A model request got no answer in time; trying again (attempt 2).`**
 The model took more than 5 minutes to answer (a reasoning model on a big request), or the connection failed. It is
 tried once more; a second timeout ends the turn with an error. A smaller request, or `/clear` for a fresh
