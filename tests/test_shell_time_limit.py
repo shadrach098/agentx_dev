@@ -82,3 +82,50 @@ class TestRunPython:
         python = tool("run_python", python_timeout_sec=30)
         result = python.func(code="print('hi ✓')")
         assert "hi ✓" in result
+
+
+def _alive(pid):
+    import os
+    import subprocess as sp
+    if sys.platform == "win32":
+        out = sp.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+class TestCtrlC:
+    """Ctrl+C while a command runs (full-screen mode raises KeyboardInterrupt in the worker) stops the command and
+    everything it started, instead of leaving them running."""
+
+    def test_the_command_and_its_children_are_stopped(self, tmp_path):
+        import threading
+        from agentx_dev.DefaultTools import _run_bounded
+        from agentx_dev.cli.fullscreen import raise_in
+        pid_file = tmp_path / "child.pid"
+        code = ("import os, subprocess, sys, time\n"
+                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+                "time.sleep(60)\n")
+        outcome = {}
+
+        def work():
+            try:
+                _run_bounded([sys.executable, "-c", code], timeout=120, env=None, cwd=None)
+                outcome["result"] = "finished"
+            except KeyboardInterrupt:
+                outcome["result"] = "interrupted"
+        worker = threading.Thread(target=work)
+        worker.start()
+        deadline = time.monotonic() + 20
+        while not (pid_file.exists() and pid_file.read_text()) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        child = int(pid_file.read_text())
+        assert raise_in(worker)
+        worker.join(15)
+        assert not worker.is_alive() and outcome.get("result") == "interrupted"
+        time.sleep(1)
+        assert not _alive(child), "the command's child kept running after Ctrl+C"

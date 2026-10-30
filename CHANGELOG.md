@@ -92,7 +92,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   stopped at the limit, and the timeout message keeps what the command printed before it. A command that ends but
   leaves a program running in the background without redirecting its output (`cmd &`) returns at once with a note
   on how to start it (`nohup cmd > log.txt 2>&1 &`) instead of holding the tool until the limit. Commands get an
-  empty stdin, so none can read the terminal.
+  empty stdin, so none can read the terminal. Ctrl+C while a command runs now stops it and everything it started
+  (a hung `ssh` used to keep the turn waiting after "Turn interrupted").
 - **A helper that calls a tool it does not have is told so and carries on.** A "final checks" step that also had to
   fix what failed went to the runner (it runs commands but cannot edit); its call to `edit_file` ended the step with
   "(agent emitted an unrecognized action and no answer text)", shown as Done. agentx's agent and helpers now get the

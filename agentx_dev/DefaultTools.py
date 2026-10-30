@@ -1215,6 +1215,15 @@ def _run_bounded(argv: List[str], *, timeout: Optional[float], env: Optional[dic
                _threading.Thread(target=_drain, args=(proc.stderr, err), daemon=True)]
     for reader in readers:
         reader.start()
+    try:
+        return _wait_bounded(proc, readers, out, err, timeout)
+    except BaseException:                  # Ctrl+C (or anything else) while it runs: stop the command too
+        _kill_tree(proc)
+        raise
+
+
+def _wait_bounded(proc: "subprocess.Popen", readers: List[Any], out: List[bytes], err: List[bytes],
+                  timeout: Optional[float]) -> _Finished:
     deadline = None if not timeout else _time.monotonic() + float(timeout)
     ended_at: Optional[float] = None
     timed_out = left_running = False
