@@ -184,7 +184,7 @@ The prompt prints exactly what `a` will remember.
 ### Ctrl+C
 
 - At an approval prompt, Ctrl+C declines that one call only. The turn goes on and the model is told the question was interrupted.
-- During a turn, Ctrl+C aborts the turn. Changes already made in that turn stay on disk; they are not undone. The interrupted turn is not recorded in the conversation, so the model will not remember it. Earlier turns are kept.
+- During a turn, Ctrl+C aborts the turn. Changes already made in that turn stay on disk; they are not undone. What the turn did before it stopped is kept: your message and a short record (files changed, commands run, the last thing it said) go into the conversation and the work log, so `continue` picks up from there, on the same model or after `/model <name>`. Earlier turns are kept.
 - At an idle prompt, Ctrl+C prints a reminder. Use `/exit` or Ctrl+D to leave.
 
 ### Typing while it works
@@ -447,7 +447,8 @@ Each conversation is saved as it goes, to `~/.agentx/sessions/<project>/<UTC tim
 - `agentx --resume` lists them (newest first, with the first message as a title) and loads the one you choose; `agentx --resume ID` loads it directly.
 - Inside a session, `/sessions` lists them and `/resume [id]` loads one.
 - `/clear` starts a new conversation (a new file). Earlier ones stay on disk.
-- Ctrl+C during a turn keeps the earlier turns and drops the interrupted one.
+- A turn that stops before it finishes (Ctrl+C, an error, the token limit) is kept as a short record of what it did, so `continue` picks up from there.
+- When you leave, `agentx` says how to come back: `agentx --continue` (with `--model <name>` to switch model).
 
 A missing or unreadable session file is reported in one line and a new conversation starts.
 
@@ -605,7 +606,7 @@ When the job ends, the agent gets one text back as the result of its tool call: 
 
 ### Ctrl+C
 
-Ctrl+C at an approval prompt declines that one call, as always. Ctrl+C anywhere else during a job (a helper working, the planner thinking) stops the job and aborts the turn: "Turn interrupted" is printed, changes the helpers already made stay on disk, and the turn is not recorded in the conversation. At a team question it only skips the question.
+Ctrl+C at an approval prompt declines that one call, as always. Ctrl+C anywhere else during a job (a helper working, the planner thinking) stops the job and aborts the turn: "Turn interrupted" is printed, changes the helpers already made stay on disk, and a short record of the turn is kept in the conversation. At a team question it only skips the question.
 
 ### Helper models
 
@@ -722,7 +723,7 @@ Answer: I added docstrings to 6 modules and the tests pass.
 - **Ran** lists `run_shell` commands (the first 100 characters of each) and `run_python` calls (`python: <first line>`), under the same rule.
 - **Answer** is the start of the final answer (300 characters). A whole entry is at most 1,200.
 - A team job is one line, `Team job: <task> (<outcome>)`, where the outcome is the job's result word such as `done` or `partial` (`ended` when none is given). A refused or declined team call writes no `Team job` line; a job that stops with an error is logged with the outcome `ended`. The files the helpers changed and the commands they ran are **not** listed: the chat does not see their tool results, only the job's summary.
-- A turn you interrupted with Ctrl+C, or one that ended in an error, writes no entry (its history is not kept either).
+- A turn that stopped before it finished (Ctrl+C, an error, the token limit) gets an entry too, with what it changed and ran and `Answer: Stopped before it finished (<why>)`.
 - Keys and secrets are hidden before anything is written, with the same hiding as error messages (key-shaped tokens and the actual values of keys in your environment). That covers what you type and the commands that ran. It is a pattern check, not a promise: do not put secrets in requests.
 - The file is readable by you only, where the platform has file modes, and so is `log-older.md`. The folder's `.agentx` and the log files must be real files inside the folder: if `.agentx`, `log.md` or `log-older.md` is a link (a symlink, or a junction on Windows), or leads outside the folder, the log is neither written nor loaded. A rotation writes through a new temporary file with a unique name, so a file planted under a fixed name is never opened. The same check guards `.agentx/settings.json`: `agentx` never creates or changes it through a link or outside the folder, and `/model <name> --folder` then says the file was left unchanged.
 - It lives in the folder, so a commit would include it. Add `.agentx/log.md` and `.agentx/log-older.md` to `.gitignore` if it should stay private; `agentx` never edits `.gitignore`.
@@ -771,7 +772,7 @@ it shows what it did so far and says so: type `continue` to carry on from there.
 
 ### The token limit
 
-One message may use 200,000 tokens (input and output, every model, team helpers included; input the provider serves from its prompt cache counts as a tenth, about what it is billed at, and the question then also says how many were sent in full) before `agentx` stops and asks `Keep going for up to 200,000 more? a = yes, and do not ask again in this message. No wraps up with what was found so far. [y/a/N]`. Yes goes on for another 200,000; `a` goes on and does not ask again until your next message. No (or Enter) wraps the message up: from then on every tool call, skill reads included, is refused with a note telling the agent to answer now with what it has found, so the agent, and any team helpers, report what they have and the turn ends normally and is kept. In a team job no further step starts: the steps that had not started are listed as skipped (`not started: the user chose to wrap up at the token limit`), and the team reports with what the finished steps found. If wrapping up itself uses more than 50,000 more tokens (or half the limit, if that is more), the turn is stopped the way Ctrl+C stops it: your earlier turns are kept, the stopped one is not recorded, and changes already made stay on disk. The check runs after each model reply, so a turn can pass the limit by one request. `/limit` shows it, `/limit 300k` (or `500000`, `1m`) changes it and saves it in `~/.agentx/settings.json` as `"tokenLimit"`, and `/limit 0` turns it off. A project's `.agentx/settings.json` may set a lower limit but not a higher one.
+One message may use 200,000 tokens (input and output, every model, team helpers included; input the provider serves from its prompt cache counts as a tenth, about what it is billed at, and the question then also says how many were sent in full) before `agentx` stops and asks `Keep going for up to 200,000 more? a = yes, and do not ask again in this message. No wraps up with what was found so far. [y/a/N]`. Yes goes on for another 200,000; `a` goes on and does not ask again until your next message. No (or Enter) wraps the message up: from then on every tool call, skill reads included, is refused with a note telling the agent to answer now with what it has found, so the agent, and any team helpers, report what they have and the turn ends normally and is kept. In a team job no further step starts: the steps that had not started are listed as skipped (`not started: the user chose to wrap up at the token limit`), and the team reports with what the finished steps found. If wrapping up itself uses more than 50,000 more tokens (or half the limit, if that is more), the turn is stopped the way Ctrl+C stops it: your earlier turns are kept, a short record of the stopped one is kept, and changes already made stay on disk. The check runs after each model reply, so a turn can pass the limit by one request. `/limit` shows it, `/limit 300k` (or `500000`, `1m`) changes it and saves it in `~/.agentx/settings.json` as `"tokenLimit"`, and `/limit 0` turns it off. A project's `.agentx/settings.json` may set a lower limit but not a higher one.
 
 ### When the model is slow
 

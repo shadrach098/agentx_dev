@@ -94,6 +94,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **`agentx`: a turn that stops before it finishes is kept.** Out of credit, any other error, Ctrl+C or the token
+  limit used to drop the whole turn, so after switching model (say Claude ran out of credit) the new model did not
+  know what the stopped turn had changed. Now your message and a short record (files changed, commands run, the last
+  thing it said, why it stopped) go into the conversation and the work log, and `continue` picks up from there, on
+  the same model or after `/model <name>`. An out-of-credit error says so plainly and what to do instead of
+  printing the raw `BadRequestError`. Leaving prints how to come back: `agentx --continue` (with `--model <name>`).
 - **`run_shell` and `run_python` stop at their time limit.** On Windows the limit killed only the shell and then
   waited, with no limit, for programs it had started (`ssh`, `sleep`, a dev server) to close the output, so a 5-minute
   limit could run for as long as such a program did (`Running run_shell... 7m 28s`). The whole process tree is now

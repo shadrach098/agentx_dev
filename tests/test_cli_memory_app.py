@@ -52,22 +52,22 @@ def test_an_environment_key_without_a_key_shape_is_hidden_too(tmp_path):
     assert text and plain_key not in text and "[hidden]" in text
 
 
-def test_an_interrupted_turn_writes_nothing(tmp_path):
+def test_an_interrupted_turn_is_logged_as_stopped(tmp_path):
     def script(messages):
         raise KeyboardInterrupt
 
     app, _, cwd, _ = make_app(tmp_path, Lines("first", "/exit"), MockModel(script=script))
     assert app.start() == 0
-    assert log_text(cwd) == ""
+    assert "- first" in log_text(cwd) and "Stopped before it finished (the user pressed Ctrl+C)" in log_text(cwd)
 
 
-def test_a_failed_turn_writes_nothing(tmp_path):
+def test_a_failed_turn_is_logged_as_stopped(tmp_path):
     def script(messages):
         raise RuntimeError("provider down")
 
     app, _, cwd, _ = make_app(tmp_path, Lines("first", "/exit"), MockModel(script=script))
     assert app.start() == 0
-    assert log_text(cwd) == ""
+    assert "Stopped before it finished (an error (RuntimeError))" in log_text(cwd)
 
 
 def test_no_log_is_kept_for_the_home_folder_or_a_drive_root(tmp_path, monkeypatch):

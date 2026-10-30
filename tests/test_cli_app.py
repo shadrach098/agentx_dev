@@ -925,7 +925,7 @@ def test_an_interrupted_turn_says_that_changes_made_stay_on_disk(tmp_path):
 
     app, out, _, _ = make_app(tmp_path, Lines("go", "/exit"), MockModel(script=script), width=300)
     app.start()
-    assert "remain on disk" in out.getvalue()
+    assert "changes already made stay on disk" in out.getvalue()
 
 
 class TestMainRoundOne:

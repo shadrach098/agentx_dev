@@ -87,6 +87,28 @@ CARRY_ON_NOTE = ("\n\n[agentx] Your last turn stopped at the step limit. Everyth
                  "something.")
 
 
+STOPPED_CARRY_ON_NOTE = ("\n\n[agentx] Your last turn stopped before it finished; what it did is noted above. Carry on "
+                         "from there: check the files it changed before redoing anything.")
+KEPT_SO_FAR = "What it did so far is kept in the conversation, and changes already made stay on disk."
+ERROR_NEXT = "Say continue to try again, or switch model with /model <name> and say continue."
+OUT_OF_CREDIT_NEXT = ("Add credit in the provider's console (Anthropic: Plans & Billing; OpenAI: Billing), or switch "
+                      "model with /model <name> and say continue.")
+# The words providers use when an account has no credit left (Anthropic, then OpenAI's two forms).
+_NO_CREDIT = ("credit balance is too low", "insufficient_quota", "exceeded your current quota")
+
+
+def _out_of_credit(error: BaseException) -> bool:
+    try:
+        text = str(error).lower()
+    except Exception:
+        return False
+    return any(words in text for words in _NO_CREDIT)
+
+
+def provider_name(model: Any) -> str:
+    return {"claude": "Anthropic", "gpt": "OpenAI"}.get(provider_for(str(model or "")) or "", "model provider's")
+
+
 def _is_carry_on(text: str) -> bool:
     words = " ".join(str(text or "").lower().replace(",", " ").replace(".", " ").replace("!", " ").split())
     return bool(words) and len(words) <= 40 and any(words == w or words.startswith(w + " ") for w in CARRY_ON_WORDS)
@@ -310,6 +332,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         self.token_limit = max(0, int(token_limit or 0))   # tokens one message may use before asking; 0 is off
         self.max_steps = max(1, int(max_steps or DEFAULT_MAX_STEPS))   # steps the agent may take for one message
         self._stopped_at_step_limit = False        # the last turn ended at the step limit (see CARRY_ON_NOTE)
+        self._stopped_turn = False                 # the last turn stopped early and was kept (_keep_stopped_turn)
         self._limit_lock = threading.Lock()
         self._turn_start: Optional[int] = None    # tokens used before the running turn; None outside a turn
         self._turn_start_sent = 0                  # the same, every input token counted in full
@@ -864,10 +887,54 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                 continue
             self.send(line)
         self.save()
+        if self.session is not None and self.session.history and self.session_path is not None:
+            self.notice("To pick up this conversation later: agentx --continue (add --model <name> to switch model).")
         return self._exit_code
 
     def _failure(self, error: BaseException) -> str:
+        if _out_of_credit(error):
+            return (f"Your {provider_name(self.model_label)} account is out of credit: the API refused the request "
+                    f"({type(error).__name__}).")
         return f"Something went wrong ({type(error).__name__}): {self._safe(error)}"
+
+    def _keep_stopped_turn(self, title: str, text: str, events: List[dict], reason: str, last_said: str) -> None:
+        """A turn that stopped before it finished (an error, Ctrl+C, the token limit): your message and a short
+        record of what it did go into the conversation and the work log, so "continue" (on this model or after
+        /model) picks up from there instead of starting over."""
+        if self.session is None:
+            return
+        record = record_from_events(title, events)
+        calls = []
+        for event in events:
+            if event.get("type") == "tool_call":
+                args = event.get("args")
+                subject = (args.get("path") or args.get("command") or args.get("task") or "") \
+                    if isinstance(args, dict) else ""
+                calls.append(" ".join(f"{event.get('name')} {subject}".split())[:120])
+        lines = [f"[agentx] This turn stopped before it finished: {reason}. What it did before it stopped:"]
+        if record.changed:
+            lines.append("- Files changed: " + ", ".join(record.changed[:20]))
+        if record.ran:
+            lines.append("- Commands run: " + "; ".join(command[:160] for command in record.ran[:10]))
+        if calls:
+            lines.append(f"- Tool calls ({len(calls)}, the last ones): " + "; ".join(calls[-15:]))
+        if last_said.strip():
+            lines.append("- The last thing it said: " + " ".join(last_said.split())[:500])
+        if not (record.changed or record.ran or calls):
+            lines.append("- Nothing yet.")
+        lines.append("Changes already made are on disk. If the user says continue, pick up from here: check the files "
+                     "above before redoing anything.")
+        note = self._hide("\n".join(lines))
+        self.session.history = [*(self.session.history or []), {"role": "user", "content": text},
+                                {"role": "assistant", "content": note}]
+        self._stopped_turn = True
+        record.answer = f"Stopped before it finished ({reason})." + (
+            f" Last: {' '.join(last_said.split())[:200]}" if last_said.strip() else "")
+        if self._memory_on:
+            now = datetime.now()
+            self._append_log(entry_text(record, now, self._hide))
+            if self.project_memory is not None and worth_a_note(record):
+                self.project_memory.write(record, now, self._hide)
 
     def send(self, text: str, log_title: Optional[str] = None) -> None:
         """One turn: summarise a very long conversation first, stream the events to the screen, then autosave
@@ -878,6 +945,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         self._team_stalled = False
         events: List[dict] = []
         finished = False
+        stopped = ""                                   # why the turn stopped before it finished, if it did
+        last_said = ""
         usage_before = self._usage_totals()
         with self._limit_lock:
             self._turn_start = counted_tokens(usage_before[1], usage_before[2], usage_before[3])
@@ -892,7 +961,10 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             sent = text
             if self._stopped_at_step_limit and _is_carry_on(text):
                 sent = text + CARRY_ON_NOTE
+            elif self._stopped_turn and _is_carry_on(text):
+                sent = text + STOPPED_CARRY_ON_NOTE
             self._stopped_at_step_limit = False
+            self._stopped_turn = False
             if self._recall_next:                      # the first message of a fresh conversation: add close notes
                 self._recall_next = False
                 if self.project_memory is not None:
@@ -912,6 +984,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                 answered = answered or kind == "final"
                 if kind in ("tool_call", "tool_result", "final"):
                     events.append(event)
+                if kind == "thought" and str(event.get("content") or "").strip():
+                    last_said = str(event.get("content"))
                 if kind == "tool_call":                    # an open look-around flow is drawn above the spinner
                     self.progress.start(f"Running {self._safe(event.get('name', ''), 40)}")
                 elif kind not in ("final", "completion"):
@@ -920,13 +994,16 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             finished = True
         except TokenLimitReached as stop:
             self.notice(f"Stopped: this message used {stop.used:,} tokens, past your limit of {stop.limit:,} a "
-                        "message, and wrapping up took more. Your earlier turns are kept; this one was not recorded. "
-                        "Changes already made in it remain on disk. /limit shows or changes the limit.")
+                        f"message, and wrapping up took more. {KEPT_SO_FAR} /limit shows or changes the limit.")
+            stopped = f"it used {stop.used:,} tokens, past the limit of {stop.limit:,}"
         except KeyboardInterrupt:
-            self.notice("Turn interrupted (Ctrl+C). Your earlier turns are kept; this one was not recorded. "
-                        "Changes already made in that turn remain on disk.")
+            self.notice(f"Turn interrupted (Ctrl+C). {KEPT_SO_FAR}")
+            stopped = "the user pressed Ctrl+C"
         except Exception as e:
             self.error(self._failure(e))
+            self.notice(KEPT_SO_FAR + " " + (OUT_OF_CREDIT_NEXT if _out_of_credit(e) else ERROR_NEXT))
+            stopped = (f"the {provider_name(self.model_label)} account is out of credit" if _out_of_credit(e)
+                       else f"an error ({type(e).__name__})")
         finally:
             self.progress.stop()
             self.screen.flush()                       # a look-around flow left open by an error or Ctrl+C
@@ -935,6 +1012,12 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                 self._wrapping_up = False
                 self.gate.closed = None
             self.progress.stop()
+            if stopped:
+                try:
+                    self._keep_stopped_turn(text if log_title is None else log_title, text, events, stopped,
+                                            last_said)
+                except Exception:              # keeping it is a help: a failure here must not end the app
+                    logging.getLogger(__name__).warning("could not keep the stopped turn", exc_info=True)
             self.save()
             after = self._usage_totals()
             self._last_turn_usage = tuple(b - a for a, b in zip(usage_before, after))      # type: ignore[assignment]

@@ -383,8 +383,19 @@ You answered no (or nothing) at the question above. Tool calls now return a refu
 the agent and any team helpers report what they have; the turn is kept.
 
 **`Stopped: this message used N tokens, past your limit of M a message, and wrapping up took more.`**
-Even wrapping up went past its allowance (50,000 tokens, or half the limit). The turn was not recorded, so the agent
-does not remember it; files it changed stay changed. Ask again with a smaller request, or raise the limit first.
+Even wrapping up went past its allowance (50,000 tokens, or half the limit). A short record of what the turn did is
+kept in the conversation, and files it changed stay changed. Say continue with a smaller request, or raise the limit
+first.
+
+**`Your Anthropic account is out of credit`** (or OpenAI)
+The provider refused the request because the account has no credit left. Add credit in its console (Anthropic: Plans
+& Billing; OpenAI: Billing), or switch to a model from the other provider with `/model <name>` and say `continue`.
+What the stopped turn did is kept, so the new model picks up from there.
+
+**After switching model it did not know where it stopped**
+Fixed: a turn that stops early (out of credit, an error, Ctrl+C) is now kept as a short record of what it did. Switch
+with `/model <name>` inside `agentx`, which keeps the conversation; after a restart use `agentx --continue` (add
+`--model <name>`). A plain `agentx` starts a new conversation that only sees the work log.
 
 **`MCP <name>: needs sign-in: /mcp login <name>`**
 The server wants you to sign in. Run `/mcp login <name>`; the browser opens. It is never opened by itself when

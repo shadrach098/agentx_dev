@@ -206,7 +206,7 @@ Your message reaches the agent at its next step; then one line is left: `❯ als
 - **`/voice` works here too**: it starts recording at once; press Enter to stop, and the words appear in the line
   you are typing, to check and send.
 
-- **Ctrl+C** stops the turn. Changes already made stay on disk; the stopped turn is not remembered.
+- **Ctrl+C** stops the turn. Changes already made stay on disk, and what it did so far is kept, so `continue` picks up from there.
 - At an approval prompt, Ctrl+C just says no to that one call.
 - A command that runs too long is stopped by itself: shell commands after 5 minutes, Python after 2.
 
@@ -380,6 +380,9 @@ select text with the mouse.
 - **Watch the cost**: `/usage` after a big message, `/limit` to set when it asks.
 - **Give it a way to check its work**: tests, a build, a screenshot. "Fix it and run the tests" beats "fix it".
 - **Point at pictures** of what is wrong instead of describing them.
+- **Switch models without losing your place**: `/model gpt-6.1-sol` (or any other) keeps the conversation, and so does
+  `agentx --continue --model <name>` after a restart. If a provider runs out of credit mid-task, switch and say
+  `continue`: what the stopped turn did is kept.
 - **Use `/clear`** when you change topic: a fresh conversation is cheaper and sharper, and the work log carries over.
 
 ## Cheat sheet
