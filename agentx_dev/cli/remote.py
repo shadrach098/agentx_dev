@@ -111,6 +111,11 @@ class RemoteControl:
         app = self.app
         front = WebFront(cwd=app.cwd, home=app.home, open_it=False, remote=True)
         front.app = app
+        # Each device that connects gets its own conversation; this terminal's is listed there as "Live on the
+        # computer", and a device that opens it shares it (mirrored, as below).
+        from agentx_dev.cli.app import device_app
+        front.first_device_owns_main = False
+        front.make_device_app = lambda room: device_app(app, room)
         front._worker = threading.main_thread()          # the Stop button interrupts the terminal's turn
         web_screen = WebScreen(front.console, front.bus)
         web_screen.cwd = getattr(app.screen, "cwd", None)

@@ -21,13 +21,24 @@
   }
   keepKey();
 
+  // -- this device: kept in the browser, so each device has its own conversation (a reload or a new tab keeps it) --
+  const DEVICE = (() => {
+    const fresh = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, "0")).join("");
+    try {
+      let id = localStorage.getItem("agentx-device");
+      if (!id || !/^[A-Za-z0-9_-]{8,64}$/.test(id)) { id = fresh(); localStorage.setItem("agentx-device", id); }
+      return id;
+    } catch (_) { return fresh(); }
+  })();
+
   async function post(path, body) {
-    const res = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Agentx-Token": token},
+    const res = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Agentx-Token": token,
+                                                             "X-Agentx-Device": DEVICE},
                                    body: JSON.stringify(body || {})});
     return res.json().catch(() => ({}));
   }
   async function get(path) {
-    const res = await fetch(path, {headers: {"X-Agentx-Token": token}});
+    const res = await fetch(path, {headers: {"X-Agentx-Token": token, "X-Agentx-Device": DEVICE}});
     if (!res.ok) throw new Error(String(res.status));
     return res.json();
   }
@@ -569,6 +580,11 @@
         ev.team.rows.map((r) => `<div class="team-row"><span class="who">${esc(r.helper)}${r.label && r.label !== r.helper ? ` · ${esc(r.label)}` : ""}</span>` +
           `<span class="stats">${esc(r.stats)}</span>${r.activity ? `<span class="act">${esc(r.activity)}</span>` : ""}</div>`).join("");
     } else { team.hidden = true; team.innerHTML = ""; }
+    const others = Number(ev.othersWorking || 0);         // other devices' conversations working in this folder
+    $("others").hidden = !others;
+    $("others").textContent = others === 1
+      ? "Another conversation is working in this folder: it may change the same files."
+      : `${others} other conversations are working in this folder: they may change the same files.`;
     const waiting = $("waiting");
     const items = ev.waiting || [];
     waiting.hidden = !items.length;
@@ -800,7 +816,7 @@
         if (name !== currentModel) { setModel(name); post("/api/send", {text: `/model ${name}`}); }
       });
   });
-  $("newChat").addEventListener("click", () => post("/api/send", {text: "/clear"}));
+  $("newChat").addEventListener("click", () => { if (live.joined) joinLive(false, "new"); else post("/api/send", {text: "/clear"}); });
   // -- the side panel: context, tokens, team work, MCP servers, memory ----------------------------------------------
   const num = (n) => Number(n || 0).toLocaleString();
   let detailsOpen = false, detailsTimer = 0;
@@ -1057,23 +1073,53 @@
       models = (s.models || []).map(String);
       if (s.model) setModel(s.model);
       if (s.mode) setMode(s.mode);
+      live = s.live || {};
+      drawSessions();
     } catch (_) { /* the app is still starting: the next status brings it */ }
   }
+  // Each device has its own conversation. The one running on the computer (or in the first window) is listed on
+  // top as "Live": opening it shares it with whoever has it; "Your own conversation" goes back.
+  let sessionList = [], live = {};
   async function loadSessions() {
-    try {
-      const list = await get("/api/sessions");
-      const nav = $("sessions");
-      if (!list.length) { nav.innerHTML = '<div class="sessions-empty">Conversations in this folder show up here.</div>'; return; }
-      nav.innerHTML = list.map((s) => `<button type="button" class="session" data-id="${esc(s.id)}" aria-current="${s.current}" ` +
-        `title="${esc(String(s.updated).replace("T", " ").slice(0, 16))}"><span class="session-title">${esc(s.title)}</span></button>`).join("");
-      const current = list.find((s) => s.current);
-      if (current) { $("topTitle").textContent = current.title; $("topTitle").dataset.fixed = "1"; }
-      else { delete $("topTitle").dataset.fixed; }
-    } catch (_) { /* ignore */ }
+    try { sessionList = await get("/api/sessions"); } catch (_) { return; }
+    drawSessions();
+  }
+  function drawSessions() {
+    const nav = $("sessions");
+    const top = live.joined
+      ? `<button type="button" class="session live-entry" data-live="leave"><span class="session-title">Your own conversation</span>` +
+        `<span class="session-sub">Back to this device's conversation</span></button>`
+      : live.available
+        ? `<button type="button" class="session live-entry" data-live="join"><span class="session-title">` +
+          `<span class="live-dot${live.working ? " working" : ""}" aria-hidden="true"></span>Live on ${esc(live.where || "the computer")}</span>` +
+          `<span class="session-sub">${esc(live.title || "The conversation running there")} · open to share it</span></button>`
+        : "";
+    const rows = sessionList.map((s) => `<button type="button" class="session" data-id="${esc(s.id)}" aria-current="${s.current}" ` +
+      `title="${esc(String(s.updated).replace("T", " ").slice(0, 16))}"><span class="session-title">${esc(s.title)}</span></button>`).join("");
+    nav.innerHTML = top + (rows || '<div class="sessions-empty">Conversations in this folder show up here.</div>');
+    const current = sessionList.find((s) => s.current);
+    if (live.joined) { $("topTitle").textContent = `Shared · ${current ? current.title : "live conversation"}`; $("topTitle").dataset.fixed = "1"; }
+    else if (current) { $("topTitle").textContent = current.title; $("topTitle").dataset.fixed = "1"; }
+    else { delete $("topTitle").dataset.fixed; }
+  }
+  // Opening or leaving the shared conversation changes what this window shows: it reloads (the key and the
+  // device stay), and what was asked for (another conversation, a new one) is done in this device's own.
+  setInterval(() => {               // other devices' conversations, the live one's title and whether it works
+    loadSessions();
+    if (live.available || live.joined) loadState();
+  }, 10000);
+  async function joinLive(on, then) {
+    await post("/api/join", {live: on, then: then || ""});
+    location.reload();
   }
   $("sessions").addEventListener("click", (e) => {
+    const l = e.target.closest("[data-live]");
+    if (l) { joinLive(l.dataset.live === "join"); return; }
     const b = e.target.closest("[data-id]");
-    if (b && b.getAttribute("aria-current") !== "true") post("/api/send", {text: `/resume ${b.dataset.id}`});
+    if (b && b.getAttribute("aria-current") !== "true") {
+      if (live.joined) joinLive(false, `resume:${b.dataset.id}`);
+      else post("/api/send", {text: `/resume ${b.dataset.id}`});
+    }
     $("side").classList.remove("open");
   });
 
@@ -1104,7 +1150,7 @@
       case "insert": input.value = (input.value ? input.value.replace(/\s*$/, " ") : "") + ev.text; grow(); setComposer(); input.focus(); break;
       case "conversation": switchConversation(ev); break;
       case "reset": reloadConversation(); break;
-      case "closed": showClosed(); break;
+      case "closed": showClosed(ev); break;
     }
     keepBottom(stick || ev.type === "user" || ev.type === "ask");
     syncView();
@@ -1196,8 +1242,17 @@
   }
 
   let closed = false;
-  function showClosed() {
+  function showClosed(ev) {
     closed = true;
+    if (ev && ev.room) {                       // this device's own conversation ended; agentx still runs
+      $("overlayBox").innerHTML = (ev.idle
+        ? "<h2>This conversation was put away</h2><p>No window used it for a while, so agentx closed it. It is saved: open it again to carry on.</p>"
+        : "<h2>This conversation ended</h2><p>It is saved in the list. Start a new one, or open any conversation from the list.</p>") +
+        `<div class="key-form"><button type="button" class="btn primary" id="reopen">${ev.idle ? "Open it again" : "Start a new conversation"}</button></div>`;
+      $("overlay").hidden = false;
+      $("reopen").addEventListener("click", () => location.reload());
+      return;
+    }
     $("overlayBox").innerHTML = "<h2>agentx has stopped</h2><p>Start it again from your terminal with <code>agentx --ui</code>. " +
       "Your conversation is saved; <code>agentx --ui --continue</code> picks it up.</p>";
     $("overlay").hidden = false;
@@ -1228,7 +1283,7 @@
         "whole link agentx printed in the terminal, or paste it here.");
       return;
     }
-    const check = await fetch("/api/state", {headers: {"X-Agentx-Token": token}}).catch(() => null);
+    const check = await fetch("/api/state", {headers: {"X-Agentx-Token": token, "X-Agentx-Device": DEVICE}}).catch(() => null);
     if (check && check.status === 403) {
       const why = await check.json().catch(() => ({}));
       if (why.error === "forbidden") {
@@ -1238,7 +1293,7 @@
         return;
       }
     }
-    const source = new EventSource(`/events?t=${encodeURIComponent(token)}`);
+    const source = new EventSource(`/events?t=${encodeURIComponent(token)}&d=${DEVICE}`);
     source.onmessage = (m) => {
       try { onEvent(JSON.parse(m.data)); } catch (error) { console.error("agentx: an event could not be shown", error); }
     };

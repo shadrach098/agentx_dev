@@ -228,3 +228,26 @@ def test_ssh_is_offered_on_the_wifi_address_first():
                                addresses=["100.113.0.53", "10.0.0.219"])
     assert "bruce@10.0.0.219" in text or "@10.0.0.219" in text
     assert "use 100.113.0.53 (its Tailscale address)" in text
+
+
+def test_in_the_terminal_each_device_gets_its_own_conversation_and_can_join(terminal):
+    """agentx --remote (or /remote-control): the terminal has its conversation; a device that connects gets one of
+    its own, and the terminal's is offered to it as "Live on the computer" (opening it mirrors it, as before)."""
+    app, prompt, out, cwd = terminal
+    prompt.typed.put("/remote-control")
+    remote = wait_for(lambda: getattr(app, "_remote", None))
+    front = remote.front
+    phone = front.route("phone0000001")
+    assert phone is not front and phone.host is front              # not the terminal's conversation
+    wait_for(lambda: phone.app is not None and any(p["kind"] == "message" for p in list(phone._pending.values())))
+    assert phone.app is not app and phone.app.cwd == app.cwd
+    live = front.live_info("phone0000001")
+    assert live["available"] and live["where"] == "the computer" and not live["joined"]
+    front.join("phone0000001", True)
+    assert front.route("phone0000001") is front                    # now it mirrors the terminal's conversation
+    front.join("phone0000001", False)
+    assert front.route("phone0000001") is phone
+    # its conversation ends with remote control
+    prompt.typed.put("/remote-control off")
+    wait_for(lambda: getattr(app, "_remote", "x") is None)
+    wait_for(lambda: phone.ended)

@@ -276,6 +276,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         self.read_short = read_short or read_line
         self.model_factory = model_factory
         self.env = dict(os.environ if env is None else env)
+        self._given_env = env                       # another device's conversation is built the same way
         self.requested_model = model_name
         self.model_source = model_source       # the settings file ``model_name`` came from (None: a flag, or none)
         self.team_models: List[str] = list(team_models or [])
@@ -1616,12 +1617,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return _run(args, home, Console(), prompt.read, prompt.read_short, prompt.select, holder, wire_prompt)
 
 
+def device_app(template: "ChatApp", room: Any) -> "ChatApp":
+    """Another device's own conversation in remote use: a new ChatApp in the same folder, drawn in that device's
+    window (``room``, a ``webui.WebFront``). It starts on the model the main conversation uses now and the settings
+    as saved (not a mode switched on for the main one only); the folder was trusted when agentx started."""
+    settings = load_settings(template.cwd, template.home)
+    app = ChatApp(cwd=template.cwd, home=template.home, console=room.console, read_line=room.read,
+                  read_short=room.read_short, select=room.select, model_name=str(template.model_label),
+                  mode=settings.mode or "default", allow=settings.allow, deny=settings.deny,
+                  add_dirs=list(template.add_dirs), problems=[], project_allow=settings.project_allow,
+                  newly_trusted=False, model_source=None, team_models=settings.team_models,
+                  team_models_source=settings.team_models_source, team_model_uses=settings.team_model_uses,
+                  token_limit=settings.token_limit, max_steps=settings.max_steps,
+                  model_factory=template.model_factory, env=getattr(template, "_given_env", None))
+    app.auto_titles = bool(getattr(template, "auto_titles", False))
+    return app
+
+
 def _run_ui(args: argparse.Namespace) -> int:
     """``agentx --ui``: the same app, drawn in a browser window (see ``webui``)."""
     from agentx_dev.cli.webui import WebFront
     home = Path.home()
     front = WebFront(cwd=Path.cwd().resolve(), home=home, port=max(0, int(args.port or 0)), open_it=not args.no_open,
                      remote=bool(getattr(args, "remote", False)))
+    front.make_device_app = lambda room: device_app(front.app, room)   # each other device: its own conversation
     holder: List[Any] = []
     return front.run(lambda: _run(args, home, front.console, front.read, front.read_short, front.select, holder,
                                   front.wire))

@@ -68,6 +68,16 @@ MODEL_SUGGESTIONS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5",
 MODES_SHOWN = ("default", "accept-edits", "plan", "auto")
 KEEP_ALIVE_SEC = 4.0                # a closed window is noticed when this write fails
 CLOSE_GRACE_SEC = 8.0               # how long the window may be gone (a reload) before agentx quits
+ROOM_IDLE_SEC = 15 * 60             # a device's own conversation no window used for this long is closed (and saved)
+ROOM_REMOTE_NOTE = ("Remote control is turned on and off on the computer agentx runs on; this device has its own "
+                    "conversation there.")
+_DEVICE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def _device_id(value: Any) -> str:
+    """A window's device id (made by the page, kept in the browser), or "" when there is none or it is malformed."""
+    text = str(value or "").strip()
+    return text if _DEVICE.match(text) else ""
 SKIP_FOLDERS = {"node_modules", "__pycache__", "dist", "build", "venv", "env", "target", "out", "coverage"}
 _MAX_RESULT_LINES = 12
 _MAX_OUTPUT_LINES = 120             # what a step shows when you open it
@@ -578,6 +588,19 @@ class WebFront:
         self._conversation = ""
         self.console = Console(file=_Sink(self._printed), force_terminal=True, color_system="truecolor",
                                width=CONSOLE_WIDTH, legacy_windows=False)
+        # One conversation per device. The front that serves the window (the "host") has the main conversation;
+        # every other device gets a room of its own: another WebFront (own events, questions, Stop and status) with
+        # its own ChatApp, built by ``make_device_app(room)``. Without that factory every window shares the main one.
+        self.host: Optional["WebFront"] = None              # on a room: the front that serves the window
+        self.device = ""                                     # on a room: the device it belongs to
+        self.rooms: Dict[str, "WebFront"] = {}
+        self.joined: set = set()                             # devices that opened the main conversation instead
+        self.main_owner: Optional[str] = None
+        self.first_device_owns_main = True                   # --ui: the first device to connect has the main one
+        self.make_device_app: Optional[Callable[["WebFront"], Any]] = None
+        self.last_session: Dict[str, str] = {}               # a room closed when unused reopens its conversation
+        self.ended = False
+        self.idle = False
 
     # -- what the app prints and asks ----------------------------------------------------------------------------
 
@@ -1042,16 +1065,17 @@ class WebFront:
         path, message = write_settings(self.home if scope == "user" else self.cwd, changes)
         if path is None:
             return {"ok": False, "message": message}
-        app = self.app
-        if app is not None:                                 # what can change mid-conversation does, at once
+        apps = self._all_apps()                             # every device's conversation in this folder
+        if apps:                                            # what can change mid-conversation does, at once
             effective = load_settings(self.cwd, self.home)
-            try:
-                app.gate.allow = list(effective.allow)
-                app.gate.deny = [*default_deny(self.home), *effective.deny]
-                app.max_steps = max(1, int(effective.max_steps))
-                app.token_limit = int(effective.token_limit)
-            except Exception:
-                pass
+            for app in apps:
+                try:
+                    app.gate.allow = list(effective.allow)
+                    app.gate.deny = [*default_deny(self.home), *effective.deny]
+                    app.max_steps = max(1, int(effective.max_steps))
+                    app.token_limit = int(effective.token_limit)
+                except Exception:
+                    pass
         return {"ok": True, "message": message, "view": self.settings_view()}
 
     # -- files to mention, and another folder ------------------------------------------------------------------
@@ -1238,6 +1262,7 @@ class WebFront:
                 for request in list(self._pending.values()))
         except Exception:
             status["recording"] = False
+        status["othersWorking"] = self._others_working()
         status["mode"] = getattr(app.gate, "mode", "default")
         try:
             status["model"] = str(app.model_label)
@@ -1247,6 +1272,11 @@ class WebFront:
 
     def _tick(self) -> None:
         while not self._closed:
+            if self.host is None and self.rooms:
+                try:
+                    self._sweep_rooms()
+                except Exception:
+                    pass
             try:
                 status = self._status()
                 encoded = json.dumps(status, sort_keys=True, default=str)
@@ -1262,6 +1292,133 @@ class WebFront:
             except Exception:
                 pass
             time.sleep(TICK_SEC)
+
+    # -- one conversation per device ------------------------------------------------------------------------------
+
+    def route(self, device: str) -> "WebFront":
+        """The front a device's requests go to: the main conversation for the device that has it (the first one to
+        connect in ``--ui``) and for devices that joined it; else that device's own room, made on its first request."""
+        if self.host is not None:
+            return self
+        device = _device_id(device)
+        if not device or self.make_device_app is None:
+            return self
+        with self._lock:
+            if device in self.joined:
+                return self
+            if self.main_owner is None and self.first_device_owns_main:
+                self.main_owner = device
+            if device == self.main_owner:
+                return self
+            room = self.rooms.get(device)
+            if room is not None and not room.ended:
+                return room
+            if self._closed:
+                return self
+            room = WebFront(cwd=self.cwd, home=self.home, open_it=False, remote=self.remote)
+            room.host, room.device, room.token, room.on_window = self, device, self.token, self.on_window
+            room._alone_since = time.monotonic()           # closed when no window comes (see _sweep_rooms)
+            self.rooms[device] = room
+        room._begin(self.last_session.pop(device, None))
+        return room
+
+    def _begin(self, resume: Optional[str]) -> None:
+        """A room: its status thread, and its own app on a thread of its own (the device's conversation)."""
+        host = self.host
+        threading.Thread(target=self._tick, name="agentx-ui-status", daemon=True).start()
+
+        def run() -> None:
+            try:
+                app = host.make_device_app(self)
+                self.wire(app)
+                app.start(resume)
+            except BaseException as error:              # noqa: BLE001 - this device's conversation only
+                if not isinstance(error, (EOFError, KeyboardInterrupt, SystemExit)):
+                    self.bus.emit("notice", level="error",
+                                  text=f"This conversation stopped ({type(error).__name__}): {_text(error, 300)}")
+            finally:
+                host._room_ended(self)
+        self._worker = threading.Thread(target=run, name=f"agentx-device-{self.device[:8]}", daemon=True)
+        self._worker.start()
+
+    def _room_ended(self, room: "WebFront") -> None:
+        with self._lock:
+            if self.rooms.get(room.device) is room:
+                del self.rooms[room.device]
+            if room.idle:                                   # closed because unused: the device comes back to it
+                path = str(getattr(room.app, "session_path", "") or "")
+                if path:
+                    self.last_session[room.device] = Path(path).name      # find_session takes the file name
+        room.ended = True
+        room.close()
+
+    def _sweep_rooms(self) -> None:
+        """A room no window has used for ``ROOM_IDLE_SEC`` and that is not working is closed (its MCP servers and
+        model client go); its conversation is saved, and the device reopens it when it comes back."""
+        now = time.monotonic()
+        with self._lock:
+            rooms = list(self.rooms.values())
+        for room in rooms:
+            with room._lock:
+                unused = (room._windows == 0 and room._alone_since is not None
+                          and now - room._alone_since >= ROOM_IDLE_SEC)
+                asking = any(r["kind"] != "message" for r in room._pending.values())
+            if unused and not asking and not room._working() and not room.ended:
+                room.idle = True
+                room.close()
+
+    def join(self, device: str, live: bool, then: str = "") -> Dict[str, Any]:
+        """A device opens the main conversation (shared with whoever has it) or goes back to its own; going back,
+        ``then`` is "resume:<id>" (open that conversation there) or "new" (start a new one there)."""
+        device = _device_id(device)
+        if not device or self.host is not None:
+            return {"ok": False}
+        with self._lock:
+            if live and self.app is not None and device != self.main_owner:
+                self.joined.add(device)
+                return {"ok": True}
+            self.joined.discard(device)
+            room = self.rooms.get(device)
+            wanted, session = str(then or ""), ""
+            ready = room is not None and not room.ended and room.app is not None
+            if wanted.startswith("resume:"):
+                session = re.sub(r"[^A-Za-z0-9_.-]", "", wanted[len("resume:"):])[:120]
+                if session and not ready:
+                    self.last_session[device] = session       # its own conversation starts on that one
+        if wanted.startswith("resume:") and ready and session:
+            room.send(f"/resume {session}")
+        elif wanted == "new" and ready:
+            room.send("/clear")
+        return {"ok": True}
+
+    def live_info(self, device: str) -> Dict[str, Any]:
+        """For a device's list: whether it can open the main conversation, and whether it has."""
+        device = _device_id(device)
+        available = bool(self.make_device_app is not None and self.app is not None and device
+                         and device != self.main_owner)
+        title = ""
+        if available:
+            for item in self.sessions():
+                if item.get("current"):
+                    title = item["title"]
+                    break
+        return {"available": available, "joined": device in self.joined,
+                "where": "the first window" if self.first_device_owns_main else "the computer",
+                "title": title, "working": self._working() if available else False}
+
+    def _others_working(self) -> int:
+        """How many other conversations in this folder (the main one, other devices') are working right now."""
+        host = self.host or self
+        with host._lock:
+            fronts = [host, *host.rooms.values()]
+        return sum(1 for front in fronts if front is not self and front.app is not None and not front.ended
+                   and front._working())
+
+    def _all_apps(self) -> List[Any]:
+        host = self.host or self
+        with host._lock:
+            rooms = list(host.rooms.values())
+        return [app for app in [host.app, *(room.app for room in rooms)] if app is not None]
 
     # -- the app ------------------------------------------------------------------------------------------------
 
@@ -1320,6 +1477,8 @@ class WebFront:
     def enable_remote(self) -> str:
         """``/remote-control`` in the app window: the window already served here can also be opened from your iPad,
         phone or another computer (Tailscale, or SSH). Closing this window no longer quits agentx while it is on."""
+        if self.host is not None:
+            return ROOM_REMOTE_NOTE
         if not self.remote:
             self._open_it_before = self.open_it
             self.remote, self.open_it = True, False
@@ -1332,6 +1491,8 @@ class WebFront:
         return text + "\n\nWhile remote control is on, closing this window does not quit agentx. /remote-control off ends it."
 
     def disable_remote(self) -> str:
+        if self.host is not None:
+            return ROOM_REMOTE_NOTE
         if not self.remote:
             return "Remote control is not on."
         self.remote = False
@@ -1360,8 +1521,9 @@ class WebFront:
                      else "through SSH, or on this computer" if client.startswith("127.") or client in ("::1", "")
                      else "from " + client)
             stamp = datetime.now().strftime("%H:%M:%S")
-            line = (f"[{stamp}] A window connected {where}. Open now: {count}." if on
-                    else f"[{stamp}] A window closed {where}. Open now: {count}.")
+            whose = " (its own conversation)" if self.host is not None else ""
+            line = (f"[{stamp}] A window connected {where}{whose}. Open now: {count}." if on
+                    else f"[{stamp}] A window closed {where}{whose}. Open now: {count}.")
             try:
                 (self.on_window or (lambda text: print(text, flush=True)))(line)
             except Exception:
@@ -1388,11 +1550,19 @@ class WebFront:
 
     def close(self) -> None:
         with self._lock:
+            already = self._closed
             self._closed = True
             pending = list(self._pending.values())
+            rooms = list(self.rooms.values())
         for request in pending:
             if not request["future"].done():
                 request["future"].set_exception(EOFError())
+        if self.host is not None:                       # a device's own conversation ends; the window stays served
+            if not already:
+                self.bus.emit("closed", room=True, idle=self.idle)
+            return
+        for room in rooms:
+            room.close()
         self.bus.emit("closed")
         self._stop_tailnet()                            # the https link Tailscale served goes away with agentx
         if self._server is not None:
@@ -1467,6 +1637,10 @@ class _Handler(BaseHTTPRequestHandler):
             return "tailscale:" + login[:80]
         return str(self.client_address[0]) if self.client_address else ""
 
+    def _device(self, query: Dict[str, List[str]]) -> str:
+        """The device a request comes from (its window sends the id it keeps); "" from an older page."""
+        return _device_id(self.headers.get("X-Agentx-Device") or (query.get("d") or [""])[0])
+
     def _token_ok(self, query: Dict[str, List[str]]) -> bool:
         given = self.headers.get("X-Agentx-Token") or (query.get("t") or [""])[0]
         return secrets.compare_digest(str(given), self.front.token)
@@ -1503,15 +1677,16 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(200, body, content_type, extra)
         if not self._token_ok(query):
             return self._json({"error": "forbidden"}, 403)
-        front = self.front
+        device = self._device(query)
+        front = self.front.route(device)                    # this device's own conversation (or the main one)
         if url.path == "/events":
             after = self.headers.get("Last-Event-ID") or (query.get("after") or ["0"])[0] or "0"
             try:
-                return self._events(max(0, int(after)))
+                return self._events(max(0, int(after)), front)
             except ValueError:
-                return self._events(0)
+                return self._events(0, front)
         if url.path == "/api/state":
-            return self._json(front.state())
+            return self._json({**front.state(), "live": self.front.live_info(device)})
         if url.path == "/api/sessions":
             return self._json(front.sessions())
         if url.path == "/api/history":
@@ -1545,7 +1720,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json({"error": "bad JSON"}, 400)
         if not isinstance(data, dict):
             return self._json({"error": "bad JSON"}, 400)
-        front = self.front
+        device = self._device(parse_qs(url.query))
+        if url.path == "/api/join":                         # open the main conversation, or go back to its own
+            return self._json(self.front.join(device, bool(data.get("live")), str(data.get("then") or "")))
+        front = self.front.route(device)
         if url.path == "/api/send":
             return self._json({"result": front.send(str(data.get("text", "")))})
         if url.path == "/api/answer":
@@ -1569,7 +1747,7 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(front.finish_signin(str(data.get("url", ""))))
         return self._json({"error": "not found"}, 404)
 
-    def _events(self, after: int) -> None:
+    def _events(self, after: int, front: Optional[WebFront] = None) -> None:
         """Server-sent events: everything after ``after``, then each new one as it comes."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -1577,10 +1755,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         last = after
-        self.front.window_connected(True, self._who())
+        front = front or self.front
+        front.window_connected(True, self._who())
         try:
             while True:
-                events = self.front.bus.after(last, wait=KEEP_ALIVE_SEC)
+                events = front.bus.after(last, wait=KEEP_ALIVE_SEC)
                 if not events:
                     self.wfile.write(b": keep-alive\n\n")
                 for event in events:
@@ -1593,4 +1772,4 @@ class _Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             return
         finally:
-            self.front.window_connected(False, self._who())
+            front.window_connected(False, self._who())
