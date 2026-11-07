@@ -1396,6 +1396,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="with --ui: the local port to serve the window on (default: any free port)")
     parser.add_argument("--no-open", action="store_true",
                         help="with --ui: print the window's address instead of opening it")
+    parser.add_argument("--remote", action="store_true",
+                        help="with --ui: use the window from another computer through an SSH tunnel (prints the "
+                             "ssh command; nothing is opened to the network)")
     return parser
 
 
@@ -1510,7 +1513,8 @@ def _run_ui(args: argparse.Namespace) -> int:
     """``agentx --ui``: the same app, drawn in a browser window (see ``webui``)."""
     from agentx_dev.cli.webui import WebFront
     home = Path.home()
-    front = WebFront(cwd=Path.cwd().resolve(), home=home, port=max(0, int(args.port or 0)), open_it=not args.no_open)
+    front = WebFront(cwd=Path.cwd().resolve(), home=home, port=max(0, int(args.port or 0)), open_it=not args.no_open,
+                     remote=bool(getattr(args, "remote", False)))
     holder: List[Any] = []
     return front.run(lambda: _run(args, home, front.console, front.read, front.read_short, front.select, holder,
                                   front.wire))

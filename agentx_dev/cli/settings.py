@@ -147,6 +147,46 @@ def _write_key(folder: Path, key: str, value: Any, what: str) -> Tuple[Optional[
         return None, f"Could not write {path}."
 
 
+def write_settings(folder: Path, changes: Mapping[str, Any]) -> Tuple[Optional[Path], str]:
+    """Set several keys at once in ``<folder>/.agentx/settings.json`` (the app window's Settings panel): a value of
+    None removes the key; ``"allow"`` and ``"deny"`` go under ``"permissions"``, which keeps its other keys. The
+    file's other keys are kept. Same safety as ``_write_key``: no link, nothing outside the folder, no rewrite of a
+    file that is not a JSON object. Returns ``(path, message)``; never raises."""
+    path = Path(folder) / FOLDER / SETTINGS_NAME
+    if not safe_location(Path(folder), SETTINGS_NAME):
+        return None, f"{path} is a link or points outside the folder, so it was left unchanged."
+    try:
+        data: dict = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, RecursionError):
+                return None, f"{path} is not valid JSON, so it was left unchanged."
+            if not isinstance(loaded, dict):
+                return None, f"{path} is not a JSON object, so it was left unchanged."
+            data = loaded
+        for key, value in changes.items():
+            if key in ("allow", "deny"):
+                permissions = data.get("permissions") if isinstance(data.get("permissions"), dict) else {}
+                if value is None:
+                    permissions.pop(key, None)
+                else:
+                    permissions[key] = list(value)
+                if permissions:
+                    data["permissions"] = permissions
+                else:
+                    data.pop("permissions", None)
+            elif value is None:
+                data.pop(key, None)
+            else:
+                data[key] = value
+        path.parent.mkdir(parents=True, exist_ok=True)
+        replace_file(path, json.dumps(data, indent=2) + "\n", prefix=".settings-")
+        return path, f"Saved {path}."
+    except (OSError, ValueError, TypeError):
+        return None, f"Could not write {path}."
+
+
 def write_project_model(cwd: Path, model: str) -> Tuple[Optional[Path], str]:
     """Save ``model`` as this folder's model (``/model <name> --folder``). See ``_write_project_key``."""
     return _write_project_key(cwd, "model", str(model), f"model {model}")

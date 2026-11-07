@@ -24,21 +24,15 @@
       <h2 class="side-title">Recent</h2>
       <nav class="sessions" id="sessions" aria-label="Conversations"></nav>
       <div class="side-foot">
-        <div class="folder" id="folder" title="">
+        <button type="button" class="side-row folder" id="folder" aria-haspopup="menu" aria-expanded="false" title="">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6l1.4 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
-          <span id="folderName"></span>
-        </div>
-        <div class="foot-buttons">
-          <button type="button" class="icon-btn" id="usageBtn" aria-label="Usage" title="Usage">
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13V8M8 13V3M13 13V6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          </button>
-          <button type="button" class="icon-btn" id="settingsBtn" aria-label="Settings" title="Settings">
-            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-          </button>
-          <button type="button" class="icon-btn" id="themeBtn" aria-label="Switch light or dark" title="Light or dark">
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.6 5.6 0 0 1 6.4 2.5a5.6 5.6 0 1 0 7.1 7.1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
-          </button>
-        </div>
+          <span class="row-text"><span class="row-label" id="folderName"></span><span class="row-hint">Folder · switch</span></span>
+          <svg class="row-chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 3 7 6 4 9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button type="button" class="side-row" id="settingsBtn">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.8 1.8h2.4l.4 1.7 1.2.7 1.7-.5 1.2 2-1.3 1.2v1.4l1.3 1.2-1.2 2-1.7-.5-1.2.7-.4 1.7H6.8l-.4-1.7-1.2-.7-1.7.5-1.2-2 1.3-1.2V7.3L2.3 6.1l1.2-2 1.7.5 1.2-.7z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+          <span class="row-text"><span class="row-label">Settings</span></span>
+        </button>
       </div>
     </aside>
 
@@ -48,6 +42,10 @@
           <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 2.5v11" stroke="currentColor" stroke-width="1.3"/></svg>
         </button>
         <div class="top-title" id="topTitle">New conversation</div>
+        <button type="button" class="top-btn" id="detailsBtn" aria-expanded="false" aria-controls="details">
+          <span class="ctx-ring" id="ctxRing" aria-hidden="true"></span>
+          <span id="detailsLabel">Details</span>
+        </button>
       </header>
 
       <section class="log" id="log" aria-live="polite">
@@ -97,6 +95,37 @@
         </div>
       </footer>
     </main>
+
+    <aside class="details" id="details" aria-label="Details" hidden>
+      <div class="details-head">
+        <h2>Details</h2>
+        <button type="button" class="icon-btn" id="detailsClose" aria-label="Close details">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="details-body" id="detailsBody"></div>
+    </aside>
+  </div>
+
+  <div class="sheet-wrap" id="settingsWrap" hidden>
+    <section class="sheet" id="settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="sheet-head">
+        <h2 id="settingsTitle">Settings</h2>
+        <button type="button" class="icon-btn" id="settingsClose" aria-label="Close settings">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="scope" role="tablist" aria-label="Where the settings apply">
+        <button type="button" role="tab" id="scopeUser" data-scope="user" aria-selected="true">All folders</button>
+        <button type="button" role="tab" id="scopeFolder" data-scope="folder" aria-selected="false">This folder</button>
+      </div>
+      <form class="sheet-body" id="settingsForm" autocomplete="off"></form>
+      <div class="sheet-foot">
+        <span class="sheet-msg" id="settingsMsg" role="status"></span>
+        <button type="button" class="btn" id="settingsCancel">Close</button>
+        <button type="button" class="btn primary" id="settingsSave">Save</button>
+      </div>
+    </section>
   </div>
   <div class="overlay" id="overlay" hidden><div class="overlay-box" id="overlayBox" role="dialog" aria-modal="true"></div></div>
   <script src="/app.js"></script>

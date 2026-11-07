@@ -354,3 +354,88 @@ def test_the_window_draws_its_own_dialogs_and_menus():
     assert not re.search(r"(?<![\w.])(alert|confirm|prompt)\(", script)
     assert "<select" not in page
     assert "function askText(" in script and 'id="menu"' in page
+
+
+class TestThePanels:
+    def test_settings_are_saved_for_all_folders_and_rules_apply_at_once(self, window):
+        w = window(MockModel())
+        w.ready()
+        status, view = w.request("GET", "/api/settings")
+        assert status == 200 and view["canFolder"] is True and "path" in view["user"]
+        values = {"model": "claude-sonnet-5-5", "mode": "plan", "allow": ["run_shell:npm test*", " "],
+                  "deny": ["read_path:.env*"], "maxSteps": "120", "tokenLimit": ""}
+        status, saved = w.request("POST", "/api/settings", {"scope": "user", "values": values})
+        assert saved["ok"] is True, saved
+        data = json.loads((w.home / ".agentx" / "settings.json").read_text(encoding="utf-8"))
+        assert data["model"] == "claude-sonnet-5-5" and data["mode"] == "plan" and data["maxSteps"] == 120
+        assert data["permissions"] == {"allow": ["run_shell:npm test*"], "deny": ["read_path:.env*"]}
+        assert "tokenLimit" not in data
+        assert "run_shell:npm test*" in w.app.gate.allow and "read_path:.env*" in w.app.gate.deny
+        assert w.app.max_steps == 120
+        assert saved["view"]["user"]["values"]["allow"] == ["run_shell:npm test*"]
+
+    def test_a_folder_cannot_turn_on_auto_and_keeps_its_other_keys(self, window):
+        w = window(MockModel())
+        w.ready()
+        (w.cwd / ".agentx").mkdir(exist_ok=True)
+        (w.cwd / ".agentx" / "settings.json").write_text('{"teamModels": ["gpt-6-luna"]}', encoding="utf-8")
+        refused = w.request("POST", "/api/settings", {"scope": "folder", "values": {"mode": "auto"}})[1]
+        assert refused["ok"] is False and "cannot turn on" in refused["message"]
+        assert w.request("POST", "/api/settings", {"scope": "folder", "values": {"maxSteps": 0}})[1]["ok"] is False
+        ok = w.request("POST", "/api/settings", {"scope": "folder", "values": {"model": "gpt-6.1-sol"}})[1]
+        assert ok["ok"] is True
+        data = json.loads((w.cwd / ".agentx" / "settings.json").read_text(encoding="utf-8"))
+        assert data == {"teamModels": ["gpt-6-luna"], "model": "gpt-6.1-sol"}
+
+    def test_the_details_panel(self, window):
+        w = window(MockModel(script=[make_final("Hi")]))
+        (w.cwd / "AGENTX.md").write_text("# notes\n", encoding="utf-8")
+        w.ready()
+        w.request("POST", "/api/send", {"text": "hello"})
+        wait_for(w.front, lambda e: e["type"] == "final")
+        d = w.request("GET", "/api/details")[1]
+        assert d["context"]["messages"] >= 2 and d["context"]["limit"] > 0
+        assert d["usage"]["tokenLimit"] >= 0 and "input" in d["usage"]
+        assert any(f["path"] == "AGENTX.md" for f in d["memory"]["files"])
+        assert d["mcp"] == [] and d["team"] is None
+
+    def test_files_to_mention(self, window):
+        w = window(MockModel())
+        (w.cwd / "src").mkdir()
+        (w.cwd / "src" / "supabase.ts").write_text("x", encoding="utf-8")
+        (w.cwd / "node_modules").mkdir()
+        (w.cwd / "node_modules" / "supabase.js").write_text("x", encoding="utf-8")
+        w.ready()
+        assert w.request("GET", "/api/files?q=supa")[1] == ["src/supabase.ts"]
+
+    def test_another_folder_is_checked_before_anything_starts(self, window, monkeypatch):
+        import subprocess
+        started = []
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: started.append((a, k)))
+        w = window(MockModel())
+        w.ready()
+        assert w.request("POST", "/api/open-folder", {"path": str(w.cwd / "missing")})[1]["ok"] is False
+        assert w.request("POST", "/api/open-folder", {"path": str(w.cwd)})[1]["ok"] is False
+        other = w.cwd.parent / "other"
+        other.mkdir()
+        res = w.request("POST", "/api/open-folder", {"path": str(other)})[1]
+        assert res["ok"] is True and len(started) == 1
+        (command,), kwargs = started[0]
+        assert command[-2:] == ["agentx_dev", "--ui"] and kwargs["cwd"] == str(other.resolve())
+
+
+def test_remote_use_goes_through_an_ssh_tunnel():
+    from agentx_dev.cli.webui import remote_instructions
+    text = remote_instructions("http://127.0.0.1:8765/?t=secret")
+    assert "ssh -N -L 8765:127.0.0.1:8765 " in text and "http://127.0.0.1:8765/?t=secret" in text
+    assert "not on the network" in text
+    args = build_parser().parse_args(["--ui", "--remote"])
+    assert args.remote is True
+
+
+def test_a_tunnel_may_use_another_port_but_never_another_host(window):
+    w = window(MockModel())
+    assert w.request("GET", "/api/state", host="127.0.0.1:9000")[0] == 200
+    assert w.request("GET", "/api/state", host="localhost:9000")[0] == 200
+    assert w.request("GET", "/api/state", host="evil.example:9000")[0] == 403
+    assert w.request("GET", "/api/state", host="127.0.0.1.evil.example")[0] == 403

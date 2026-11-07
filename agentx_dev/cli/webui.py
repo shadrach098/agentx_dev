@@ -63,6 +63,8 @@ TICK_SEC = 0.25
 RECORDING_MARK = "Recording"        # the prompt /voice shows while it records (app_voice.RECORDING)
 MODEL_SUGGESTIONS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "gpt-6.1-sol",
                      "gpt-6-luna", "gpt-5.5")
+MODES_SHOWN = ("default", "accept-edits", "plan", "auto")
+SKIP_FOLDERS = {"node_modules", "__pycache__", "dist", "build", "venv", "env", "target", "out", "coverage"}
 _MAX_RESULT_LINES = 12
 _MAX_OUTPUT_LINES = 120             # what a step shows when you open it
 _MAX_OUTPUT_CHARS = 8000
@@ -296,16 +298,39 @@ def open_window(url: str) -> str:
     return ""
 
 
+def remote_instructions(url: str) -> str:
+    """``agentx --ui --remote``: the window stays on this machine's 127.0.0.1 (never on the network); the person
+    reaches it through an SSH tunnel from their own computer. This says how, with this machine's names filled in."""
+    import getpass
+    import socket
+    parsed = urlparse(url)
+    port = parsed.port or 0
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = "you"
+    host = socket.gethostname() or "this-server"
+    return (f"agentx is ready for remote use. It listens on 127.0.0.1:{port} on this machine only, not on the network.\n"
+            f"On your own computer, run (use the server's address if the name '{host}' does not reach it):\n\n"
+            f"    ssh -N -L {port}:127.0.0.1:{port} {user}@{host}\n\n"
+            f"then open this address there (it holds this run's secret key; do not share it):\n\n"
+            f"    {url}\n\n"
+            f"Port {port} already in use at home? Pick another on the left of -L (ssh -N -L 9000:127.0.0.1:{port} ...) "
+            f"and open http://127.0.0.1:9000/?t=... instead.\n"
+            f"To keep agentx running after you log out of the server, start it inside tmux or screen.")
+
+
 class WebFront:
     """The window's side of agentx: ``console``, ``read``, ``read_short`` and ``select`` for the app, ``wire(app)``
     once it is built, and ``run(work)``, which serves the window while ``work`` (the app) runs on a worker thread."""
 
     def __init__(self, *, cwd: Path, home: Path, port: int = 0, open_it: bool = True,
-                 opener: Callable[[str], str] = open_window) -> None:
+                 opener: Callable[[str], str] = open_window, remote: bool = False) -> None:
         self.cwd = Path(cwd)
         self.home = Path(home)
         self.port = port
-        self.open_it = open_it
+        self.open_it = open_it and not remote
+        self.remote = remote
         self.opener = opener
         self.token = secrets.token_urlsafe(24)
         self.bus = Bus()
@@ -317,6 +342,7 @@ class WebFront:
         self._closed = False
         self._worker: Optional[threading.Thread] = None
         self._server: Optional[ThreadingHTTPServer] = None
+        self._files: Optional[tuple] = None                 # (when, the project's files) for "Mention a file"
         self._last_status = ""
         self._since_wall: Dict[float, float] = {}
         self._conversation = ""
@@ -560,6 +586,244 @@ class WebFront:
         return [{"id": info.session_id, "title": _text(info.title, 200) or "(no message)",
                  "updated": str(info.updated_at), "current": str(info.path) == current} for info in found[:200]]
 
+    # -- the side panel: context, tokens, team work, MCP servers, memory ------------------------------------------
+
+    def details(self) -> Dict[str, Any]:
+        app = self.app
+        out: Dict[str, Any] = {"context": None, "usage": None, "team": None, "mcp": [], "mcpProblems": [],
+                               "memory": None}
+        if app is None:
+            return out
+        try:
+            from agentx_dev.cli.compact import THRESHOLD_CHARS, history_size
+            from agentx_dev.Runner.Trim import TrimPolicy, trim_tool_results
+            history = list(getattr(getattr(app, "session", None), "history", None) or [])
+            out["context"] = {"chars": history_size(trim_tool_results(history, TrimPolicy())),
+                              "limit": THRESHOLD_CHARS, "messages": len(history)}
+        except Exception:
+            pass
+        try:
+            requests, tokens_in, tokens_out, cached = app._usage_totals()
+            last = getattr(getattr(app, "model", None), "usage", None)
+            out["usage"] = {"requests": requests, "input": tokens_in, "output": tokens_out, "cached": cached,
+                            "lastInput": int(getattr(last, "last_input_tokens", 0) or 0),
+                            "lastTurn": list(getattr(app, "_last_turn_usage", None) or []),
+                            "tokenLimit": int(getattr(app, "token_limit", 0) or 0),
+                            "maxSteps": int(getattr(app, "max_steps", 0) or 0)}
+        except Exception:
+            pass
+        out["team"] = self._team_details()
+        manager = getattr(app, "mcp", None)
+        if manager is not None:
+            for name, config in sorted(getattr(manager, "servers", {}).items()):
+                status = str(getattr(manager, "status", {}).get(name, "") or "not started")
+                low = status.lower()
+                state = ("on" if low.startswith("connected") else "signin" if "sign-in" in low or "sign in" in low
+                         else "off" if low in ("signed out", "disconnected", "not started") else "failed")
+                tools = re.search(r"(\d+) tools?", status)
+                out["mcp"].append({"name": name, "transport": getattr(config, "transport", ""),
+                                   "target": _text(getattr(config, "url", "") or getattr(config, "command", ""), 200),
+                                   "status": _text(status, 300), "state": state,
+                                   "tools": int(tools.group(1)) if tools else None})
+            out["mcpProblems"] = [_text(p, 300) for p in getattr(manager, "problems", []) or []]
+        try:
+            from agentx_dev.cli.context import find_context_files
+            files = []
+            for path in find_context_files(self.cwd, self.home):
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    size = 0
+                files.append({"path": self._relative(str(path)), "bytes": size})
+            memory = getattr(app, "project_memory", None)
+            log = self.cwd / ".agentx" / "log.md"
+            out["memory"] = {"files": files, "notes": len(memory.notes()) if memory is not None else None,
+                             "reports": len(memory.team_reports()) if memory is not None else None,
+                             "log": log.is_file()}
+        except Exception:
+            pass
+        return out
+
+    def _relative(self, path: str) -> str:
+        try:
+            return Path(path).resolve().relative_to(self.cwd.resolve()).as_posix()
+        except (ValueError, OSError):
+            return str(path)
+
+    def _team_details(self) -> Optional[Dict[str, Any]]:
+        """The last team job: each step, its numbers and what it did (newest steps last)."""
+        app = self.app
+        steps = list(getattr(app, "_team_log", None) or [])
+        if not steps:
+            return None
+        try:
+            from agentx_dev.cli.approval import subject_of
+        except Exception:                                   # pragma: no cover - the module is always there
+            subject_of = None                               # type: ignore[assignment]
+        shown = []
+        for step in steps[-12:]:
+            try:
+                snap = step.snapshot()
+            except Exception:
+                continue
+            actions = []
+            for entry in snap.get("log", [])[-40:]:
+                name, args = (entry[0], entry[1]) if isinstance(entry, (list, tuple)) and len(entry) > 1 else (entry, {})
+                subject = ""
+                if subject_of is not None:
+                    try:
+                        subject = self._relative(subject_of(str(name), args if isinstance(args, dict) else {}))
+                    except Exception:
+                        subject = ""
+                failed = bool(entry[3]) if isinstance(entry, (list, tuple)) and len(entry) > 3 else False
+                actions.append({"name": _text(name, 80), "subject": _text(subject, 200), "failed": failed})
+            shown.append({"helper": _text(getattr(step, "helper", ""), 80), "label": _text(getattr(step, "label", ""), 120),
+                          "query": _text(getattr(step, "query", ""), 600), "done": getattr(step, "ended", None) is not None,
+                          "seconds": round(float(snap.get("seconds") or 0)), "tokens": int(snap.get("tokens") or 0),
+                          "toolUses": int(snap.get("tool_uses") or 0), "files": len(snap.get("files") or {}),
+                          "actions": actions})
+        return {"steps": shown, "running": bool(getattr(app, "_team_rows", None))}
+
+    # -- the Settings panel ------------------------------------------------------------------------------------
+
+    def settings_view(self) -> Dict[str, Any]:
+        from agentx_dev.cli.settings import is_project_folder, load_settings, project_settings_path, user_settings_path
+
+        def read(path: Path) -> Dict[str, Any]:
+            entry: Dict[str, Any] = {"path": str(path), "exists": path.is_file(), "values": {}, "error": ""}
+            if not entry["exists"]:
+                return entry
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, RecursionError):
+                entry["error"] = "not valid JSON"
+                return entry
+            if not isinstance(data, dict):
+                entry["error"] = "not a JSON object"
+                return entry
+            permissions = data.get("permissions") if isinstance(data.get("permissions"), dict) else {}
+            entry["values"] = {"model": data.get("model"), "mode": data.get("mode"),
+                               "allow": [str(r) for r in permissions.get("allow") or [] if isinstance(r, str)],
+                               "deny": [str(r) for r in permissions.get("deny") or [] if isinstance(r, str)],
+                               "maxSteps": data.get("maxSteps"), "tokenLimit": data.get("tokenLimit")}
+            return entry
+
+        effective = load_settings(self.cwd, self.home)
+        return {"user": read(user_settings_path(self.home)), "folder": read(project_settings_path(self.cwd)),
+                "canFolder": is_project_folder(self.cwd, self.home),
+                "effective": {"model": effective.model, "mode": effective.mode, "allow": effective.allow,
+                              "deny": effective.deny, "maxSteps": effective.max_steps,
+                              "tokenLimit": effective.token_limit},
+                "problems": [_text(p, 300) for p in effective.problems], "modes": list(MODES_SHOWN)}
+
+    def save_settings(self, scope: str, values: Any) -> Dict[str, Any]:
+        """Save the Settings panel for ``scope`` ("user": every folder, "folder": this one). The permission rules,
+        step limit and token limit take effect at once; the model and mode are defaults for the next start (the
+        menus under the message box change the current conversation)."""
+        from agentx_dev.cli.app import default_deny
+        from agentx_dev.cli.settings import MAX_MAX_STEPS, is_project_folder, load_settings, write_settings
+
+        if scope not in ("user", "folder") or not isinstance(values, dict):
+            return {"ok": False, "message": "Nothing to save."}
+        if scope == "folder" and not is_project_folder(self.cwd, self.home):
+            return {"ok": False, "message": "This folder cannot have its own settings (it is your home folder or a drive root)."}
+        changes: Dict[str, Any] = {}
+        if "model" in values:
+            model = str(values.get("model") or "").strip()
+            changes["model"] = model[:200] or None
+        if "mode" in values:
+            mode = str(values.get("mode") or "").strip()
+            if mode and mode not in MODES_SHOWN:
+                return {"ok": False, "message": f"Unknown mode {mode}."}
+            if scope == "folder" and mode in ("accept-edits", "auto"):
+                return {"ok": False, "message": "A folder's own settings cannot turn on accept-edits or auto; "
+                                                "save it for all folders, or use the mode menu for this conversation."}
+            changes["mode"] = mode or None
+        for key in ("allow", "deny"):
+            if key in values:
+                rules = values.get(key)
+                if not isinstance(rules, list) or len(rules) > 200:
+                    return {"ok": False, "message": f"The {key} rules must be a list (at most 200)."}
+                cleaned = [str(r).strip()[:300] for r in rules if isinstance(r, str) and str(r).strip()]
+                changes[key] = cleaned
+        for key, low, high in (("maxSteps", 1, MAX_MAX_STEPS), ("tokenLimit", 0, 50_000_000)):
+            if key in values:
+                raw = values.get(key)
+                if raw in (None, ""):
+                    changes[key] = None
+                    continue
+                try:
+                    number = int(raw)
+                except (TypeError, ValueError):
+                    return {"ok": False, "message": f"{key} must be a whole number."}
+                if not low <= number <= high:
+                    return {"ok": False, "message": f"{key} must be between {low:,} and {high:,}."}
+                changes[key] = number
+        path, message = write_settings(self.home if scope == "user" else self.cwd, changes)
+        if path is None:
+            return {"ok": False, "message": message}
+        app = self.app
+        if app is not None:                                 # what can change mid-conversation does, at once
+            effective = load_settings(self.cwd, self.home)
+            try:
+                app.gate.allow = list(effective.allow)
+                app.gate.deny = [*default_deny(self.home), *effective.deny]
+                app.max_steps = max(1, int(effective.max_steps))
+                app.token_limit = int(effective.token_limit)
+            except Exception:
+                pass
+        return {"ok": True, "message": message, "view": self.settings_view()}
+
+    # -- files to mention, and another folder ------------------------------------------------------------------
+
+    def find_files(self, query: str) -> List[str]:
+        now = time.monotonic()
+        if self._files is None or now - self._files[0] > 15:
+            found: List[str] = []
+            root = self.cwd
+            for folder, dirs, names in os.walk(root):
+                dirs[:] = sorted(d for d in dirs if d not in SKIP_FOLDERS and not d.startswith("."))
+                for name in sorted(names):
+                    try:
+                        found.append((Path(folder) / name).relative_to(root).as_posix())
+                    except ValueError:
+                        continue
+                if len(found) >= 20_000:
+                    break
+            self._files = (now, found)
+        words = str(query or "").lower().split()
+        hits = [p for p in self._files[1] if all(w in p.lower() for w in words)]
+        hits.sort(key=lambda p: (not words or not p.lower().rsplit("/", 1)[-1].startswith(words[-1]), len(p)))
+        return hits[:40]
+
+    def open_folder(self, raw: str) -> Dict[str, Any]:
+        """Start agentx in another folder, in a window of its own (``agentx --ui`` there). This one keeps running."""
+        text = str(raw or "").strip().strip('"')
+        if not text:
+            return {"ok": False, "message": "Type a folder."}
+        folder = Path(text).expanduser()
+        if not folder.is_absolute():
+            folder = self.cwd / folder
+        try:
+            folder = folder.resolve()
+        except OSError:
+            return {"ok": False, "message": f"{text} could not be read."}
+        if not folder.is_dir():
+            return {"ok": False, "message": f"{folder} is not a folder."}
+        if folder == self.cwd.resolve():
+            return {"ok": False, "message": "agentx is already open in this folder."}
+        command = [sys.executable, "-m", "agentx_dev", "--ui"]
+        try:
+            if os.name == "nt":
+                subprocess.Popen(command, cwd=str(folder), creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+            else:
+                subprocess.Popen(command, cwd=str(folder), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError as error:
+            return {"ok": False, "message": f"agentx could not be started there: {error}"}
+        return {"ok": True, "message": f"Opening agentx in {folder}. It asks whether you trust the folder the first time.",
+                "folder": str(folder)}
+
     def history(self, upto: Optional[int] = None) -> List[Dict[str, Any]]:
         """The current conversation as items for the window; ``upto``: only its first messages (those it had when
         it was opened: what came later reaches the window as events)."""
@@ -764,9 +1028,12 @@ class WebFront:
         url = self.start_server()
         self._worker = threading.Thread(target=worker, name="agentx-work", daemon=True)
         self._worker.start()
-        how = self.opener(url) if self.open_it else ""
-        print(f"agentx is open {'in an ' + how if how == 'app window' else 'in your browser' if how else 'at'}: {url}",
-              flush=True)
+        if self.remote:
+            print(remote_instructions(url), flush=True)
+        else:
+            how = self.opener(url) if self.open_it else ""
+            print(f"agentx is open {'in an ' + how if how == 'app window' else 'in your browser' if how else 'at'}: {url}",
+                  flush=True)
         print("Keep this terminal open; close it or press Ctrl+C here to quit agentx.", flush=True)
         try:
             while self._worker.is_alive():
@@ -790,8 +1057,11 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
     def _host_ok(self) -> bool:
-        port = self.server.server_address[1]
-        return self.headers.get("Host", "") in (f"127.0.0.1:{port}", f"localhost:{port}")
+        """Only a page on 127.0.0.1 or localhost (any port: an SSH tunnel may use another one at home), so another
+        site's page that points a DNS name at this machine cannot use the window."""
+        host = self.headers.get("Host", "")
+        name, _, port = host.rpartition(":")
+        return name in ("127.0.0.1", "localhost") and port.isdigit()
 
     def _token_ok(self, query: Dict[str, List[str]]) -> bool:
         given = self.headers.get("X-Agentx-Token") or (query.get("t") or [""])[0]
@@ -843,6 +1113,12 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/api/history":
             raw = (query.get("upto") or [""])[0]
             return self._json(front.history_payload(int(raw) if raw.isdigit() else None))
+        if url.path == "/api/details":
+            return self._json(front.details())
+        if url.path == "/api/settings":
+            return self._json(front.settings_view())
+        if url.path == "/api/files":
+            return self._json(front.find_files((query.get("q") or [""])[0]))
         return self._json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:                                      # noqa: N802
@@ -881,6 +1157,10 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/api/upload":
             return self._json(front.upload(str(data.get("name", "")), str(data.get("data", "")),
                                            str(data.get("type", ""))))
+        if url.path == "/api/settings":
+            return self._json(front.save_settings(str(data.get("scope", "")), data.get("values")))
+        if url.path == "/api/open-folder":
+            return self._json(front.open_folder(str(data.get("path", ""))))
         return self._json({"error": "not found"}, 404)
 
     def _events(self, after: int) -> None:

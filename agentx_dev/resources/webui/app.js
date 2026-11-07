@@ -342,6 +342,18 @@
     const flush = (s) => String(s || "").replace(/^[ \t]+/gm, "").trim();      // the terminal's indent is not needed here
     if (ev.level === "callout") n.innerHTML = `<b>${esc(flush(ev.text))}</b>${esc(flush(ev.hint))}`;
     else n.innerHTML = `<span>${esc(flush(ev.text))}${ev.hint ? ` <span class="hint">${esc(flush(ev.hint))}</span>` : ""}</span>`;
+    // "2 MCP servers need sign-in: flightclaw, supabase": a button for each, named
+    const signin = String(ev.text || "").match(/MCP servers? needs? sign-in:\s*([\w, -]+)/i);
+    if (signin) {
+      const row = el("span", "notice-actions");
+      signin[1].split(",").map((s) => s.trim()).filter((s) => /^[\w-]{1,40}$/.test(s)).forEach((name) => {
+        const b = el("button", "btn small", `Sign in to ${esc(name)}`);
+        b.type = "button";
+        b.addEventListener("click", () => post("/api/send", {text: `/mcp login ${name}`}));
+        row.append(b);
+      });
+      n.firstElementChild.append(row);
+    }
     column.append(n);
   }
   function addEcho(ev) {
@@ -582,7 +594,6 @@
   document.addEventListener("dragover", (e) => { if ([...e.dataTransfer.items].some((i) => i.kind === "file")) e.preventDefault(); });
   document.addEventListener("drop", (e) => { const files = [...(e.dataTransfer?.files || [])]; if (files.length) { e.preventDefault(); files.forEach(addPicture); } });
 
-  $("attachBtn").addEventListener("click", () => $("fileInput").click());
   $("fileInput").addEventListener("change", () => { [...$("fileInput").files].forEach(addPicture); $("fileInput").value = ""; });
   $("micBtn").addEventListener("click", () => post("/api/voice"));
 
@@ -664,8 +675,9 @@
       `${it.current ? CHECK : ""}</div>`).join("");
     menu.items = items;
     menu.hidden = false;
-    const box = $("composer").getBoundingClientRect(), b = button.getBoundingClientRect();
-    menu.style.left = Math.max(0, Math.min(b.left - box.left, box.width - menu.offsetWidth)) + "px";
+    const b = button.getBoundingClientRect();           // above its button, kept inside the window
+    menu.style.left = Math.max(8, Math.min(b.left, window.innerWidth - menu.offsetWidth - 8)) + "px";
+    menu.style.bottom = Math.max(8, window.innerHeight - b.top + 8) + "px";
     button.setAttribute("aria-expanded", "true");
     const start = Math.max(0, items.findIndex((it) => it.current));
     menu.querySelector(`[data-n="${start}"]`).focus();
@@ -712,8 +724,224 @@
       });
   });
   $("newChat").addEventListener("click", () => post("/api/send", {text: "/clear"}));
-  $("usageBtn").addEventListener("click", () => post("/api/send", {text: "/usage"}));
-  $("settingsBtn").addEventListener("click", () => post("/api/send", {text: "/settings"}));
+  // -- the side panel: context, tokens, team work, MCP servers, memory ----------------------------------------------
+  const num = (n) => Number(n || 0).toLocaleString();
+  let detailsOpen = false, detailsTimer = 0;
+  function setDetails(open) {
+    detailsOpen = open;
+    $("details").hidden = !open;
+    document.querySelector(".app").classList.toggle("with-details", open);
+    $("detailsBtn").setAttribute("aria-expanded", String(open));
+    try { localStorage.setItem("agentx-details", open ? "open" : "closed"); } catch (_) { /* no storage */ }
+    if (open) loadDetails();
+  }
+  $("detailsBtn").addEventListener("click", () => setDetails(!detailsOpen));
+  $("detailsClose").addEventListener("click", () => setDetails(false));
+  function section(title, body, extra) {
+    return `<section class="d-sec"><h3>${esc(title)}${extra ? `<span class="d-extra">${extra}</span>` : ""}</h3>${body}</section>`;
+  }
+  async function loadDetails() {
+    let d;
+    try { d = await get("/api/details"); } catch (_) { return; }
+    // the ring in the top bar: how close the conversation is to being summarised
+    const ctx = d.context;
+    const pct = ctx ? Math.min(100, Math.round(ctx.chars * 100 / Math.max(1, ctx.limit))) : 0;
+    $("ctxRing").style.setProperty("--p", pct);
+    $("ctxRing").classList.toggle("high", pct >= 80);
+    $("detailsBtn").title = ctx ? `Context ${pct}% full` : "Details";
+    if (!detailsOpen) return;
+    const out = [];
+    if (ctx) {
+      out.push(section("Context", `<div class="meter"><span style="width:${pct}%"></span></div>
+        <p class="d-note">${pct}% full · ${num(ctx.messages)} messages. At 100%, older parts are summarised so the
+        conversation can go on.</p>`));
+    }
+    const u = d.usage;
+    if (u) {
+      const last = u.lastTurn && u.lastTurn.length ? u.lastTurn : null;
+      out.push(section("Tokens this session", `<dl class="d-grid">
+        <dt>Sent</dt><dd>${num(u.input)}</dd><dt>Received</dt><dd>${num(u.output)}</dd>
+        <dt>From cache</dt><dd>${num(u.cached)}</dd><dt>Requests</dt><dd>${num(u.requests)}</dd>
+        ${last ? `<dt>Last message</dt><dd>${num(last[1] + last[2])}</dd>` : ""}
+        <dt>Limit per message</dt><dd>${u.tokenLimit ? num(u.tokenLimit) : "none"}</dd></dl>`,
+        `<button type="button" class="link" data-cmd="/usage">Full report</button>`));
+    }
+    const t = d.team;
+    out.push(section("Team work", t && t.steps.length ? t.steps.map((s) => `<details class="d-step"${s.done ? "" : " open"}>
+        <summary><span class="dot ${s.done ? "ok" : "run"}"></span><span class="d-who">${esc(s.helper)}${s.label && s.label !== s.helper ? ` · ${esc(s.label)}` : ""}</span>
+        <span class="d-num">${s.seconds}s · ${num(s.tokens)} tok</span></summary>
+        <p class="d-note">${esc(s.query)}</p>
+        ${s.actions.length ? `<ul class="d-acts">${s.actions.map((a) => `<li class="${a.failed ? "failed" : ""}">${esc(toolLook(a.name)[0])} <code>${esc(a.subject)}</code></li>`).join("")}</ul>` : ""}
+      </details>`).join("") : `<p class="d-empty">No team job in this conversation yet. Ask for a big job and agentx can split it across helpers.</p>`,
+      t && t.steps.length ? `<button type="button" class="link" data-cmd="/team log">Log</button>` : ""));
+    const servers = d.mcp || [];
+    const words = {on: "Connected", signin: "Needs sign-in", off: "Not connected", failed: "Failed"};
+    out.push(section("MCP servers", (servers.length ? `<ul class="d-mcp">${servers.map((m) => `<li>
+        <div class="d-row"><span class="dot ${m.state}"></span><span class="d-name">${esc(m.name)}</span>
+        <span class="d-state ${m.state}">${words[m.state] || ""}${m.tools != null ? ` · ${m.tools} tools` : ""}</span></div>
+        <div class="d-target">${esc(m.target)}</div>
+        ${m.state !== "on" ? `<div class="d-why">${esc(m.status)}</div>` : ""}
+        <div class="d-actions">
+          ${m.state === "signin" || m.state === "off" || m.state === "failed" ? `<button type="button" class="btn small${m.state === "signin" ? " primary" : ""}" data-cmd="/mcp login ${esc(m.name)}">Sign in to ${esc(m.name)}</button>` : ""}
+          <button type="button" class="btn small" data-cmd="/mcp reload ${esc(m.name)}">Reconnect</button>
+          ${m.state === "on" ? `<button type="button" class="btn small" data-cmd="/mcp tools ${esc(m.name)}">Tools</button>
+          <button type="button" class="btn small" data-cmd="/mcp logout ${esc(m.name)}">Sign out</button>` : ""}
+        </div></li>`).join("")}</ul>` : `<p class="d-empty">No MCP servers. Add one with <code>/mcp add &lt;name&gt; &lt;url&gt;</code>.</p>`) +
+      (d.mcpProblems || []).map((p) => `<p class="d-why">${esc(p)}</p>`).join("")));
+    const mem = d.memory;
+    if (mem) {
+      out.push(section("Memory", `${mem.files.length ? `<ul class="d-files">${mem.files.map((f) =>
+          `<li><code>${esc(f.path)}</code><span class="d-num">${num(Math.round(f.bytes / 100) / 10)} KB</span></li>`).join("")}</ul>`
+        : `<p class="d-empty">No AGENTX.md yet. <button type="button" class="link" data-cmd="/init">Write one with /init</button></p>`}
+        ${mem.notes != null ? `<p class="d-note">${num(mem.notes)} saved notes · ${num(mem.reports)} team reports${mem.log ? " · a work log" : ""}</p>` : ""}`,
+        mem.notes != null ? `<button type="button" class="link" data-cmd="/memory">Browse</button>` : ""));
+    }
+    const body = $("detailsBody");
+    const open = [...body.querySelectorAll("details[open] summary .d-who")].map((n) => n.textContent);
+    body.innerHTML = out.join("");
+    body.querySelectorAll("details summary .d-who").forEach((n) => { if (open.includes(n.textContent)) n.closest("details").open = true; });
+  }
+  $("detailsBody").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-cmd]");
+    if (b) { post("/api/send", {text: b.dataset.cmd}); setTimeout(loadDetails, 1500); }
+  });
+  setInterval(() => { if (detailsOpen || detailsTimer++ % 5 === 0) loadDetails(); }, 3000);
+  setTimeout(() => {
+    try { if (localStorage.getItem("agentx-details") === "open" && !narrow()) setDetails(true); else loadDetails(); } catch (_) { loadDetails(); }
+  }, 0);
+
+  // -- the Settings sheet: saved to the settings files, for every folder or for this one ----------------------------
+  let settingsData = null, scope = "user";
+  async function openSettings() {
+    try { settingsData = await get("/api/settings"); } catch (_) { return; }
+    $("settingsWrap").hidden = false;
+    $("settingsMsg").textContent = "";
+    $("scopeFolder").disabled = !settingsData.canFolder;
+    drawSettings();
+    setTimeout(() => $("settingsForm").querySelector("input, textarea, button")?.focus(), 0);
+  }
+  function closeSettings() { $("settingsWrap").hidden = true; $("settingsBtn").focus(); }
+  function drawSettings() {
+    const file = settingsData[scope], v = file.values || {}, eff = settingsData.effective;
+    document.querySelectorAll(".scope [data-scope]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.scope === scope)));
+    const folderModes = scope === "folder";
+    const lines = (list) => esc((list || []).join("\n"));
+    $("settingsForm").innerHTML = `
+      <p class="s-file">${scope === "user" ? "Used in every folder, unless a folder sets its own." : "Only for this folder; wins over the all-folders settings."}
+        <br><code>${esc(file.path)}</code>${file.exists ? "" : " (created when you save)"}${file.error ? ` <span class="s-err">${esc(file.error)}</span>` : ""}</p>
+      <label class="s-field"><span class="s-label">Default model</span>
+        <input type="text" name="model" value="${esc(v.model || "")}" placeholder="${esc(eff.model || "for example claude-opus-5-5")}" list="modelList" spellcheck="false">
+        <span class="s-hint">Used when agentx starts here. The model menu under the message box changes this conversation only.</span></label>
+      <datalist id="modelList">${models.map((m) => `<option value="${esc(m)}">`).join("")}</datalist>
+      <fieldset class="s-field"><legend class="s-label">Default mode</legend><div class="s-modes">
+        <label class="s-mode"><input type="radio" name="mode" value=""${!v.mode ? " checked" : ""}><span><b>Not set</b><small>${scope === "folder" ? "Use the all-folders setting" : "Ask before changes"}</small></span></label>
+        ${MODES.map(([value, label, hint]) => `<label class="s-mode${folderModes && (value === "accept-edits" || value === "auto") ? " off" : ""}">
+          <input type="radio" name="mode" value="${value}"${v.mode === value ? " checked" : ""}${folderModes && (value === "accept-edits" || value === "auto") ? " disabled" : ""}>
+          <span><b>${esc(label)}</b><small>${esc(hint)}</small></span></label>`).join("")}</div>
+        ${folderModes ? `<span class="s-hint">A folder's own settings cannot turn on Accept edits or Auto; that stays your choice.</span>` : ""}</fieldset>
+      <label class="s-field"><span class="s-label">Always allow</span>
+        <textarea name="allow" rows="3" spellcheck="false" placeholder="one rule per line, for example run_shell:npm test*">${lines(v.allow)}</textarea>
+        <span class="s-hint">These run without asking. A rule is a tool, optionally with <code>:pattern</code>.</span></label>
+      <label class="s-field"><span class="s-label">Never allow</span>
+        <textarea name="deny" rows="3" spellcheck="false" placeholder="for example read_path:.env*">${lines(v.deny)}</textarea>
+        <span class="s-hint">Refused every time, in every mode.</span></label>
+      <div class="s-two">
+        <label class="s-field"><span class="s-label">Steps per message</span>
+          <input type="number" name="maxSteps" min="1" max="2000" value="${esc(v.maxSteps ?? "")}" placeholder="${esc(eff.maxSteps)}"></label>
+        <label class="s-field"><span class="s-label">Token limit per message</span>
+          <input type="number" name="tokenLimit" min="0" value="${esc(v.tokenLimit ?? "")}" placeholder="${esc(eff.tokenLimit || 0)}">
+          <span class="s-hint">0 means no limit${folderModes ? "; a folder can only lower it" : ""}.</span></label>
+      </div>
+      ${settingsData.problems.length ? `<div class="s-problems"><b>Problems in the settings files</b>${settingsData.problems.map((p) => `<p>${esc(p)}</p>`).join("")}</div>` : ""}
+      <p class="s-hint">Rules and limits take effect at once. The model and mode are used from the next start.</p>`;
+  }
+  async function saveSettings() {
+    const f = new FormData($("settingsForm"));
+    const split = (s) => String(s || "").split("\n").map((x) => x.trim()).filter(Boolean);
+    const values = {model: f.get("model") || "", mode: f.get("mode") || "", allow: split(f.get("allow")), deny: split(f.get("deny")),
+                    maxSteps: f.get("maxSteps") || "", tokenLimit: f.get("tokenLimit") || ""};
+    $("settingsSave").disabled = true;
+    const res = await post("/api/settings", {scope, values});
+    $("settingsSave").disabled = false;
+    $("settingsMsg").textContent = res.ok ? "Saved" : (res.message || "Not saved");
+    $("settingsMsg").className = `sheet-msg ${res.ok ? "ok" : "bad"}`;
+    if (res.ok && res.view) { settingsData = res.view; drawSettings(); }
+  }
+  $("settingsBtn").addEventListener("click", openSettings);
+  $("settingsClose").addEventListener("click", closeSettings);
+  $("settingsCancel").addEventListener("click", closeSettings);
+  $("settingsSave").addEventListener("click", saveSettings);
+  $("settingsForm").addEventListener("submit", (e) => { e.preventDefault(); saveSettings(); });
+  $("settingsWrap").addEventListener("mousedown", (e) => { if (e.target === $("settingsWrap")) closeSettings(); });
+  $("settingsWrap").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeSettings(); } });
+  document.querySelector(".scope").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-scope]");
+    if (b && !b.disabled && b.dataset.scope !== scope) { scope = b.dataset.scope; $("settingsMsg").textContent = ""; drawSettings(); }
+  });
+
+  // -- the + menu, the folder menu, mentioning a file, another folder ---------------------------------------------
+  async function pickFile() {
+    if (closed) return null;
+    return new Promise((resolve) => {
+      const overlay = $("overlay"), box = $("overlayBox"), back = document.activeElement;
+      box.innerHTML = `<h2 id="dlgTitle">Mention a file</h2><p>The path goes into your message, so agentx knows which file you mean.</p>
+        <input type="text" class="dlg-input" placeholder="Type part of a name" aria-labelledby="dlgTitle" spellcheck="false" autocomplete="off">
+        <ul class="pick" role="listbox"></ul><div class="dlg-actions"><button type="button" class="btn" data-d="cancel">Cancel</button></div>`;
+      overlay.hidden = false;
+      const field = box.querySelector("input"), list = box.querySelector(".pick");
+      let hits = [], at = 0, seq = 0;
+      const draw = () => { list.innerHTML = hits.length ? hits.map((p, n) => `<li role="option" data-n="${n}" aria-selected="${n === at}">${esc(p)}</li>`).join("")
+        : `<li class="none">No file matches.</li>`; };
+      const search = async () => {
+        const mine = ++seq;
+        let found = [];
+        try { found = await get(`/api/files?q=${encodeURIComponent(field.value)}`); } catch (_) { /* keep the list */ }
+        if (mine !== seq) return;
+        hits = found; at = 0; draw();
+      };
+      const done = (value) => { overlay.hidden = true; box.onclick = box.onkeydown = overlay.onmousedown = null; resolve(value); if (back && back.focus) back.focus(); };
+      field.addEventListener("input", search);
+      box.onclick = (e) => {
+        const it = e.target.closest("[data-n]"); if (it) return done(hits[Number(it.dataset.n)]);
+        if (e.target.closest('[data-d="cancel"]')) done(null);
+      };
+      overlay.onmousedown = (e) => { if (e.target === overlay) done(null); };
+      box.onkeydown = (e) => {
+        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); }
+        else if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); if (hits.length) { at = (at + (e.key === "ArrowDown" ? 1 : -1) + hits.length) % hits.length; draw(); list.children[at].scrollIntoView({block: "nearest"}); } }
+        else if (e.key === "Enter" && hits.length) { e.preventDefault(); done(hits[at]); }
+      };
+      field.focus();
+      search();
+    });
+  }
+  async function openAnotherFolder() {
+    const path = await askText({title: "Open another folder", text: "agentx starts there in a window of its own; this one keeps running.",
+                                placeholder: "for example C:\\Users\\you\\projects\\shop", ok: "Open"});
+    if (!path) return;
+    const res = await post("/api/open-folder", {path});
+    addNotice({level: res.ok ? "info" : "error", text: res.message || "The folder could not be opened."});
+  }
+  function insertText(text) {
+    input.value = (input.value && !/\s$/.test(input.value) ? input.value + " " : input.value) + text + " ";
+    grow(); setComposer(); input.focus();
+  }
+  $("attachBtn").addEventListener("click", () => openMenu($("attachBtn"), [
+    {value: "picture", label: "Add a picture", hint: "PNG, JPEG, GIF or WebP; or paste one"},
+    {value: "file", label: "Mention a file", hint: "Put a file's path in your message"},
+    {value: "folder", label: "Open another folder…", hint: "agentx in another project, in a new window"},
+  ], async (it) => {
+    if (it.value === "picture") $("fileInput").click();
+    else if (it.value === "file") { const p = await pickFile(); if (p) insertText(p); }
+    else openAnotherFolder();
+  }));
+  $("folder").addEventListener("click", () => openMenu($("folder"), [
+    {value: "open", label: "Open another folder…", hint: "agentx in another project, in a new window"},
+    {value: "copy", label: "Copy this folder's path", hint: $("folder").title},
+  ], async (it) => {
+    if (it.value === "open") openAnotherFolder();
+    else { try { await navigator.clipboard.writeText($("folder").title); } catch (_) { /* no clipboard */ } }
+  }));
   // the sidebar: slides over on a narrow window, folds away on a wide one (remembered)
   const narrow = () => matchMedia("(max-width: 860px)").matches;
   try { if (localStorage.getItem("agentx-side") === "hidden") document.querySelector(".app").classList.add("side-hidden"); } catch (_) { /* no storage */ }
@@ -728,13 +956,8 @@
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") { e.preventDefault(); toggleSide(); }
   });
 
-  try { const saved = localStorage.getItem("agentx-theme"); if (saved) document.documentElement.dataset.theme = saved; } catch (_) { /* no storage */ }
-  $("themeBtn").addEventListener("click", () => {
-    const dark = document.documentElement.dataset.theme
-      ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
-    document.documentElement.dataset.theme = dark ? "light" : "dark";
-    try { localStorage.setItem("agentx-theme", document.documentElement.dataset.theme); } catch (_) { /* no storage */ }
-  });
+  // light or dark follows the system, and changes with it (the stylesheet's prefers-color-scheme does that live)
+  try { localStorage.removeItem("agentx-theme"); } catch (_) { /* no storage */ }
 
   async function loadState() {
     try {

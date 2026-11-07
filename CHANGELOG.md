@@ -18,6 +18,13 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   It opens as an Edge or Chrome app window when one is installed, else in the browser. The app itself runs
   unchanged; the window is another front end, served on 127.0.0.1 with a random token per start and a Host check.
   `--port` and `--no-open`. No new packages.
+- **The app window's side panel, Settings and remote use.** **Details** shows how full the conversation is, the
+  tokens used, the last team job step by step, the MCP servers by name with their own Sign in / Reconnect / Tools /
+  Sign out buttons, and the project memory. **Settings** saves the default model and mode, the allow and deny rules,
+  the steps and the token limit, for all folders or this folder (rules and limits apply at once). The **+** menu adds
+  a picture, mentions a file (search) or opens another folder in a new window. `agentx --ui --remote` keeps the window
+  on the server's 127.0.0.1 and prints the `ssh -N -L` command to use it from another computer. Light or dark follows
+  the system. A notice that MCP servers need sign-in has a button per server.
 - **`agentx`: commands while it works, and `/unsend`.** Commands that only show something (`/usage`, `/settings`,
   `/help`, `/team log`, `/skills`, `/mcp`, `/memory`, `/sessions`, and `/model`, `/team-models`, `/limit`,
   `/fullscreen` with nothing after them) run at once while the agent works, and `/mode` changes the mode at once;

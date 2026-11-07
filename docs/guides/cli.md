@@ -83,6 +83,7 @@ Keys are read from the environment only. With no `--model`, the first key found 
 | `--version` | Print the version and exit. |
 | `--ui` | Open agentx in an app window instead of the terminal (see [The app window](#the-app-window)). |
 | `--port N`, `--no-open` | With `--ui`: serve the window on port `N` (default: any free port); print its address instead of opening it. |
+| `--remote` | With `--ui`: use the window from another computer. Prints the `ssh -N -L` command to run there and the address to open; nothing is opened to the network. |
 
 `--continue` and `--resume` cannot be combined. A flag that does not exist exits with code 2 (argparse's usage error).
 
@@ -815,7 +816,18 @@ tabs or address bar) when one is installed, else a tab in your default browser. 
 from open; closing it, or Ctrl+C there, quits agentx.
 
 - **Left:** the conversations in this folder, newest first; click one to open it (`/resume`), or **New
-  conversation** (`/clear`). At the bottom: the folder, and buttons for `/usage`, `/settings` and light or dark.
+  conversation** (`/clear`). At the bottom: the folder (click it to open another folder or copy its path) and
+  **Settings**.
+- **Details** (top right; the ring beside it shows how full the conversation is): how close the conversation is to
+  being summarised, the tokens used this session, the last team job (each helper, what it is doing, and every file
+  and command it touched), your MCP servers by name with their state and their own **Sign in**, **Reconnect**,
+  **Tools** and **Sign out** buttons, and the project memory (the `AGENTX.md` files in force, saved notes, team
+  reports). A notice that MCP servers need sign-in has a **Sign in to <name>** button for each.
+- **Settings** edits the settings files, for **All folders** (`~/.agentx/settings.json`) or **This folder**
+  (`.agentx/settings.json`): the default model and mode, the always-allow and never-allow rules, the steps and the
+  token limit per message. Rules and limits take effect at once; the model and mode are used from the next start (the
+  menus under the message box change the current conversation). A folder's own settings cannot turn on Accept edits
+  or Auto, as in the file.
 - **The conversation:** your messages on the right, the agent's steps as short rows (**Read**, **Edit**, **Run**
   and the file or command; look-around steps fold into one **Explored** row you can open), its notes, and the
   answer rendered as markdown. Click a step to see what the tool gave back (the first 120 lines). The answer and each
@@ -829,18 +841,25 @@ from open; closing it, or Ctrl+C there, quits agentx.
 - **Above the message box:** what it is doing and for how long, the team's running steps, and the messages you
   typed while it works, each with ✕ to take it back (`/unsend`).
 - **The message box:** Enter sends, Shift+Enter adds a line, `/` opens the commands and skills. Under the text: **+**
-  adds a picture, then the mode and the model as menus (they send `/mode` and `/model`), the microphone (`/voice`)
+  (add a picture, mention a file by searching for it, or open another folder: agentx starts there in a new window and
+  this one keeps running), then the mode and the model as menus (they send `/mode` and `/model`), the microphone (`/voice`)
   and the send button. While it works and the box is empty, the send button is **Stop** (as is Esc): it stops the
   turn and the command it runs, like Ctrl+C. A message typed while it works goes to the agent at its next step, and
   show-only commands run at once, as in the terminal. A picture pasted, dropped or added with **+** (PNG, JPEG,
   GIF, WebP, up to 10 MB) is saved in `.agentx/uploads/` and its path is put in your message, so the agent opens it
   with `read_path`.
-- Light or dark follows your system; the moon button at the bottom left switches it.
+- Light or dark follows your system, and changes when the system does.
 
 **Safety.** The window talks to agentx over `http://127.0.0.1` only, never the network. Each start makes a new random
 token; the window's address carries it and every request must, and a request naming another host is refused, so a
 web page in another tab cannot drive the agent. Everything the agent does still goes through the same approvals and
 deny rules. A reload or a second window shows the same conversation; `--no-open` prints the address to open yourself.
+
+**From another computer.** Run `agentx --ui --remote` on the server (inside tmux or screen, so it keeps running
+when you log out). It still listens on the server's own 127.0.0.1 only, and prints one `ssh -N -L ...` command and an
+address. Run the command on your computer, open the address there, and the window is yours as if agentx ran
+locally. Nothing is opened to the network: the SSH connection carries everything, and the address's secret key
+works for that run only.
 
 ## Full-screen mode
 

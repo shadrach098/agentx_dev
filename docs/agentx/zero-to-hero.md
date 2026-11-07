@@ -374,7 +374,9 @@ agentx --ui
 The same agentx opens in a window of its own: your conversations on the left, the agent's steps and answers in the
 middle, approvals as cards with **Yes** / **No** buttons, and a message box with the mode and model menus, a
 microphone button for `/voice`, and a send button that turns into **Stop** while it works. Paste a screenshot
-straight into the message box. Keep the
+straight into the message box. **Details** at the top right shows the tokens, the team's work, your MCP servers
+(each with its own Sign in button) and the project memory; **Settings** at the bottom left saves your defaults. On a
+server, `agentx --ui --remote` prints the `ssh` command that brings the window to your own computer. Keep the
 terminal it started from open. More in [The app window](../guides/cli.md#the-app-window).
 
 ### 18. Full-screen mode
