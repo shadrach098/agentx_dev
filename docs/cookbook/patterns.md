@@ -1644,6 +1644,9 @@ agentx --ui --remote             # the app window only, the same two ways
   model menus; the mic (`/voice`); the send button turns into **Stop** while it works. Click any step to see what
   the tool gave back.
 - **Closing the window quits agentx**; the conversation is saved for `--continue`. Light or dark follows the system.
+- **Several devices at once:** each device gets its own conversation and agent, working side by side in the same
+  folder; the computer's conversation is listed as **Live** and can be opened to share it. A window says when
+  another conversation is working in the folder, since two agents can change the same files.
 - **From an iPad or phone:** with Tailscale on both and HTTPS turned on for your Tailscale network, `--remote` prints
   an `https://<computer>.<tailnet>.ts.net:<port>/?t=...` link: open it there, from anywhere. agentx says first when
   Tailscale gives no link, and where to turn it on. "Open in Safari", a new tab or a bookmark keep working.

@@ -818,6 +818,18 @@ saying "Open agentx from your terminal" that could not be closed *(fixed: the ke
 In `/remote-control` from the terminal the window did not see the terminal's spinner. It now shows the same line
 (what it does, the time, the tokens) from the moment you send.
 
+**A message from one device got mixed into another device's task** *(fixed)*
+All windows used to share one conversation. Each device now has its own; open **Live on the computer** in the
+list to share the computer's on purpose.
+
+**"Another conversation is working in this folder"**
+Another device's conversation (or the computer's) is running in the same folder. Both agents can change the same
+files: let one finish before asking the other to edit the same thing, or give them different parts of the project.
+
+**"This conversation was put away"**
+No window used this device's conversation for 15 minutes, so agentx closed it to free its MCP servers. It is
+saved: **Open it again** carries on.
+
 **The Details panel scrolls sideways on an iPad** *(fixed)*
 A long MCP server name or address stretched it. Names now wrap, and on an iPad the panel slides over the chat.
 

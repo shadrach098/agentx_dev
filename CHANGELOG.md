@@ -8,6 +8,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **One conversation per device in remote use.** Each device that opens the window (an iPad, a laptop, the
+  computer's own window) gets its own conversation and agent, with its own approvals, Stop and status, working at
+  the same time as the others in the same folder; before, every window shared one conversation, so a second
+  device's message slipped into the running task. The computer's conversation (the terminal's, or the first
+  window's) is listed on the others as **Live** and can be opened to share it, as before. `/exit` on a device ends
+  only its own; one unused for 15 minutes is put away and reopened when the device comes back; settings saved on
+  one device reach all; a window says when another conversation is working in the folder. Inside: each
+  conversation has its own team lane (a team job's questions, notes and `/skip` never reach another's), the
+  conversation titles, work log and team records take several writers, and one MCP sign-in runs at a time.
 - **`agentx --ui`: the app window.** The same agentx in a desktop-style window instead of the terminal: the
   conversations of the folder on the left (open one, or start a new one), your messages on the right, the agent's
   steps as short rows (Read, Edit, Run, with look-around steps folded into one Explored row), answers rendered as

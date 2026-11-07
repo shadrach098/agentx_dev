@@ -883,6 +883,18 @@ The computer that runs agentx does the work (your files, your keys, the agent); 
   menu in the terminal, and the first answer wins); in the app window, the same window becomes reachable from your
   other devices. `/remote-control off` ends it. While it is on, closing a window does not quit agentx. Started from
   the terminal, the link and the ssh steps show in the terminal only: whoever opens the window got there already.
+- **Each device has its own conversation.** Every device that opens the window (an iPad, a laptop, the computer's
+  own window) gets a conversation of its own, with its own agent, approvals, Stop button and status, working at
+  the same time as the others in the same folder: a message from one device never waits for another's task or
+  slips into it. The conversation running on the computer (the terminal's, or the first window's with `--ui`) is
+  at the top of every other device's list as **Live on the computer** (or **Live on the first window**): open it
+  to share it, as before (what you do in either place shows in both), and **Your own conversation** goes back.
+  `/exit` on a device ends only its own conversation. One no window has used for 15 minutes is put away (saved)
+  and opened again when that device comes back. Settings saved on one device apply to every conversation.
+  Each conversation uses its own tokens and starts its own MCP servers; one MCP sign-in runs at a time.
+  Two agents in one folder can still change the same file or run git at the same time: a window says when
+  another conversation is working in the folder. A device is the browser on it (a reload or a new tab keeps its
+  conversation).
 - **From an iPad or phone: Tailscale.** Install Tailscale on that computer and on the iPad or phone and sign both in to
   the same account, and turn on HTTPS for your Tailscale network once (https://login.tailscale.com/admin/dns, HTTPS
   Certificates, Enable HTTPS; agentx says so first when it is off, also when it was turned off after it worked, and

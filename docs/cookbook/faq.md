@@ -810,6 +810,15 @@ them; nothing is sent by itself. OpenAI's speech-to-text writes them out (about 
 models take no audio, so it needs `OPENAI_API_KEY` whatever model you chat with. The microphone needs
 `pip install "agentx-dev[voice]"`. See [Voice](../guides/cli.md#voice).
 
+## Can several devices use one `agentx` at the same time? *(next release)*
+
+Yes. With `agentx --remote` (or `--ui --remote`), each device that opens the window gets its own conversation and
+its own agent, so nobody waits for anyone else's task or interrupts it. The computer's conversation is listed on
+the others as **Live on the computer**: open it to share it. They all work in the same folder, so two agents can
+change the same file at once; each window says when another conversation is working there. Anyone with the link
+can do what you can on that computer: only open it on your own devices. See
+[Remote control](../guides/cli.md#remote-control-from-an-ipad-a-phone-or-another-computer).
+
 ## Is there a desktop app for `agentx`? *(next release)*
 
 `agentx --ui` opens it in an app window: the conversations on the left, the steps and answers in the middle,
