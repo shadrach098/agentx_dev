@@ -827,13 +827,16 @@ on the left and in `/resume`; until then, and for older conversations, the first
   being summarised, the tokens used this session, the last team job (each helper, what it is doing, and every file
   and command it touched), your MCP servers by name with their state and their own **Sign in**, **Reconnect**,
   **Tools** and **Sign out** buttons, and the project memory (the `AGENTX.md` files in force, saved notes, team
-  reports). A notice that MCP servers need sign-in has a **Sign in to <name>** button for each.
+  reports). A notice that MCP servers need sign-in has a **Sign in to <name>** button for each. On a wide window it
+  is a column on the right; on an iPad, a phone or a half-screen window it slides over the chat, and tapping beside
+  it (or Esc) closes it. Long server names and addresses wrap, so it never scrolls sideways.
 - **Settings** edits the settings files, for **All folders** (`~/.agentx/settings.json`) or **This folder**
   (`.agentx/settings.json`): the default model and mode, the always-allow and never-allow rules, the steps and the
   token limit per message. Rules and limits take effect at once; the model and mode are used from the next start (the
   menus under the message box change the current conversation). A folder's own settings cannot turn on Accept edits
   or Auto, as in the file.
-- **The conversation:** your messages on the right, the agent's steps as short rows (**Read**, **Edit**, **Run**
+- **The conversation** starts with the agentx header (version, model, folder), like the box the terminal opens
+  with. Then your messages on the right, the agent's steps as short rows (**Read**, **Edit**, **Run**
   and the file or command; look-around steps fold into one **Explored** row you can open), its notes, and the
   answer rendered as markdown. Click a step to see what the tool gave back (the first 120 lines). What the model is thinking shows as it happens: its
   reasoning and its notes between steps appear as **Thinking** blocks (the newest open), and a moving **Thinking…**
@@ -848,7 +851,9 @@ on the left and in `/resume`; until then, and for older conversations, the first
   again** (when it can be remembered) and **No**, which asks what it should do instead. Keys `1`, `2`, `3` answer
   when you are not typing; the other questions (the folder trust question, team questions, the token limit) are
   cards too.
-- **Above the message box:** what it is doing and for how long, the team's running steps, and the messages you
+- **Above the message box:** what it is doing, for how long and the tokens this message has used so far (the
+  terminal's spinner line), from the moment you send; a soft light runs along the top of the message box while it
+  works. Also the team's running steps, and the messages you
   typed while it works, each with ✕ to take it back (`/unsend`).
 - **The message box:** Enter sends, Shift+Enter adds a line, `/` opens the commands and skills. Under the text: **+**
   (add a picture, mention a file by searching for it, or open another folder: agentx starts there in a new window and
@@ -864,6 +869,9 @@ on the left and in `/resume`; until then, and for older conversations, the first
 token; the window's address carries it and every request must, and a request naming another host is refused, so a
 web page in another tab cannot drive the agent. Everything the agent does still goes through the same approvals and
 deny rules. A reload or a second window shows the same conversation; `--no-open` prints the address to open yourself.
+Once the page is open, the key stays in the address after a `#` (the part a browser never sends), so a reload, a new
+tab, **Open in Safari** or a bookmark keeps working until agentx stops. A page opened without its key, or with the
+key of an earlier start, says which and takes the link agentx printed, pasted in.
 
 ### Remote control: from an iPad, a phone or another computer
 
@@ -873,7 +881,8 @@ The computer that runs agentx does the work (your files, your keys, the agent); 
   --remote` (the app window only), or type `/remote-control` in a session that is already running: in the terminal, the terminal keeps showing everything live and the window mirrors it (a
   message, an answer or a menu choice from either side shows in both; an approval is a card in the window and the
   menu in the terminal, and the first answer wins); in the app window, the same window becomes reachable from your
-  other devices. `/remote-control off` ends it. While it is on, closing a window does not quit agentx.
+  other devices. `/remote-control off` ends it. While it is on, closing a window does not quit agentx. Started from
+  the terminal, the link and the ssh steps show in the terminal only: whoever opens the window got there already.
 - **From an iPad or phone: Tailscale.** Install Tailscale on that computer and on the iPad or phone and sign both in to
   the same account, and turn on HTTPS for your Tailscale network once (https://login.tailscale.com/admin/dns, HTTPS
   Certificates, Enable HTTPS; agentx says so first when it is off, also when it was turned off after it worked, and
@@ -883,7 +892,8 @@ passes on Tailscale's own link when Tailscale asks to allow Serve). agentx then 
   certificate (so Safari's HTTPS-only setting is happy) and no firewall rule to add. The link's secret key is still
   needed, and the link stops when agentx does (`tailscale serve reset` clears a leftover one after a crash).
 - **From another computer: SSH.** Run the printed `ssh -N -L <port>:127.0.0.1:<port> you@<address>` there and leave
-  it open (it prints nothing while it works), then open the printed `http://127.0.0.1:<port>/?t=...` in that
+  it open. The address is the computer's address on your Wi-Fi or office network; its Tailscale address (100.x, also
+  printed) answers only a computer signed in to your Tailscale, which can open the Tailscale link instead. Keep it open (it prints nothing while it works), then open the printed `http://127.0.0.1:<port>/?t=...` in that
   computer's browser. The computer running agentx needs an SSH server: Linux servers have one; on Windows turn on
   OpenSSH Server once (agentx prints the three commands when none runs), on a Mac turn on Remote Login. On Windows,
   agentx also says when the firewall blocks SSH because the network is set to Public: set your home network to

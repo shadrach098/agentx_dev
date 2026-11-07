@@ -1636,13 +1636,20 @@ agentx --ui --remote             # the app window only, the same two ways
 - **Left:** this folder's conversations, each with a short title the model wrote; **Settings** saves the default
   model and mode, the always-allow and never-allow rules, and the limits, for all folders or this one.
 - **Details** (top right): how full the conversation is, the tokens, the team's work step by step, your MCP servers
-  by name with their own **Sign in** / **Reconnect** buttons, and the project memory.
+  by name with their own **Sign in** / **Reconnect** buttons, and the project memory. On an iPad or a narrow window
+  it slides over the chat; tap beside it to close it.
+- **While it works:** the line above the message box shows what it does, the time and the tokens, as the terminal's
+  spinner does, and a soft light runs along the message box.
 - **The message box:** **+** adds a picture, mentions a file or opens another folder in a new window; the mode and
   model menus; the mic (`/voice`); the send button turns into **Stop** while it works. Click any step to see what
   the tool gave back.
 - **Closing the window quits agentx**; the conversation is saved for `--continue`. Light or dark follows the system.
+- **From an iPad or phone:** with Tailscale on both and HTTPS turned on for your Tailscale network, `--remote` prints
+  an `https://<computer>.<tailnet>.ts.net:<port>/?t=...` link: open it there, from anywhere. agentx says first when
+  Tailscale gives no link, and where to turn it on. "Open in Safari", a new tab or a bookmark keep working.
 - **From another computer:** `--remote` keeps the window on the machine's own 127.0.0.1 and prints
-  `ssh -N -L <port>:127.0.0.1:<port> you@<address>` and an address. Run the first there, open the second. The machine
-  needs an SSH server (on Windows, turn on OpenSSH Server once; `--remote` prints the commands when none runs). From
-  outside your network, use a public address or a private network such as Tailscale.
+  `ssh -N -L <port>:127.0.0.1:<port> you@<address>` (the Wi-Fi address) and an address. Run the first there, open the
+  second. The machine needs an SSH server (on Windows, turn on OpenSSH Server once; `--remote` prints the commands
+  when none runs). From outside your network, use the Tailscale address it also prints, from a computer with
+  Tailscale on.
 - See [The app window](../guides/cli.md#the-app-window) and step 17 of [zero to hero](../agentx/zero-to-hero.md).

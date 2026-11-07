@@ -376,7 +376,8 @@ middle, approvals as cards with **Yes** / **No** buttons, and a message box with
 microphone button for `/voice`, and a send button that turns into **Stop** while it works. Paste a screenshot
 straight into the message box. **Details** at the top right shows the tokens, the team's work, your MCP servers
 (each with its own Sign in button) and the project memory; **Settings** at the bottom left saves your defaults. On a
-server, `agentx --ui --remote` prints the `ssh` command that brings the window to your own computer. Closing the
+computer that stays put, `agentx --remote` keeps the terminal and prints a link for your iPad or phone (with
+Tailscale) and the `ssh` command for another computer; what you do on either side shows in both. Closing the
 window quits agentx; your conversation is saved. More in [The app window](../guides/cli.md#the-app-window).
 
 ### 18. Full-screen mode

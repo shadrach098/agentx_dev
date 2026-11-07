@@ -804,6 +804,23 @@ can be turned off in the Tailscale account after it worked. Turn HTTPS on at htt
 `/remote-control off` and `/remote-control`, or start agentx again. agentx says this first, above the SSH steps.
 The link is `https://`, so Safari's HTTPS-only setting accepts it.
 
+**`--remote`: ssh times out from a laptop, though it worked before Tailscale** *(fixed)*
+The ssh command used the computer's Tailscale address (100.x), which answers only computers signed in to your
+Tailscale. It now uses the Wi-Fi address; on an older version, put that address (`ipconfig` on Windows) in the
+command instead. From a laptop with Tailscale, open the Tailscale link and skip ssh.
+
+**The window says "This page has no key" or "This link is from an earlier start"**
+The page was opened without the end of its link (`?t=...`), or with the link of an earlier start: open the link
+the terminal shows now, or paste it into the box. Before this version, "Open in Safari" or a new tab showed a box
+saying "Open agentx from your terminal" that could not be closed *(fixed: the key now stays in the address)*.
+
+**The window says "Waiting for agentx…" and nothing moves while the terminal works** *(fixed)*
+In `/remote-control` from the terminal the window did not see the terminal's spinner. It now shows the same line
+(what it does, the time, the tokens) from the moment you send.
+
+**The Details panel scrolls sideways on an iPad** *(fixed)*
+A long MCP server name or address stretched it. Names now wrap, and on an iPad the panel slides over the chat.
+
 **`--remote`: the Tailscale link does not load on a device**
 That device must be signed in to the same Tailscale account and switched on (the Tailscale app shows it connected; on
 the agentx computer, `tailscale status` lists it). agentx's terminal prints a line when a window connects.
