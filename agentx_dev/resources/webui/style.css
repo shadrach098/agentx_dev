@@ -42,7 +42,7 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html, body { height: 100%; margin: 0; }
+html, body { height: 100%; margin: 0; overflow: hidden; }
 body { background: var(--bg); color: var(--text); font: 15px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
 button, select, textarea, input { font: inherit; color: inherit; }
 button { cursor: pointer; }
@@ -52,10 +52,10 @@ svg { width: 16px; height: 16px; flex: none; }
 ::selection { background: rgba(156, 195, 245, 0.3); }
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 
-.app { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100dvh; }
+.app { display: grid; grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100dvh; overflow: hidden; }   /* one row, the window's height: only the inner lists scroll */
 
 /* ---- the sidebar ---- */
-.side { display: flex; flex-direction: column; background: var(--side); border-right: 1px solid var(--line); min-width: 0; padding: 12px 8px 8px; }
+.side { display: flex; flex-direction: column; background: var(--side); border-right: 1px solid var(--line); min-width: 0; min-height: 0; overflow: hidden; padding: 12px 8px 8px; }
 .brand { display: flex; align-items: center; gap: 9px; padding: 6px 10px 14px; }
 .mark { width: 18px; height: 18px; color: var(--brand); }
 .brand-name { font-family: var(--display); font-weight: 600; font-size: 15.5px; letter-spacing: -0.01em; }

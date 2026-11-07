@@ -126,6 +126,7 @@ class RemoteControl:
         app.gate.ask = lambda request: on_main(self.approving, request)
         console.file = _TeeFile(console.file, front._printed, self._quiet)
         self.prompt.mirror = self
+        front.on_window = self._say_in_terminal          # "a window connected": shown above the open prompt
         front.tailnet = tailscale_address()
         front.start_server()
         self.front = front
@@ -133,6 +134,24 @@ class RemoteControl:
         self.instructions = remote_instructions(front.address(), tailnet_url=front.tailnet_address(),
                                                 tailnet_problem=front.tailnet_problem)
         return self.instructions
+
+    def _say_in_terminal(self, text: str) -> None:
+        """A line in the terminal from another thread: above the open prompt (so it is not broken), else printed."""
+        session = getattr(self.prompt, "_chat", None)
+        application = getattr(session, "app", None)
+        loop = getattr(application, "loop", None) if application is not None else None
+        if application is not None and loop is not None and getattr(application, "is_running", False):
+            try:
+                from prompt_toolkit.application import run_in_terminal
+                loop.call_soon_threadsafe(lambda: run_in_terminal(lambda: print(text)))
+                return
+            except Exception:
+                pass
+        before, self._quiet.on = self._quiet.on, True     # the terminal only: the window knows already
+        try:
+            self.app.console.print(text, style="dim", markup=False, highlight=False)
+        finally:
+            self._quiet.on = before
 
     def stop(self) -> None:
         if not self.active:

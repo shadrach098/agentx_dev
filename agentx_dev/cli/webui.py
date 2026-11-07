@@ -493,6 +493,7 @@ class WebFront:
         self.tailnet_problem = ""
         self._tail_server: Optional[ThreadingHTTPServer] = None
         self._handler: Any = None
+        self.on_window: Optional[Callable[[str], None]] = None   # where "a window connected" goes (default: print)
         self._windows = 0                                   # windows connected now (their event streams)
         self._had_window = False
         self._alone_since: Optional[float] = None
@@ -1220,14 +1221,26 @@ class WebFront:
             return None
         return f"http://{self.tailnet}:{self._tail_server.server_address[1]}/?t={self.token}"
 
-    def window_connected(self, on: bool) -> None:
+    def window_connected(self, on: bool, client: str = "") -> None:
         with self._lock:
             self._windows = max(0, self._windows + (1 if on else -1))
+            count = self._windows
             if on:
                 self._had_window = True
                 self._alone_since = None
             elif self._windows == 0:
                 self._alone_since = time.monotonic()
+        if self.remote and not self._closed:            # feedback in the terminal: someone is (or is no longer) in
+            where = ("from " + client + " (Tailscale)" if is_tailnet_ip(client)
+                     else "through SSH, or on this computer" if client.startswith("127.") or client in ("::1", "")
+                     else "from " + client)
+            stamp = datetime.now().strftime("%H:%M:%S")
+            line = (f"[{stamp}] A window connected {where}. Open now: {count}." if on
+                    else f"[{stamp}] A window closed {where}. Open now: {count}.")
+            try:
+                (self.on_window or (lambda text: print(text, flush=True)))(line)
+            except Exception:
+                pass
 
     def window_closed(self) -> bool:
         """True once the window agentx opened has been gone for ``CLOSE_GRACE_SEC`` (a reload comes back sooner).
@@ -1434,7 +1447,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         last = after
-        self.front.window_connected(True)
+        self.front.window_connected(True, str(self.client_address[0]) if self.client_address else "")
         try:
             while True:
                 events = self.front.bus.after(last, wait=KEEP_ALIVE_SEC)
@@ -1450,4 +1463,4 @@ class _Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             return
         finally:
-            self.front.window_connected(False)
+            self.front.window_connected(False, str(self.client_address[0]) if self.client_address else "")

@@ -504,3 +504,19 @@ def test_a_firewall_that_blocks_ssh_is_said_first():
     text = remote_instructions("http://127.0.0.1:4529/?t=k", ssh_running=True, addresses=["10.0.0.219"],
                                firewall="This computer's network is set to Public ...")
     assert text.index("First: This computer's network is set to Public") < text.index("ssh -N -L")
+
+
+def test_remote_says_in_the_terminal_when_a_window_comes_and_goes(tmp_path):
+    front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False, remote=True)
+    said = []
+    front.on_window = said.append
+    front.window_connected(True, "127.0.0.1")
+    front.window_connected(True, "100.101.102.103")
+    front.window_connected(False, "100.101.102.103")
+    assert "connected through SSH, or on this computer. Open now: 1." in said[0]
+    assert "connected from 100.101.102.103 (Tailscale). Open now: 2." in said[1]
+    assert "closed from 100.101.102.103 (Tailscale). Open now: 1." in said[2]
+    quiet = WebFront(cwd=tmp_path, home=tmp_path, open_it=False)
+    quiet.on_window = said.append
+    quiet.window_connected(True, "127.0.0.1")
+    assert len(said) == 3                     # not in remote mode: nothing to say
