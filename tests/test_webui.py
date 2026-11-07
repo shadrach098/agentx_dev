@@ -426,9 +426,13 @@ class TestThePanels:
 
 def test_remote_use_goes_through_an_ssh_tunnel():
     from agentx_dev.cli.webui import remote_instructions
-    text = remote_instructions("http://127.0.0.1:8765/?t=secret")
-    assert "ssh -N -L 8765:127.0.0.1:8765 " in text and "http://127.0.0.1:8765/?t=secret" in text
-    assert "not on the network" in text
+    text = remote_instructions("http://127.0.0.1:8765/?t=secret", ssh_running=True, addresses=["10.0.0.219"])
+    assert "ssh -N -L 8765:127.0.0.1:8765 " in text and "@10.0.0.219" in text
+    assert "http://127.0.0.1:8765/?t=secret" in text and "not on the network" in text
+    assert "No SSH server" not in text
+    off = remote_instructions("http://127.0.0.1:8765/?t=secret", ssh_running=False, addresses=[])
+    assert "No SSH server is running on this machine" in off and "ssh -N -L 8765" in off
+    assert ("Add-WindowsCapability" in off) or ("Remote Login" in off) or ("openssh-server" in off)
     args = build_parser().parse_args(["--ui", "--remote"])
     assert args.remote is True
 

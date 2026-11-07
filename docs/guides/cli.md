@@ -864,7 +864,10 @@ deny rules. A reload or a second window shows the same conversation; `--no-open`
 when you log out). It still listens on the server's own 127.0.0.1 only, and prints one `ssh -N -L ...` command and an
 address. Run the command on your computer, open the address there, and the window is yours as if agentx ran
 locally. Nothing is opened to the network: the SSH connection carries everything, and the address's secret key
-works for that run only.
+works for that run only. The machine running agentx needs an SSH server: Linux servers have one; on Windows turn on
+OpenSSH Server once (`agentx --ui --remote` says so, with the three commands, when none is running), on a Mac turn on
+Remote Login. From outside your own network, use an address that reaches the machine (a server's public address, or
+a private network such as Tailscale).
 
 ## Full-screen mode
 

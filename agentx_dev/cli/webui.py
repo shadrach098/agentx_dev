@@ -300,9 +300,57 @@ def open_window(url: str) -> str:
     return ""
 
 
-def remote_instructions(url: str) -> str:
+def ssh_server_running(port: int = 22, timeout: float = 0.5) -> bool:
+    """Whether something accepts connections on this machine's SSH port: the tunnel needs an SSH server here."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def local_addresses() -> List[str]:
+    """This machine's IPv4 addresses on its networks (not 127.x or 169.254.x), for the ssh command."""
+    import socket
+    found: List[str] = []
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except OSError:
+        infos = []
+    for info in infos:
+        address = str(info[4][0])
+        if not address.startswith(("127.", "169.254.")) and address not in found:
+            found.append(address)
+    if not found:                                       # the address a route out would use (nothing is sent)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                probe.connect(("192.0.2.1", 9))
+                address = probe.getsockname()[0]
+                if not address.startswith(("127.", "0.")):
+                    found.append(address)
+        except OSError:
+            pass
+    return found
+
+
+ENABLE_SSH_SERVER = {
+    "nt": ("On Windows, in PowerShell opened as administrator (once; it also opens the firewall for SSH):\n"
+           "    Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0\n"
+           "    Start-Service sshd\n"
+           "    Set-Service -Name sshd -StartupType Automatic\n"
+           "You sign in over SSH with your Windows user name and password (for a Microsoft account, its password)."),
+    "darwin": "On a Mac: System Settings > General > Sharing > Remote Login, on.",
+    "posix": "On Linux: install and start the OpenSSH server, for example\n"
+             "    sudo apt install openssh-server && sudo systemctl enable --now ssh",
+}
+
+
+def remote_instructions(url: str, ssh_running: Optional[bool] = None,
+                        addresses: Optional[Sequence[str]] = None) -> str:
     """``agentx --ui --remote``: the window stays on this machine's 127.0.0.1 (never on the network); the person
-    reaches it through an SSH tunnel from their own computer. This says how, with this machine's names filled in."""
+    reaches it through an SSH tunnel from their own computer. This says how, with this machine's names filled in, and
+    says first when no SSH server runs here (then the ssh command is refused)."""
     import getpass
     import socket
     parsed = urlparse(url)
@@ -312,14 +360,26 @@ def remote_instructions(url: str) -> str:
     except Exception:
         user = "you"
     host = socket.gethostname() or "this-server"
-    return (f"agentx is ready for remote use. It listens on 127.0.0.1:{port} on this machine only, not on the network.\n"
-            f"On your own computer, run (use the server's address if the name '{host}' does not reach it):\n\n"
-            f"    ssh -N -L {port}:127.0.0.1:{port} {user}@{host}\n\n"
-            f"then open this address there (it holds this run's secret key; do not share it):\n\n"
-            f"    {url}\n\n"
-            f"Port {port} already in use at home? Pick another on the left of -L (ssh -N -L 9000:127.0.0.1:{port} ...) "
-            f"and open http://127.0.0.1:9000/?t=... instead.\n"
-            f"To keep agentx running after you log out of the server, start it inside tmux or screen.")
+    running = ssh_server_running() if ssh_running is None else ssh_running
+    found = list(local_addresses() if addresses is None else addresses)
+    target = found[0] if found else host
+    others = f" (or {', '.join(found[1:] + [host])})" if found else ""
+    lines = [f"agentx is ready for remote use. It listens on 127.0.0.1:{port} on this machine only, not on the network.",
+             f"On this same computer, just open: {url}", ""]
+    if not running:
+        key = "nt" if os.name == "nt" else "darwin" if sys.platform == "darwin" else "posix"
+        lines += ["No SSH server is running on this machine, so the ssh command below will be refused until you turn",
+                  "one on. " + ENABLE_SSH_SERVER[key], ""]
+    lines += [f"On your other computer, run (it asks for {user}'s password on this machine):", "",
+              f"    ssh -N -L {port}:127.0.0.1:{port} {user}@{target}", "",
+              f"{target} is this machine's address{others}; from outside this network use an address that reaches it",
+              "(a server's public address, or a private network such as Tailscale).",
+              "Leave that command running, then open this address on that computer (it holds this run's secret key; "
+              "do not share it):", "", f"    {url}", "",
+              f"Port {port} already in use there? Pick another on the left of -L (ssh -N -L 9000:127.0.0.1:{port} ...) "
+              "and open http://127.0.0.1:9000/?t=... instead.",
+              "To keep agentx running after you log out of a server, start it inside tmux or screen."]
+    return "\n".join(lines)
 
 
 class WebFront:
