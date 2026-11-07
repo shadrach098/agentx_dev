@@ -31,7 +31,7 @@ class UsageCommands:
     def _show_retry(self, attempt: int, error: BaseException, delay: float) -> None:
         """A tracked model's ``on_retry`` hook: say that a model request failed and is being sent again, so a long
         wait does not look like a hang. (Said on the main thread: a team helper's request runs in a worker.)"""
-        on_main(self._say_retry, attempt, error, wait=False)
+        on_main(self._say_retry, attempt, error, wait=False, lane=getattr(self, "team_lane", None))
 
     def _say_retry(self, attempt: int, error: BaseException) -> None:
         what = "got no answer in time" if _is_timeout(error) else f"failed ({type(error).__name__})"

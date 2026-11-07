@@ -368,6 +368,32 @@ def _wait_for_callback(server: HTTPServer, timeout: float) -> Tuple[str, Optiona
     return str(found["code"]), found.get("state")
 
 
+class _CallbackPort:
+    """One sign-in at a time per process uses ``CALLBACK_PORT``: with several conversations (remote use, one per
+    device), two sign-ins would both listen there (Windows allows it) and the code could reach the wrong one. A sign-in
+    left unfinished frees the port after its time is up."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._since: Optional[float] = None
+
+    def take(self) -> bool:
+        with self._lock:
+            if self._since is not None and time.monotonic() - self._since < LOGIN_TIMEOUT_SEC + 30:
+                return False
+            self._since = time.monotonic()
+            return True
+
+    def free(self) -> None:
+        with self._lock:
+            self._since = None
+
+
+_CALLBACK = _CallbackPort()
+SIGN_IN_BUSY = ("Another MCP sign-in is open on this computer (from this or another device). Finish it, or wait a few "
+                "minutes, then try again.")
+
+
 def oauth_provider(config: ServerConfig, storage: KeyringStorage, interactive: bool,
                    show: Callable[[str], None] = print,
                    open_browser: Callable[[str], Any] = webbrowser.open,
@@ -388,7 +414,14 @@ def oauth_provider(config: ServerConfig, storage: KeyringStorage, interactive: b
             if needs_login is not None:
                 needs_login()
             raise NeedsLogin(config.name)
-        listening["server"] = HTTPServer(("127.0.0.1", CALLBACK_PORT), BaseHTTPRequestHandler)
+        if not _CALLBACK.take():
+            show(SIGN_IN_BUSY)
+            raise NeedsLogin(config.name)
+        try:
+            listening["server"] = HTTPServer(("127.0.0.1", CALLBACK_PORT), BaseHTTPRequestHandler)
+        except OSError:
+            _CALLBACK.free()
+            raise
         show(f"Sign in to {config.name} in your browser. If it did not open, go to:\n{url}")
         try:
             open_browser(url)
@@ -398,7 +431,10 @@ def oauth_provider(config: ServerConfig, storage: KeyringStorage, interactive: b
     async def callback_handler() -> Tuple[str, Optional[str]]:
         if not interactive or "server" not in listening:
             raise NeedsLogin(config.name)
-        return await asyncio.to_thread(_wait_for_callback, listening["server"], LOGIN_TIMEOUT_SEC)
+        try:
+            return await asyncio.to_thread(_wait_for_callback, listening.pop("server"), LOGIN_TIMEOUT_SEC)
+        finally:
+            _CALLBACK.free()
 
     class Provider(OAuthClientProvider):
         """The SDK loads saved tokens without knowing when they run out, so it sent an expired token, got a 401

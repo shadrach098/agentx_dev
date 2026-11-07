@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence
 
@@ -70,7 +71,7 @@ def remember_trust(cwd: Path, home: Path) -> bool:
             folders.append(key)
         path = trust_file(home)
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
+        temporary = path.with_name(f"{path.stem}-{os.getpid()}-{threading.get_ident()}.tmp")
         temporary.write_text(json.dumps({"folders": folders}, indent=2) + "\n", encoding="utf-8")
         os.replace(temporary, path)
         try:

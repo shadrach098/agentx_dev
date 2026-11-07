@@ -123,7 +123,7 @@ class RemoteControl:
             terminal_echo(text, outcome, done)
             front.bus.emit("echo", text=str(text)[:2000], outcome=str(outcome)[:600], done=bool(done))
         app._echo = echo
-        app.gate.ask = lambda request: on_main(self.approving, request)
+        app.gate.ask = lambda request: on_main(self.approving, request, lane=getattr(app, "team_lane", None))
         console.file = _TeeFile(console.file, front._printed, self._quiet)
         self.prompt.mirror = self
         self._saved["signin"] = getattr(app, "remote_signin", None)

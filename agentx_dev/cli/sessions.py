@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import re
 import stat
 from dataclasses import dataclass
@@ -115,6 +116,9 @@ def read_titles(home: Path, cwd: Path) -> dict:
     return {str(k): _printable(v)[:TITLE_CHARS] for k, v in (data or {}).items() if isinstance(v, str) and v.strip()}
 
 
+_TITLES_LOCK = threading.Lock()      # several conversations in one process (remote use) write titles.json
+
+
 def save_title(home: Path, cwd: Path, session_file: str, title: str) -> bool:
     """Keep ``title`` for the session saved as ``session_file`` (its name). Never raises; False when not saved."""
     title = _printable(title)[:TITLE_CHARS].strip()
@@ -122,12 +126,20 @@ def save_title(home: Path, cwd: Path, session_file: str, title: str) -> bool:
         return False
     path = titles_path(home, cwd)
     try:
+        with _TITLES_LOCK:
+            return _save_title(home, cwd, path, str(session_file), title)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _save_title(home: Path, cwd: Path, path: Path, session_file: str, title: str) -> bool:
+    try:
         titles = read_titles(home, cwd)
-        titles[str(session_file)] = title
+        titles[session_file] = title
         if len(titles) > MAX_TITLES:                       # the oldest names (by their timestamp) go first
             titles = dict(sorted(titles.items())[-MAX_TITLES:])
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".titles-{os.getpid()}.tmp")
+        tmp = path.with_name(f".titles-{os.getpid()}-{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(titles, indent=1, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, path)
         return True

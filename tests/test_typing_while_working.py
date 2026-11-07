@@ -196,7 +196,7 @@ class TestTheApp:
         from agentx_dev.cli.team import _Job, StepStatus, _running_status
         app, out, cwd, home = make_app(tmp_path, Lines(), MockModel())
         job = _Job()
-        team._active_job = job
+        app.team_lane.job = job                                         # this conversation's job
         try:
             app.typed_while_working("add a wishlist")
             assert app._waiting_shown() == [("add a wishlist", "waiting for a helper's next step")]
@@ -207,7 +207,7 @@ class TestTheApp:
                 finally:
                     _running_status.reset(token)
         finally:
-            team._active_job = None
+            app.team_lane.job = None
         text = out.getvalue()
         assert text.count("add a wishlist  ✓ read by bag-flow-tracer") == 1 and "account-ui-builder" not in text
         assert app._waiting_shown() == []
@@ -216,11 +216,11 @@ class TestTheApp:
         import agentx_dev.cli.team as team
         from agentx_dev.cli.team import _Job
         app, out, cwd, home = make_app(tmp_path, Lines(), MockModel())
-        team._active_job = _Job()
+        app.team_lane.job = _Job()
         try:
             app.typed_while_working("no delivery as a gift")
         finally:
-            team._active_job = None
+            app.team_lane.job = None
         app._team_notes_to_agent()
         assert "no delivery as a gift  ✓ read by the agent" in out.getvalue()
         assert app._waiting_shown() == []
@@ -363,3 +363,31 @@ class TestAToolTheHelperDoesNotHave:
         run_team_job("the job", model=model, tools=build_tools(tmp_path, [], Gate(mode="auto", cwd=tmp_path)),
                      addendum="", notify=lambda kind, data: None)
         assert "Give a step only to a helper that has every tool the step needs" in model.planner_prompts()[0]
+
+
+def test_two_conversations_keep_their_team_jobs_apart(tmp_path):
+    """Remote use runs one conversation per device in one process: a note typed or a /skip in one must reach its own
+    team job, never the other's, and a question from one job goes to the thread of the conversation it belongs to."""
+    import threading
+    from agentx_dev.cli.team import TeamLane, _Job, _Pump, on_main, skip_team_step, team_note
+    first, second = TeamLane(), TeamLane()
+    first.job, second.job = _Job(), _Job()
+    assert team_note("blue buttons", lane=first)
+    assert first.job.notes == ["blue buttons"] and second.job.notes == []
+    assert skip_team_step("2", lane=second) and "2" in second.job.skips and not first.job.skips
+    assert team_note("nothing runs") is False                          # the module's own lane has no job
+    # a question asked for the second conversation runs on its thread, not on the first one's
+    pump = _Pump()
+    second.pump = pump
+    served, ran_on = threading.Event(), []
+    done = threading.Event()
+
+    def owner():
+        pump.serve(done)
+    thread = threading.Thread(target=owner)
+    thread.start()
+    asker = threading.Thread(target=lambda: (ran_on.append(on_main(lambda: threading.current_thread().name,
+                                                                         lane=second)), done.set()))
+    asker.start(); asker.join(10); thread.join(10)
+    assert ran_on == [thread.name]
+    assert on_main(lambda: "here", lane=first) == "here"               # the first has no job running: a plain call

@@ -34,7 +34,7 @@ from agentx_dev.cli.sessions import (SessionInfo, find_session, latest_session, 
 from agentx_dev.cli.settings import (DEFAULT_MAX_STEPS, DEFAULT_TOKEN_LIMIT, MAX_MAX_STEPS, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
                                      read_user_fullscreen, write_user_fullscreen)
-from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, counted_tokens, current_helper, make_team_tool, note_usage, on_main, run_team_job, skip_team_step, step_token_share, team_note)
+from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, counted_tokens, current_helper, make_team_tool, note_usage, on_main, run_team_job, skip_team_step, step_token_share, team_note, TeamLane)
 from agentx_dev.cli.typeahead import TypeAhead
 from agentx_dev.cli.ui_text import plain
 from agentx_dev.cli.team_record import TeamRecord
@@ -314,8 +314,10 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
 
         remembering = self._remembering(ask_with_spinner_paused)
         self._ask_remembering = remembering      # /remote-control asks it alongside the window's card
-        # helpers run in worker threads: every approval is asked on the main thread, one at a time
-        self.gate.ask = lambda request: on_main(remembering, request)
+        # helpers run in worker threads: every approval is asked on the main thread, one at a time. The lane is
+        # this conversation's: another one in the same process (remote use, one per device) has its own.
+        self.team_lane = TeamLane()
+        self.gate.ask = lambda request: on_main(remembering, request, lane=self.team_lane)
         self.base_tools = build_tools(self.cwd, self.add_dirs, self.gate, observer=self._observe_tool)
         self.screen.cwd = str(self.cwd)
         self.tools = [*self.base_tools,
@@ -667,7 +669,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         with self._typed_lock:
             self._waiting.append(entry)
         if entry["for"] == "team":
-            withdraw = team_note(text, on_read=lambda who: self._read_by(entry, who))
+            withdraw = team_note(text, on_read=lambda who: self._read_by(entry, who), lane=self.team_lane)
             if withdraw:
                 entry["withdraw"] = withdraw
                 return True
@@ -772,7 +774,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             if not any(wanted in (str(step.get("agent", "")).lower(), str(step.get("agent", "")).split("@")[0].lower())
                        for step in steps):
                 return f"No step run by {self._safe(which, 60)!r} in the plan." if steps else "No team job is running."
-        if not skip_team_step(which):
+        if not skip_team_step(which, lane=self.team_lane):
             return "No team job is running: nothing to skip."
         shown = f"Step {number}" if number is not None else f"The steps of {self._safe(which, 60)}"
         return f"{shown} will be skipped if not started yet{SKIP_DONE}"
@@ -1144,7 +1146,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             if self._wrapping_up:
                 self._turn_stopped = True
                 raise TokenLimitReached(used, self.token_limit)
-            answer = on_main(self._ask_to_go_on, used, sent)
+            answer = on_main(self._ask_to_go_on, used, sent, lane=self.team_lane)
             if answer == "a":
                 self._turn_allowed = sys.maxsize
                 return
@@ -1155,7 +1157,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             self.gate.closed = WRAP_UP
             self._turn_allowed = used + max(WRAP_UP_TOKENS, self.token_limit // 2)
             on_main(self._say_paused, "Wrapping up: no more tool calls in this message; the agent answers with "
-                                      "what it has found so far.")
+                                      "what it has found so far.", lane=self.team_lane)
 
     def set_fullscreen(self, on: bool) -> None:
         """``/fullscreen on|off``: saved in ~/.agentx/settings.json; it applies the next time agentx starts."""
@@ -1452,7 +1454,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                                 describe_error=self._safe, extra_models=extras,
                                 chat_use=self._use_of(self.model_label), skills=self.skills,
                                 step_tokens=step_token_share(self.token_limit), closed=lambda: self.gate.closed,
-                                record=self._team_record(task))
+                                record=self._team_record(task), lane=self.team_lane)
         finally:
             self._team_running = []
             self._team_rows = {}

@@ -8,6 +8,7 @@ an unwritable folder."""
 from __future__ import annotations
 
 import os
+import threading
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -176,9 +177,17 @@ def _rotate(path: Path, limit: int) -> None:
         pass
 
 
+_LOG_LOCK = threading.Lock()         # several conversations in one process (remote use) append to one log
+
+
 def append_entry(cwd: Path, text: str, limit: int = MAX_LOG_BYTES) -> bool:
     """Append ``text`` as one entry, creating ``.agentx/log.md`` (readable by its owner only, where the platform
     allows) and rotating it above ``limit`` bytes. False on any failure; never raises."""
+    with _LOG_LOCK:
+        return _append_entry(cwd, text, limit)
+
+
+def _append_entry(cwd: Path, text: str, limit: int) -> bool:
     path = log_path(cwd)
     try:
         if not _safe_location(cwd):

@@ -1281,7 +1281,7 @@ class WebFront:
         app._echo = lambda text, outcome, done=True: self.bus.emit(           # a typed line and what became of it
             "echo", text=_text(text, 2000), outcome=_text(outcome, 600), done=bool(done))
         asking = app._remembering(self.approve)
-        app.gate.ask = lambda request: on_main(asking, request)
+        app.gate.ask = lambda request: on_main(asking, request, lane=getattr(app, "team_lane", None))
 
     def address(self) -> str:
         port = self._server.server_address[1] if self._server is not None else self.port

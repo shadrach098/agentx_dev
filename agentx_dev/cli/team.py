@@ -160,6 +160,7 @@ class _Job:
         self._read: List[bool] = []
         self.skips: set = set()
         self._lock = threading.Lock()
+        self.pump: Any = None                       # the _Pump its questions go through (set when it runs)
 
     def add_note(self, text: str, on_read: Optional[Callable[[str], None]] = None) -> int:
         with self._lock:
@@ -466,42 +467,65 @@ class _Pump:
                 future.set_exception(JobStopped())
 
 
-_active: Optional[_Pump] = None
+class TeamLane:
+    """One conversation's team job: the job running in it and the thread its questions go to. Each ChatApp has its
+    own, so two conversations in one process (one per device in remote use) never hand each other's approvals,
+    typed notes or /skip to the wrong job. Callers that pass no lane share the module's one (the old behaviour)."""
+
+    def __init__(self) -> None:
+        self.pump: Optional[_Pump] = None
+        self.job: Optional[_Job] = None
+        self.lock = threading.Lock()
+
+
+_active: Optional[_Pump] = None          # the lane of callers that pass none
 _active_lock = threading.Lock()
 _active_job: Optional[_Job] = None
 
 
-def team_note(text: str, on_read: Optional[Callable[[str], None]] = None) -> Any:
+def _lane_job(lane: Optional[TeamLane]) -> Optional[_Job]:
+    if lane is not None:
+        with lane.lock:
+            return lane.job
+    with _active_lock:
+        return _active_job
+
+
+def team_note(text: str, on_read: Optional[Callable[[str], None]] = None, lane: Optional[TeamLane] = None) -> Any:
     """Hand ``text`` (typed by the user while a team job runs) to that job: each running helper reads it at its next
     step, a step that starts later is given it at once, and the main agent reads it in the job's result. ``on_read``
     is called with a helper's name each time one reads it. Returns a function that takes the note back while no
     helper has read it (``/unsend``; it returns whether it could), or False when no team job is running."""
-    with _active_lock:
-        job = _active_job
+    job = _lane_job(lane)
     if job is None or job.stopped:
         return False
     index = job.add_note(text, on_read)
     return lambda: job.withdraw(index)
 
 
-def skip_team_step(which: str) -> bool:
+def skip_team_step(which: str, lane: Optional[TeamLane] = None) -> bool:
     """Skip the running job's step ``which`` (its number in the plan, or its helper's or role's name) if it has not
     started. False when no team job is running."""
-    with _active_lock:
-        job = _active_job
+    job = _lane_job(lane)
     if job is None or job.stopped:
         return False
     job.skip(which)
     return True
 
 
-def on_main(fn: Callable[..., Any], *args: Any, wait: bool = True) -> Any:
+def on_main(fn: Callable[..., Any], *args: Any, wait: bool = True, lane: Optional[TeamLane] = None) -> Any:
     """``fn(*args)`` on the thread that started the running team job (``current_helper()`` there still names the
     caller's helper) and its result; ``wait=False`` hands it over and returns ``None`` at once. Outside a team job,
-    or on that thread, it is a plain call. A helper thread whose job is over gets ``JobStopped``."""
-    pump = _active
-    here = threading.current_thread()
+    or on that thread, it is a plain call. A helper thread whose job is over gets ``JobStopped``. ``lane`` is the
+    conversation the call belongs to; without one, a helper's own job decides, else the module's lane."""
     step = getattr(_local, "step", None)
+    if lane is not None:
+        pump = lane.pump
+    elif step is not None and getattr(step.job, "pump", None) is not None:
+        pump = step.job.pump
+    else:
+        pump = _active
+    here = threading.current_thread()
     if step is not None and step.job.stopped and (pump is None or here is not pump.owner):
         raise JobStopped()
     if pump is None or here is pump.owner:
@@ -1034,11 +1058,12 @@ class TeamSupervisor(AsyncSupervisor):
         return result
 
 
-def _run_on_loop(make: Callable[[], Any], job: _Job, pump: _Pump) -> Any:
+def _run_on_loop(make: Callable[[], Any], job: _Job, pump: _Pump, lane: Optional[TeamLane] = None) -> Any:
     """Run the coroutine ``make()`` on an event loop in a new thread while this thread serves ``pump``, and return
     its value or raise its error here. Ctrl+C here cancels it. Either way the job is over when this returns, so a
     helper still working in a worker thread ends at its next tool call or model reply."""
     global _active
+    job.pump = pump
     finished = threading.Event()
     box: Dict[str, Any] = {}
 
@@ -1066,8 +1091,12 @@ def _run_on_loop(make: Callable[[], Any], job: _Job, pump: _Pump) -> Any:
             loop.close()
             finished.set()
 
-    with _active_lock:
-        _active = pump
+    if lane is not None:
+        with lane.lock:
+            lane.pump = pump
+    else:
+        with _active_lock:
+            _active = pump
     thread = threading.Thread(target=target, name="agentx-team", daemon=True)
     try:
         thread.start()
@@ -1083,9 +1112,14 @@ def _run_on_loop(make: Callable[[], Any], job: _Job, pump: _Pump) -> Any:
         raise
     finally:
         pump.close()
-        with _active_lock:
-            if _active is pump:
-                _active = None
+        if lane is not None:
+            with lane.lock:
+                if lane.pump is pump:
+                    lane.pump = None
+        else:
+            with _active_lock:
+                if _active is pump:
+                    _active = None
         thread.join(STOP_WAIT_SEC)
     if "error" in box:
         raise box["error"]
@@ -1096,7 +1130,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                  ask_user: Optional[Callable[[str], Optional[str]]] = None,
                  describe_error: Callable[[BaseException], str] = str,
                  extra_models: Sequence[HelperModel] = (), chat_use: str = "", skills: Any = None,
-                 step_tokens: int = 0, closed: Optional[Callable[[], Any]] = None, record: Any = None) -> str:
+                 step_tokens: int = 0, closed: Optional[Callable[[], Any]] = None, record: Any = None,
+                 lane: Optional[TeamLane] = None) -> str:
     """Plan ``task``, run the helpers (read-only steps side by side, any other step alone) and return the result
     text. Progress goes to ``notify`` and questions to ``ask_user``, both on the calling thread. ``extra_models``
     adds the roles on other models (see ``build_helpers``); the planner stays on ``model``. ``step_tokens`` is each
@@ -1110,9 +1145,9 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
     pump = _Pump()
 
     def tell(kind: str, data: Dict[str, Any]) -> None:
-        on_main(notify, kind, data, wait=False)     # an error in it is dropped: a display error never aborts
+        on_main(notify, kind, data, wait=False, lane=lane)   # an error in it is dropped: a display error never aborts
 
-    asker = (lambda question: on_main(ask_user, question)) if callable(ask_user) else ask_user
+    asker = (lambda question: on_main(ask_user, question, lane=lane)) if callable(ask_user) else ask_user
 
     async def consume() -> Any:
         helpers = build_helpers(model, tools, addendum, describe_error, extra_models=extra_models,
@@ -1178,16 +1213,25 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                     result = event.get("result")
         return result
 
-    with _active_lock:
-        _active_job = job
+    if lane is not None:
+        with lane.lock:
+            lane.job = job
+    else:
+        with _active_lock:
+            _active_job = job
     try:
-        result = _run_on_loop(consume, job, pump)
+        result = _run_on_loop(consume, job, pump, lane)
     except Exception as error:                     # KeyboardInterrupt and SystemExit are not Exceptions
         return _recorded(record, _with_notes(_failure(error, describe_error), job))
     finally:
-        with _active_lock:
-            if _active_job is job:
-                _active_job = None
+        if lane is not None:
+            with lane.lock:
+                if lane.job is job:
+                    lane.job = None
+        else:
+            with _active_lock:
+                if _active_job is job:
+                    _active_job = None
     if result is None:
         return _recorded(record, _with_notes(f"Team job ended without a result. {MAY_HAVE_CHANGED}", job))
     return _recorded(record, _with_notes(format_result(result), job))

@@ -47,10 +47,14 @@ class TeamRecord:
         try:
             base = Path(folder)
             name = f"{self.when:%Y-%m-%d-%H%M%S}-{_slug(self.task)}"
+            base.mkdir(parents=True, exist_ok=True)
             target, number = base / name, 2
-            while target.exists():
-                target, number = base / f"{name}-{number}", number + 1
-            target.mkdir(parents=True)
+            while True:                         # two jobs in one second (two conversations): the next free name
+                try:
+                    target.mkdir()
+                    break
+                except FileExistsError:
+                    target, number = base / f"{name}-{number}", number + 1
             self.folder = target
             self._write_job()
         except OSError as e:
