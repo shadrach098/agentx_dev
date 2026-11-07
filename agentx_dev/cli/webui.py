@@ -364,23 +364,26 @@ def remote_instructions(url: str, ssh_running: Optional[bool] = None,
     found = list(local_addresses() if addresses is None else addresses)
     target = found[0] if found else host
     others = f" (or {', '.join(found[1:] + [host])})" if found else ""
-    lines = [f"agentx is ready for remote use. It listens on 127.0.0.1:{port} on this machine only, not on the network.",
-             f"On this same computer, just open: {url}", ""]
+    lines = [f"agentx is running here, on {host}, for use from another computer. It is not on the network: only an",
+             "SSH connection to this computer reaches it.",
+             "Nothing more to do on this computer: leave this terminal open (and the computer awake).", ""]
     if not running:
         key = "nt" if os.name == "nt" else "darwin" if sys.platform == "darwin" else "posix"
-        lines += ["No SSH server is running on this machine, so the ssh command below will be refused until you turn",
-                  "one on. " + ENABLE_SSH_SERVER[key], ""]
-    lines += [f"On your other computer, run (it asks for {user}'s password on this machine):", "",
-              f"    ssh -N -L {port}:127.0.0.1:{port} {user}@{target}", "",
-              f"{target} is this machine's address{others}; from outside this network use an address that reaches it",
-              "(a server's public address, or a private network such as Tailscale).",
-              "Once signed in it prints nothing and stays open: that is the tunnel working. Leave it running, then open",
-              "this address in a browser on that computer (it holds this run's secret key; do not share it):", "",
-              f"    {url}", "",
-              f"The port changes with each start; add --port {port} to keep this one.",
-              f"Port {port} already in use there? Pick another on the left of -L (ssh -N -L 9000:127.0.0.1:{port} ...) "
-              "and open http://127.0.0.1:9000/?t=... instead.",
-              "To keep agentx running after you log out of a server, start it inside tmux or screen."]
+        lines += ["First, once: no SSH server runs on this computer, so the other computer cannot connect yet.",
+                  ENABLE_SSH_SERVER[key], ""]
+    lines += ["On the other computer (the one you use the window from):", "",
+              "  1. Run this, and leave it open. It prints nothing while it works; that silence is the connection:", "",
+              f"       ssh -N -L {port}:127.0.0.1:{port} {user}@{target}", "",
+              "  2. Open this in that computer's browser (it carries this run's secret key; do not share it):", "",
+              f"       {url}", "",
+              f"     It says 127.0.0.1 because step 1 makes that computer's port {port} lead here.", "",
+              f"{target} is this computer's address on this network{others}. Away from this network it does not reach "
+              "here:",
+              "use a private network such as Tailscale on both computers, and its address for this one in step 1.",
+              f"The port changes with each start; add --port {port} to keep this one. Port {port} busy on the other "
+              f"computer? Use",
+              f"ssh -N -L 9000:127.0.0.1:{port} ... and open http://127.0.0.1:9000/?t=... instead.",
+              f"(Sitting at this computer instead? The same address works here directly, without ssh.)"]
     return "\n".join(lines)
 
 

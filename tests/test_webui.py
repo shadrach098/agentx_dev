@@ -429,9 +429,10 @@ def test_remote_use_goes_through_an_ssh_tunnel():
     text = remote_instructions("http://127.0.0.1:8765/?t=secret", ssh_running=True, addresses=["10.0.0.219"])
     assert "ssh -N -L 8765:127.0.0.1:8765 " in text and "@10.0.0.219" in text
     assert "http://127.0.0.1:8765/?t=secret" in text and "not on the network" in text
-    assert "No SSH server" not in text
+    assert "no SSH server" not in text and "On the other computer" in text
+    assert text.index("ssh -N -L") < text.index("?t=secret")        # the ssh command first, then the address
     off = remote_instructions("http://127.0.0.1:8765/?t=secret", ssh_running=False, addresses=[])
-    assert "No SSH server is running on this machine" in off and "ssh -N -L 8765" in off
+    assert "no SSH server runs on this computer" in off and "ssh -N -L 8765" in off
     assert ("Add-WindowsCapability" in off) or ("Remote Login" in off) or ("openssh-server" in off)
     args = build_parser().parse_args(["--ui", "--remote"])
     assert args.remote is True
