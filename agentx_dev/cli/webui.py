@@ -374,8 +374,10 @@ def remote_instructions(url: str, ssh_running: Optional[bool] = None,
               f"    ssh -N -L {port}:127.0.0.1:{port} {user}@{target}", "",
               f"{target} is this machine's address{others}; from outside this network use an address that reaches it",
               "(a server's public address, or a private network such as Tailscale).",
-              "Leave that command running, then open this address on that computer (it holds this run's secret key; "
-              "do not share it):", "", f"    {url}", "",
+              "Once signed in it prints nothing and stays open: that is the tunnel working. Leave it running, then open",
+              "this address in a browser on that computer (it holds this run's secret key; do not share it):", "",
+              f"    {url}", "",
+              f"The port changes with each start; add --port {port} to keep this one.",
               f"Port {port} already in use there? Pick another on the left of -L (ssh -N -L 9000:127.0.0.1:{port} ...) "
               "and open http://127.0.0.1:9000/?t=... instead.",
               "To keep agentx running after you log out of a server, start it inside tmux or screen."]
