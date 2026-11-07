@@ -341,7 +341,9 @@ def local_addresses() -> List[str]:
                     found.append(address)
         except OSError:
             pass
-    return found
+    # The home or office network first: a Tailscale address (100.x) only answers devices signed in to Tailscale, and
+    # those can open the Tailscale link instead. Put first, it made ssh time out from a laptop without Tailscale.
+    return sorted(found, key=is_tailnet_ip)
 
 
 def is_tailnet_ip(address: Any) -> bool:
@@ -488,9 +490,11 @@ def remote_instructions(url: str, ssh_running: Optional[bool] = None,
         user = "you"
     host = socket.gethostname() or "this-server"
     running = ssh_server_running() if ssh_running is None else ssh_running
-    found = list(local_addresses() if addresses is None else addresses)
+    found = sorted(local_addresses() if addresses is None else addresses, key=is_tailnet_ip)
     target = found[0] if found else host
-    others = f" (or {', '.join(found[1:] + [host])})" if found else ""
+    nearby = [a for a in found[1:] if not is_tailnet_ip(a)]
+    tailnet_ips = [a for a in found if is_tailnet_ip(a)]
+    others = f" (or {', '.join(nearby + [host])})" if found else ""
     if tailnet_url:
         lines = [f"agentx is running here, on {host}, for use from your other devices.",
                  "Nothing more to do on this computer: leave this terminal open (and the computer awake).", "",
@@ -524,9 +528,13 @@ def remote_instructions(url: str, ssh_running: Optional[bool] = None,
               "  2. Open this in that computer's browser (it carries this run's secret key; do not share it):", "",
               f"       {url}", "",
               f"     It says 127.0.0.1 because step 1 makes that computer's port {port} lead here.", "",
-              f"{target} is this computer's address on this network{others}. Away from this network it does not reach "
-              "here:",
-              "use a private network such as Tailscale on both computers, and its address for this one in step 1.",
+              *([f"{target} is this computer's address on this network{others}. Away from this network it does not "
+                 "reach here:",
+                 (f"from a computer with Tailscale on, use {tailnet_ips[0]} (its Tailscale address) in step 1, from "
+                  "anywhere." if tailnet_ips else
+                  "use a private network such as Tailscale on both computers, and its address for this one in step 1.")]
+                if not is_tailnet_ip(target) else
+                [f"{target} is this computer's Tailscale address: it answers only computers signed in to your Tailscale."]),
               f"The port changes with each start; add --port {port} to keep this one. Port {port} busy on the other "
               f"computer? Use",
               f"ssh -N -L 9000:127.0.0.1:{port} ... and open http://127.0.0.1:9000/?t=... instead.",
@@ -811,8 +819,11 @@ class WebFront:
     # -- what the window reads ---------------------------------------------------------------------------------
 
     def _working(self) -> bool:
+        """The spinner runs: drawn by a screen (``_shown``: the window, full-screen mode) or by the terminal itself
+        (``_live``: the normal screen, which /remote-control mirrors)."""
         progress = getattr(self.app, "progress", None)
-        return bool(progress is not None and getattr(progress, "_shown", False))
+        return bool(progress is not None and (getattr(progress, "_shown", False)
+                                              or getattr(progress, "_live", None) is not None))
 
     def state(self) -> Dict[str, Any]:
         app = self.app
@@ -1199,6 +1210,13 @@ class WebFront:
                 self._since_wall = {since: time.time() - (time.monotonic() - since)}
             status["label"] = _text(getattr(progress, "_label", ""), 200)
             status["startedAt"] = round(self._since_wall[since], 2)
+            try:                                       # the tokens this message has used so far
+                from agentx_dev.cli.team import counted_tokens
+                _, tokens_in, tokens_out, cached = app._usage_totals()
+                status["tokens"] = max(0, counted_tokens(tokens_in, tokens_out, cached)
+                                       - int(getattr(app, "_turn_start", 0) or 0))
+            except Exception:
+                pass
         try:
             status["waiting"] = [{"text": _text(text, 300), "where": where} for text, where in app._waiting_shown()]
         except Exception:

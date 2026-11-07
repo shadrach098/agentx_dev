@@ -521,6 +521,7 @@
     if (ev.kind === "message") {
       ready = ev.id;
       if (ev.default) { input.value = (input.value ? input.value + " " : "") + ev.default; grow(); }
+      drawStatus();                                            // agentx is back for the next message
       setComposer();
       return;
     }
@@ -545,15 +546,22 @@
   }
 
   // -- the status, team and waiting messages under the conversation -----------------------------------------------
-  let status = {}, startedAt = 0;
+  let status = {}, startedAt = 0, sentAt = 0;   // sentAt: a message went off and agentx has not picked it up yet
+  function drawStatus() {
+    const open = liveCard();
+    const starting = sentAt && !status.working && !open && !ready && Date.now() - sentAt < 60000;
+    if (!starting) sentAt = 0;
+    $("status").hidden = !status.working && !open && !starting;
+    $("statusLabel").textContent = status.working ? friendlyLabel(status.label) + "…"
+      : open ? "Waiting for your answer" : starting ? "Starting…" : "";
+    $("composer").classList.toggle("busy", !!(status.working || starting));
+    tickTime();
+  }
   function onStatus(ev) {
     status = ev;
-    const box = $("status");
-    const open = liveCard();
-    box.hidden = !ev.working && !open;
-    $("statusLabel").textContent = ev.working ? friendlyLabel(ev.label) + "…" : open ? "Waiting for your answer" : "";
+    if (ev.working) sentAt = 0;
     startedAt = ev.working ? ev.startedAt || 0 : 0;
-    tickTime();
+    drawStatus();
     const team = $("team");
     if (ev.team && ev.team.rows && ev.team.rows.length) {
       team.hidden = false;
@@ -575,7 +583,13 @@
     updateLive();
     keepBottom(stick);
   }
-  function tickTime() { $("statusTime").textContent = startedAt ? shortTime(Date.now() / 1000 - startedAt) : ""; }
+  function shortTokens(n) { return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n); }
+  function tickTime() {
+    const parts = [];
+    if (startedAt) parts.push(shortTime(Date.now() / 1000 - startedAt));
+    if (status.working && status.tokens) parts.push(`${shortTokens(status.tokens)} tokens`);
+    $("statusTime").textContent = parts.join(" · ");
+  }
   setInterval(tickTime, 1000);
   $("waiting").addEventListener("click", (e) => {
     const b = e.target.closest("[data-unsend]");
@@ -586,7 +600,7 @@
   // While agentx works and the box is empty, the send button is the Stop button.
   function setComposer() {
     input.placeholder = ready ? "Ask agentx to do something, or type / for commands"
-      : status.working ? "Add to the task while it works, or / for a command" : "Waiting for agentx…";
+      : status.working || sentAt ? "Add to the task while it works, or / for a command" : "Waiting for agentx…";
     const send = $("sendBtn");
     const stopping = !!(status.working || liveCard()) && !input.value.trim();
     send.classList.toggle("stopping", stopping);
@@ -600,6 +614,7 @@
     const text = input.value.replace(/\s+$/, "");
     if (!text.trim()) return;
     input.value = ""; grow(); hidePalette();
+    if (ready && !status.working) { ready = null; sentAt = Date.now(); drawStatus(); }   // moving at once, not "Waiting…"
     await post("/api/send", {text});
   }
   $("composer").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
@@ -1095,7 +1110,21 @@
     syncView();
   }
   // the empty screen puts the message box in the middle; scrolled up, a button jumps back to the latest
+  // Once a conversation has started, its top carries the agentx header, like the box the terminal opens with.
+  function syncBanner() {
+    const has = column.querySelector(":scope > .banner");
+    const empty = !column.children.length || (has && column.children.length === 1);
+    if (!welcome || column.querySelector(".welcome") || empty) { if (has) has.remove(); return; }
+    if (has && column.firstElementChild === has) return;
+    const b = has || el("header", "banner");
+    const where = folderName || welcome.folder || "";
+    b.innerHTML = `${MARK}<div class="banner-text"><div class="banner-name">agentx` +
+      `${welcome.version ? ` <span class="banner-version">${esc(welcome.version)}</span>` : ""}</div>` +
+      `<div class="banner-meta">${[welcome.model, where].filter(Boolean).map(esc).join(" · ")}</div></div>`;
+    column.prepend(b);
+  }
   function syncView() {
+    syncBanner();
     updateLive();
     document.querySelector(".main").classList.toggle("empty", !!column.querySelector(".welcome"));
     $("jump").hidden = nearBottom();

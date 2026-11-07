@@ -189,3 +189,42 @@ def test_agentx_remote_opens_this_terminal_with_remote_control_on(monkeypatch):
     assert "if args.remote:\n        wanted = False" in source
     start = source.split("    def start(self", 1)[1].split("\n    def ", 1)[0]
     assert "if getattr(self, \"remote_at_start\", False):" in start and "self.remote_control()" in start
+
+
+class TestWhatTheIpadSees:
+    def test_the_terminal_spinner_counts_as_working_and_the_tokens_go_along(self, tmp_path):
+        """/remote-control mirrors the normal screen, whose spinner is a rich Live (``_live``), not ``_shown``: the
+        window said "Waiting for agentx" with nothing moving while the terminal worked."""
+        from types import SimpleNamespace
+        from agentx_dev.cli.webui import WebFront
+        front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False)
+        progress = SimpleNamespace(_shown=False, _live=object(), _since=0.0, _label="Thinking")
+        front.app = SimpleNamespace(progress=progress, _usage_totals=lambda: (3, 12000, 800, 0), _turn_start=2000,
+                                    _waiting_shown=lambda: [], _team_rows={}, _team_steps=(0, 0),
+                                    recording=lambda: False, gate=SimpleNamespace(mode="default"), model_label="m")
+        status = front._status()
+        assert status["working"] is True and status["tokens"] > 0
+        progress._live = None
+        assert front._status()["working"] is False
+
+    def test_the_ways_in_stay_in_the_terminal(self):
+        """Whoever opens the window already got there: the link and the ssh steps are for the terminal only."""
+        shown, sent = [], []
+        rc = remote_module.RemoteControl.__new__(remote_module.RemoteControl)
+        rc.active = True
+        rc._quiet = remote_module._Quiet()
+        terminal = type("T", (), {"notice": lambda self, text: shown.append(text)})()
+        web = type("W", (), {"notice": lambda self, text: sent.append(text)})()
+        rc._saved = {"screen": terminal}
+        rc.app = type("A", (), {"screen": remote_module._TeeScreen(terminal, web, rc._quiet)})()
+        rc.tell_terminal("open https://pc.tail.ts.net:4529/?t=k")
+        assert shown and not sent
+
+
+def test_ssh_is_offered_on_the_wifi_address_first():
+    """With Tailscale on, the ssh command used the 100.x address, which times out from a laptop without Tailscale."""
+    from agentx_dev.cli.webui import remote_instructions
+    text = remote_instructions("http://127.0.0.1:4529/?t=k", ssh_running=True, firewall="",
+                               addresses=["100.113.0.53", "10.0.0.219"])
+    assert "bruce@10.0.0.219" in text or "@10.0.0.219" in text
+    assert "use 100.113.0.53 (its Tailscale address)" in text

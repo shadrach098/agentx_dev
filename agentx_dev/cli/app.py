@@ -1227,7 +1227,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             self.notice("Remote control is off. Open windows say agentx stopped; this terminal goes on.")
             return
         if remote is not None and remote.active:
-            self.notice(remote.instructions)
+            remote.tell_terminal(remote.instructions)
             return
         prompt = getattr(self, "prompt_input", None)
         if prompt is None or getattr(prompt, "_chat", None) is None:
@@ -1243,8 +1243,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             self.error(f"Remote control could not start: {self._safe(error, 200)}")
             return
         self._remote = remote
-        self.notice(text + "\n\nThis terminal keeps working: what you do in either place shows in both. "
-                           "/remote-control off ends it.")
+        remote.tell_terminal(text + "\n\nThis terminal keeps working: what you do in either place shows in both. "
+                                    "/remote-control off ends it.")      # not in the window: it is already there
 
     def _maybe_title(self) -> None:
         """After the first answer: a short title for this conversation, written once by the model on a thread of its

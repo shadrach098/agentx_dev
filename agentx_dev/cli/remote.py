@@ -137,6 +137,19 @@ class RemoteControl:
                                                 tailnet_problem=front.tailnet_problem)
         return self.instructions
 
+    def tell_terminal(self, text: str) -> None:
+        """A notice for the terminal only: how to reach the window is for the person at this computer, and whoever
+        opens the window got there already."""
+        screen = self._saved.get("screen") if self.active else None
+        if screen is None:
+            self.app.notice(text)
+            return
+        before, self._quiet.on = self._quiet.on, True
+        try:
+            screen.notice(text)
+        finally:
+            self._quiet.on = before
+
     def _say_in_terminal(self, text: str) -> None:
         """A line in the terminal from another thread: above the open prompt (so it is not broken), else printed."""
         session = getattr(self.prompt, "_chat", None)

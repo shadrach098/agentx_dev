@@ -130,6 +130,14 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **The ssh command for another computer uses the Wi-Fi address again.** With Tailscale on, it used this computer's
+  Tailscale address (100.x), which times out from a laptop without Tailscale; the Tailscale address is now offered
+  as the one to use from a computer with Tailscale on.
+- **The app window shows agentx at work, as the terminal does.** In `/remote-control` from the terminal it said
+  "Waiting for agentx…" with nothing moving: now the spinner line (what it does, the time and the tokens this
+  message has used) shows there too, starts the moment a message is sent, and a soft light runs along the message
+  box while it works. A conversation starts with the agentx header (version, model, folder), like the terminal's
+  box, and the link and ssh steps of `/remote-control` stay in the terminal instead of filling the window.
 - **"Open in Safari" opens the app window, not a box saying to start agentx.** The page took its key out of
   the address, so opening it in another browser, a new tab or from a bookmark had none, and the box could not be
   closed. The key now stays in the address after a `#` (never sent to the server). Without a key, or with one from
