@@ -198,6 +198,19 @@ class TestATurn:
         assert data["seq"] >= 1 and isinstance(data["pending"], list)
         assert w.request("GET", "/api/history?upto=0")[1]["items"] == []
 
+    def test_a_step_carries_its_output_live_and_after_a_reload(self, window):
+        """Click a step in the window to see what the tool gave back: the result event and the history carry it."""
+        w = window(MockModel(script=[make_react_response("read_path", {"path": "notes.txt"}), make_final("Read it")]))
+        (w.cwd / "notes.txt").write_text("".join(f"line {n}\n" for n in range(1, 301)), encoding="utf-8")
+        w.ready()
+        w.request("POST", "/api/send", {"text": "read notes.txt"})
+        result = wait_for(w.front, lambda e: e["type"] == "tool_result" and e["name"] == "read_path")
+        assert "line 1" in result["output"] and "line 300" not in result["output"]
+        assert result["outputMore"] > 0
+        wait_for(w.front, lambda e: e["type"] == "final")
+        item = next(i for i in w.request("GET", "/api/history")[1]["items"] if i["type"] == "tool_result")
+        assert "line 1" in item["output"] and item["outputMore"] > 0
+
     def test_a_command_from_the_window(self, window):
         w = window(MockModel())
         w.ready()

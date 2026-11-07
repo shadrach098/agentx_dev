@@ -818,7 +818,10 @@ from open; closing it, or Ctrl+C there, quits agentx.
   conversation** (`/clear`). At the bottom: the folder, and buttons for `/usage`, `/settings` and light or dark.
 - **The conversation:** your messages on the right, the agent's steps as short rows (**Read**, **Edit**, **Run**
   and the file or command; look-around steps fold into one **Explored** row you can open), its notes, and the
-  answer rendered as markdown. What the app prints as terminal text (tables, `/usage`, team lines) keeps its colours.
+  answer rendered as markdown. Click a step to see what the tool gave back (the first 120 lines). The answer and each
+  code block in it have a copy button. What the app prints as terminal text (tables, `/usage`, team lines) keeps its
+  colours. Scrolled up, an arrow above the message box jumps back to the latest. Ctrl+B (or the button at the top
+  left) hides and shows the sidebar.
 - **Approvals** are cards under the step they are about: the diff or the command, then **Yes**, **Yes, don't ask
   again** (when it can be remembered) and **No**, which asks what it should do instead. Keys `1`, `2`, `3` answer
   when you are not typing; the other questions (the folder trust question, team questions, the token limit) are

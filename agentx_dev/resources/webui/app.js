@@ -152,7 +152,7 @@
     if (!turn || column.lastElementChild !== turn) { turn = el("div", "agent"); column.append(turn); group = null; }
     return turn;
   }
-  function dropWelcome() { const w = column.querySelector(".welcome"); if (w) w.remove(); }
+  function dropWelcome() { const w = column.querySelector(".welcome"); if (w) { w.remove(); syncView(); } }
   const MARK = '<svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M6 8 16 16 6 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><rect x="21" y="8" width="3" height="16" rx=".5" fill="currentColor"/></svg>';
   const STARTERS = [
     ["Explain how this project fits together", "Explain how this project fits together"],
@@ -178,6 +178,7 @@
       grow(); setComposer(); input.focus();
     });
     column.append(w);
+    syncView();
   }
 
   function addUser(text) {
@@ -277,8 +278,55 @@
     step.classList.add(ev.failed ? "failed" : "done");
     const text = ev.failed ? (ev.detail || ev.summary || "failed") + (ev.more ? `\n... ${ev.more} more lines` : "") : ev.summary;
     if (text) step.append(el("div", "step-result", ev.failed ? ansi(text) : esc(text)));
+    if (ev.output) addOutput(step, ev.output, ev.outputMore);
     const g = step.closest(".group");
     if (g) groupSummary(g);
+  }
+  // a step you can open to see what the tool gave back
+  function addOutput(step, output, more) {
+    const head = step.querySelector(":scope > .step-head");
+    if (!head) return;
+    step.classList.add("openable");
+    head.setAttribute("role", "button");
+    head.tabIndex = 0;
+    head.setAttribute("aria-expanded", "false");
+    head.insertAdjacentHTML("beforeend", `<svg class="step-more" viewBox="0 0 16 16" aria-hidden="true">${ICONS.explore}</svg>`);
+    const box = el("pre", "step-output", ansi(output) + (more > 0 ? `\n<span class="d">… ${more} more line${more > 1 ? "s" : ""}</span>` : ""));
+    box.hidden = true;
+    step.append(box);
+    const toggle = () => {
+      box.hidden = !box.hidden;
+      step.classList.toggle("open", !box.hidden);
+      head.setAttribute("aria-expanded", String(!box.hidden));
+    };
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+  }
+  // the answer, with a copy button for it and for each code block
+  const COPY = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
+  const DONE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  function copyButton(getText, label) {
+    const b = el("button", "copy", COPY + (label ? `<span>${esc(label)}</span>` : ""));
+    b.type = "button";
+    b.setAttribute("aria-label", "Copy");
+    b.title = "Copy";
+    b.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(getText()); } catch (_) { return; }
+      b.innerHTML = DONE + (label ? "<span>Copied</span>" : "");
+      setTimeout(() => { b.innerHTML = COPY + (label ? `<span>${esc(label)}</span>` : ""); }, 1500);
+    });
+    return b;
+  }
+  function addAnswer(text) {
+    const a = el("div", "answer", markdown(text));
+    a.querySelectorAll("pre").forEach((pre) => {
+      const wrap = el("div", "code");
+      pre.replaceWith(wrap);
+      wrap.append(pre, copyButton(() => pre.innerText));
+    });
+    const tools = el("div", "answer-tools");
+    tools.append(copyButton(() => String(text), "Copy"));
+    agentTurn().append(a, tools);
   }
   function addPrint(ev) {
     if (!ev.ansi || !ev.ansi.trim()) return;
@@ -564,15 +612,26 @@
   $("newChat").addEventListener("click", () => post("/api/send", {text: "/clear"}));
   $("usageBtn").addEventListener("click", () => post("/api/send", {text: "/usage"}));
   $("settingsBtn").addEventListener("click", () => post("/api/send", {text: "/settings"}));
-  $("sideToggle").addEventListener("click", () => $("side").classList.toggle("open"));
+  // the sidebar: slides over on a narrow window, folds away on a wide one (remembered)
+  const narrow = () => matchMedia("(max-width: 860px)").matches;
+  try { if (localStorage.getItem("agentx-side") === "hidden") document.querySelector(".app").classList.add("side-hidden"); } catch (_) { /* no storage */ }
+  function toggleSide() {
+    if (narrow()) { $("side").classList.toggle("open"); return; }
+    const hidden = document.querySelector(".app").classList.toggle("side-hidden");
+    try { localStorage.setItem("agentx-side", hidden ? "hidden" : "shown"); } catch (_) { /* no storage */ }
+  }
+  $("sideToggle").addEventListener("click", toggleSide);
+  $("sideClose").addEventListener("click", toggleSide);
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") { e.preventDefault(); toggleSide(); }
+  });
 
-  const savedTheme = localStorage.getItem("agentx-theme");
-  if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+  try { const saved = localStorage.getItem("agentx-theme"); if (saved) document.documentElement.dataset.theme = saved; } catch (_) { /* no storage */ }
   $("themeBtn").addEventListener("click", () => {
     const dark = document.documentElement.dataset.theme
       ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
     document.documentElement.dataset.theme = dark ? "light" : "dark";
-    localStorage.setItem("agentx-theme", document.documentElement.dataset.theme);
+    try { localStorage.setItem("agentx-theme", document.documentElement.dataset.theme); } catch (_) { /* no storage */ }
   });
 
   async function loadState() {
@@ -622,7 +681,7 @@
       case "thought": agentTurn().append(el("div", "note", esc(ev.text))); group = null; break;
       case "tool_call": dropWelcome(); toolCall(ev); break;
       case "tool_result": toolResult(ev); break;
-      case "final": group = null; lastPrint = null; agentTurn().append(el("div", "answer", markdown(ev.text))); loadSessions(); break;
+      case "final": group = null; lastPrint = null; addAnswer(ev.text); loadSessions(); break;
       case "print": dropWelcome(); addPrint(ev); break;
       case "notice": addNotice(ev); break;
       case "echo": addEcho(ev); break;
@@ -636,7 +695,15 @@
       case "closed": showClosed(); break;
     }
     keepBottom(stick || ev.type === "user" || ev.type === "ask");
+    syncView();
   }
+  // the empty screen puts the message box in the middle; scrolled up, a button jumps back to the latest
+  function syncView() {
+    document.querySelector(".main").classList.toggle("empty", !!column.querySelector(".welcome"));
+    $("jump").hidden = nearBottom();
+  }
+  log.addEventListener("scroll", () => { $("jump").hidden = nearBottom(); }, {passive: true});
+  $("jump").addEventListener("click", () => { log.scrollTop = log.scrollHeight; $("jump").hidden = true; });
   function onEvent(ev) { if (loading) queue.push(ev); else handle(ev); }
 
   // A conversation opened (start, /resume, /clear): its earlier messages come from /api/history; what happens in it

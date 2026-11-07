@@ -64,6 +64,25 @@ RECORDING_MARK = "Recording"        # the prompt /voice shows while it records (
 MODEL_SUGGESTIONS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "gpt-6.1-sol",
                      "gpt-6-luna", "gpt-5.5")
 _MAX_RESULT_LINES = 12
+_MAX_OUTPUT_LINES = 120             # what a step shows when you open it
+_MAX_OUTPUT_CHARS = 8000
+
+
+def _output(raw_text: Any) -> Dict[str, Any]:
+    """A tool's output for the step you can open: the first lines, each cut, and how many lines were left out."""
+    lines = str(raw_text or "").replace("\r\n", "\n").rstrip("\n").split("\n")
+    shown: List[str] = []
+    size = 0
+    for line in lines[:_MAX_OUTPUT_LINES]:
+        line = line[:400]
+        if size + len(line) > _MAX_OUTPUT_CHARS:
+            break
+        shown.append(line)
+        size += len(line) + 1
+    text = "\n".join(shown)
+    if not text.strip():
+        return {"output": "", "outputMore": 0}
+    return {"output": text, "outputMore": len(lines) - len(shown)}
 
 
 class Bus:
@@ -177,7 +196,8 @@ class WebScreen(Screen):
             lines = raw_text.replace("\r\n", "\n").split("\n")        # ANSI colours kept: the window draws them
             self.bus.emit("tool_result", name=name, summary=_text(summary, 300), failed=failed or failed_command,
                           detail="\n".join(line[:400] for line in lines[:_MAX_RESULT_LINES]) if failed else "",
-                          more=max(0, len(lines) - _MAX_RESULT_LINES) if failed else 0)
+                          more=max(0, len(lines) - _MAX_RESULT_LINES) if failed else 0,
+                          **(_output(raw_text) if not failed else {}))
         elif kind == "final":
             self.bus.emit("final", text=_text(event.get("content"), 200_000))
 
@@ -566,7 +586,7 @@ class WebFront:
                     items.append({"type": "tool_result", "name": last_action, "failed": failed,
                                   "summary": "" if failed else _text(summarize_result(last_action, result)[0], 300),
                                   "detail": "\n".join(result.split("\n")[:_MAX_RESULT_LINES]) if failed else "",
-                                  "more": 0})
+                                  "more": 0, **(_output(result) if not failed else {})})
                     continue
                 if text.startswith(INTERJECTION_PREFIX):          # typed while it worked
                     items.append({"type": "echo", "text": _text(text[len(INTERJECTION_PREFIX):], 4000),
@@ -615,7 +635,8 @@ class WebFront:
                 failed = text.lstrip().startswith(("ERROR", "Error:", "Refused", "The user declined"))
                 summary = "" if failed else summarize_result(name, text)[0]
                 items.append({"type": "tool_result", "name": name, "summary": _text(summary, 300), "failed": failed,
-                              "detail": "\n".join(text.split("\n")[:_MAX_RESULT_LINES]) if failed else "", "more": 0})
+                              "detail": "\n".join(text.split("\n")[:_MAX_RESULT_LINES]) if failed else "", "more": 0,
+                              **(_output(text) if not failed else {})})
         return items
 
     def history_payload(self, upto: Optional[int] = None) -> Dict[str, Any]:
