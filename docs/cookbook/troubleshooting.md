@@ -797,6 +797,14 @@ Windows Firewall drops it: the network is set to Public and the OpenSSH rule onl
 At home, set the Wi-Fi to Private (Settings > Network & internet > Wi-Fi > your network). agentx says so when it
 starts in `--remote` or `/remote-control`.
 
+**`--remote`: no Tailscale link, "HTTPS is off for your Tailscale network"**
+Turn it on once at https://login.tailscale.com/admin/dns (HTTPS Certificates, Enable HTTPS), then start agentx again.
+The link is `https://`, so Safari's HTTPS-only setting accepts it.
+
+**`--remote`: the Tailscale link does not load on a device**
+That device must be signed in to the same Tailscale account and switched on (the Tailscale app shows it connected; on
+the agentx computer, `tailscale status` lists it). agentx's terminal prints a line when a window connects.
+
 **`--remote`: ssh keeps asking for a password, and yours is refused**
 A Windows Microsoft account wants its Microsoft password, not the PIN, and some accounts have none. Use a key made
 **on the other computer**: `ssh-keygen -t ed25519` there, then add its `.pub` line (it ends with that computer's

@@ -870,10 +870,12 @@ The computer that runs agentx does the work (your files, your keys, the agent); 
   menu in the terminal, and the first answer wins); in the app window, the same window becomes reachable from your
   other devices. `/remote-control off` ends it. While it is on, closing a window does not quit agentx.
 - **From an iPad or phone: Tailscale.** Install Tailscale on that computer and on the iPad or phone and sign both in to
-  the same account. agentx then also listens on the computer's Tailscale address (100.x.x.x) and prints one link to
-  open in Safari or Chrome there, from anywhere. Only your own Tailscale devices can reach it (others are refused even
-  if their traffic arrives), and the link's secret key is still needed. Windows may ask once whether Python may
-  accept connections; allow it.
+  the same account, and turn on HTTPS for your Tailscale network once (https://login.tailscale.com/admin/dns, HTTPS
+  Certificates, Enable HTTPS; agentx says so when it is off). agentx then has Tailscale serve the window as
+  `https://<computer>.<your-tailnet>.ts.net:<port>/?t=...` and prints that link: open it in Safari or Chrome there, from
+  anywhere. agentx itself stays on 127.0.0.1; Tailscale carries the window to your own devices only, with a real
+  certificate (so Safari's HTTPS-only setting is happy) and no firewall rule to add. The link's secret key is still
+  needed, and the link stops when agentx does (`tailscale serve reset` clears a leftover one after a crash).
 - **From another computer: SSH.** Run the printed `ssh -N -L <port>:127.0.0.1:<port> you@<address>` there and leave
   it open (it prints nothing while it works), then open the printed `http://127.0.0.1:<port>/?t=...` in that
   computer's browser. The computer running agentx needs an SSH server: Linux servers have one; on Windows turn on

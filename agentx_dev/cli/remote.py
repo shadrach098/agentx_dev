@@ -106,7 +106,7 @@ class RemoteControl:
 
     def start(self) -> str:
         from agentx_dev.cli.team import on_main
-        from agentx_dev.cli.webui import WebFront, WebScreen, remote_instructions, tailscale_address
+        from agentx_dev.cli.webui import WebFront, WebScreen, remote_instructions, tailscale_name
 
         app = self.app
         front = WebFront(cwd=app.cwd, home=app.home, open_it=False, remote=True)
@@ -127,7 +127,7 @@ class RemoteControl:
         console.file = _TeeFile(console.file, front._printed, self._quiet)
         self.prompt.mirror = self
         front.on_window = self._say_in_terminal          # "a window connected": shown above the open prompt
-        front.tailnet = tailscale_address()
+        front.tailnet, front.tailnet_problem = tailscale_name()
         front.start_server()
         self.front = front
         self.active = True

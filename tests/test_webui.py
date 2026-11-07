@@ -455,37 +455,56 @@ class TestTailscale:
         assert not is_tailnet_ip("100.128.0.1") and not is_tailnet_ip("10.0.0.219") and not is_tailnet_ip("127.0.0.1")
         assert is_tailnet_ip("fd7a:115c:a1e0::1") and not is_tailnet_ip("nonsense")
 
-    def test_no_tailscale_means_none(self, monkeypatch):
+    def test_no_tailscale_means_nothing_to_say(self, monkeypatch):
         from agentx_dev.cli import webui
-        monkeypatch.setattr(webui.shutil, "which", lambda name: None)
-        monkeypatch.setattr(webui.os.path, "isfile", lambda path: False)
-        assert webui.tailscale_address() is None
+        monkeypatch.setattr(webui, "_tailscale_exe", lambda: None)
+        assert webui.tailscale_name() == (None, "")
 
-    def _front(self, tmp_path):
+    def test_https_off_for_the_tailnet_says_where_to_turn_it_on(self, monkeypatch):
+        from agentx_dev.cli import webui
+        monkeypatch.setattr(webui, "_tailscale_exe", lambda: "tailscale")
+        status = {"BackendState": "Running", "Self": {"DNSName": "pc.tail1.ts.net."}, "CertDomains": None}
+        monkeypatch.setattr(webui, "_tailscale", lambda args, timeout=20: (0, json.dumps(status)))
+        name, problem = webui.tailscale_name()
+        assert name is None and "login.tailscale.com/admin/dns" in problem and "Enable HTTPS" in problem
+        status["CertDomains"] = ["pc.tail1.ts.net"]
+        assert webui.tailscale_name() == ("pc.tail1.ts.net", "")
+        status["BackendState"] = "Stopped"
+        assert "not connected" in webui.tailscale_name()[1]
+
+    def test_tailscale_serves_https_and_stops_with_agentx(self, tmp_path, monkeypatch):
+        from agentx_dev.cli import webui
+        served, stopped = [], []
+        monkeypatch.setattr(webui, "tailscale_serve", lambda port: served.append(port) or "")
+        monkeypatch.setattr(webui, "tailscale_unserve", lambda port: stopped.append(port))
         front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False, remote=True)
-        front.tailnet = "127.0.0.2"                     # stands in for 100.x.y.z: a second address of this computer
+        front.tailnet = "pc.tail1.ts.net"
         front.start_server()
-        return front
-
-    def _get(self, address, port, host):
-        conn = http.client.HTTPConnection(address, port, timeout=10)
-        conn.request("GET", "/", headers={"Host": host})
-        status = conn.getresponse().status
-        conn.close()
-        return status
-
-    def test_only_tailscale_devices_and_only_its_own_name(self, tmp_path, monkeypatch):
-        front = self._front(tmp_path)
+        port = front._server.server_address[1]
         try:
-            port = front._tail_server.server_address[1]
-            assert front.tailnet_address() == f"http://127.0.0.2:{port}/?t={front.token}"
-            # this test's client is 127.0.0.1, not a Tailscale device: refused
-            assert self._get("127.0.0.2", port, f"127.0.0.2:{port}") == 403
-            from agentx_dev.cli import webui
-            monkeypatch.setattr(webui, "is_tailnet_ip", lambda ip: str(ip).startswith("127."))
-            assert self._get("127.0.0.2", port, f"127.0.0.2:{port}") == 200
-            assert self._get("127.0.0.2", port, f"127.0.0.1:{port}") == 403      # another name: refused
-            assert self._get("127.0.0.1", front._server.server_address[1], f"127.0.0.1:{port}") == 200
+            assert served == [port]
+            assert front.tailnet_address() == f"https://pc.tail1.ts.net:{port}/?t={front.token}"
+
+            def get(host):
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                conn.request("GET", "/", headers={"Host": host})
+                status = conn.getresponse().status
+                conn.close()
+                return status
+            assert get(f"pc.tail1.ts.net:{port}") == 200 and get("PC.tail1.ts.net") == 200
+            assert get("evil.ts.net") == 403 and get(f"pc.tail1.ts.net.evil.example:{port}") == 403
+        finally:
+            front.close()
+        assert stopped == [port]
+
+    def test_a_failed_serve_falls_back_to_ssh(self, tmp_path, monkeypatch):
+        from agentx_dev.cli import webui
+        monkeypatch.setattr(webui, "tailscale_serve", lambda port: "Tailscale could not serve agentx (x); use SSH below.")
+        front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False, remote=True)
+        front.tailnet = "pc.tail1.ts.net"
+        front.start_server()
+        try:
+            assert front.tailnet_address() is None and "use SSH below" in front.tailnet_problem
         finally:
             front.close()
 

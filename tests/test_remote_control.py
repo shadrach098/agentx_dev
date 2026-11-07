@@ -72,7 +72,7 @@ def request(front, method, path, body=None):
 
 @pytest.fixture
 def terminal(tmp_path, monkeypatch):
-    monkeypatch.setattr("agentx_dev.cli.webui.tailscale_address", lambda: None)
+    monkeypatch.setattr("agentx_dev.cli.webui.tailscale_name", lambda: (None, ""))
     prompt = FakePrompt()
     monkeypatch.setattr(remote_module, "pick_in_menu", lambda index: prompt.picks.put(index) or True)
     cwd, home = tmp_path / "proj", tmp_path / "home"

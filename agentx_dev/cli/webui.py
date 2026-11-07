@@ -346,25 +346,68 @@ def is_tailnet_ip(address: Any) -> bool:
     return ip in ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
 
-def tailscale_address() -> Optional[str]:
-    """This computer's Tailscale IPv4 address when Tailscale is installed and connected, else None."""
+TAILSCALE_HTTPS_HELP = ("Tailscale is on, but HTTPS is off for your Tailscale network, so an iPad or phone cannot open "
+                        "agentx securely. Turn it on once: open https://login.tailscale.com/admin/dns, and under "
+                        "HTTPS Certificates click Enable HTTPS. Then start agentx --ui --remote again (or "
+                        "/remote-control).")
+
+
+def _tailscale_exe() -> Optional[str]:
     candidates = [shutil.which("tailscale")]
     if os.name == "nt":
         candidates.append(os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Tailscale", "tailscale.exe"))
     elif sys.platform == "darwin":
         candidates.append("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
-    for exe in candidates:
-        if not exe or not os.path.isfile(exe):
-            continue
-        try:
-            done = subprocess.run([exe, "ip", "-4"], capture_output=True, text=True, timeout=5,
-                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        except (OSError, subprocess.SubprocessError):
-            continue
-        for line in (done.stdout or "").split():
-            if is_tailnet_ip(line):
-                return line.strip()
-    return None
+    return next((exe for exe in candidates if exe and os.path.isfile(exe)), None)
+
+
+def _tailscale(args: Sequence[str], timeout: float = 20) -> "tuple[int, str]":
+    exe = _tailscale_exe()
+    if exe is None:
+        return 127, "Tailscale is not installed"
+    try:
+        done = subprocess.run([exe, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except subprocess.TimeoutExpired:
+        return 124, "Tailscale did not answer in time"
+    except OSError as error:
+        return 126, str(error)
+    return done.returncode, ((done.stdout or "") + (done.stderr or "")).strip()
+
+
+def tailscale_name() -> "tuple[Optional[str], str]":
+    """``(name, problem)``: this computer's Tailscale name (``pc.tailnet.ts.net``) when Tailscale is connected and
+    HTTPS is on for the tailnet, else None and what to do ("" when Tailscale is not installed at all)."""
+    if _tailscale_exe() is None:
+        return None, ""
+    code, out = _tailscale(["status", "--json"], timeout=10)
+    try:
+        data = json.loads(out) if code == 0 else {}
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict) or data.get("BackendState") != "Running":
+        return None, "Tailscale is installed but not connected on this computer: open it and sign in, then start again."
+    name = str((data.get("Self") or {}).get("DNSName") or "").rstrip(".")
+    if not name:
+        return None, "Tailscale gave this computer no name (turn on MagicDNS in its admin page), so use SSH below."
+    if not data.get("CertDomains"):
+        return None, TAILSCALE_HTTPS_HELP
+    return name, ""
+
+
+def tailscale_serve(port: int) -> str:
+    """Have Tailscale serve ``https://<this computer's name>:<port>`` to your own devices, passed to agentx on
+    127.0.0.1:<port>. Returns "" when it worked, else what went wrong."""
+    code, out = _tailscale(["serve", "--bg", f"--https={int(port)}", f"http://127.0.0.1:{int(port)}"])
+    if code == 0:
+        return ""
+    if "https" in out.lower() and ("enable" in out.lower() or "cert" in out.lower()):
+        return TAILSCALE_HTTPS_HELP
+    return f"Tailscale could not serve agentx ({out.splitlines()[0][:200] if out else f'exit {code}'}); use SSH below."
+
+
+def tailscale_unserve(port: int) -> None:
+    _tailscale(["serve", f"--https={int(port)}", "off"], timeout=10)
 
 
 def windows_ssh_blocked() -> str:
@@ -491,7 +534,7 @@ class WebFront:
         self._files: Optional[tuple] = None                 # (when, the project's files) for "Mention a file"
         self.tailnet: Optional[str] = None                  # --remote: this computer's Tailscale address, when on
         self.tailnet_problem = ""
-        self._tail_server: Optional[ThreadingHTTPServer] = None
+        self._serving: Optional[int] = None                # the port Tailscale serves as https, while it does
         self._handler: Any = None
         self.on_window: Optional[Callable[[str], None]] = None   # where "a window connected" goes (default: print)
         self._windows = 0                                   # windows connected now (their event streams)
@@ -1174,23 +1217,25 @@ class WebFront:
         self._server.daemon_threads = True
         threading.Thread(target=self._server.serve_forever, name="agentx-ui-server", daemon=True).start()
         self._handler = Handler
-        if self.tailnet:                                # --remote with Tailscale: also on this computer's tailnet address
+        if self.tailnet:                                # --remote with Tailscale: Tailscale serves it as https
             self._start_tailnet()
         threading.Thread(target=self._tick, name="agentx-ui-status", daemon=True).start()
         return self.address()
 
     def _start_tailnet(self) -> None:
-        try:
-            port = self._server.server_address[1]
-            self._tail_server = _QuietServer((self.tailnet, port), self._handler)
-            self._tail_server.tailnet_only = True       # only Tailscale devices may use it (see _Handler._client_ok)
-            self._tail_server.daemon_threads = True
-            threading.Thread(target=self._tail_server.serve_forever, name="agentx-ui-tailnet", daemon=True).start()
-        except OSError as error:
-            self.tailnet_problem = (f"Tailscale is on, but agentx could not listen on {self.tailnet} ({error}); "
-                                    "use SSH below, or start again with another --port.")
-            self.tailnet = None
-            self._tail_server = None
+        """Tailscale serves ``https://<name>:<port>`` to your own devices and passes it to this server on
+        127.0.0.1 (agentx itself never listens on another address; Tailscale handles the firewall and HTTPS)."""
+        port = self._server.server_address[1]
+        problem = tailscale_serve(port)
+        if problem:
+            self.tailnet_problem, self.tailnet = problem, None
+            return
+        self._serving = port
+
+    def _stop_tailnet(self) -> None:
+        port, self._serving = self._serving, None
+        if port:
+            tailscale_unserve(port)
 
     def enable_remote(self) -> str:
         """``/remote-control`` in the app window: the window already served here can also be opened from your iPad,
@@ -1198,7 +1243,7 @@ class WebFront:
         if not self.remote:
             self._open_it_before = self.open_it
             self.remote, self.open_it = True, False
-            self.tailnet, self.tailnet_problem = tailscale_address(), ""
+            self.tailnet, self.tailnet_problem = tailscale_name()
             if self.tailnet and self._server is not None:
                 self._start_tailnet()
         text = remote_instructions(self.address(), tailnet_url=self.tailnet_address(),
@@ -1211,15 +1256,14 @@ class WebFront:
             return "Remote control is not on."
         self.remote = False
         self.open_it = getattr(self, "_open_it_before", self.open_it)
-        server, self._tail_server, self.tailnet = self._tail_server, None, None
-        if server is not None:
-            threading.Thread(target=server.shutdown, daemon=True).start()
+        self._stop_tailnet()
+        self.tailnet = None
         return "Remote control is off: the Tailscale link no longer works. An SSH tunnel to this computer still would."
 
     def tailnet_address(self) -> Optional[str]:
-        if not self.tailnet or self._tail_server is None:
+        if not self.tailnet or not self._serving:
             return None
-        return f"http://{self.tailnet}:{self._tail_server.server_address[1]}/?t={self.token}"
+        return f"https://{self.tailnet}:{self._serving}/?t={self.token}"
 
     def window_connected(self, on: bool, client: str = "") -> None:
         with self._lock:
@@ -1231,7 +1275,8 @@ class WebFront:
             elif self._windows == 0:
                 self._alone_since = time.monotonic()
         if self.remote and not self._closed:            # feedback in the terminal: someone is (or is no longer) in
-            where = ("from " + client + " (Tailscale)" if is_tailnet_ip(client)
+            where = ("through Tailscale (" + client[len("tailscale:"):] + ")" if client.startswith("tailscale:")
+                     else "from " + client + " (Tailscale)" if is_tailnet_ip(client)
                      else "through SSH, or on this computer" if client.startswith("127.") or client in ("::1", "")
                      else "from " + client)
             stamp = datetime.now().strftime("%H:%M:%S")
@@ -1269,9 +1314,9 @@ class WebFront:
             if not request["future"].done():
                 request["future"].set_exception(EOFError())
         self.bus.emit("closed")
-        for server in (self._server, self._tail_server):
-            if server is not None:
-                threading.Timer(1.0, server.shutdown).start()
+        self._stop_tailnet()                            # the https link Tailscale served goes away with agentx
+        if self._server is not None:
+            threading.Timer(1.0, self._server.shutdown).start()
 
     def run(self, work: Callable[[], int]) -> int:
         box: Dict[str, Any] = {}
@@ -1283,7 +1328,7 @@ class WebFront:
                 box["error"] = error
 
         if self.remote and self.tailnet is None:
-            self.tailnet = tailscale_address()
+            self.tailnet, self.tailnet_problem = tailscale_name()
         url = self.start_server()
         self._worker = threading.Thread(target=worker, name="agentx-work", daemon=True)
         self._worker.start()
@@ -1326,18 +1371,21 @@ class _Handler(BaseHTTPRequestHandler):
     def _host_ok(self) -> bool:
         """Only a page on 127.0.0.1 or localhost (any port: an SSH tunnel may use another one at home), so another
         site's page that points a DNS name at this machine cannot use the window."""
-        host = self.headers.get("Host", "")
-        name, _, port = host.rpartition(":")
-        if not port.isdigit():
-            return False
-        if getattr(self.server, "tailnet_only", False):     # the Tailscale listener: its own address, Tailscale peers only
-            return name == self.front.tailnet and self._client_ok()
-        return name in ("127.0.0.1", "localhost")
+        host = self.headers.get("Host", "").strip().lower()
+        name, sep, port = host.rpartition(":")
+        if not sep or not port.isdigit():
+            name = host
+        elif name in ("127.0.0.1", "localhost"):
+            return True
+        tailnet = (self.front.tailnet or "").lower()        # Tailscale serve passes the browser's name through
+        return bool(tailnet) and name == tailnet
 
-    def _client_ok(self) -> bool:
-        """On the Tailscale listener, the other end must be a Tailscale device: Windows may hand a packet sent from the
-        Wi-Fi to this computer's Tailscale address to that listener, and this keeps such a device out."""
-        return is_tailnet_ip(self.client_address[0]) if self.client_address else False
+    def _who(self) -> str:
+        """Where a window is: ``tailscale:<account>`` when Tailscale served it, else the address it came from."""
+        login = (self.headers.get("Tailscale-User-Login") or "").strip()
+        if login:
+            return "tailscale:" + login[:80]
+        return str(self.client_address[0]) if self.client_address else ""
 
     def _token_ok(self, query: Dict[str, List[str]]) -> bool:
         given = self.headers.get("X-Agentx-Token") or (query.get("t") or [""])[0]
@@ -1447,7 +1495,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         last = after
-        self.front.window_connected(True, str(self.client_address[0]) if self.client_address else "")
+        self.front.window_connected(True, self._who())
         try:
             while True:
                 events = self.front.bus.after(last, wait=KEEP_ALIVE_SEC)
@@ -1463,4 +1511,4 @@ class _Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             return
         finally:
-            self.front.window_connected(False, str(self.client_address[0]) if self.client_address else "")
+            self.front.window_connected(False, self._who())
