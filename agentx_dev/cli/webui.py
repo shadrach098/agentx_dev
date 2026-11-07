@@ -171,15 +171,11 @@ class WebScreen(Screen):
             return
         kind = event.get("type")
         name = _text(event.get("name"), 120)
-        if kind == "thought":                        # held: narration before a look-around step or the answer is
-            text = _text(event.get("content")).strip()   # dropped, as on the terminal; a note before a change is shown
+        if kind == "thought":                        # shown at once: the window folds it into a "Thinking" block
+            text = _text(event.get("content")).strip()
             if text:
-                self._notes.append(text)
+                self.bus.emit("thought", text=text)
             return
-        if kind == "final" or (kind == "tool_call" and name in HELPER_LOOKS):
-            self._notes = []
-        elif kind == "tool_call":
-            self.flush()
         if kind == "tool_call":
             args = event.get("args")
             try:
@@ -258,6 +254,18 @@ def _text_mode_step(text: str) -> Optional[tuple]:
     if not isinstance(data, dict) or not isinstance(data.get("action"), str):
         return None
     return data["action"], data.get("action_input")
+
+
+def _text_mode_thought(text: str) -> str:
+    """The ``thought`` a text-mode step carries (``{"thought": ..., "action": ...}``), or ""."""
+    try:
+        data = json.loads(str(text or "").strip())
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    value = data.get("thought", data.get("Thought", ""))
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _app_window_command(url: str) -> Optional[List[str]]:
@@ -1075,6 +1083,8 @@ class WebFront:
                     continue
                 items.append({"type": "user", "text": _text(text, 100_000)})
             elif role == "assistant":
+                if message.get("tool_calls") and text.strip():     # what it said before its steps: a note
+                    items.append({"type": "thought", "text": _text(text.strip(), 20_000)})
                 for call in message.get("tool_calls") or []:
                     function = call.get("function") or {}
                     name = str(function.get("name") or "")
@@ -1093,6 +1103,9 @@ class WebFront:
                 step = _text_mode_step(text) if not message.get("tool_calls") else None
                 if step is not None:                               # a text-mode model's call or answer, as JSON
                     name, args = step
+                    note = _text_mode_thought(text)
+                    if note:
+                        items.append({"type": "thought", "text": _text(note, 20_000)})
                     if name.lower().replace("_", "") in ("finalanswer", "final", "respond"):
                         answer = args.get("answer") if isinstance(args, dict) else args
                         items.append({"type": "final", "text": _text(answer, 200_000)})

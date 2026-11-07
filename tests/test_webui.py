@@ -539,3 +539,31 @@ def test_remote_says_in_the_terminal_when_a_window_comes_and_goes(tmp_path):
     quiet.on_window = said.append
     quiet.window_connected(True, "127.0.0.1")
     assert len(said) == 3                     # not in remote mode: nothing to say
+
+
+def test_what_the_model_says_between_steps_is_shown_live_and_after_a_reload(window):
+    """Every note the model writes before a step reaches the window at once (none held back or dropped), and a
+    reload shows it again in its place, before the step."""
+    w = window(MockModel(script=[
+        make_react_response("read_path", {"path": "notes.txt"}, thought="First I read the notes to see the plan."),
+        make_final("Read it")]))
+    (w.cwd / "notes.txt").write_text("plan\n", encoding="utf-8")
+    w.ready()
+    w.request("POST", "/api/send", {"text": "read notes.txt"})
+    note = wait_for(w.front, lambda e: e["type"] == "thought")
+    assert note["text"] == "First I read the notes to see the plan."
+    wait_for(w.front, lambda e: e["type"] == "final")
+    items = w.request("GET", "/api/history")[1]["items"]
+    kinds = [i["type"] for i in items]
+    assert "thought" in kinds and kinds.index("thought") < kinds.index("tool_call")
+    assert next(i for i in items if i["type"] == "thought")["text"] == "First I read the notes to see the plan."
+    assert [i for i in items if i["type"] == "final"] == [{"type": "final", "text": "Read it"}]
+
+
+def test_the_thinking_line_has_a_name_of_its_own():
+    """An open approval card is "card live": the "Thinking…" line must not share that name, or clearing the line
+    removed the card (it did, once)."""
+    from agentx_dev.cli.webui import RESOURCES
+    script = (RESOURCES / "app.js").read_text(encoding="utf-8")
+    assert 'querySelector(".live")' not in script and 'el("div", "live"' not in script
+    assert "thinking-now" in script

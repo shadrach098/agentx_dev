@@ -303,6 +303,28 @@
     head.addEventListener("click", toggle);
     head.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
   }
+  // what the model says it is doing between steps: the newest one open, older ones folded to their first line
+  function addThought(text) {
+    if (/^\s*(thinking|thought|working)?\s*(\.{3}|…)?\s*$/i.test(String(text || ""))) return;   // filler, nothing said
+    const here = agentTurn();
+    group = null;
+    column.querySelectorAll("details.thought[open]").forEach((d) => { d.open = false; });
+    const t = el("details", "thought");
+    t.open = true;
+    const first = String(text || "").trim().split("\n")[0].slice(0, 160);
+    t.innerHTML = `<summary><span class="thought-label">Thinking</span><span class="thought-peek">${esc(first)}</span></summary>` +
+      `<div class="thought-body">${markdown(text)}</div>`;
+    here.append(t);
+  }
+  // a live "Thinking…" line while the model works and no step is running yet
+  function updateLive() {
+    let live = column.querySelector(".thinking-now");
+    const show = !!status.working && !pending.length && !liveCard() && !column.querySelector(".welcome");
+    if (!show) { if (live) live.remove(); return; }
+    if (!live) live = el("div", "thinking-now", '<span class="spinner" aria-hidden="true"></span><span class="thinking-now-label">Thinking…</span>');
+    if (column.lastElementChild !== live) column.append(live);
+  }
+
   // the answer, with a copy button for it and for each code block
   const COPY = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
   const DONE = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -512,6 +534,9 @@
     if (ev.mode) setMode(ev.mode);
     if (ev.model) setModel(ev.model);
     setComposer();
+    const stick = nearBottom();
+    updateLive();
+    keepBottom(stick);
   }
   function tickTime() { $("statusTime").textContent = startedAt ? shortTime(Date.now() / 1000 - startedAt) : ""; }
   setInterval(tickTime, 1000);
@@ -998,10 +1023,12 @@
   function handle(ev) {
     if (ev.seq <= skipUpTo) return;
     const stick = nearBottom();
+    const live = column.querySelector(".thinking-now");          // drawn again after the event, at the very end
+    if (live) live.remove();
     switch (ev.type) {
       case "welcome": welcome = ev; showWelcome(); break;
       case "user": addUser(ev.text); break;
-      case "thought": agentTurn().append(el("div", "note", esc(ev.text))); group = null; break;
+      case "thought": addThought(ev.text); break;
       case "tool_call": dropWelcome(); toolCall(ev); break;
       case "tool_result": toolResult(ev); break;
       case "final":                                 // the conversation's short title is written just after
@@ -1024,6 +1051,7 @@
   }
   // the empty screen puts the message box in the middle; scrolled up, a button jumps back to the latest
   function syncView() {
+    updateLive();
     document.querySelector(".main").classList.toggle("empty", !!column.querySelector(".welcome"));
     $("jump").hidden = nearBottom();
   }
@@ -1108,7 +1136,9 @@
       return;
     }
     const source = new EventSource(`/events?t=${encodeURIComponent(token)}`);
-    source.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch (_) { /* a broken event is skipped */ } };
+    source.onmessage = (m) => {
+      try { onEvent(JSON.parse(m.data)); } catch (error) { console.error("agentx: an event could not be shown", error); }
+    };
     source.onerror = () => { if (closed) source.close(); };
   }
 

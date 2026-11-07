@@ -140,6 +140,23 @@ svg { width: 16px; height: 16px; flex: none; }
 .group .inner .step-result { padding-left: 26px; }
 .note { color: var(--muted); font-size: 14px; margin: 8px 0; white-space: pre-wrap; }
 
+/* what the model says between steps */
+.thought { margin: 6px 0; border-left: 2px solid var(--line-strong); padding: 2px 0 2px 12px; }
+.thought > summary { display: flex; gap: 8px; align-items: baseline; cursor: pointer; list-style: none; font-size: 13px; color: var(--faint); min-width: 0; }
+.thought > summary::-webkit-details-marker { display: none; }
+.thought-label { font-weight: 500; color: var(--muted); flex: none; }
+.thought-peek { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.thought[open] .thought-peek { display: none; }
+.thought-body { color: var(--muted); font-size: 14px; line-height: 1.6; margin-top: 4px; overflow-wrap: anywhere; }
+.thought-body > :first-child { margin-top: 0; }
+.thought-body > :last-child { margin-bottom: 0; }
+.thought-body p, .thought-body ul, .thought-body ol { margin: 0 0 8px; }
+.thought-body code { font-family: var(--mono); font-size: 0.86em; background: var(--raised); padding: 1px 4px; border-radius: 4px; }
+
+/* the live line while the model works on its next step */
+.thinking-now { display: flex; align-items: center; gap: 10px; margin: 10px 0 4px; font-size: 14px; }
+.thinking-now-label { background: linear-gradient(90deg, var(--faint) 0%, var(--text) 50%, var(--faint) 100%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.6s linear infinite; }
+
 /* the answer, rendered from markdown */
 .answer { margin: 12px 0 6px; overflow-wrap: anywhere; line-height: 1.7; }
 .answer > :first-child { margin-top: 0; }
