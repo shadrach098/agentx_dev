@@ -802,9 +802,13 @@ def _resolve_for_ops(target: str, perms: Permissions) -> Path:
     # IS inside the sandbox keeps its literal meaning; only a rooted
     # path that would otherwise escape it is re-rooted, and the
     # re-rooted form still goes through the sandbox check.
+    # A rooted path that names a file or folder that really exists there
+    # (/home/you/Pictures/shot.png) keeps its meaning, so it is refused
+    # as outside the sandbox (and a picture there can be offered to the
+    # user) instead of turning into a missing file in the workspace.
     if perms.workspace is not None and target[:1] in ("/", "\\") and not p.drive:
         literal = p.resolve()
-        if not _is_inside_any(literal, allowed):
+        if not _is_inside_any(literal, allowed) and not literal.exists():
             rerooted = (Path(perms.workspace) / target.lstrip("/\\")).resolve()
             _assert_resolved_allowed(target, rerooted, allowed)
             return rerooted

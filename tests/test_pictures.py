@@ -315,3 +315,19 @@ class TestAPictureOutsideTheProject:
         from agentx_dev.cli.preview import preview_for
         preview = preview_for("read_path", {"path": "C:/Users/me/Pictures/shot.png"}, tmp_path)
         assert preview.title == "Open a picture outside the project: C:/Users/me/Pictures/shot.png"
+
+
+def test_a_rooted_path_to_a_real_file_outside_keeps_its_meaning(tmp_path):
+    """On Linux and macOS a screenshot is at /home/you/Pictures/shot.png: a path with a leading slash that exists
+    there is outside the project (asked about), not a missing file inside it. A rooted name that does not exist
+    (/report.md) still means the project's file."""
+    from agentx_dev.DefaultTools import Permissions, _resolve_for_ops
+    project, pictures = tmp_path / "project", tmp_path / "Pictures"
+    project.mkdir(); pictures.mkdir()
+    (pictures / "shot.png").write_bytes(png_bytes())
+    rooted = str(pictures / "shot.png")
+    rooted = rooted[2:] if len(rooted) > 1 and rooted[1] == ":" else rooted     # Windows: drop the drive letter
+    perms = Permissions(workspace=str(project))
+    with pytest.raises(PermissionError):
+        _resolve_for_ops(rooted, perms)
+    assert _resolve_for_ops("/report.md", perms) == (project / "report.md").resolve()

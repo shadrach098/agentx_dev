@@ -810,6 +810,22 @@ them; nothing is sent by itself. OpenAI's speech-to-text writes them out (about 
 models take no audio, so it needs `OPENAI_API_KEY` whatever model you chat with. The microphone needs
 `pip install "agentx-dev[voice]"`. See [Voice](../guides/cli.md#voice).
 
+## Is there a desktop app for `agentx`? *(next release)*
+
+`agentx --ui` opens it in an app window: the conversations on the left, the steps and answers in the middle,
+approvals as cards, Settings, a Details panel (tokens, the team's work, MCP servers with sign-in buttons, memory), and
+a message box with the mode and model menus. It is the same agentx underneath (same approvals, settings and
+conversations), served on 127.0.0.1 with a secret key for each start. Closing the window quits it. See
+[The app window](../guides/cli.md#the-app-window) and pattern 45.
+
+## Can I control `agentx` on my server from home? *(next release)*
+
+Yes, through SSH: run `agentx --ui --remote` on the server (inside tmux or screen), then run the `ssh -N -L ...`
+command it prints on your computer and open the address it prints. Nothing is opened to the network; the SSH
+connection carries the window. The server needs an SSH server; on a Windows PC, turn on OpenSSH Server first (the
+command prints how when none runs). Away from home, reach the machine through its public address or a private
+network such as Tailscale. See pattern 45.
+
 ## Where's the source of truth for each feature?
 
 Every feature has its own module under `agentx_dev/`. The docs cross-

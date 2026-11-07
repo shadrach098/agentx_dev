@@ -1619,3 +1619,29 @@ Research a team job does is written to disk as it happens, so a closed terminal 
 - Search uses OpenAI embeddings when `OPENAI_API_KEY` is set, and a local similarity search otherwise.
 - In your own code, keep a `SupervisorResult`: `result.subtasks` holds each step's whole `content`, and
   `result.model_dump_json()` saves it. See [Team jobs](../guides/cli.md#every-helper-report-is-saved).
+
+---
+
+## 45. Use `agentx` in a window, or from another computer *(next release)*
+
+The same agentx, drawn as a desktop app instead of in the terminal:
+
+```bash
+agentx --ui                      # opens an app window (Edge or Chrome) in this folder
+agentx --ui --continue           # the same, picking up the last conversation
+agentx --ui --remote             # on a server: prints the ssh command to use the window from your computer
+```
+
+- **Left:** this folder's conversations, each with a short title the model wrote; **Settings** saves the default
+  model and mode, the always-allow and never-allow rules, and the limits, for all folders or this one.
+- **Details** (top right): how full the conversation is, the tokens, the team's work step by step, your MCP servers
+  by name with their own **Sign in** / **Reconnect** buttons, and the project memory.
+- **The message box:** **+** adds a picture, mentions a file or opens another folder in a new window; the mode and
+  model menus; the mic (`/voice`); the send button turns into **Stop** while it works. Click any step to see what
+  the tool gave back.
+- **Closing the window quits agentx**; the conversation is saved for `--continue`. Light or dark follows the system.
+- **From another computer:** `--remote` keeps the window on the machine's own 127.0.0.1 and prints
+  `ssh -N -L <port>:127.0.0.1:<port> you@<address>` and an address. Run the first there, open the second. The machine
+  needs an SSH server (on Windows, turn on OpenSSH Server once; `--remote` prints the commands when none runs). From
+  outside your network, use a public address or a private network such as Tailscale.
+- See [The app window](../guides/cli.md#the-app-window) and step 17 of [zero to hero](../agentx/zero-to-hero.md).

@@ -785,6 +785,25 @@ while they are open, and nothing is read on a pipe.
 **The spinner showed `683s`** *(fixed)*
 It shows minutes and hours now: `11m 23s`, `1h 02m`.
 
+**`agentx --ui --remote`: `ssh: connect to host ... port 22: Connection refused`, or the ssh command times out**
+No SSH server runs on the machine with agentx (Windows does not turn one on by itself), or a firewall blocks it. On
+Windows, in PowerShell as administrator: `Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0`, then
+`Start-Service sshd` and `Set-Service -Name sshd -StartupType Automatic`; on a Mac, turn on Remote Login. Use the
+address `--remote` prints (the machine's name may not resolve from another computer). On the same computer you need
+no ssh: open the address directly.
+
+**The app window shows "agentx has stopped"**
+The agentx it belongs to ended (Ctrl+C in its terminal, or the window was closed for more than a few seconds).
+Start it again with `agentx --ui --continue`; the conversation is saved.
+
+**`agentx --ui` opened a browser tab, not an app window**
+Neither Edge nor Chrome was found, so your default browser shows it. It works the same; closing the tab quits
+agentx too. `--no-open` prints the address instead, and then agentx keeps running when the page closes.
+
+**A conversation in the list still shows its first message, not a title**
+The title is written by the model a few seconds after the first answer; conversations from before this version
+keep their first message (without agentx's summary note).
+
 ## Evals
 
 **`tool_error_count` is always 0**
