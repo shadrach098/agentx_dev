@@ -797,8 +797,11 @@ Windows Firewall drops it: the network is set to Public and the OpenSSH rule onl
 At home, set the Wi-Fi to Private (Settings > Network & internet > Wi-Fi > your network). agentx says so when it
 starts in `--remote` or `/remote-control`.
 
-**`--remote`: no Tailscale link, "HTTPS is off for your Tailscale network"**
-Turn it on once at https://login.tailscale.com/admin/dns (HTTPS Certificates, Enable HTTPS), then start agentx again.
+**`--remote`: no Tailscale link (only `127.0.0.1`), "HTTPS is off for your Tailscale network" or "Serve is off"**
+Tailscale is connected, but HTTPS, or sharing to your own devices (Serve), is off for your Tailscale network. It
+can be turned off in the Tailscale account after it worked. Turn HTTPS on at https://login.tailscale.com/admin/dns
+(HTTPS Certificates, Enable HTTPS); when agentx prints Tailscale's own link to allow Serve, open that too. Then
+`/remote-control off` and `/remote-control`, or start agentx again. agentx says this first, above the SSH steps.
 The link is `https://`, so Safari's HTTPS-only setting accepts it.
 
 **`--remote`: the Tailscale link does not load on a device**

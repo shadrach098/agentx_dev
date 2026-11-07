@@ -130,6 +130,13 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **`agentx --remote` opens the terminal with remote control on.** Before, `--remote` needed `--ui` and gave the app
+  window only; now `agentx --remote` is `agentx` followed by `/remote-control` (`--ui --remote` still serves the
+  window only).
+- **When Tailscale gives no link for the iPad, agentx says so first.** HTTPS or Serve turned off in the Tailscale
+  account (also after it worked) left only the 127.0.0.1 address, with the reason under the SSH steps; now the reason
+  and where to turn it on come first, Tailscale's own link to allow Serve is passed on, and agentx no longer waits
+  20 seconds for Tailscale there.
 - **The app window's Details panel fits the screen.** A long MCP server name or address stretched it, so on an iPad
   it scrolled sideways; long names and addresses now wrap inside it. Below a wide desktop window (an iPad, a
   half-screen window) it slides over the chat instead of squeezing it, and tapping beside it or Escape closes it.

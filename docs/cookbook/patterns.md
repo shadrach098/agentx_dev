@@ -1629,7 +1629,8 @@ The same agentx, drawn as a desktop app instead of in the terminal:
 ```bash
 agentx --ui                      # opens an app window (Edge or Chrome) in this folder
 agentx --ui --continue           # the same, picking up the last conversation
-agentx --ui --remote             # on a server: prints the ssh command to use the window from your computer
+agentx --remote                  # this terminal, also usable from your iPad (Tailscale link) or another computer (ssh)
+agentx --ui --remote             # the app window only, the same two ways
 ```
 
 - **Left:** this folder's conversations, each with a short title the model wrote; **Settings** saves the default

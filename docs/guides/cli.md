@@ -83,7 +83,7 @@ Keys are read from the environment only. With no `--model`, the first key found 
 | `--version` | Print the version and exit. |
 | `--ui` | Open agentx in an app window instead of the terminal (see [The app window](#the-app-window)). |
 | `--port N`, `--no-open` | With `--ui`: serve the window on port `N` (default: any free port); print its address instead of opening it. |
-| `--remote` | With `--ui`: use the window from an iPad, a phone or another computer: a Tailscale link when Tailscale is on, and the `ssh -N -L` way. Nothing is opened to the internet. `/remote-control` does the same for a running session. |
+| `--remote` | Use agentx from an iPad, a phone or another computer too: a Tailscale link when Tailscale is on, and the `ssh -N -L` way. Nothing is opened to the internet. Alone it opens this terminal with `/remote-control` already on; with `--ui` it serves the app window only. |
 
 `--continue` and `--resume` cannot be combined. A flag that does not exist exits with code 2 (argparse's usage error).
 
@@ -869,14 +869,15 @@ deny rules. A reload or a second window shows the same conversation; `--no-open`
 
 The computer that runs agentx does the work (your files, your keys, the agent); the other device is only a screen.
 
-- **Start it:** `agentx --ui --remote` on the computer that stays put, or type `/remote-control` in a session that
-  is already running: in the terminal, the terminal keeps showing everything live and the window mirrors it (a
+- **Start it:** `agentx --remote` on the computer that stays put (the terminal, with remote control on), `agentx --ui
+  --remote` (the app window only), or type `/remote-control` in a session that is already running: in the terminal, the terminal keeps showing everything live and the window mirrors it (a
   message, an answer or a menu choice from either side shows in both; an approval is a card in the window and the
   menu in the terminal, and the first answer wins); in the app window, the same window becomes reachable from your
   other devices. `/remote-control off` ends it. While it is on, closing a window does not quit agentx.
 - **From an iPad or phone: Tailscale.** Install Tailscale on that computer and on the iPad or phone and sign both in to
   the same account, and turn on HTTPS for your Tailscale network once (https://login.tailscale.com/admin/dns, HTTPS
-  Certificates, Enable HTTPS; agentx says so when it is off). agentx then has Tailscale serve the window as
+  Certificates, Enable HTTPS; agentx says so first when it is off, also when it was turned off after it worked, and
+passes on Tailscale's own link when Tailscale asks to allow Serve). agentx then has Tailscale serve the window as
   `https://<computer>.<your-tailnet>.ts.net:<port>/?t=...` and prints that link: open it in Safari or Chrome there, from
   anywhere. agentx itself stays on 127.0.0.1; Tailscale carries the window to your own devices only, with a real
   certificate (so Safari's HTTPS-only setting is happy) and no firewall rule to add. The link's secret key is still

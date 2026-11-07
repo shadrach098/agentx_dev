@@ -356,10 +356,13 @@ def is_tailnet_ip(address: Any) -> bool:
     return ip in ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
 
-TAILSCALE_HTTPS_HELP = ("Tailscale is on, but HTTPS is off for your Tailscale network, so an iPad or phone cannot open "
-                        "agentx securely. Turn it on once: open https://login.tailscale.com/admin/dns, and under "
-                        "HTTPS Certificates click Enable HTTPS. Then start agentx --ui --remote again (or "
-                        "/remote-control).")
+TAILSCALE_HTTPS_HELP = ("No link for your iPad or phone this time: Tailscale is connected, but HTTPS is off for your "
+                        "Tailscale network (it can be turned off in your Tailscale account, also after it worked). "
+                        "Turn it on: open https://login.tailscale.com/admin/dns and, under HTTPS Certificates, click "
+                        "Enable HTTPS. Then /remote-control off and /remote-control again (or start agentx again).")
+TAILSCALE_SERVE_HELP = ("No link for your iPad or phone this time: Tailscale's sharing to your own devices (Serve) is "
+                        "off for your Tailscale network. Turn it on once at {link}, then /remote-control off and "
+                        "/remote-control again (or start agentx again).")
 
 
 def _tailscale_exe() -> Optional[str]:
@@ -378,8 +381,10 @@ def _tailscale(args: Sequence[str], timeout: float = 20) -> "tuple[int, str]":
     try:
         done = subprocess.run([exe, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except subprocess.TimeoutExpired:
-        return 124, "Tailscale did not answer in time"
+    except subprocess.TimeoutExpired as error:          # what it said before waiting (say, a link to allow Serve)
+        said = "".join(part.decode(errors="replace") if isinstance(part, bytes) else part
+                       for part in (error.stdout, error.stderr) if part)
+        return 124, said.strip() or "Tailscale did not answer in time"
     except OSError as error:
         return 126, str(error)
     return done.returncode, ((done.stdout or "") + (done.stderr or "")).strip()
@@ -408,9 +413,15 @@ def tailscale_name() -> "tuple[Optional[str], str]":
 def tailscale_serve(port: int) -> str:
     """Have Tailscale serve ``https://<this computer's name>:<port>`` to your own devices, passed to agentx on
     127.0.0.1:<port>. Returns "" when it worked, else what went wrong."""
-    code, out = _tailscale(["serve", "--bg", f"--https={int(port)}", f"http://127.0.0.1:{int(port)}"])
+    # When Serve is off for the tailnet, Tailscale prints a link to allow it and then waits: give up after a while
+    # and pass that link on.
+    code, out = _tailscale(["serve", "--bg", f"--https={int(port)}", f"http://127.0.0.1:{int(port)}"], timeout=12)
     if code == 0:
         return ""
+    if "serve is not enabled" in out.lower():
+        link = next((word for word in out.split() if word.startswith("https://login.tailscale.com/")),
+                    "https://login.tailscale.com/admin/settings/features")
+        return TAILSCALE_SERVE_HELP.format(link=link)
     if "https" in out.lower() and ("enable" in out.lower() or "cert" in out.lower()):
         return TAILSCALE_HTTPS_HELP
     return f"Tailscale could not serve agentx ({out.splitlines()[0][:200] if out else f'exit {code}'}); use SSH below."
@@ -488,12 +499,16 @@ def remote_instructions(url: str, ssh_running: Optional[bool] = None,
                  "Only your own Tailscale devices can reach it, wherever they are; it carries this run's secret key, so do",
                  "not share it. Nothing is opened on your Wi-Fi or the internet.", "",
                  "Or, from a computer without Tailscale, through SSH:", ""]
+    elif tailnet_problem:                  # Tailscale is here but gave no link: say that first, not under the SSH way
+        lines = [tailnet_problem, "",
+                 f"Meanwhile agentx is running here, on {host}, and only an SSH connection to this computer reaches it.",
+                 "Leave this terminal open (and the computer awake).", ""]
     else:
         lines = [f"agentx is running here, on {host}, for use from another computer. It is not on the network: only an",
                  "SSH connection to this computer reaches it.",
                  "Nothing more to do on this computer: leave this terminal open (and the computer awake).", "",
-                 tailnet_problem or ("From an iPad or phone: install Tailscale on this computer and on it, sign both in to the "
-                                     "same account, then start agentx --ui --remote again; it prints a link to open there."),
+                 "From an iPad or phone: install Tailscale on this computer and on it, sign both in to the same account, "
+                 "then start agentx --remote again; it prints a link to open there.",
                  ""]
     if not running:
         key = "nt" if os.name == "nt" else "darwin" if sys.platform == "darwin" else "posix"

@@ -146,3 +146,46 @@ def test_remote_control_needs_the_terminal_prompt(tmp_path):
     assert "needs this terminal's own prompt" in out.getvalue()
     app.remote_control("off")
     assert "not on" in out.getvalue()
+
+
+class TestWhenTailscaleGivesNoLink:
+    """It worked, then HTTPS / Serve was turned off in the Tailscale account: the terminal showed only the SSH way,
+    with the reason buried under it."""
+
+    def test_the_reason_comes_first(self):
+        from agentx_dev.cli.webui import TAILSCALE_HTTPS_HELP, remote_instructions
+        text = remote_instructions("http://127.0.0.1:4529/?t=k", ssh_running=True, addresses=["10.0.0.5"],
+                                   tailnet_problem=TAILSCALE_HTTPS_HELP, firewall="")
+        assert text.startswith("No link for your iPad or phone this time")
+        assert "login.tailscale.com/admin/dns" in text and "ssh -N -L 4529" in text
+
+    def test_serve_turned_off_passes_on_tailscales_own_link(self, monkeypatch):
+        from agentx_dev.cli import webui
+        said = ("Serve is not enabled on your tailnet.\nTo enable, visit:\n\n"
+                "         https://login.tailscale.com/f/serve?node=abc123")
+        monkeypatch.setattr(webui, "_tailscale", lambda args, timeout=20: (124, said))
+        problem = webui.tailscale_serve(4529)
+        assert problem.startswith("No link for your iPad") and "https://login.tailscale.com/f/serve?node=abc123" in problem
+
+    def test_a_tailscale_that_waits_still_says_what_it_printed(self, monkeypatch):
+        import subprocess
+        from agentx_dev.cli import webui
+
+        def waits(*a, **kw):
+            raise subprocess.TimeoutExpired(cmd="tailscale", timeout=1, output="Serve is not enabled on your tailnet.")
+        monkeypatch.setattr(webui, "_tailscale_exe", lambda: "tailscale")
+        monkeypatch.setattr(webui.subprocess, "run", waits)
+        assert webui._tailscale(["serve"]) == (124, "Serve is not enabled on your tailnet.")
+
+
+def test_agentx_remote_opens_this_terminal_with_remote_control_on(monkeypatch):
+    """agentx --remote (no --ui): the terminal, with /remote-control already on (and the normal screen, whose prompt
+    it mirrors)."""
+    from agentx_dev.cli import app as app_module
+    args = app_module.build_parser().parse_args(["--remote"])
+    assert args.remote and not args.ui
+    source = open(app_module.__file__, encoding="utf-8").read()
+    assert 'app.remote_at_start = bool(getattr(args, "remote", False)) and not getattr(args, "ui", False)' in source
+    assert "if args.remote:\n        wanted = False" in source
+    start = source.split("    def start(self", 1)[1].split("\n    def ", 1)[0]
+    assert "if getattr(self, \"remote_at_start\", False):" in start and "self.remote_control()" in start

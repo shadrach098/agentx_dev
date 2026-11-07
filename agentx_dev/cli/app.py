@@ -606,6 +606,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         if self.project_settings_created is not None:
             self.notice(f"Created {self._safe(self.project_settings_created, 400)} with this folder's model. "
                         "/model <name> --folder changes it.")
+        if getattr(self, "remote_at_start", False):   # agentx --remote: this terminal, with remote control on
+            self.remote_control()
         self._start_typeahead()
         try:
             return self.loop()
@@ -1496,8 +1498,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-open", action="store_true",
                         help="with --ui: print the window's address instead of opening it")
     parser.add_argument("--remote", action="store_true",
-                        help="with --ui: use the window from another computer through an SSH tunnel (prints the "
-                             "ssh command; nothing is opened to the network)")
+                        help="use this agentx from your iPad, phone or another computer too (a Tailscale link, or "
+                             "an SSH tunnel; nothing is opened to the network): in this terminal, like "
+                             "/remote-control, or with --ui for the window only")
     return parser
 
 
@@ -1580,6 +1583,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                  toolbar=lambda: holder[0].status_bar() if holder else "",
                  cycle_mode=lambda: holder[0].cycle_mode() if holder else None)
     wanted = args.fullscreen if args.fullscreen is not None else read_user_fullscreen(home)
+    if args.remote:
+        wanted = False                     # remote control mirrors the normal screen's prompt
     if wanted:
         try:
             from agentx_dev.cli.fullscreen import FullScreen
@@ -1649,6 +1654,7 @@ def _run(args: argparse.Namespace, home: Path, console: Console, read: Callable[
                       team_model_uses=settings.team_model_uses, token_limit=settings.token_limit,
                       max_steps=min(max(1, args.max_steps), MAX_MAX_STEPS) if args.max_steps else settings.max_steps)
         app.auto_titles = True                         # a real run: conversations get a short title from the model
+        app.remote_at_start = bool(getattr(args, "remote", False)) and not getattr(args, "ui", False)
         if wire is not None:
             wire(app)
         holder.append(app)

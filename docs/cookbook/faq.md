@@ -820,8 +820,9 @@ conversations), served on 127.0.0.1 with a secret key for each start. Closing th
 
 ## Can I control `agentx` on my server from home? *(next release)*
 
-Yes. From an iPad or phone, use Tailscale on both devices: `agentx --ui --remote` (or `/remote-control` in a running
-session) prints a link to open there. From another computer you can also use SSH: run `agentx --ui --remote` on the server (inside tmux or screen), then run the `ssh -N -L ...`
+Yes. From an iPad or phone, use Tailscale on both devices: `agentx --remote` (the terminal, with remote control
+on), `agentx --ui --remote` (the app window only) or `/remote-control` in a running session prints a link to open
+there. From another computer you can also use SSH: run `agentx --ui --remote` on the server (inside tmux or screen), then run the `ssh -N -L ...`
 command it prints on your computer and open the address it prints. Nothing is opened to the network; the SSH
 connection carries the window. The server needs an SSH server; on a Windows PC, turn on OpenSSH Server first (the
 command prints how when none runs). Away from home, reach the machine through its public address or a private
