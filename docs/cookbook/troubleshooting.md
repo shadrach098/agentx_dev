@@ -800,7 +800,7 @@ starts in `--remote` or `/remote-control`.
 **`--remote`: ssh keeps asking for a password, and yours is refused**
 A Windows Microsoft account wants its Microsoft password, not the PIN, and some accounts have none. Use a key made
 **on the other computer**: `ssh-keygen -t ed25519` there, then add its `.pub` line (it ends with that computer's
-name) to `C:\ProgramData\sshdministrators_authorized_keys` on the agentx computer. A key made on the agentx
+name) to `C:\ProgramData\ssh\administrators_authorized_keys` on the agentx computer. A key made on the agentx
 computer itself does not let the other one in.
 
 **The app window shows "agentx has stopped"**

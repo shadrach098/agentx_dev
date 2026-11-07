@@ -880,7 +880,7 @@ The computer that runs agentx does the work (your files, your keys, the agent); 
   OpenSSH Server once (agentx prints the three commands when none runs), on a Mac turn on Remote Login. On Windows,
   agentx also says when the firewall blocks SSH because the network is set to Public: set your home network to
   Private. Sign in with an SSH key made **on the other computer** (`ssh-keygen -t ed25519` there; its `.pub` line goes
-  into `C:\ProgramData\sshdministrators_authorized_keys` for an administrator, or `~/.ssh/authorized_keys`).
+  into `C:\ProgramData\ssh\administrators_authorized_keys` for an administrator, or `~/.ssh/authorized_keys`).
 - Nothing is opened to the internet: Tailscale or SSH carries the window, and the key works for that run only. Keep
   the computer awake; on a server, run agentx inside tmux or screen. `--port N` keeps the same port between starts.
 
