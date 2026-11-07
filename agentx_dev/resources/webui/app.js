@@ -184,10 +184,11 @@
   function addUser(text) {
     dropWelcome();
     turn = null; group = null; lastPrint = null;
-    const u = el("div", "user");
+    const command = /^\/\w/.test(text);              // a command (often from a menu) is not a chat message
+    const u = el("div", command ? "user command" : "user");
     u.textContent = text;
     column.append(u);
-    if (!$("topTitle").dataset.fixed) $("topTitle").textContent = text.split("\n")[0].slice(0, 90) || "Conversation";
+    if (!command && !$("topTitle").dataset.fixed) $("topTitle").textContent = text.split("\n")[0].slice(0, 90) || "Conversation";
   }
 
   // each tool as a plain verb and a small icon
@@ -496,7 +497,7 @@
       `<span class="w-where">${esc(w.where)}</span><button type="button" data-unsend="${n + 1}" aria-label="Take back this message">✕</button></li>`).join("");
     $("micBtn").classList.toggle("recording", !!ev.recording);
     $("micBtn").setAttribute("aria-label", ev.recording ? "Stop recording" : "Speak instead of typing");
-    if (ev.mode) $("mode").value = ev.mode;
+    if (ev.mode) setMode(ev.mode);
     if (ev.model) setModel(ev.model);
     setComposer();
   }
@@ -594,21 +595,122 @@
     if (card && card.keyHandler && /^[1-9]$/.test(e.key)) { e.preventDefault(); card.keyHandler(e.key); }
   });
 
-  // -- the top bar and the sidebar ------------------------------------------------------------------------------
-  function setModel(model) {
-    const sel = $("model");
-    if (![...sel.options].some((o) => o.value === model)) sel.prepend(new Option(model, model));
-    sel.value = model;
+  // -- the window's own dialog (never the browser's) ---------------------------------------------------------------
+  // askText({title, text, placeholder, ok}) → the typed text, or null when cancelled (Esc, Cancel, a click outside).
+  function askText({title, text, placeholder, ok}) {
+    return new Promise((resolve) => {
+      if (closed) { resolve(null); return; }
+      const overlay = $("overlay"), box = $("overlayBox"), back = document.activeElement;
+      box.innerHTML = `<h2 id="dlgTitle">${esc(title)}</h2>${text ? `<p>${esc(text)}</p>` : ""}` +
+        `<input type="text" class="dlg-input" placeholder="${esc(placeholder || "")}" aria-labelledby="dlgTitle" spellcheck="false" autocomplete="off">` +
+        `<div class="dlg-actions"><button type="button" class="btn" data-d="cancel">Cancel</button>` +
+        `<button type="button" class="btn primary" data-d="ok" disabled>${esc(ok || "OK")}</button></div>`;
+      box.setAttribute("aria-labelledby", "dlgTitle");
+      overlay.hidden = false;
+      const field = box.querySelector("input"), okBtn = box.querySelector('[data-d="ok"]');
+      const done = (value) => {
+        overlay.hidden = true;
+        box.onclick = box.onkeydown = overlay.onmousedown = null;
+        resolve(value);
+        if (back && back.focus) back.focus();
+      };
+      field.addEventListener("input", () => { okBtn.disabled = !field.value.trim(); });
+      box.onclick = (e) => { const b = e.target.closest("[data-d]"); if (b && !b.disabled) done(b.dataset.d === "ok" ? field.value.trim() : null); };
+      overlay.onmousedown = (e) => { if (e.target === overlay) done(null); };
+      box.onkeydown = (e) => {
+        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); }
+        else if (e.key === "Enter" && e.target === field && field.value.trim()) { e.preventDefault(); done(field.value.trim()); }
+        else if (e.key === "Tab") {                     // keep the keys inside the dialog
+          const stops = [...box.querySelectorAll("input, button:not(:disabled)")];
+          const at = stops.indexOf(document.activeElement);
+          e.preventDefault();
+          stops[(at + (e.shiftKey ? -1 : 1) + stops.length) % stops.length].focus();
+        }
+      };
+      field.focus();
+    });
   }
-  $("model").addEventListener("change", () => {
-    let name = $("model").value;
-    if (name === "__other") {
-      name = (prompt("Model name, for example claude-sonnet-5-5 or gpt-6.1-sol") || "").trim();
-      if (!name) { setModel(status.model || ""); return; }
-    }
-    post("/api/send", {text: `/model ${name}`});
+
+  // -- the mode and model menus under the message box --------------------------------------------------------------
+  const MODES = [
+    ["default", "Ask before changes", "Edits, commands and web lookups ask first"],
+    ["accept-edits", "Accept edits", "Edits run without asking; commands still ask"],
+    ["plan", "Plan only", "Reads and plans; changes nothing"],
+    ["auto", "Auto", "Nothing asks. Only in folders you trust"],
+  ];
+  const CHECK = '<svg class="menu-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  let models = [], currentModel = "", currentMode = "default", menuFor = null, menuPick = null;
+  function setMode(mode) {
+    currentMode = mode;
+    const m = MODES.find((x) => x[0] === mode);
+    $("modeLabel").textContent = m ? m[1] : mode;
+  }
+  function setModel(model) { currentModel = model || ""; $("modelLabel").textContent = currentModel || "Model"; }
+
+  const menu = $("menu");
+  function closeMenu(refocus) {
+    if (!menuFor) return;
+    menu.hidden = true;
+    menuFor.setAttribute("aria-expanded", "false");
+    if (refocus) menuFor.focus();
+    menuFor = null; menuPick = null;
+  }
+  function openMenu(button, items, pick) {
+    if (menuFor === button) { closeMenu(true); return; }
+    closeMenu(); hidePalette();
+    menuFor = button; menuPick = pick;
+    menu.innerHTML = items.map((it, n) => `<div class="menu-item" role="option" tabindex="-1" data-n="${n}" aria-selected="${!!it.current}">` +
+      `<span class="menu-text"><span class="menu-label">${esc(it.label)}</span>${it.hint ? `<span class="menu-hint">${esc(it.hint)}</span>` : ""}</span>` +
+      `${it.current ? CHECK : ""}</div>`).join("");
+    menu.items = items;
+    menu.hidden = false;
+    const box = $("composer").getBoundingClientRect(), b = button.getBoundingClientRect();
+    menu.style.left = Math.max(0, Math.min(b.left - box.left, box.width - menu.offsetWidth)) + "px";
+    button.setAttribute("aria-expanded", "true");
+    const start = Math.max(0, items.findIndex((it) => it.current));
+    menu.querySelector(`[data-n="${start}"]`).focus();
+  }
+  function choose(n) {
+    const it = menu.items && menu.items[n], pick = menuPick;
+    closeMenu(true);
+    if (it && pick) pick(it);
+  }
+  menu.addEventListener("click", (e) => { const it = e.target.closest("[data-n]"); if (it) choose(Number(it.dataset.n)); });
+  menu.addEventListener("mousemove", (e) => { const it = e.target.closest("[data-n]"); if (it && document.activeElement !== it) it.focus(); });
+  menu.addEventListener("keydown", (e) => {
+    const all = [...menu.querySelectorAll("[data-n]")];
+    const at = all.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") all[(at + (e.key === "ArrowDown" ? 1 : -1) + all.length) % all.length].focus();
+    else if (e.key === "Home") all[0].focus();
+    else if (e.key === "End") all[all.length - 1].focus();
+    else if (e.key === "Enter" || e.key === " ") { if (at >= 0) choose(Number(all[at].dataset.n)); }
+    else if (e.key === "Escape") closeMenu(true);
+    else if (e.key === "Tab") { closeMenu(true); return; }
+    else return;
+    e.preventDefault(); e.stopPropagation();
   });
-  $("mode").addEventListener("change", () => post("/api/send", {text: `/mode ${$("mode").value}`}));
+  document.addEventListener("mousedown", (e) => {
+    if (menuFor && !menu.contains(e.target) && !menuFor.contains(e.target)) closeMenu();
+  });
+  window.addEventListener("resize", () => closeMenu());
+
+  $("modeBtn").addEventListener("click", () => openMenu($("modeBtn"),
+    MODES.map(([value, label, hint]) => ({value, label, hint, current: value === currentMode})),
+    (it) => { if (it.value !== currentMode) { setMode(it.value); post("/api/send", {text: `/mode ${it.value}`}); } }));
+  $("modelBtn").addEventListener("click", () => {
+    const names = models.includes(currentModel) || !currentModel ? models : [currentModel, ...models];
+    openMenu($("modelBtn"), [...names.map((m) => ({value: m, label: m, current: m === currentModel})),
+                             {value: "", label: "Other model…", hint: "Type any model name"}],
+      async (it) => {
+        let name = it.value;
+        if (!name) {
+          name = await askText({title: "Use another model", text: "Any model your keys can reach, by its exact name.",
+                                placeholder: "for example claude-sonnet-5-5 or gpt-6.1-sol", ok: "Switch"});
+          if (!name) return;
+        }
+        if (name !== currentModel) { setModel(name); post("/api/send", {text: `/model ${name}`}); }
+      });
+  });
   $("newChat").addEventListener("click", () => post("/api/send", {text: "/clear"}));
   $("usageBtn").addEventListener("click", () => post("/api/send", {text: "/usage"}));
   $("settingsBtn").addEventListener("click", () => post("/api/send", {text: "/settings"}));
@@ -645,11 +747,9 @@
       document.title = `agentx · ${s.folderName || ""}`;
       commands = s.commands || {};
       skills = s.skills || {};
-      const sel = $("model");
-      sel.innerHTML = (s.models || []).map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("") +
-        '<option value="__other">Other model…</option>';
+      models = (s.models || []).map(String);
       if (s.model) setModel(s.model);
-      if (s.mode) $("mode").value = s.mode;
+      if (s.mode) setMode(s.mode);
     } catch (_) { /* the app is still starting: the next status brings it */ }
   }
   async function loadSessions() {

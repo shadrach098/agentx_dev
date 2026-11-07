@@ -113,6 +113,7 @@ svg { width: 16px; height: 16px; flex: none; }
 /* your message: a bubble on the right */
 .user { align-self: flex-end; max-width: 85%; margin: 26px 0 16px; padding: 9px 16px; background: var(--raised); border-radius: 18px 18px 6px 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .user:first-child { margin-top: 12px; }
+.user.command { font-family: var(--mono); font-size: 13px; padding: 4px 11px; border-radius: 8px; margin: 14px 0 6px; color: var(--muted); }
 
 /* the agent's turn: steps, notes, the answer */
 .agent { margin: 0 0 6px; }
@@ -258,12 +259,29 @@ svg { width: 16px; height: 16px; flex: none; }
 .composer textarea::placeholder { color: var(--faint); }
 .composer-bar { display: flex; align-items: center; gap: 2px; margin-top: 6px; }
 .bar-gap { flex: 1; }
-.pill { position: relative; display: inline-flex; min-width: 0; }
-.pill select { appearance: none; -webkit-appearance: none; border: 0; background-color: transparent; border-radius: 8px; padding: 5px 24px 5px 9px; font-size: 13px; color: var(--muted); max-width: 220px; text-overflow: ellipsis; cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23888' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 7px center; background-size: 11px; transition: background-color 0.12s, color 0.12s; }
-.pill select:hover { background-color: var(--hover); color: var(--text); }
-.pill select option { background: var(--surface); color: var(--text); }
+.pill { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 240px; border: 0; background: none; border-radius: 8px; padding: 5px 7px 5px 9px; font-size: 13px; color: var(--muted); transition: background-color 0.12s, color 0.12s; }
+.pill:hover, .pill[aria-expanded="true"] { background: var(--hover); color: var(--text); }
+.pill-label { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pill-chev { width: 11px; height: 11px; opacity: 0.7; transition: transform 0.15s; }
+.pill[aria-expanded="true"] .pill-chev { transform: rotate(180deg); }
+
+/* the mode and model menus */
+.menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 6; min-width: 250px; max-width: min(360px, 100%); max-height: 340px; overflow-y: auto; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 14px; box-shadow: var(--shadow); padding: 6px; animation: pop 0.12s ease-out; transform-origin: bottom left; }
+.menu-item { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 9px; cursor: pointer; outline: none; }
+.menu-item:focus { background: var(--hover); }
+.menu-text { flex: 1; min-width: 0; }
+.menu-label { display: block; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.menu-hint { display: block; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+.menu-check { width: 15px; height: 15px; color: var(--text); }
+@keyframes pop { from { opacity: 0; transform: translateY(4px) scale(0.98); } }
+
+/* the window's own dialog */
+.dlg-input { display: block; width: 100%; margin: 16px 0 0; background: var(--bg); border: 1px solid var(--line-strong); border-radius: 10px; padding: 9px 12px; outline: none; font-size: 14.5px; }
+.dlg-input:focus { border-color: var(--muted); }
+.dlg-input::placeholder { color: var(--faint); }
+.dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.btn:disabled { opacity: 0.4; cursor: default; }
+.btn.primary:disabled:hover { opacity: 0.4; }
 .send { width: 32px; height: 32px; margin-left: 4px; border-radius: 50%; border: 0; background: var(--text); color: var(--ink); display: grid; place-items: center; transition: opacity 0.12s, transform 0.08s; }
 .send:hover { opacity: 0.88; }
 .send:active { transform: scale(0.95); }
@@ -281,7 +299,7 @@ svg { width: 16px; height: 16px; flex: none; }
 .palette-desc { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(3px); display: grid; place-items: center; z-index: 20; padding: 16px; }
-.overlay-box { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 16px; padding: 24px 26px; max-width: 440px; box-shadow: var(--shadow); }
+.overlay-box { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 16px; padding: 24px 26px; width: min(440px, 100%); box-shadow: var(--shadow); animation: pop 0.14s ease-out; }
 .overlay-box h2 { margin: 0 0 8px; font-size: 18px; font-weight: 600; font-family: var(--display); }
 .overlay-box p { margin: 0; color: var(--muted); }
 .overlay-box code { font-family: var(--mono); font-size: 13px; color: var(--text); }
@@ -331,7 +349,7 @@ svg { width: 16px; height: 16px; flex: none; }
   .side.open { transform: none; }
   .side-toggle { display: inline-grid; }
   .top { padding: 0 10px; }
-  .pill select { max-width: 112px; }
+  .pill { max-width: 128px; }
   .composer-bar { gap: 4px; }
   .status-key { display: none; }
   .column { padding: 0 16px; }

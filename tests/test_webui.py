@@ -342,3 +342,15 @@ def test_a_dropped_window_connection_prints_no_traceback(capsys):
     except ConnectionAbortedError:
         server.handle_error(None, ("127.0.0.1", 1))
     assert capsys.readouterr().err == ""
+
+
+def test_the_window_draws_its_own_dialogs_and_menus():
+    """No browser alert, confirm or prompt box, and no browser dropdowns: the window draws its own."""
+    import re
+    from agentx_dev.cli.webui import RESOURCES
+
+    script = (RESOURCES / "app.js").read_text(encoding="utf-8")
+    page = (RESOURCES / "index.html").read_text(encoding="utf-8")
+    assert not re.search(r"(?<![\w.])(alert|confirm|prompt)\(", script)
+    assert "<select" not in page
+    assert "function askText(" in script and 'id="menu"' in page
