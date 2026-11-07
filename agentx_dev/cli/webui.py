@@ -173,10 +173,10 @@ class WebScreen(Screen):
             return
         kind = event.get("type")
         name = _text(event.get("name"), 120)
-        if kind == "thought":                        # shown at once: the window folds it into a "Thinking" block
+        if kind in ("thought", "reasoning"):         # shown at once: the window folds it into a "Thinking" block
             text = _text(event.get("content")).strip()
             if text:
-                self.bus.emit("thought", text=text)
+                self.bus.emit("thought", text=text, reasoning=kind == "reasoning")
             return
         if kind == "tool_call":
             args = event.get("args")

@@ -2087,6 +2087,8 @@ class AgentRunner(PersistenceMixin):
           - ``{"type": "text_delta", "content": str}``  (only when stream_tokens=True
             and the LLM emits text in JSON-text mode)
           - ``{"type": "thought",     "content": str}``
+          - ``{"type": "reasoning",   "content": str}``  (3.8: the model's readable reasoning, when the model
+            returns it, before that step's call or answer)
           - ``{"type": "tool_call",   "name": str, "args": Any}``
           - ``{"type": "tool_result", "name": str, "result": str, "is_error": bool}``
           - ``{"type": "final",       "content": str}``
@@ -2268,6 +2270,8 @@ class AgentRunner(PersistenceMixin):
                     tools=native_tool_specs,
                     force_tool=None,
                 ))
+                if call_result.get("reasoning"):          # the model's readable reasoning, for whoever shows it
+                    yield {"type": "reasoning", "content": str(call_result["reasoning"])}
 
                 if call_result.get("type") == "invalid_tool_args":
                     self._feed_back_invalid_tool_args(working_history, call_result)
@@ -2501,6 +2505,8 @@ class AgentRunner(PersistenceMixin):
                     tools=[parser_tool_spec],
                     force_tool=parser_tool_name,
                 ))
+                if call_result.get("reasoning"):          # the model's readable reasoning, for whoever shows it
+                    yield {"type": "reasoning", "content": str(call_result["reasoning"])}
 
                 if call_result.get("type") == "invalid_tool_args":
                     self._feed_back_invalid_tool_args(working_history, call_result)

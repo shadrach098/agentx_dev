@@ -31,6 +31,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   the remote ways to the window already served. With Tailscale on, `--remote` and `/remote-control` also listen on
   the computer's Tailscale address (Tailscale devices only) and print a link for Safari; otherwise the SSH way. They
   say when no SSH server runs, or when Windows Firewall blocks SSH on a Public network.
+- **The model's thinking, shown.** On Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 agentx asks for a readable summary of
+  the reasoning they do on every step anyway (`thinking.display: "summarized"`, same cost; nothing is sent back on
+  later requests), and on GPT reasoning models on the Responses API for OpenAI's reasoning summary (asked once more
+  only if the account allows it). The app window shows it, and the model's notes between steps, as Thinking blocks
+  as they happen, with a live Thinking… line; the terminal shows it before an edit or a command. In the library:
+  `Claude(show_reasoning=True)`, `GPT(show_reasoning=True)`, `"reasoning"` in a `call_with_tools` result, and a
+  `{"type": "reasoning"}` runner event.
+- **MCP sign-in from a remote window.** The sign-in page is a card in the window, and pasting the address of the
+  page that could not load afterwards finishes the sign-in on the agentx computer.
 - **Conversation titles and closing the window.** After its first answer, a conversation gets a short title from the
   model (one small request, on a thread of its own), shown in the app window's list and in `/resume`; older ones
   show the first thing you typed, no longer agentx's summary note. Closing the app window quits agentx (a running turn

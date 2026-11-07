@@ -651,6 +651,24 @@ def _anthropic_text(response: Any) -> str:
     return "".join(parts)
 
 
+def _anthropic_reasoning(response: Any) -> str:
+    """The readable reasoning in a Messages response: the text of its ``thinking`` blocks, which is a summary when the
+    request asked for ``display: "summarized"`` and empty otherwise (``"omitted"``, the default on current models).
+    Shown to the user only; the blocks are not sent back on later requests."""
+    parts = [str(getattr(b, "thinking", "") or "").strip() for b in (getattr(response, "content", None) or [])
+             if getattr(b, "type", None) == "thinking"]
+    return "\n\n".join(p for p in parts if p)
+
+
+def reasoning_display_config(model: Any) -> Optional[Dict[str, Any]]:
+    """The ``thinking`` setting that makes a model's reasoning readable, for models that think on every request
+    already (Claude Opus 5.5, Sonnet 5.5, Fable 5.1, Mythos 5.1): only ``display`` changes, so the request costs the
+    same and works the same. None for other models, where asking for thinking would change the request (older
+    models need forced tool choice, which thinking rules out)."""
+    return {"type": "adaptive", "display": "summarized"} if str(model or "").lower().startswith(_NO_FORCED_TOOL_CHOICE) \
+        else None
+
+
 def _system_text(content: Any) -> str:
     if isinstance(content, list):
         return "\n".join(str(b.get("text", "")) for b in content
@@ -680,6 +698,7 @@ def _system_text(content: Any) -> str:
 # chat-completions request instead of learning it again. ``forget_learned_endpoints()`` clears it.
 _RESPONSES_FOR_TOOLS: set = set()
 _RESPONSES_LOCK = _threading.Lock()
+_NO_REASONING_SUMMARY: set = set()      # OpenAI models that refused a reasoning summary on this account
 
 
 def forget_learned_endpoints() -> None:
@@ -796,9 +815,15 @@ def _parse_responses_output(response: Any) -> Dict[str, Any]:
     """Responses output items -> the framework's call_with_tools result."""
     tool_calls = []
     texts = []
+    reasoning = []
     for item in getattr(response, "output", None) or []:
         itype = getattr(item, "type", None)
-        if itype == "function_call":
+        if itype == "reasoning":                        # a summary only when the request asked for one
+            for part in getattr(item, "summary", None) or []:
+                text = str(getattr(part, "text", "") or "").strip()
+                if text:
+                    reasoning.append(text)
+        elif itype == "function_call":
             raw = getattr(item, "arguments", "") or "{}"
             args, arg_error = _parse_tool_arguments(raw)
             call_id = getattr(item, "call_id", None) or getattr(item, "id", None)
@@ -812,11 +837,12 @@ def _parse_responses_output(response: Any) -> Dict[str, Any]:
             for part in getattr(item, "content", None) or []:
                 if getattr(part, "type", None) == "output_text":
                     texts.append(getattr(part, "text", "") or "")
+    extra = {"reasoning": "\n\n".join(reasoning)} if reasoning else {}
     if tool_calls:
         first = tool_calls[0]
         return {"type": "tool_use", "name": first["name"], "input": first["input"],
-                "id": first["id"], "tool_calls": tool_calls}
-    return {"type": "text", "text": "".join(texts)}
+                "id": first["id"], "tool_calls": tool_calls, **extra}
+    return {"type": "text", "text": "".join(texts), **extra}
 
 
 def _normalize_tool_spec_for_openai(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -1536,8 +1562,14 @@ class GPT(BaseChatModel):
         reasoning_effort: str | NotGiven = NOT_GIVEN,
         adapt_params: bool = True,
         use_responses_api: Optional[bool] = None,
+        show_reasoning: bool = False,
     ):
         """
+        ``show_reasoning`` (3.8): on the Responses API, ask a reasoning model for a readable summary of its
+        reasoning (``reasoning.summary: "auto"``); ``call_with_tools`` returns it as ``"reasoning"``. Chat
+        completions return no reasoning text, so it does nothing there. An account that may not have summaries
+        is asked once, then not again for that model.
+
         ``reasoning_effort`` accepts any value a model generation uses
         ("none", "minimal", "low", "medium", "high", "xhigh"). If the
         model rejects the value -- or the parameter -- the call adapts
@@ -1605,6 +1637,7 @@ class GPT(BaseChatModel):
         self.timeout = timeout
         self._params = _ParamAdapter("OpenAI", _openai_param_fix, adapt_params)
         self.use_responses_api = use_responses_api
+        self.show_reasoning = bool(show_reasoning)
         # Models the provider told us need /v1/responses for tool calls.
         self._responses_models: set = set()
         # Per-model tool_choice to use instead of a forced one.
@@ -1660,6 +1693,21 @@ class GPT(BaseChatModel):
         if kw.get("store", NOT_GIVEN) in (NOT_GIVEN, None):
             kw["store"] = False
         kw = {k: v for k, v in kw.items() if v is not NOT_GIVEN}
+        model = str(kw.get("model") or "")
+        if (getattr(self, "show_reasoning", False) and _is_openai_reasoning_model(model)
+                and model not in _NO_REASONING_SUMMARY):
+            # a readable summary of its reasoning, shown as Thinking. An account that may not have summaries
+            # (OpenAI asks some organisations to verify first) gets a 400 naming them: retried without, once
+            # per model, so the effort setting is never touched by it.
+            try:
+                return self.client.responses.create(**{**kw, "reasoning": {**(kw.get("reasoning") or {}),
+                                                                         "summary": "auto"}})
+            except Exception as e:
+                if getattr(e, "status_code", None) != 400 or "summar" not in _error_text(e).lower():
+                    raise
+                _NO_REASONING_SUMMARY.add(model)
+                logger.warning(f"OpenAI model {model!r} gives no reasoning summary on this account; not asking "
+                               f"for it again.")
         return self.client.responses.create(**kw)
 
     def _uses_responses(self, model: Any, *, for_tools: bool) -> bool:
@@ -2011,8 +2059,15 @@ class Claude(BaseChatModel):
         thinking: Optional[Dict[str, Any]] = None,
         stop_sequences: Optional[List[str]] = None,
         adapt_params: bool = True,
+        show_reasoning: bool = False,
     ):
         """
+        Args (new in 3.8):
+            show_reasoning: Ask for a readable summary of the model's reasoning on models that think on every
+                request already (Claude Opus 5.5, Sonnet 5.5, Fable 5.1): only ``thinking.display`` changes, so cost
+                and behaviour stay the same. ``call_with_tools`` then returns it as ``"reasoning"``. Ignored on
+                other models and when ``thinking`` is given.
+
         Args (new in 3.1):
             enable_prompt_cache: Opt in to Anthropic prompt caching. When True,
                 the system prompt and the tool schema list are marked as
@@ -2066,6 +2121,7 @@ class Claude(BaseChatModel):
         self.top_p = top_p
         self.top_k = top_k
         self.thinking = thinking
+        self.show_reasoning = bool(show_reasoning)
         self.stop_sequences = stop_sequences
         self._params = _ParamAdapter("Anthropic", _anthropic_param_fix, adapt_params)
         self.client = _anthropic.Anthropic(
@@ -2097,6 +2153,10 @@ class Claude(BaseChatModel):
             kw["stop_sequences"] = list(self.stop_sequences)
         if self.thinking:
             kw["thinking"] = self.thinking
+        elif getattr(self, "show_reasoning", False):
+            readable = reasoning_display_config(self.model_name)
+            if readable:
+                kw["thinking"] = readable
         kw.update(extra)
         return kw
 
@@ -2334,6 +2394,7 @@ class Claude(BaseChatModel):
             for b in response.content
             if getattr(b, "type", None) == "tool_use"
         ]
+        reasoning = _anthropic_reasoning(response)
         if tool_calls:
             first = tool_calls[0]
             return {
@@ -2342,13 +2403,14 @@ class Claude(BaseChatModel):
                 "input": first["input"],
                 "id": first["id"],
                 "tool_calls": tool_calls,
+                **({"reasoning": reasoning} if reasoning else {}),
             }
 
         text_parts = [
             block.text for block in response.content
             if getattr(block, "type", None) == "text"
         ]
-        return {"type": "text", "text": "".join(text_parts)}
+        return {"type": "text", "text": "".join(text_parts), **({"reasoning": reasoning} if reasoning else {})}
 
     async def async_call_with_tools(
         self,
@@ -2393,6 +2455,7 @@ class Claude(BaseChatModel):
             for b in response.content
             if getattr(b, "type", None) == "tool_use"
         ]
+        reasoning = _anthropic_reasoning(response)
         if tool_calls:
             first = tool_calls[0]
             return {
@@ -2401,13 +2464,14 @@ class Claude(BaseChatModel):
                 "input": first["input"],
                 "id": first["id"],
                 "tool_calls": tool_calls,
+                **({"reasoning": reasoning} if reasoning else {}),
             }
 
         text_parts = [
             block.text for block in response.content
             if getattr(block, "type", None) == "text"
         ]
-        return {"type": "text", "text": "".join(text_parts)}
+        return {"type": "text", "text": "".join(text_parts), **({"reasoning": reasoning} if reasoning else {})}
 
     # ------------------------------------------------------------------
     # Anthropic Batch API (3.1)

@@ -552,7 +552,7 @@ class Screen:
             name = str(event.get("name") or "")
         except Exception:                            # a name that cannot be shown must not stop the screen
             name = "?"
-        if kind == "thought":
+        if kind in ("thought", "reasoning"):           # the model's reasoning is shown the same way as its notes
             text = plain(_nothing_if_none(event.get("content")), keep_newlines=True).strip()
             if text:
                 self._held.append(text)

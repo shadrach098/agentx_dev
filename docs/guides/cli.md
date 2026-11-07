@@ -835,7 +835,12 @@ on the left and in `/resume`; until then, and for older conversations, the first
   or Auto, as in the file.
 - **The conversation:** your messages on the right, the agent's steps as short rows (**Read**, **Edit**, **Run**
   and the file or command; look-around steps fold into one **Explored** row you can open), its notes, and the
-  answer rendered as markdown. Click a step to see what the tool gave back (the first 120 lines). The answer and each
+  answer rendered as markdown. Click a step to see what the tool gave back (the first 120 lines). What the model is thinking shows as it happens: its
+  reasoning and its notes between steps appear as **Thinking** blocks (the newest open), and a moving **Thinking…**
+  line shows while it works on its next step. On Claude Opus 5.5, Sonnet 5.5 and Fable 5.1, agentx asks for a
+  readable summary of the reasoning these models do on every step anyway (same cost); on GPT models it asks for
+  OpenAI's reasoning summary where the model runs on the Responses API. The terminal shows the reasoning before an
+  edit or a command, like the model's notes. The answer and each
   code block in it have a copy button. What the app prints as terminal text (tables, `/usage`, team lines) keeps its
   colours. Scrolled up, an arrow above the message box jumps back to the latest. Ctrl+B (or the button at the top
   left) hides and shows the sidebar.
@@ -883,6 +888,9 @@ The computer that runs agentx does the work (your files, your keys, the agent); 
   agentx also says when the firewall blocks SSH because the network is set to Public: set your home network to
   Private. Sign in with an SSH key made **on the other computer** (`ssh-keygen -t ed25519` there; its `.pub` line goes
   into `C:\ProgramData\ssh\administrators_authorized_keys` for an administrator, or `~/.ssh/authorized_keys`).
+- **Signing in to an MCP server from the other device:** the sign-in page opens as a card in the window (not on
+  the computer agentx runs on). After you sign in there, the browser opens a page that cannot load, because it was
+  meant for the agentx computer: copy that page's address into the card and agentx finishes the sign-in.
 - Nothing is opened to the internet: Tailscale or SSH carries the window, and the key works for that run only. Keep
   the computer awake; on a server, run agentx inside tmux or screen. `--port N` keeps the same port between starts.
 

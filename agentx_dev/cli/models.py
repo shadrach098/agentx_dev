@@ -84,7 +84,7 @@ def _claude(name: Optional[str], key: str) -> Any:
     long run sent the whole conversation again at full price: one helper used 229k tokens on 8 tool calls."""
     kwargs: Dict[str, Any] = {"model": name} if name else {}
     return Claude(api_key=key, timeout=MODEL_TIMEOUT_SEC, max_retries=CLIENT_RETRIES, enable_prompt_cache=True,
-                  **kwargs)
+                  show_reasoning=True, **kwargs)     # its reasoning, readable (same cost), shown as Thinking
 
 
 def choose_model(name: Optional[str], env: Mapping[str, str]) -> Any:
@@ -102,13 +102,15 @@ def choose_model(name: Optional[str], env: Mapping[str, str]) -> Any:
                 raise _no_key(provider)
             if provider == "claude":
                 return _claude(claude_model_id(name), key)
-            return GPT(model=name, api_key=key, timeout=MODEL_TIMEOUT_SEC, max_retries=CLIENT_RETRIES)
+            return GPT(model=name, api_key=key, timeout=MODEL_TIMEOUT_SEC, max_retries=CLIENT_RETRIES,
+                       show_reasoning=True)
         anthropic_key = _key(env, ANTHROPIC_KEY)
         if anthropic_key:
             return _claude(None, anthropic_key)
         openai_key = _key(env, OPENAI_KEY)
         if openai_key:
-            return GPT(api_key=openai_key, timeout=MODEL_TIMEOUT_SEC, max_retries=CLIENT_RETRIES)
+            return GPT(api_key=openai_key, timeout=MODEL_TIMEOUT_SEC, max_retries=CLIENT_RETRIES,
+                       show_reasoning=True)
     except ModelError:
         raise
     except ImportError as e:
