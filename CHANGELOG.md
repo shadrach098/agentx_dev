@@ -25,6 +25,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   a picture, mentions a file (search) or opens another folder in a new window. `agentx --ui --remote` keeps the window
   on the server's 127.0.0.1 and prints the `ssh -N -L` command to use it from another computer. Light or dark follows
   the system. A notice that MCP servers need sign-in has a button per server.
+- **Remote control.** `/remote-control` in the terminal makes the running session usable from an iPad, a phone or
+  another computer: the terminal keeps showing everything, the window mirrors it, and messages, answers, menu choices
+  and approvals from the window go into the terminal's own prompt (the first answer wins). In the app window it adds
+  the remote ways to the window already served. With Tailscale on, `--remote` and `/remote-control` also listen on
+  the computer's Tailscale address (Tailscale devices only) and print a link for Safari; otherwise the SSH way. They
+  say when no SSH server runs, or when Windows Firewall blocks SSH on a Public network.
 - **Conversation titles and closing the window.** After its first answer, a conversation gets a short title from the
   model (one small request, on a thread of its own), shown in the app window's list and in `/resume`; older ones
   show the first thing you typed, no longer agentx's summary note. Closing the app window quits agentx (a running turn

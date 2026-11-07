@@ -792,6 +792,17 @@ Windows, in PowerShell as administrator: `Add-WindowsCapability -Online -Name Op
 address `--remote` prints (the machine's name may not resolve from another computer). On the same computer you need
 no ssh: open the address directly.
 
+**`--remote`: ssh times out from the other computer, and the agentx computer's SSH log shows nothing**
+Windows Firewall drops it: the network is set to Public and the OpenSSH rule only lets SSH in on Private networks.
+At home, set the Wi-Fi to Private (Settings > Network & internet > Wi-Fi > your network). agentx says so when it
+starts in `--remote` or `/remote-control`.
+
+**`--remote`: ssh keeps asking for a password, and yours is refused**
+A Windows Microsoft account wants its Microsoft password, not the PIN, and some accounts have none. Use a key made
+**on the other computer**: `ssh-keygen -t ed25519` there, then add its `.pub` line (it ends with that computer's
+name) to `C:\ProgramData\sshdministrators_authorized_keys` on the agentx computer. A key made on the agentx
+computer itself does not let the other one in.
+
 **The app window shows "agentx has stopped"**
 The agentx it belongs to ended (Ctrl+C in its terminal, or the window was closed for more than a few seconds).
 Start it again with `agentx --ui --continue`; the conversation is saved.

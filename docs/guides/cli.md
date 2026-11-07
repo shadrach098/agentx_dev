@@ -83,7 +83,7 @@ Keys are read from the environment only. With no `--model`, the first key found 
 | `--version` | Print the version and exit. |
 | `--ui` | Open agentx in an app window instead of the terminal (see [The app window](#the-app-window)). |
 | `--port N`, `--no-open` | With `--ui`: serve the window on port `N` (default: any free port); print its address instead of opening it. |
-| `--remote` | With `--ui`: use the window from another computer. Prints the `ssh -N -L` command to run there and the address to open; nothing is opened to the network. |
+| `--remote` | With `--ui`: use the window from an iPad, a phone or another computer: a Tailscale link when Tailscale is on, and the `ssh -N -L` way. Nothing is opened to the internet. `/remote-control` does the same for a running session. |
 
 `--continue` and `--resume` cannot be combined. A flag that does not exist exits with code 2 (argparse's usage error).
 
@@ -860,14 +860,29 @@ token; the window's address carries it and every request must, and a request nam
 web page in another tab cannot drive the agent. Everything the agent does still goes through the same approvals and
 deny rules. A reload or a second window shows the same conversation; `--no-open` prints the address to open yourself.
 
-**From another computer.** Run `agentx --ui --remote` on the server (inside tmux or screen, so it keeps running
-when you log out). It still listens on the server's own 127.0.0.1 only, and prints one `ssh -N -L ...` command and an
-address. Run the command on your computer, open the address there, and the window is yours as if agentx ran
-locally. Nothing is opened to the network: the SSH connection carries everything, and the address's secret key
-works for that run only. The machine running agentx needs an SSH server: Linux servers have one; on Windows turn on
-OpenSSH Server once (`agentx --ui --remote` says so, with the three commands, when none is running), on a Mac turn on
-Remote Login. From outside your own network, use an address that reaches the machine (a server's public address, or
-a private network such as Tailscale).
+### Remote control: from an iPad, a phone or another computer
+
+The computer that runs agentx does the work (your files, your keys, the agent); the other device is only a screen.
+
+- **Start it:** `agentx --ui --remote` on the computer that stays put, or type `/remote-control` in a session that
+  is already running: in the terminal, the terminal keeps showing everything live and the window mirrors it (a
+  message, an answer or a menu choice from either side shows in both; an approval is a card in the window and the
+  menu in the terminal, and the first answer wins); in the app window, the same window becomes reachable from your
+  other devices. `/remote-control off` ends it. While it is on, closing a window does not quit agentx.
+- **From an iPad or phone: Tailscale.** Install Tailscale on that computer and on the iPad or phone and sign both in to
+  the same account. agentx then also listens on the computer's Tailscale address (100.x.x.x) and prints one link to
+  open in Safari or Chrome there, from anywhere. Only your own Tailscale devices can reach it (others are refused even
+  if their traffic arrives), and the link's secret key is still needed. Windows may ask once whether Python may
+  accept connections; allow it.
+- **From another computer: SSH.** Run the printed `ssh -N -L <port>:127.0.0.1:<port> you@<address>` there and leave
+  it open (it prints nothing while it works), then open the printed `http://127.0.0.1:<port>/?t=...` in that
+  computer's browser. The computer running agentx needs an SSH server: Linux servers have one; on Windows turn on
+  OpenSSH Server once (agentx prints the three commands when none runs), on a Mac turn on Remote Login. On Windows,
+  agentx also says when the firewall blocks SSH because the network is set to Public: set your home network to
+  Private. Sign in with an SSH key made **on the other computer** (`ssh-keygen -t ed25519` there; its `.pub` line goes
+  into `C:\ProgramData\sshdministrators_authorized_keys` for an administrator, or `~/.ssh/authorized_keys`).
+- Nothing is opened to the internet: Tailscale or SSH carries the window, and the key works for that run only. Keep
+  the computer awake; on a server, run agentx inside tmux or screen. `--port N` keeps the same port between starts.
 
 ## Full-screen mode
 
