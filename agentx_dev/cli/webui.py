@@ -334,6 +334,39 @@ def local_addresses() -> List[str]:
     return found
 
 
+def is_tailnet_ip(address: Any) -> bool:
+    """An address Tailscale gives a device (100.64.0.0/10, or its IPv6 range): only your own devices have them."""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(str(address).strip("[]"))
+    except ValueError:
+        return False
+    if ip.version == 4:
+        return ip in ipaddress.ip_network("100.64.0.0/10")
+    return ip in ipaddress.ip_network("fd7a:115c:a1e0::/48")
+
+
+def tailscale_address() -> Optional[str]:
+    """This computer's Tailscale IPv4 address when Tailscale is installed and connected, else None."""
+    candidates = [shutil.which("tailscale")]
+    if os.name == "nt":
+        candidates.append(os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Tailscale", "tailscale.exe"))
+    elif sys.platform == "darwin":
+        candidates.append("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+    for exe in candidates:
+        if not exe or not os.path.isfile(exe):
+            continue
+        try:
+            done = subprocess.run([exe, "ip", "-4"], capture_output=True, text=True, timeout=5,
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in (done.stdout or "").split():
+            if is_tailnet_ip(line):
+                return line.strip()
+    return None
+
+
 ENABLE_SSH_SERVER = {
     "nt": ("On Windows, in PowerShell opened as administrator (once; it also opens the firewall for SSH):\n"
            "    Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0\n"
@@ -347,7 +380,8 @@ ENABLE_SSH_SERVER = {
 
 
 def remote_instructions(url: str, ssh_running: Optional[bool] = None,
-                        addresses: Optional[Sequence[str]] = None) -> str:
+                        addresses: Optional[Sequence[str]] = None, tailnet_url: Optional[str] = None,
+                        tailnet_problem: str = "") -> str:
     """``agentx --ui --remote``: the window stays on this machine's 127.0.0.1 (never on the network); the person
     reaches it through an SSH tunnel from their own computer. This says how, with this machine's names filled in, and
     says first when no SSH server runs here (then the ssh command is refused)."""
@@ -364,9 +398,21 @@ def remote_instructions(url: str, ssh_running: Optional[bool] = None,
     found = list(local_addresses() if addresses is None else addresses)
     target = found[0] if found else host
     others = f" (or {', '.join(found[1:] + [host])})" if found else ""
-    lines = [f"agentx is running here, on {host}, for use from another computer. It is not on the network: only an",
-             "SSH connection to this computer reaches it.",
-             "Nothing more to do on this computer: leave this terminal open (and the computer awake).", ""]
+    if tailnet_url:
+        lines = [f"agentx is running here, on {host}, for use from your other devices.",
+                 "Nothing more to do on this computer: leave this terminal open (and the computer awake).", "",
+                 "On your iPad, phone or another computer signed in to the same Tailscale account, open:", "",
+                 f"       {tailnet_url}", "",
+                 "Only your own Tailscale devices can reach it, wherever they are; it carries this run's secret key, so do",
+                 "not share it. Nothing is opened on your Wi-Fi or the internet.", "",
+                 "Or, from a computer without Tailscale, through SSH:", ""]
+    else:
+        lines = [f"agentx is running here, on {host}, for use from another computer. It is not on the network: only an",
+                 "SSH connection to this computer reaches it.",
+                 "Nothing more to do on this computer: leave this terminal open (and the computer awake).", "",
+                 tailnet_problem or ("From an iPad or phone: install Tailscale on this computer and on it, sign both in to the "
+                                     "same account, then start agentx --ui --remote again; it prints a link to open there."),
+                 ""]
     if not running:
         key = "nt" if os.name == "nt" else "darwin" if sys.platform == "darwin" else "posix"
         lines += ["First, once: no SSH server runs on this computer, so the other computer cannot connect yet.",
@@ -410,6 +456,9 @@ class WebFront:
         self._worker: Optional[threading.Thread] = None
         self._server: Optional[ThreadingHTTPServer] = None
         self._files: Optional[tuple] = None                 # (when, the project's files) for "Mention a file"
+        self.tailnet: Optional[str] = None                  # --remote: this computer's Tailscale address, when on
+        self.tailnet_problem = ""
+        self._tail_server: Optional[ThreadingHTTPServer] = None
         self._windows = 0                                   # windows connected now (their event streams)
         self._had_window = False
         self._alone_since: Optional[float] = None
@@ -1072,8 +1121,25 @@ class WebFront:
         self._server = _QuietServer(("127.0.0.1", int(self.port or 0)), Handler)
         self._server.daemon_threads = True
         threading.Thread(target=self._server.serve_forever, name="agentx-ui-server", daemon=True).start()
+        if self.tailnet:                                # --remote with Tailscale: also on this computer's tailnet address
+            try:
+                port = self._server.server_address[1]
+                self._tail_server = _QuietServer((self.tailnet, port), Handler)
+                self._tail_server.tailnet_only = True   # only Tailscale devices may use it (see _Handler._client_ok)
+                self._tail_server.daemon_threads = True
+                threading.Thread(target=self._tail_server.serve_forever, name="agentx-ui-tailnet", daemon=True).start()
+            except OSError as error:
+                self.tailnet_problem = (f"Tailscale is on, but agentx could not listen on {self.tailnet} ({error}); "
+                                        "use SSH below, or start again with another --port.")
+                self.tailnet = None
+                self._tail_server = None
         threading.Thread(target=self._tick, name="agentx-ui-status", daemon=True).start()
         return self.address()
+
+    def tailnet_address(self) -> Optional[str]:
+        if not self.tailnet or self._tail_server is None:
+            return None
+        return f"http://{self.tailnet}:{self._tail_server.server_address[1]}/?t={self.token}"
 
     def window_connected(self, on: bool) -> None:
         with self._lock:
@@ -1111,8 +1177,9 @@ class WebFront:
             if not request["future"].done():
                 request["future"].set_exception(EOFError())
         self.bus.emit("closed")
-        if self._server is not None:
-            threading.Timer(1.0, self._server.shutdown).start()
+        for server in (self._server, self._tail_server):
+            if server is not None:
+                threading.Timer(1.0, server.shutdown).start()
 
     def run(self, work: Callable[[], int]) -> int:
         box: Dict[str, Any] = {}
@@ -1123,11 +1190,14 @@ class WebFront:
             except BaseException as error:           # noqa: BLE001 - raised again on this thread
                 box["error"] = error
 
+        if self.remote and self.tailnet is None:
+            self.tailnet = tailscale_address()
         url = self.start_server()
         self._worker = threading.Thread(target=worker, name="agentx-work", daemon=True)
         self._worker.start()
         if self.remote:
-            print(remote_instructions(url), flush=True)
+            print(remote_instructions(url, tailnet_url=self.tailnet_address(), tailnet_problem=self.tailnet_problem),
+                  flush=True)
         else:
             how = self.opener(url) if self.open_it else ""
             print(f"agentx is open {'in an ' + how if how == 'app window' else 'in your browser' if how else 'at'}: {url}",
@@ -1166,7 +1236,16 @@ class _Handler(BaseHTTPRequestHandler):
         site's page that points a DNS name at this machine cannot use the window."""
         host = self.headers.get("Host", "")
         name, _, port = host.rpartition(":")
-        return name in ("127.0.0.1", "localhost") and port.isdigit()
+        if not port.isdigit():
+            return False
+        if getattr(self.server, "tailnet_only", False):     # the Tailscale listener: its own address, Tailscale peers only
+            return name == self.front.tailnet and self._client_ok()
+        return name in ("127.0.0.1", "localhost")
+
+    def _client_ok(self) -> bool:
+        """On the Tailscale listener, the other end must be a Tailscale device: Windows may hand a packet sent from the
+        Wi-Fi to this computer's Tailscale address to that listener, and this keeps such a device out."""
+        return is_tailnet_ip(self.client_address[0]) if self.client_address else False
 
     def _token_ok(self, query: Dict[str, List[str]]) -> bool:
         given = self.headers.get("X-Agentx-Token") or (query.get("t") or [""])[0]

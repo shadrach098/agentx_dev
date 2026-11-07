@@ -444,3 +444,56 @@ def test_a_tunnel_may_use_another_port_but_never_another_host(window):
     assert w.request("GET", "/api/state", host="localhost:9000")[0] == 200
     assert w.request("GET", "/api/state", host="evil.example:9000")[0] == 403
     assert w.request("GET", "/api/state", host="127.0.0.1.evil.example")[0] == 403
+
+
+class TestTailscale:
+    """agentx --ui --remote with Tailscale: also listens on this computer's tailnet address, for an iPad or phone."""
+
+    def test_tailnet_addresses(self):
+        from agentx_dev.cli.webui import is_tailnet_ip
+        assert is_tailnet_ip("100.101.102.103") and is_tailnet_ip("100.64.0.1") and is_tailnet_ip("100.127.255.254")
+        assert not is_tailnet_ip("100.128.0.1") and not is_tailnet_ip("10.0.0.219") and not is_tailnet_ip("127.0.0.1")
+        assert is_tailnet_ip("fd7a:115c:a1e0::1") and not is_tailnet_ip("nonsense")
+
+    def test_no_tailscale_means_none(self, monkeypatch):
+        from agentx_dev.cli import webui
+        monkeypatch.setattr(webui.shutil, "which", lambda name: None)
+        monkeypatch.setattr(webui.os.path, "isfile", lambda path: False)
+        assert webui.tailscale_address() is None
+
+    def _front(self, tmp_path):
+        front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False, remote=True)
+        front.tailnet = "127.0.0.2"                     # stands in for 100.x.y.z: a second address of this computer
+        front.start_server()
+        return front
+
+    def _get(self, address, port, host):
+        conn = http.client.HTTPConnection(address, port, timeout=10)
+        conn.request("GET", "/", headers={"Host": host})
+        status = conn.getresponse().status
+        conn.close()
+        return status
+
+    def test_only_tailscale_devices_and_only_its_own_name(self, tmp_path, monkeypatch):
+        front = self._front(tmp_path)
+        try:
+            port = front._tail_server.server_address[1]
+            assert front.tailnet_address() == f"http://127.0.0.2:{port}/?t={front.token}"
+            # this test's client is 127.0.0.1, not a Tailscale device: refused
+            assert self._get("127.0.0.2", port, f"127.0.0.2:{port}") == 403
+            from agentx_dev.cli import webui
+            monkeypatch.setattr(webui, "is_tailnet_ip", lambda ip: str(ip).startswith("127."))
+            assert self._get("127.0.0.2", port, f"127.0.0.2:{port}") == 200
+            assert self._get("127.0.0.2", port, f"127.0.0.1:{port}") == 403      # another name: refused
+            assert self._get("127.0.0.1", front._server.server_address[1], f"127.0.0.1:{port}") == 200
+        finally:
+            front.close()
+
+    def test_the_link_for_the_ipad_comes_first(self):
+        from agentx_dev.cli.webui import remote_instructions
+        text = remote_instructions("http://127.0.0.1:4529/?t=k", ssh_running=True, addresses=["10.0.0.219"],
+                                   tailnet_url="http://100.101.102.103:4529/?t=k")
+        assert text.index("http://100.101.102.103:4529/?t=k") < text.index("ssh -N -L")
+        assert "iPad" in text and "Tailscale" in text
+        without = remote_instructions("http://127.0.0.1:4529/?t=k", ssh_running=True, addresses=["10.0.0.219"])
+        assert "install Tailscale" in without
