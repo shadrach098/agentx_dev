@@ -785,6 +785,7 @@
   function setDetails(open) {
     detailsOpen = open;
     $("details").hidden = !open;
+    $("detailsScrim").hidden = !open;
     document.querySelector(".app").classList.toggle("with-details", open);
     $("detailsBtn").setAttribute("aria-expanded", String(open));
     try { localStorage.setItem("agentx-details", open ? "open" : "closed"); } catch (_) { /* no storage */ }
@@ -792,6 +793,12 @@
   }
   $("detailsBtn").addEventListener("click", () => setDetails(!detailsOpen));
   $("detailsClose").addEventListener("click", () => setDetails(false));
+  // below a wide window the panel lies over the chat: tapping beside it, or Escape, closes it
+  const detailsOver = () => matchMedia("(max-width: 1199px)").matches;
+  $("detailsScrim").addEventListener("click", () => setDetails(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && detailsOpen && detailsOver() && $("settingsWrap").hidden) setDetails(false);
+  });
   function section(title, body, extra) {
     return `<section class="d-sec"><h3>${esc(title)}${extra ? `<span class="d-extra">${extra}</span>` : ""}</h3>${body}</section>`;
   }
@@ -862,7 +869,7 @@
   });
   setInterval(() => { if (detailsOpen || detailsTimer++ % 5 === 0) loadDetails(); }, 3000);
   setTimeout(() => {
-    try { if (localStorage.getItem("agentx-details") === "open" && !narrow()) setDetails(true); else loadDetails(); } catch (_) { loadDetails(); }
+    try { if (localStorage.getItem("agentx-details") === "open" && !detailsOver()) setDetails(true); else loadDetails(); } catch (_) { loadDetails(); }
   }, 0);
 
   // -- the Settings sheet: saved to the settings files, for every folder or for this one ----------------------------

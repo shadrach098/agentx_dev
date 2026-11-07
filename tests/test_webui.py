@@ -569,6 +569,21 @@ def test_the_thinking_line_has_a_name_of_its_own():
     assert "thinking-now" in script
 
 
+def test_the_details_panel_never_scrolls_sideways():
+    """On an iPad a long MCP server name or address stretched the Details panel, so it scrolled sideways. The panel
+    clips sideways, its lists cannot grow past it, long names wrap, and below a wide window it slides over the chat
+    with a backdrop that closes it."""
+    from agentx_dev.cli.webui import RESOURCES
+    css = (RESOURCES / "style.css").read_text(encoding="utf-8")
+    script = (RESOURCES / "app.js").read_text(encoding="utf-8")
+    page = (RESOURCES / "index.html").read_text(encoding="utf-8")
+    assert "overflow-x: hidden" in css.split(".details-body {", 1)[1].split("}", 1)[0]
+    assert "grid-template-columns: minmax(0, 1fr)" in css.split(".d-mcp {", 1)[1].split("}", 1)[0]
+    assert "white-space: nowrap" not in css.split(".d-target {", 1)[1].split("}", 1)[0]
+    assert "@media (max-width: 1199px)" in css and 'id="detailsScrim"' in page
+    assert '$("detailsScrim").addEventListener("click"' in script
+
+
 class TestSigningInFromAnotherDevice:
     def test_a_remote_window_gets_the_sign_in_page_as_a_card(self, tmp_path):
         front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False, remote=True)

@@ -130,6 +130,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **The app window's Details panel fits the screen.** A long MCP server name or address stretched it, so on an iPad
+  it scrolled sideways; long names and addresses now wrap inside it. Below a wide desktop window (an iPad, a
+  half-screen window) it slides over the chat instead of squeezing it, and tapping beside it or Escape closes it.
 - **`agentx`: a turn that stops before it finishes is kept.** Out of credit, any other error, Ctrl+C or the token
   limit used to drop the whole turn, so after switching model (say Claude ran out of credit) the new model did not
   know what the stopped turn had changed. Now your message and a short record (files changed, commands run, the last
