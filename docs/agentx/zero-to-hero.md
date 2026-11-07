@@ -371,9 +371,10 @@ Prefer a desktop app to the terminal?
 agentx --ui
 ```
 
-The same agentx opens in a window of its own: your conversations on the left, the model and mode at the top, the
-agent's steps and answers in the middle, approvals as cards with **Yes** / **No** buttons, a **Stop** button while it
-works, a microphone button for `/voice`, and screenshots you can paste straight into the message box. Keep the
+The same agentx opens in a window of its own: your conversations on the left, the agent's steps and answers in the
+middle, approvals as cards with **Yes** / **No** buttons, and a message box with the mode and model menus, a
+microphone button for `/voice`, and a send button that turns into **Stop** while it works. Paste a screenshot
+straight into the message box. Keep the
 terminal it started from open. More in [The app window](../guides/cli.md#the-app-window).
 
 ### 18. Full-screen mode

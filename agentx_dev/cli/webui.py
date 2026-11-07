@@ -40,6 +40,16 @@ from agentx_dev.cli.preview import preview_for
 from agentx_dev.cli.ui import CANCELLED, Screen, plain
 from agentx_dev.cli.ui_text import HELPER_LOOKS, helper_activity, step_counts, step_stats, summarize_result
 
+
+class _QuietServer(ThreadingHTTPServer):
+    """A window that reloads or closes drops its connections; that is normal, not a traceback for the terminal."""
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
 RESOURCES = Path(__file__).resolve().parent.parent / "resources" / "webui"
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8"),
@@ -195,7 +205,7 @@ class WebScreen(Screen):
         tips = parts.get("tips")
         if isinstance(tips, (list, tuple)):              # the terminal's keys, said the window's way
             parts["tips"] = [str(t).replace("Alt+Enter adds a line", "Shift+Enter adds a line")
-                             .replace("Shift+Tab changes the mode", "the menu at the top right changes the mode")
+                             .replace("Shift+Tab changes the mode", "the menu under the message box changes the mode")
                              for t in tips]
         self.bus.emit("welcome", **{key: (value if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value)
                                           else _text(value, 400)) for key, value in parts.items()})
@@ -704,7 +714,7 @@ class WebFront:
         class Handler(_Handler):
             pass
         Handler.front = front
-        self._server = ThreadingHTTPServer(("127.0.0.1", int(self.port or 0)), Handler)
+        self._server = _QuietServer(("127.0.0.1", int(self.port or 0)), Handler)
         self._server.daemon_threads = True
         threading.Thread(target=self._server.serve_forever, name="agentx-ui-server", daemon=True).start()
         threading.Thread(target=self._tick, name="agentx-ui-status", daemon=True).start()

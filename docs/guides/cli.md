@@ -815,23 +815,24 @@ tabs or address bar) when one is installed, else a tab in your default browser. 
 from open; closing it, or Ctrl+C there, quits agentx.
 
 - **Left:** the conversations in this folder, newest first; click one to open it (`/resume`), or **New
-  conversation** (`/clear`). **Usage** and **Settings** run `/usage` and `/settings`.
-- **Top:** the model and the mode, as menus (they send `/model` and `/mode`).
-- **The conversation:** your messages, the agent's steps on a thin rail (look-around steps fold into one **Explored**
-  row; click it for each read and search), its notes, and the answer rendered as markdown. What the app prints as
-  terminal text (tables, `/usage`, team lines) is shown with its colours.
-- **Approvals** are cards under the step they are about: the diff or the command, then **Yes**, **Yes, and don't ask
+  conversation** (`/clear`). At the bottom: the folder, and buttons for `/usage`, `/settings` and light or dark.
+- **The conversation:** your messages on the right, the agent's steps as short rows (**Read**, **Edit**, **Run**
+  and the file or command; look-around steps fold into one **Explored** row you can open), its notes, and the
+  answer rendered as markdown. What the app prints as terminal text (tables, `/usage`, team lines) keeps its colours.
+- **Approvals** are cards under the step they are about: the diff or the command, then **Yes**, **Yes, don't ask
   again** (when it can be remembered) and **No**, which asks what it should do instead. Keys `1`, `2`, `3` answer
   when you are not typing; the other questions (the folder trust question, team questions, the token limit) are
   cards too.
-- **Under the conversation:** what it is doing and for how long, with **Stop** (Ctrl+C: it stops the turn and the
-  command it runs) and Esc; the team's running steps; the messages you typed while it works, each with ✕ to take it
-  back (`/unsend`).
-- **The input:** Enter sends, Shift+Enter adds a line, `/` opens the commands and skills. While it works, a message
-  goes to the agent at its next step and show-only commands run at once, as in the terminal. Paste or drop a
-  screenshot (PNG, JPEG, GIF, WebP, up to 10 MB): it is saved in `.agentx/uploads/` and its path is put in your
-  message, so the agent opens it with `read_path`. The microphone button is `/voice`.
-- Light or dark follows your system; the moon button switches it.
+- **Above the message box:** what it is doing and for how long, the team's running steps, and the messages you
+  typed while it works, each with ✕ to take it back (`/unsend`).
+- **The message box:** Enter sends, Shift+Enter adds a line, `/` opens the commands and skills. Under the text: **+**
+  adds a picture, then the mode and the model as menus (they send `/mode` and `/model`), the microphone (`/voice`)
+  and the send button. While it works and the box is empty, the send button is **Stop** (as is Esc): it stops the
+  turn and the command it runs, like Ctrl+C. A message typed while it works goes to the agent at its next step, and
+  show-only commands run at once, as in the terminal. A picture pasted, dropped or added with **+** (PNG, JPEG,
+  GIF, WebP, up to 10 MB) is saved in `.agentx/uploads/` and its path is put in your message, so the agent opens it
+  with `read_path`.
+- Light or dark follows your system; the moon button at the bottom left switches it.
 
 **Safety.** The window talks to agentx over `http://127.0.0.1` only, never the network. Each start makes a new random
 token; the window's address carries it and every request must, and a request naming another host is refused, so a

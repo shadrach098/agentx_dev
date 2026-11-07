@@ -317,3 +317,15 @@ class TestBus:
 def test_the_ui_flags():
     args = build_parser().parse_args(["--ui", "--port", "8123", "--no-open"])
     assert args.ui and args.port == 8123 and args.no_open
+
+
+def test_a_dropped_window_connection_prints_no_traceback(capsys):
+    """Reloading or closing the window drops its connections; the terminal stays clean."""
+    from agentx_dev.cli.webui import _QuietServer
+
+    server = _QuietServer.__new__(_QuietServer)
+    try:
+        raise ConnectionAbortedError(10053, "aborted")
+    except ConnectionAbortedError:
+        server.handle_error(None, ("127.0.0.1", 1))
+    assert capsys.readouterr().err == ""
