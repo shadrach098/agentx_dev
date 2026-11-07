@@ -426,12 +426,12 @@ class TestThePanels:
 
 def test_remote_use_goes_through_an_ssh_tunnel():
     from agentx_dev.cli.webui import remote_instructions
-    text = remote_instructions("http://127.0.0.1:8765/?t=secret", ssh_running=True, addresses=["10.0.0.219"])
+    text = remote_instructions("http://127.0.0.1:8765/?t=secret", ssh_running=True, addresses=["10.0.0.219"], firewall="")
     assert "ssh -N -L 8765:127.0.0.1:8765 " in text and "@10.0.0.219" in text
     assert "http://127.0.0.1:8765/?t=secret" in text and "not on the network" in text
     assert "no SSH server" not in text and "On the other computer" in text
     assert text.index("ssh -N -L") < text.index("?t=secret")        # the ssh command first, then the address
-    off = remote_instructions("http://127.0.0.1:8765/?t=secret", ssh_running=False, addresses=[])
+    off = remote_instructions("http://127.0.0.1:8765/?t=secret", ssh_running=False, addresses=[], firewall="")
     assert "no SSH server runs on this computer" in off and "ssh -N -L 8765" in off
     assert ("Add-WindowsCapability" in off) or ("Remote Login" in off) or ("openssh-server" in off)
     args = build_parser().parse_args(["--ui", "--remote"])
@@ -492,8 +492,15 @@ class TestTailscale:
     def test_the_link_for_the_ipad_comes_first(self):
         from agentx_dev.cli.webui import remote_instructions
         text = remote_instructions("http://127.0.0.1:4529/?t=k", ssh_running=True, addresses=["10.0.0.219"],
-                                   tailnet_url="http://100.101.102.103:4529/?t=k")
+                                   tailnet_url="http://100.101.102.103:4529/?t=k", firewall="")
         assert text.index("http://100.101.102.103:4529/?t=k") < text.index("ssh -N -L")
         assert "iPad" in text and "Tailscale" in text
-        without = remote_instructions("http://127.0.0.1:4529/?t=k", ssh_running=True, addresses=["10.0.0.219"])
+        without = remote_instructions("http://127.0.0.1:4529/?t=k", ssh_running=True, addresses=["10.0.0.219"], firewall="")
         assert "install Tailscale" in without
+
+
+def test_a_firewall_that_blocks_ssh_is_said_first():
+    from agentx_dev.cli.webui import remote_instructions
+    text = remote_instructions("http://127.0.0.1:4529/?t=k", ssh_running=True, addresses=["10.0.0.219"],
+                               firewall="This computer's network is set to Public ...")
+    assert text.index("First: This computer's network is set to Public") < text.index("ssh -N -L")

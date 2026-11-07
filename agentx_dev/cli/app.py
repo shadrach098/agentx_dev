@@ -313,6 +313,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                 return asker(request)
 
         remembering = self._remembering(ask_with_spinner_paused)
+        self._ask_remembering = remembering      # /remote-control asks it alongside the window's card
         # helpers run in worker threads: every approval is asked on the main thread, one at a time
         self.gate.ask = lambda request: on_main(remembering, request)
         self.base_tools = build_tools(self.cwd, self.add_dirs, self.gate, observer=self._observe_tool)
@@ -1198,6 +1199,51 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             self._log_warned = True
             self.notice("Could not write the work log in .agentx/log.md; carrying on without it.")
 
+    def remote_control(self, arg: str = "") -> None:
+        """``/remote-control``: use this session from an iPad, a phone or another computer too. In the app window it
+        adds the Tailscale link and the SSH way to the window that is already served; in the terminal it serves a
+        window that mirrors the terminal (``remote.RemoteControl``). ``/remote-control off`` ends it."""
+        word = str(arg or "").strip().lower()
+        if word not in ("", "on", "off", "stop"):
+            self.error("Use /remote-control to turn it on, or /remote-control off.")
+            return
+        turning_off = word in ("off", "stop")
+        front = getattr(self, "web_front", None)
+        if front is not None:                         # agentx --ui: the window is already served
+            if turning_off:
+                self.notice(front.disable_remote())
+            else:
+                self.notice(front.enable_remote())
+            return
+        remote = getattr(self, "_remote", None)
+        if turning_off:
+            if remote is None or not remote.active:
+                self.notice("Remote control is not on.")
+                return
+            remote.stop()
+            self._remote = None
+            self.notice("Remote control is off. Open windows say agentx stopped; this terminal goes on.")
+            return
+        if remote is not None and remote.active:
+            self.notice(remote.instructions)
+            return
+        prompt = getattr(self, "prompt_input", None)
+        if prompt is None or getattr(prompt, "_chat", None) is None:
+            self.error("Remote control needs this terminal's own prompt (not full-screen mode, not piped input). "
+                       "Start agentx --ui --remote instead.")
+            return
+        from agentx_dev.cli.remote import RemoteControl
+        remote = RemoteControl(self, prompt)
+        try:
+            text = remote.start()
+        except OSError as error:
+            remote.stop()
+            self.error(f"Remote control could not start: {self._safe(error, 200)}")
+            return
+        self._remote = remote
+        self.notice(text + "\n\nThis terminal keeps working: what you do in either place shows in both. "
+                           "/remote-control off ends it.")
+
     def _maybe_title(self) -> None:
         """After the first answer: a short title for this conversation, written once by the model on a thread of its
         own (the list of conversations shows it instead of the first message). Only in a real run
@@ -1558,6 +1604,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                          descriptions=command_descriptions(), **hooks)
     def wire_prompt(app: "ChatApp") -> None:
         app.insert_input = getattr(prompt, "insert", None)     # /voice words that arrive after the turn
+        app.prompt_input = prompt                              # /remote-control types the window's answers into it
 
     return _run(args, home, Console(), prompt.read, prompt.read_short, prompt.select, holder, wire_prompt)
 

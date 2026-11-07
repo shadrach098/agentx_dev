@@ -801,12 +801,34 @@ def select_menu(options: Sequence[str], default: int = 0,
         application = Application(
             layout=Layout(Window(FormattedTextControl(render), height=len(labels) + 1)),
             key_bindings=bindings, full_screen=False, erase_when_done=False)
-        result = application.run()
+        global _OPEN_MENU
+        _OPEN_MENU = application                         # remote control may pick an answer in it (pick_in_menu)
+        try:
+            result = application.run()
+        finally:
+            _OPEN_MENU = None
         return result if isinstance(result, int) else CANCELLED
     except (KeyboardInterrupt, EOFError):
         return CANCELLED
     except Exception:
         return None
+
+
+_OPEN_MENU: Any = None
+
+
+def pick_in_menu(index: int) -> bool:
+    """Choose ``index`` in the arrow-key menu open now, from another thread (an answer given in the remote window).
+    False when no menu is open."""
+    application = _OPEN_MENU
+    loop = getattr(application, "loop", None) if application is not None else None
+    if application is None or loop is None or not getattr(application, "is_running", False):
+        return False
+    try:
+        loop.call_soon_threadsafe(lambda: application.exit(result=index) if application.is_running else None)
+    except RuntimeError:
+        return False
+    return True
 
 
 def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
@@ -933,6 +955,8 @@ class PromptInput:
     The history file stores whatever the user types, and is made readable by the user only where the platform
     allows it."""
 
+    mirror: Any = None                   # remote control (``remote.RemoteControl``): the same questions in a window
+
     def __init__(self, *, history_file: Path, commands: Sequence[str], toolbar: Callable[[], str],
                  cycle_mode: Callable[[], object], descriptions: Optional[Mapping[str, str]] = None,
                  extra_commands: Optional[Callable[[], Mapping[str, str]]] = None) -> None:
@@ -1024,8 +1048,34 @@ class PromptInput:
             return False
         return True
 
+    def type_in(self, kind: str, text: str) -> bool:
+        """Type ``text`` into the open prompt and send it, from another thread: an answer given in the remote window
+        shows here as if typed. ``kind`` is ``message`` (the chat line) or ``text`` (a short answer). False when that
+        prompt is not open."""
+        session = self._chat if kind == "message" else self._short
+        app = getattr(session, "app", None) if session is not None else None
+        loop = getattr(app, "loop", None) if app is not None else None
+        if app is None or loop is None or not getattr(app, "is_running", False):
+            return False
+
+        def put() -> None:
+            buffer = app.current_buffer
+            buffer.text = str(text)
+            buffer.cursor_position = len(buffer.text)
+            buffer.validate_and_handle()
+        try:
+            loop.call_soon_threadsafe(put)
+        except RuntimeError:
+            return False
+        return True
+
     def read(self, prompt: str = "> ", default: str = "") -> str:
         """The next message; ``default`` is text the line starts with (the words from /voice)."""
+        if self.mirror is not None:
+            return self.mirror.around("message", lambda: self._read(prompt, default), prompt=prompt)
+        return self._read(prompt, default)
+
+    def _read(self, prompt: str = "> ", default: str = "") -> str:
         if self._chat is None:
             if default:
                 print(f"You said: {plain(default)}  (type or paste it)")
@@ -1035,6 +1085,11 @@ class PromptInput:
         return self._chat.prompt(prompt_message)        # a rule across the screen, then the mark: your turn
 
     def read_short(self, prompt: str = "") -> str:
+        if self.mirror is not None:
+            return self.mirror.around("text", lambda: self._read_short(prompt), prompt=prompt)
+        return self._read_short(prompt)
+
+    def _read_short(self, prompt: str = "") -> str:
         if self._short is None:
             return input(prompt)
         return self._short.prompt([("ansiyellow bold", prompt)])
@@ -1043,4 +1098,7 @@ class PromptInput:
         """An arrow-key menu (see ``select_menu``); None when this input line has no console to draw on."""
         if self._chat is None:
             return None
+        if self.mirror is not None:
+            return self.mirror.around("select", lambda: select_menu(options, default, hotkeys),
+                                      options=[plain(o) for o in options], default=default)
         return select_menu(options, default, hotkeys)

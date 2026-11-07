@@ -477,7 +477,7 @@
   function onAnswered(ev) {
     if (ev.id === ready) ready = null;
     const card = cards.get(ev.id);
-    if (card && !card.classList.contains("done")) finishCard(card, "");
+    if (card && !card.classList.contains("done")) finishCard(card, ev.outcome ? `${ev.outcome} in the terminal` : "");
     setComposer();
   }
   function liveCard() {

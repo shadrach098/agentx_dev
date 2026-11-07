@@ -367,6 +367,35 @@ def tailscale_address() -> Optional[str]:
     return None
 
 
+def windows_ssh_blocked() -> str:
+    """On Windows: a line saying why other computers cannot reach SSH here, when the network is set to Public and
+    the OpenSSH firewall rule only lets SSH in on Private networks (the usual case at home); else ""."""
+    if os.name != "nt":
+        return ""
+    script = ("$c = @(Get-NetConnectionProfile | ForEach-Object { [string]$_.NetworkCategory }) -join ',';"
+              "$r = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue;"
+              "$p = if ($r -and $r.Enabled -eq 'True') { [string]$r.Profile } else { 'none' };"
+              "Write-Output \"$c|$p\"")
+    try:
+        done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                              capture_output=True, text=True, timeout=10,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    categories, _, profile = (done.stdout or "").strip().rpartition("|")
+    if not categories:
+        return ""
+    if profile == "none":
+        return ("Windows Firewall has no enabled rule letting SSH in (OpenSSH-Server-In-TCP), so other computers "
+                "time out.")
+    if "Public" in categories.split(",") and not any(p in profile for p in ("Public", "Any")):
+        return ("This computer's network is set to Public, and Windows Firewall lets SSH in only on Private "
+                "networks, so other computers time out. At home, set it to Private (Settings > Network & internet > "
+                "Wi-Fi > your network > Private network), or in PowerShell as administrator:\n"
+                "    Set-NetConnectionProfile -InterfaceAlias \"Wi-Fi\" -NetworkCategory Private")
+    return ""
+
+
 ENABLE_SSH_SERVER = {
     "nt": ("On Windows, in PowerShell opened as administrator (once; it also opens the firewall for SSH):\n"
            "    Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0\n"
@@ -381,7 +410,7 @@ ENABLE_SSH_SERVER = {
 
 def remote_instructions(url: str, ssh_running: Optional[bool] = None,
                         addresses: Optional[Sequence[str]] = None, tailnet_url: Optional[str] = None,
-                        tailnet_problem: str = "") -> str:
+                        tailnet_problem: str = "", firewall: Optional[str] = None) -> str:
     """``agentx --ui --remote``: the window stays on this machine's 127.0.0.1 (never on the network); the person
     reaches it through an SSH tunnel from their own computer. This says how, with this machine's names filled in, and
     says first when no SSH server runs here (then the ssh command is refused)."""
@@ -417,6 +446,10 @@ def remote_instructions(url: str, ssh_running: Optional[bool] = None,
         key = "nt" if os.name == "nt" else "darwin" if sys.platform == "darwin" else "posix"
         lines += ["First, once: no SSH server runs on this computer, so the other computer cannot connect yet.",
                   ENABLE_SSH_SERVER[key], ""]
+    else:
+        blocked = windows_ssh_blocked() if firewall is None else firewall
+        if blocked:
+            lines += ["First: " + blocked, ""]
     lines += ["On the other computer (the one you use the window from):", "",
               "  1. Run this, and leave it open. It prints nothing while it works; that silence is the connection:", "",
               f"       ssh -N -L {port}:127.0.0.1:{port} {user}@{target}", "",
@@ -459,6 +492,7 @@ class WebFront:
         self.tailnet: Optional[str] = None                  # --remote: this computer's Tailscale address, when on
         self.tailnet_problem = ""
         self._tail_server: Optional[ThreadingHTTPServer] = None
+        self._handler: Any = None
         self._windows = 0                                   # windows connected now (their event streams)
         self._had_window = False
         self._alone_since: Optional[float] = None
@@ -477,7 +511,9 @@ class WebFront:
         if sep and done.strip():
             self.bus.emit("print", ansi=done)
 
-    def _ask(self, kind: str, **data: Any) -> Any:
+    def open_request(self, kind: str, **data: Any) -> "tuple[int, Future]":
+        """Show a question in the window (a card, or the input box for ``message``) without waiting for it: the id
+        and the future its answer sets. ``close_request`` takes it away."""
         with self._lock:
             if self._closed:
                 raise EOFError()
@@ -486,12 +522,19 @@ class WebFront:
             future: Future = Future()
             self._pending[ident] = {"kind": kind, "future": future, **data}
         self.bus.emit("ask", id=ident, kind=kind, **{k: v for k, v in data.items() if k != "request"})
+        return ident, future
+
+    def close_request(self, ident: int, outcome: str = "") -> None:
+        with self._lock:
+            self._pending.pop(ident, None)
+        self.bus.emit("answered", id=ident, **({"outcome": _text(outcome, 300)} if outcome else {}))
+
+    def _ask(self, kind: str, **data: Any) -> Any:
+        ident, future = self.open_request(kind, **data)
         try:
             return future.result()
         finally:
-            with self._lock:
-                self._pending.pop(ident, None)
-            self.bus.emit("answered", id=ident)
+            self.close_request(ident)
 
     def read(self, prompt: str = "> ", default: str = "") -> str:
         text = self._ask("message", default=str(default or ""))
@@ -509,6 +552,19 @@ class WebFront:
 
     def approve(self, request: Any) -> Answer:
         """The gate's question, as a card: what will happen, the diff or the command, and the answers."""
+        fields = self.approval_fields(request)
+        if isinstance(fields, Answer):
+            return fields
+        value = self._ask("approval", **fields)
+        if not isinstance(value, dict):
+            return Answer("n", "")
+        choice = str(value.get("choice") or "n")
+        if choice == "a" and not fields["always"]:
+            choice = "y"
+        return Answer(choice if choice in ("y", "a", "n") else "n", _text(value.get("reason"), 2000).strip())
+
+    def approval_fields(self, request: Any) -> Any:
+        """What an approval card shows, or the ``Answer`` when it is declined unseen (too long to preview)."""
         app = self.app
         try:
             preview = preview_for(request.tool, request.args, self.cwd,
@@ -533,15 +589,9 @@ class WebFront:
         grant = _text(getattr(request, "grant", ""), 200)
         if always and getattr(request, "kind", "") == "command":
             grant = f"{_text(request.tool, 40)} commands starting with '{grant}'"
-        value = self._ask("approval", tool=_text(request.tool, 80), title=_text(title, 2000),
-                          subject=_text(getattr(request, "subject", ""), 2000), body=_text(body, 400_000),
-                          body_kind=str(kind), helper=_text(helper, 120), always=always, grant=grant)
-        if not isinstance(value, dict):
-            return Answer("n", "")
-        choice = str(value.get("choice") or "n")
-        if choice == "a" and not always:
-            choice = "y"
-        return Answer(choice if choice in ("y", "a", "n") else "n", _text(value.get("reason"), 2000).strip())
+        return {"tool": _text(request.tool, 80), "title": _text(title, 2000),
+                "subject": _text(getattr(request, "subject", ""), 2000), "body": _text(body, 400_000),
+                "body_kind": str(kind), "helper": _text(helper, 120), "always": always, "grant": grant}
 
     def insert(self, words: str) -> bool:
         self.bus.emit("insert", text=_text(words, 20_000))
@@ -1096,6 +1146,7 @@ class WebFront:
         """Called once the app is built: it draws through the window from now on."""
         from agentx_dev.cli.team import on_main
         self.app = app
+        app.web_front = self                          # /remote-control adds the remote ways to this window
         app.fullscreen = True                         # no key reading in the terminal; typed lines come from here
         screen = WebScreen(self.console, self.bus)
         screen.cwd = getattr(app.screen, "cwd", None)
@@ -1121,20 +1172,48 @@ class WebFront:
         self._server = _QuietServer(("127.0.0.1", int(self.port or 0)), Handler)
         self._server.daemon_threads = True
         threading.Thread(target=self._server.serve_forever, name="agentx-ui-server", daemon=True).start()
+        self._handler = Handler
         if self.tailnet:                                # --remote with Tailscale: also on this computer's tailnet address
-            try:
-                port = self._server.server_address[1]
-                self._tail_server = _QuietServer((self.tailnet, port), Handler)
-                self._tail_server.tailnet_only = True   # only Tailscale devices may use it (see _Handler._client_ok)
-                self._tail_server.daemon_threads = True
-                threading.Thread(target=self._tail_server.serve_forever, name="agentx-ui-tailnet", daemon=True).start()
-            except OSError as error:
-                self.tailnet_problem = (f"Tailscale is on, but agentx could not listen on {self.tailnet} ({error}); "
-                                        "use SSH below, or start again with another --port.")
-                self.tailnet = None
-                self._tail_server = None
+            self._start_tailnet()
         threading.Thread(target=self._tick, name="agentx-ui-status", daemon=True).start()
         return self.address()
+
+    def _start_tailnet(self) -> None:
+        try:
+            port = self._server.server_address[1]
+            self._tail_server = _QuietServer((self.tailnet, port), self._handler)
+            self._tail_server.tailnet_only = True       # only Tailscale devices may use it (see _Handler._client_ok)
+            self._tail_server.daemon_threads = True
+            threading.Thread(target=self._tail_server.serve_forever, name="agentx-ui-tailnet", daemon=True).start()
+        except OSError as error:
+            self.tailnet_problem = (f"Tailscale is on, but agentx could not listen on {self.tailnet} ({error}); "
+                                    "use SSH below, or start again with another --port.")
+            self.tailnet = None
+            self._tail_server = None
+
+    def enable_remote(self) -> str:
+        """``/remote-control`` in the app window: the window already served here can also be opened from your iPad,
+        phone or another computer (Tailscale, or SSH). Closing this window no longer quits agentx while it is on."""
+        if not self.remote:
+            self._open_it_before = self.open_it
+            self.remote, self.open_it = True, False
+            self.tailnet, self.tailnet_problem = tailscale_address(), ""
+            if self.tailnet and self._server is not None:
+                self._start_tailnet()
+        text = remote_instructions(self.address(), tailnet_url=self.tailnet_address(),
+                                   tailnet_problem=self.tailnet_problem)
+        print(text, flush=True)                         # the terminal agentx runs in shows it too
+        return text + "\n\nWhile remote control is on, closing this window does not quit agentx. /remote-control off ends it."
+
+    def disable_remote(self) -> str:
+        if not self.remote:
+            return "Remote control is not on."
+        self.remote = False
+        self.open_it = getattr(self, "_open_it_before", self.open_it)
+        server, self._tail_server, self.tailnet = self._tail_server, None, None
+        if server is not None:
+            threading.Thread(target=server.shutdown, daemon=True).start()
+        return "Remote control is off: the Tailscale link no longer works. An SSH tunnel to this computer still would."
 
     def tailnet_address(self) -> Optional[str]:
         if not self.tailnet or self._tail_server is None:
