@@ -25,6 +25,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 from concurrent.futures import Future
 from datetime import datetime
@@ -649,6 +651,37 @@ class WebFront:
         self.bus.emit("insert", text=_text(words, 20_000))
         return True
 
+    # -- MCP sign-in from another device -----------------------------------------------------------------------
+
+    def offer_signin(self, url: str, server: str = "") -> bool:
+        """In remote use: show an MCP server's sign-in page as a card in the window instead of opening a browser on
+        this computer (nobody is at it). False when not in remote use: this computer's browser opens it."""
+        if not self.remote or not str(url).lower().startswith(("https://", "http://")):
+            return False
+        self.bus.emit("signin", url=_text(url, 4000), server=_text(server, 60))
+        return True
+
+    def finish_signin(self, pasted: str) -> Dict[str, Any]:
+        """The address the browser could not open after signing in (``http://localhost:<port>/callback?code=...``):
+        its code is handed to the sign-in agentx waits for on this computer, as if the browser had reached it."""
+        from agentx_dev.cli.mcp import CALLBACK_PORT
+        parsed = urlparse(str(pasted or "").strip())
+        query = parse_qs(parsed.query)
+        if parsed.path.rstrip("/") != "/callback" or not (query.get("code") or query.get("error")):
+            return {"ok": False, "message": "That is not the sign-in address: copy the whole address of the page that "
+                                            "could not load (it starts with http://localhost and has code= in it)."}
+        if parsed.hostname not in ("localhost", "127.0.0.1") or (parsed.port and parsed.port != CALLBACK_PORT):
+            return {"ok": False, "message": "That address is not agentx's sign-in address on this computer."}
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{CALLBACK_PORT}/callback?{parsed.query}", timeout=15):
+                pass
+        except urllib.error.HTTPError:
+            pass                                        # the waiting page answered; the sign-in reads the code
+        except OSError:
+            return {"ok": False, "message": "No sign-in is waiting on this computer any more (it waits 5 minutes): "
+                                            "start it again with the Sign in button."}
+        return {"ok": True, "message": "Signed in: agentx is finishing the connection."}
+
     # -- what the window sends ---------------------------------------------------------------------------------
 
     def _pending_of(self, kind: str) -> Optional[int]:
@@ -1204,6 +1237,7 @@ class WebFront:
         from agentx_dev.cli.team import on_main
         self.app = app
         app.web_front = self                          # /remote-control adds the remote ways to this window
+        app.remote_signin = self.offer_signin         # in remote use, an MCP sign-in page is a card here
         app.fullscreen = True                         # no key reading in the terminal; typed lines come from here
         screen = WebScreen(self.console, self.bus)
         screen.cwd = getattr(app.screen, "cwd", None)
@@ -1498,6 +1532,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(front.save_settings(str(data.get("scope", "")), data.get("values")))
         if url.path == "/api/open-folder":
             return self._json(front.open_folder(str(data.get("path", ""))))
+        if url.path == "/api/mcp-signin":
+            return self._json(front.finish_signin(str(data.get("url", ""))))
         return self._json({"error": "not found"}, 404)
 
     def _events(self, after: int) -> None:

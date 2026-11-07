@@ -478,6 +478,36 @@
     return card;
   }
 
+  // an MCP server's sign-in, from a device that is not the computer agentx runs on
+  function signinCard(ev) {
+    if (!/^https?:\/\//i.test(ev.url || "")) return;
+    lastPrint = null; turn = null;
+    const who = ev.server ? esc(ev.server) : "the MCP server";
+    const card = el("section", "card signin");
+    card.innerHTML = `<div class="card-head"><div class="card-tool">Sign in</div><div class="card-title">Sign in to ${who}</div></div>
+      <ol class="signin-steps">
+        <li><a class="btn primary" href="${esc(ev.url)}" target="_blank" rel="noopener noreferrer">Open the sign-in page</a></li>
+        <li>Sign in there. Afterwards a page opens that cannot load (it was meant for the computer agentx runs on).
+          That is expected: copy its whole address from the address bar.</li>
+        <li><div class="signin-paste"><input type="url" placeholder="http://localhost:…/callback?code=…" aria-label="The address of the page that could not load">
+          <button type="button" class="btn">Finish sign-in</button></div></li>
+      </ol><div class="card-outcome" hidden></div>`;
+    const box = card.querySelector("input"), out = card.querySelector(".card-outcome"), finish = card.querySelector(".signin-paste .btn");
+    const send = async () => {
+      if (!box.value.trim()) return;
+      finish.disabled = true;
+      const res = await post("/api/mcp-signin", {url: box.value.trim()});
+      finish.disabled = false;
+      out.hidden = false;
+      out.textContent = res.message || (res.ok ? "Signed in." : "That did not work.");
+      out.classList.toggle("no", !res.ok);
+      if (res.ok) card.querySelector(".signin-steps").remove();
+    };
+    finish.addEventListener("click", send);
+    box.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); send(); } });
+    column.append(card);
+  }
+
   let ready = null;          // the app's open "message" request: your next message answers it
   function onAsk(ev) {
     if (ready === ev.id || cards.has(ev.id)) return;          // already shown (a reload plays it twice)
@@ -1029,6 +1059,7 @@
       case "welcome": welcome = ev; showWelcome(); break;
       case "user": addUser(ev.text); break;
       case "thought": addThought(ev.text); break;
+      case "signin": signinCard(ev); break;
       case "tool_call": dropWelcome(); toolCall(ev); break;
       case "tool_result": toolResult(ev); break;
       case "final":                                 // the conversation's short title is written just after

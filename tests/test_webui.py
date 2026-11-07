@@ -567,3 +567,58 @@ def test_the_thinking_line_has_a_name_of_its_own():
     script = (RESOURCES / "app.js").read_text(encoding="utf-8")
     assert 'querySelector(".live")' not in script and 'el("div", "live"' not in script
     assert "thinking-now" in script
+
+
+class TestSigningInFromAnotherDevice:
+    def test_a_remote_window_gets_the_sign_in_page_as_a_card(self, tmp_path):
+        front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False, remote=True)
+        assert front.offer_signin("https://mcp.supabase.com/authorize?x=1", "supabase") is True
+        event = [e for e in front.bus.after(0) if e["type"] == "signin"][-1]
+        assert event["url"].startswith("https://mcp.supabase.com/") and event["server"] == "supabase"
+        local = WebFront(cwd=tmp_path, home=tmp_path, open_it=False)
+        assert local.offer_signin("https://x.example/a", "x") is False      # at this computer: its browser opens it
+        assert front.offer_signin("javascript:alert(1)", "x") is False
+
+    def test_the_app_asks_the_window_before_opening_a_browser(self, tmp_path, monkeypatch):
+        import webbrowser
+        from agentx_dev.cli.app import ChatApp
+        opened, offered = [], []
+        monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+        app = ChatApp(cwd=tmp_path, home=tmp_path, console=None, read_line=lambda *a: "/exit", env={},
+                      model_factory=lambda name, env: MockModel(script=[make_final("ok")]))
+        app._mcp_open_browser("https://a.example/signin")
+        assert opened == ["https://a.example/signin"]
+        app.remote_signin = lambda url, server: offered.append((url, server)) or True
+        app._signing_in = "supabase"
+        app._mcp_open_browser("https://b.example/signin")
+        assert offered == [("https://b.example/signin", "supabase")] and opened == ["https://a.example/signin"]
+
+    def test_the_pasted_address_finishes_the_sign_in_waiting_here(self, tmp_path, monkeypatch):
+        import socket
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from agentx_dev.cli import mcp
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        monkeypatch.setattr(mcp, "CALLBACK_PORT", port)
+        got = []
+
+        class Callback(BaseHTTPRequestHandler):
+            def do_GET(self):
+                got.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+        server = HTTPServer(("127.0.0.1", port), Callback)
+        threading.Thread(target=server.handle_request, daemon=True).start()
+        front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False, remote=True)
+        try:
+            bad = front.finish_signin("https://evil.example/callback?code=1")
+            assert bad["ok"] is False
+            assert front.finish_signin("http://localhost:1/nothing")["ok"] is False
+            ok = front.finish_signin(f"http://localhost:{port}/callback?code=abc123&state=xyz")
+            assert ok["ok"] is True and got == ["/callback?code=abc123&state=xyz"]
+        finally:
+            server.server_close()

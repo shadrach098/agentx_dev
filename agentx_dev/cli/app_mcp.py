@@ -15,8 +15,21 @@ class McpCommands:
 
     def _mcp_manager(self) -> MCPManager:
         if self.mcp is None:
-            self.mcp = MCPManager(self.home, self.env, show=self._mcp_show)
+            self.mcp = MCPManager(self.home, self.env, show=self._mcp_show, open_browser=self._mcp_open_browser)
         return self.mcp
+
+    def _mcp_open_browser(self, url: str) -> bool:
+        """Open a sign-in page. In remote use (``remote_signin`` set by the window) it goes to the window as a card
+        instead, since the person is not at this computer; else this computer's browser opens it."""
+        hook = getattr(self, "remote_signin", None)
+        if hook is not None:
+            try:
+                if hook(str(url), str(getattr(self, "_signing_in", "") or "")):
+                    return True
+            except Exception:
+                pass
+        import webbrowser
+        return bool(webbrowser.open(url))
 
     def _mcp_show(self, text: str) -> None:
         with self.progress.paused():
@@ -229,7 +242,11 @@ class McpCommands:
         manager = self._mcp_manager()
         if manager.servers[name].transport == "stdio":
             self.notice(f"{name} runs on your computer; there is nothing to sign in to. Reconnecting.")
-        status = manager.login(name)
+        self._signing_in = name                       # the sign-in card in a remote window names the server
+        try:
+            status = manager.login(name)
+        finally:
+            self._signing_in = ""
         self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
         if status.startswith("connected"):
             self._note_new_mcp_tools(name, quiet_if_none=True)

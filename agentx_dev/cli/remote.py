@@ -126,6 +126,8 @@ class RemoteControl:
         app.gate.ask = lambda request: on_main(self.approving, request)
         console.file = _TeeFile(console.file, front._printed, self._quiet)
         self.prompt.mirror = self
+        self._saved["signin"] = getattr(app, "remote_signin", None)
+        app.remote_signin = front.offer_signin             # an MCP sign-in page goes to the window as a card
         front.on_window = self._say_in_terminal          # "a window connected": shown above the open prompt
         front.tailnet, front.tailnet_problem = tailscale_name()
         front.start_server()
@@ -160,6 +162,7 @@ class RemoteControl:
         app = self.app
         self.prompt.mirror = None
         saved = self._saved
+        app.remote_signin = saved.get("signin")
         app.screen = saved.get("screen", app.screen)
         app._echo = saved.get("echo", app._echo)
         app.gate.ask = saved.get("ask", app.gate.ask)
