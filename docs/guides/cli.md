@@ -81,6 +81,8 @@ Keys are read from the environment only. With no `--model`, the first key found 
 | `--continue` | Resume the latest conversation for this folder. With none saved, it says so and starts a new one. |
 | `--resume [ID]` | Resume a saved conversation: with no id, pick from a numbered list; with an id, a file name or a unique id prefix of at least four characters. An id that matches nothing is an error (exit code 1). |
 | `--version` | Print the version and exit. |
+| `--ui` | Open agentx in an app window instead of the terminal (see [The app window](#the-app-window)). |
+| `--port N`, `--no-open` | With `--ui`: serve the window on port `N` (default: any free port); print its address instead of opening it. |
 
 `--continue` and `--resume` cannot be combined. A flag that does not exist exits with code 2 (argparse's usage error).
 
@@ -800,6 +802,41 @@ Every turn sends the whole history again, so a long conversation costs more with
 - The log is not searched by meaning: only the newest entries are loaded, and `log-older.md` never is.
 - A team job is one log line (see above), and the log holds what the app saw, not everything that happened.
 - There is no `/compact` command; summarising happens by itself.
+
+## The app window
+
+```bash
+agentx --ui                      # the same flags work: agentx --ui --continue --model claude-opus-5-5
+```
+
+`agentx --ui` opens agentx in a window of its own instead of the terminal: the same agent, tools, approvals,
+settings, conversations and commands, drawn as a desktop app. The window is Edge or Chrome started as an app (no
+tabs or address bar) when one is installed, else a tab in your default browser. Keep the terminal it was started
+from open; closing it, or Ctrl+C there, quits agentx.
+
+- **Left:** the conversations in this folder, newest first; click one to open it (`/resume`), or **New
+  conversation** (`/clear`). **Usage** and **Settings** run `/usage` and `/settings`.
+- **Top:** the model and the mode, as menus (they send `/model` and `/mode`).
+- **The conversation:** your messages, the agent's steps on a thin rail (look-around steps fold into one **Explored**
+  row; click it for each read and search), its notes, and the answer rendered as markdown. What the app prints as
+  terminal text (tables, `/usage`, team lines) is shown with its colours.
+- **Approvals** are cards under the step they are about: the diff or the command, then **Yes**, **Yes, and don't ask
+  again** (when it can be remembered) and **No**, which asks what it should do instead. Keys `1`, `2`, `3` answer
+  when you are not typing; the other questions (the folder trust question, team questions, the token limit) are
+  cards too.
+- **Under the conversation:** what it is doing and for how long, with **Stop** (Ctrl+C: it stops the turn and the
+  command it runs) and Esc; the team's running steps; the messages you typed while it works, each with ✕ to take it
+  back (`/unsend`).
+- **The input:** Enter sends, Shift+Enter adds a line, `/` opens the commands and skills. While it works, a message
+  goes to the agent at its next step and show-only commands run at once, as in the terminal. Paste or drop a
+  screenshot (PNG, JPEG, GIF, WebP, up to 10 MB): it is saved in `.agentx/uploads/` and its path is put in your
+  message, so the agent opens it with `read_path`. The microphone button is `/voice`.
+- Light or dark follows your system; the moon button switches it.
+
+**Safety.** The window talks to agentx over `http://127.0.0.1` only, never the network. Each start makes a new random
+token; the window's address carries it and every request must, and a request naming another host is refused, so a
+web page in another tab cannot drive the agent. Everything the agent does still goes through the same approvals and
+deny rules. A reload or a second window shows the same conversation; `--no-open` prints the address to open yourself.
 
 ## Full-screen mode
 

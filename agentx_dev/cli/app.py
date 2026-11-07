@@ -1390,6 +1390,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="full-screen mode: the header and the input stay put while the conversation scrolls")
     screen.add_argument("--no-fullscreen", dest="fullscreen", action="store_false",
                         help="the normal screen, even when the settings turn full-screen mode on")
+    parser.add_argument("--ui", action="store_true",
+                        help="open agentx in an app window (a browser window) instead of the terminal")
+    parser.add_argument("--port", type=int, default=0, metavar="N",
+                        help="with --ui: the local port to serve the window on (default: any free port)")
+    parser.add_argument("--no-open", action="store_true",
+                        help="with --ui: print the window's address instead of opening it")
     return parser
 
 
@@ -1461,6 +1467,8 @@ def _startup_failure(error: BaseException) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.ui:
+        return _run_ui(args)
     if not is_terminal():
         print(NOT_A_TERMINAL, file=sys.stderr)
         return 1
@@ -1496,6 +1504,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         app.insert_input = getattr(prompt, "insert", None)     # /voice words that arrive after the turn
 
     return _run(args, home, Console(), prompt.read, prompt.read_short, prompt.select, holder, wire_prompt)
+
+
+def _run_ui(args: argparse.Namespace) -> int:
+    """``agentx --ui``: the same app, drawn in a browser window (see ``webui``)."""
+    from agentx_dev.cli.webui import WebFront
+    home = Path.home()
+    front = WebFront(cwd=Path.cwd().resolve(), home=home, port=max(0, int(args.port or 0)), open_it=not args.no_open)
+    holder: List[Any] = []
+    return front.run(lambda: _run(args, home, front.console, front.read, front.read_short, front.select, holder,
+                                  front.wire))
 
 
 def _run(args: argparse.Namespace, home: Path, console: Console, read: Callable[..., str],

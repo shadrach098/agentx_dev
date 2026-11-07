@@ -8,6 +8,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **`agentx --ui`: the app window.** The same agentx in a desktop-style window instead of the terminal: the
+  conversations of the folder on the left (open one, or start a new one), the model and mode as menus, the agent's
+  steps on a rail with look-around steps folded into one row, answers rendered as markdown, approvals as cards with
+  the diff and Yes / don't ask again / No (with a reason) and keys 1-3, the other questions as cards, a Stop button,
+  the team's running steps, typed messages waiting with a button to take each back, `/` for commands and skills, a
+  microphone button (`/voice`), and screenshots pasted or dropped into the message (saved in `.agentx/uploads/`).
+  It opens as an Edge or Chrome app window when one is installed, else in the browser. The app itself runs
+  unchanged; the window is another front end, served on 127.0.0.1 with a random token per start and a Host check.
+  `--port` and `--no-open`. No new packages.
 - **`agentx`: commands while it works, and `/unsend`.** Commands that only show something (`/usage`, `/settings`,
   `/help`, `/team log`, `/skills`, `/mcp`, `/memory`, `/sessions`, and `/model`, `/team-models`, `/limit`,
   `/fullscreen` with nothing after them) run at once while the agent works, and `/mode` changes the mode at once;

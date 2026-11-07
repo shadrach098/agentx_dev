@@ -80,6 +80,8 @@ screen (the model, the folder, tips) and the input line:
  default mode: edits and commands ask first (shift+tab to cycle) · claude-opus-5-5 · site
 ```
 
+Prefer a window to the terminal? `agentx --ui` opens the same agentx as a desktop-style app (step 17).
+
 Pick the model with `--model` (`agentx --model claude-opus-5-5`, `agentx --model gpt-6.1-sol`), or switch later with
 `/model`. To leave, type `/exit` or press Ctrl+D; the conversation is saved.
 
@@ -361,7 +363,20 @@ it makes for the step (`security-reviewer`). Reading steps run side by side, up 
 The supervisor then shares the steps among them (at least one step each for Claude and GPT when you list both).
 Each step costs what its model costs. More in [Team jobs](../guides/cli.md#team-jobs).
 
-### 17. Full-screen mode
+### 17. The app window
+
+Prefer a desktop app to the terminal?
+
+```bash
+agentx --ui
+```
+
+The same agentx opens in a window of its own: your conversations on the left, the model and mode at the top, the
+agent's steps and answers in the middle, approvals as cards with **Yes** / **No** buttons, a **Stop** button while it
+works, a microphone button for `/voice`, and screenshots you can paste straight into the message box. Keep the
+terminal it started from open. More in [The app window](../guides/cli.md#the-app-window).
+
+### 18. Full-screen mode
 
 ```bash
 agentx --fullscreen          # or /fullscreen on, from the next start
