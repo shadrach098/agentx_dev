@@ -74,14 +74,65 @@ def _text_of(content: Any) -> str:
     return ""
 
 
+_ADDED_TO_MESSAGES = ("\n\n<project-notes>", "\n\n[agentx]", "\n\n[framework]")
+
+
+def user_messages(history: Any) -> List[str]:
+    """What the person typed, in order: not agentx's own notes, a summary that replaced older messages, a tool
+    result sent as text, or what agentx added to a message."""
+    said: List[str] = []
+    if not isinstance(history, list):
+        return said
+    for message in history:
+        if not (isinstance(message, dict) and message.get("role") == "user"):
+            continue
+        text = _text_of(message.get("content"))
+        for marker in _ADDED_TO_MESSAGES:
+            text = text.split(marker, 1)[0]
+        text = text.removeprefix("[The user wrote this while you were working; take it into account from now on]\n")
+        text = " ".join(_printable(text).split())
+        if not text or text.startswith(("[", "Observation: ")):
+            continue
+        said.append(text)
+    return said
+
+
 def _title(history: Any) -> str:
-    if isinstance(history, list):
-        for message in history:
-            if isinstance(message, dict) and message.get("role") == "user":
-                text = " ".join(_printable(_text_of(message.get("content"))).split())
-                if text:
-                    return text[:TITLE_CHARS]
-    return "(no messages yet)"
+    said = user_messages(history)
+    return said[0][:TITLE_CHARS] if said else "(no messages yet)"
+
+
+TITLES_NAME = "titles.json"                 # short titles the model wrote, by session file name
+MAX_TITLES = 2000
+
+
+def titles_path(home: Path, cwd: Path) -> Path:
+    return sessions_dir(home, cwd) / TITLES_NAME
+
+
+def read_titles(home: Path, cwd: Path) -> dict:
+    data = _load(titles_path(home, cwd))
+    return {str(k): _printable(v)[:TITLE_CHARS] for k, v in (data or {}).items() if isinstance(v, str) and v.strip()}
+
+
+def save_title(home: Path, cwd: Path, session_file: str, title: str) -> bool:
+    """Keep ``title`` for the session saved as ``session_file`` (its name). Never raises; False when not saved."""
+    title = _printable(title)[:TITLE_CHARS].strip()
+    if not title:
+        return False
+    path = titles_path(home, cwd)
+    try:
+        titles = read_titles(home, cwd)
+        titles[str(session_file)] = title
+        if len(titles) > MAX_TITLES:                       # the oldest names (by their timestamp) go first
+            titles = dict(sorted(titles.items())[-MAX_TITLES:])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".titles-{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(titles, indent=1, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def _load(path: Path) -> Optional[dict]:
@@ -106,14 +157,18 @@ def list_sessions(home: Path, cwd: Path) -> List[SessionInfo]:
     except (OSError, ValueError):
         return []
     found: List[SessionInfo] = []
+    titles = read_titles(home, cwd)
     for path in paths:
+        if path.name == TITLES_NAME:
+            continue
         data = _load(path)
         if data is None:
             continue
         raw_id = data.get("session_id")
         session_id = (_printable(raw_id) if isinstance(raw_id, (str, int)) else "") or path.stem
         updated = data.get("updated_at")
-        found.append(SessionInfo(path=path, session_id=session_id, title=_title(data.get("history")),
+        found.append(SessionInfo(path=path, session_id=session_id,
+                                 title=titles.get(path.name) or _title(data.get("history")),
                                  updated_at=_printable(updated) if isinstance(updated, str) else ""))
     found.sort(key=lambda info: (info.updated_at, info.path.name), reverse=True)
     return found

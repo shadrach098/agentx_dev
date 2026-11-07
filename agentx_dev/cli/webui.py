@@ -64,6 +64,8 @@ RECORDING_MARK = "Recording"        # the prompt /voice shows while it records (
 MODEL_SUGGESTIONS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "gpt-6.1-sol",
                      "gpt-6-luna", "gpt-5.5")
 MODES_SHOWN = ("default", "accept-edits", "plan", "auto")
+KEEP_ALIVE_SEC = 4.0                # a closed window is noticed when this write fails
+CLOSE_GRACE_SEC = 8.0               # how long the window may be gone (a reload) before agentx quits
 SKIP_FOLDERS = {"node_modules", "__pycache__", "dist", "build", "venv", "env", "target", "out", "coverage"}
 _MAX_RESULT_LINES = 12
 _MAX_OUTPUT_LINES = 120             # what a step shows when you open it
@@ -343,6 +345,9 @@ class WebFront:
         self._worker: Optional[threading.Thread] = None
         self._server: Optional[ThreadingHTTPServer] = None
         self._files: Optional[tuple] = None                 # (when, the project's files) for "Mention a file"
+        self._windows = 0                                   # windows connected now (their event streams)
+        self._had_window = False
+        self._alone_since: Optional[float] = None
         self._last_status = ""
         self._since_wall: Dict[float, float] = {}
         self._conversation = ""
@@ -1005,6 +1010,34 @@ class WebFront:
         threading.Thread(target=self._tick, name="agentx-ui-status", daemon=True).start()
         return self.address()
 
+    def window_connected(self, on: bool) -> None:
+        with self._lock:
+            self._windows = max(0, self._windows + (1 if on else -1))
+            if on:
+                self._had_window = True
+                self._alone_since = None
+            elif self._windows == 0:
+                self._alone_since = time.monotonic()
+
+    def window_closed(self) -> bool:
+        """True once the window agentx opened has been gone for ``CLOSE_GRACE_SEC`` (a reload comes back sooner).
+        Only for a window agentx opened itself: with ``--no-open`` or ``--remote`` it keeps running for a later
+        connection."""
+        if not self.open_it:
+            return False
+        with self._lock:
+            return (self._had_window and self._windows == 0 and self._alone_since is not None
+                    and time.monotonic() - self._alone_since >= CLOSE_GRACE_SEC)
+
+    def quit_for_closed_window(self) -> None:
+        """The window was closed: stop what runs (kept as a stopped turn, as with Ctrl+C), then end the app."""
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and self._worker is not None and self._worker.is_alive():
+            if self.stop() == "idle":
+                break
+            time.sleep(0.3)
+        self.close()
+
     def close(self) -> None:
         with self._lock:
             self._closed = True
@@ -1034,10 +1067,17 @@ class WebFront:
             how = self.opener(url) if self.open_it else ""
             print(f"agentx is open {'in an ' + how if how == 'app window' else 'in your browser' if how else 'at'}: {url}",
                   flush=True)
-        print("Keep this terminal open; close it or press Ctrl+C here to quit agentx.", flush=True)
+        print("Closing the window quits agentx; so does Ctrl+C here." if self.open_it else
+              "Keep this terminal open; close it or press Ctrl+C here to quit agentx.", flush=True)
         try:
             while self._worker.is_alive():
                 self._worker.join(0.5)
+                if self.window_closed():
+                    print("The window was closed, so agentx is quitting. Your conversation is saved; "
+                          "agentx --ui --continue picks it up.", flush=True)
+                    self.quit_for_closed_window()
+                    self._worker.join(10)
+                    break
         except KeyboardInterrupt:
             self.close()
             self._worker.join(5)
@@ -1171,9 +1211,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         last = after
+        self.front.window_connected(True)
         try:
             while True:
-                events = self.front.bus.after(last, wait=15.0)
+                events = self.front.bus.after(last, wait=KEEP_ALIVE_SEC)
                 if not events:
                     self.wfile.write(b": keep-alive\n\n")
                 for event in events:
@@ -1185,3 +1226,5 @@ class _Handler(BaseHTTPRequestHandler):
                     return
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             return
+        finally:
+            self.front.window_connected(False)

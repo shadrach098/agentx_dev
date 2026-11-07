@@ -25,6 +25,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   a picture, mentions a file (search) or opens another folder in a new window. `agentx --ui --remote` keeps the window
   on the server's 127.0.0.1 and prints the `ssh -N -L` command to use it from another computer. Light or dark follows
   the system. A notice that MCP servers need sign-in has a button per server.
+- **Conversation titles and closing the window.** After its first answer, a conversation gets a short title from the
+  model (one small request, on a thread of its own), shown in the app window's list and in `/resume`; older ones
+  show the first thing you typed, no longer agentx's summary note. Closing the app window quits agentx (a running turn
+  stops and is kept, the conversation is saved); a reload does not. Not with `--no-open` or `--remote`.
 - **`agentx`: commands while it works, and `/unsend`.** Commands that only show something (`/usage`, `/settings`,
   `/help`, `/team log`, `/skills`, `/mcp`, `/memory`, `/sessions`, and `/model`, `/team-models`, `/limit`,
   `/fullscreen` with nothing after them) run at once while the agent works, and `/mode` changes the mode at once;

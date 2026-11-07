@@ -812,8 +812,13 @@ agentx --ui                      # the same flags work: agentx --ui --continue -
 
 `agentx --ui` opens agentx in a window of its own instead of the terminal: the same agent, tools, approvals,
 settings, conversations and commands, drawn as a desktop app. The window is Edge or Chrome started as an app (no
-tabs or address bar) when one is installed, else a tab in your default browser. Keep the terminal it was started
-from open; closing it, or Ctrl+C there, quits agentx.
+tabs or address bar) when one is installed, else a tab in your default browser. Closing the window quits agentx
+(after about 8 seconds, so a reload does not): a turn that is running stops and is kept, as with Ctrl+C, and the
+conversation is saved for `agentx --ui --continue`. Ctrl+C in the terminal it started from quits too. With
+`--no-open` or `--remote`, agentx keeps running when the window closes, so you can open it again.
+
+Each conversation gets a short title from the model after its first answer (one small request), shown in the list
+on the left and in `/resume`; until then, and for older conversations, the first thing you typed is the title.
 
 - **Left:** the conversations in this folder, newest first; click one to open it (`/resume`), or **New
   conversation** (`/clear`). At the bottom: the folder (click it to open another folder or copy its path) and

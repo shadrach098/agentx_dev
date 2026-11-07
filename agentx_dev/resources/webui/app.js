@@ -1004,7 +1004,9 @@
       case "thought": agentTurn().append(el("div", "note", esc(ev.text))); group = null; break;
       case "tool_call": dropWelcome(); toolCall(ev); break;
       case "tool_result": toolResult(ev); break;
-      case "final": group = null; lastPrint = null; addAnswer(ev.text); loadSessions(); break;
+      case "final":                                 // the conversation's short title is written just after
+        group = null; lastPrint = null; addAnswer(ev.text); loadSessions();
+        setTimeout(loadSessions, 4000); setTimeout(loadSessions, 12000); break;
       case "print": dropWelcome(); addPrint(ev); break;
       case "notice": addNotice(ev); break;
       case "echo": addEcho(ev); break;

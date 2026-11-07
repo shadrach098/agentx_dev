@@ -87,6 +87,24 @@ CARRY_ON_NOTE = ("\n\n[agentx] Your last turn stopped at the step limit. Everyth
                  "something.")
 
 
+TITLE_PROMPT = ("Write a title for this conversation, for a list of conversations: 2 to 6 words, in the language the "
+                "user writes in, naming the task (not the greeting). Only the title: no quotes, no full stop.\n\n"
+                "What the user said:\n{said}\n\nThe start of the answer:\n{answer}")
+
+
+def clean_title(reply: str) -> str:
+    """The model's title, as one short line: the first non-empty line, without quotes, a ``Title:`` label, markdown
+    marks or a final full stop; at most 60 characters. Empty when nothing usable came back."""
+    for line in str(reply or "").splitlines():
+        line = line.strip().lstrip("#*-> ").strip()
+        if line.lower().startswith("title:"):
+            line = line[6:].strip()
+        line = line.strip("\"'`*_“”‘’ ").rstrip(".").strip()
+        if line:
+            return " ".join(line.split())[:60]
+    return ""
+
+
 STOPPED_CARRY_ON_NOTE = ("\n\n[agentx] Your last turn stopped before it finished; what it did is noted above. Carry on "
                          "from there: check the files it changed before redoing anything.")
 KEPT_SO_FAR = "What it did so far is kept in the conversation, and changes already made stay on disk."
@@ -1021,6 +1039,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             self.save()
             after = self._usage_totals()
             self._last_turn_usage = tuple(b - a for a, b in zip(usage_before, after))      # type: ignore[assignment]
+            self._maybe_title()
         if finished:
             try:
                 self._log_turn(text if log_title is None else log_title, events)
@@ -1178,6 +1197,40 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         if not self._log_warned:
             self._log_warned = True
             self.notice("Could not write the work log in .agentx/log.md; carrying on without it.")
+
+    def _maybe_title(self) -> None:
+        """After the first answer: a short title for this conversation, written once by the model on a thread of its
+        own (the list of conversations shows it instead of the first message). Only in a real run
+        (``auto_titles``); a failure leaves the first message as the title."""
+        path = self.session_path
+        if not getattr(self, "auto_titles", False) or self.session is None or path is None \
+                or getattr(self, "_titled", None) == path:
+            return
+        from agentx_dev.cli.sessions import _text_of, read_titles, save_title, user_messages
+        if path.name in read_titles(self.home, self.cwd):
+            self._titled = path
+            return
+        history = list(self.session.history)
+        said = user_messages(history)
+        answer = next((_text_of(m.get("content")) for m in reversed(history)
+                       if isinstance(m, dict) and m.get("role") == "assistant" and _text_of(m.get("content")).strip()), "")
+        if not said or not answer:
+            return
+        self._titled = path
+        prompt = TITLE_PROMPT.format(said="\n".join(f"- {s[:400]}" for s in said[:4]), answer=answer.strip()[:600])
+        model_name, env, home, cwd = self.requested_model, dict(self.env), self.home, self.cwd
+
+        def work() -> None:
+            try:
+                model = self.model_factory(model_name, env)
+                reply = model.Initialize(messages=[{"role": "user", "content": prompt}])
+                title = clean_title(reply if isinstance(reply, str) else "")
+                if title:
+                    save_title(home, cwd, path.name, title)
+            except Exception:                           # a title is a nicety: the first message stays
+                logging.getLogger(__name__).debug("no title for the conversation", exc_info=True)
+
+        threading.Thread(target=work, name="agentx-title", daemon=True).start()
 
     def save(self) -> None:
         if self.session is None or self.session_path is None or not self.session.history:
@@ -1548,6 +1601,7 @@ def _run(args: argparse.Namespace, home: Path, console: Console, read: Callable[
                       team_models=settings.team_models, team_models_source=settings.team_models_source,
                       team_model_uses=settings.team_model_uses, token_limit=settings.token_limit,
                       max_steps=min(max(1, args.max_steps), MAX_MAX_STEPS) if args.max_steps else settings.max_steps)
+        app.auto_titles = True                         # a real run: conversations get a short title from the model
         if wire is not None:
             wire(app)
         holder.append(app)
