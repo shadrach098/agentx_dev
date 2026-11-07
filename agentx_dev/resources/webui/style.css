@@ -327,11 +327,15 @@ svg { width: 16px; height: 16px; flex: none; }
 .palette-name.skill { color: var(--info); }
 .palette-desc { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(3px); display: grid; place-items: center; z-index: 20; padding: 16px; }
+.overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(3px); display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; z-index: 20; padding: 16px; }
 .overlay-box { background: var(--surface); border: 1px solid var(--line-strong); border-radius: 16px; padding: 24px 26px; width: min(440px, 100%); box-shadow: var(--shadow); animation: pop 0.14s ease-out; }
 .overlay-box h2 { margin: 0 0 8px; font-size: 18px; font-weight: 600; font-family: var(--display); }
 .overlay-box p { margin: 0; color: var(--muted); }
 .overlay-box code { font-family: var(--mono); font-size: 13px; color: var(--text); }
+.key-form { display: flex; gap: 8px; margin-top: 16px; }
+.key-form input { flex: 1; width: 0; min-width: 0; padding: 8px 11px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--bg); font-family: var(--mono); font-size: 13px; }
+.overlay-box .key-msg { margin-top: 8px; font-size: 13px; color: var(--danger); }
+.overlay-box .key-msg:empty { display: none; }
 
 /* a step you can open: its output */
 .step.openable > .step-head { cursor: pointer; }

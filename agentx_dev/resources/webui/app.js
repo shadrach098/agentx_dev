@@ -6,13 +6,20 @@
   const $ = (id) => document.getElementById(id);
   const column = $("column"), log = $("log"), input = $("input"), palette = $("palette");
 
-  // -- the token of this run: from the address once, then kept for reloads -----------------------------------
-  const params = new URLSearchParams(location.search);
-  let token = params.get("t") || sessionStorage.getItem("agentx-token") || "";
-  if (params.get("t")) {
-    sessionStorage.setItem("agentx-token", token);
-    history.replaceState(null, "", "/");
+  // -- the key of this run: from the link (?t=...), then kept in the address after a # (never sent to the server,
+  // but it goes along with "Open in Safari", a new tab, sharing to another browser or a bookmark) ------------
+  const keyFrom = (text) => {
+    const s = String(text || "").trim();
+    const m = s.match(/[?#&]t=([^&#\s]+)/);
+    return m ? decodeURIComponent(m[1]) : /^[\w-]{16,}$/.test(s) ? s : "";
+  };
+  let token = keyFrom(location.search) || keyFrom(location.hash);
+  try { token = token || sessionStorage.getItem("agentx-token") || ""; } catch (_) { /* no storage */ }
+  function keepKey() {
+    try { sessionStorage.setItem("agentx-token", token); } catch (_) { /* no storage */ }
+    if (token) history.replaceState(null, "", `/#t=${encodeURIComponent(token)}`);
   }
+  keepKey();
 
   async function post(path, body) {
     const res = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Agentx-Token": token},
@@ -1167,11 +1174,40 @@
     $("overlay").hidden = false;
   }
 
-  function connect() {
+  // No key, or the key of an earlier start: say so, and take the link agentx printed (pasted here) instead.
+  function askForKey(title, text) {
+    $("overlayBox").innerHTML = `<h2>${esc(title)}</h2><p>${esc(text)}</p>
+      <form class="key-form"><input type="text" name="link" autocomplete="off" autocapitalize="off" spellcheck="false"
+        placeholder="Paste the link agentx printed" aria-label="The link agentx printed">
+        <button type="submit" class="btn primary">Open</button></form><p class="key-msg" role="status"></p>`;
+    $("overlay").hidden = false;
+    const form = $("overlayBox").querySelector("form");
+    form.link.focus();
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const key = keyFrom(form.link.value);
+      if (!key) { $("overlayBox").querySelector(".key-msg").textContent = "That is not an agentx link: it has ?t= in it."; return; }
+      token = key;
+      keepKey();
+      location.reload();
+    });
+  }
+
+  async function connect() {
     if (!token) {
-      $("overlayBox").innerHTML = "<h2>Open agentx from your terminal</h2><p>Run <code>agentx --ui</code> in a project folder; it opens this window with the right address.</p>";
-      $("overlay").hidden = false;
+      askForKey("This page has no key", "It was opened without the end of its link (the part with ?t=). Open the " +
+        "whole link agentx printed in the terminal, or paste it here.");
       return;
+    }
+    const check = await fetch("/api/state", {headers: {"X-Agentx-Token": token}}).catch(() => null);
+    if (check && check.status === 403) {
+      const why = await check.json().catch(() => ({}));
+      if (why.error === "forbidden") {
+        try { sessionStorage.removeItem("agentx-token"); } catch (_) { /* no storage */ }
+        askForKey("This link is from an earlier start", "Every start of agentx makes a new link. Open the one the " +
+          "terminal shows now, or paste it here.");
+        return;
+      }
     }
     const source = new EventSource(`/events?t=${encodeURIComponent(token)}`);
     source.onmessage = (m) => {

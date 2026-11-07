@@ -637,3 +637,16 @@ class TestSigningInFromAnotherDevice:
             assert ok["ok"] is True and got == ["/callback?code=abc123&state=xyz"]
         finally:
             server.server_close()
+
+
+def test_the_key_stays_in_the_address_for_open_in_safari():
+    """The page took the key out of the address, so "Open in Safari" (or a new tab, or a bookmark) opened it without
+    one and a box that could not be closed said to start agentx. The key stays after a # (never sent to the server);
+    with none, or one from an earlier start, the box says so and takes the printed link pasted in."""
+    from agentx_dev.cli.webui import RESOURCES
+    script = (RESOURCES / "app.js").read_text(encoding="utf-8")
+    assert 'history.replaceState(null, "", `/#t=${encodeURIComponent(token)}`)' in script
+    assert 'history.replaceState(null, "", "/")' not in script
+    assert "keyFrom(location.hash)" in script
+    assert "This page has no key" in script and "This link is from an earlier start" in script
+    assert "Paste the link agentx printed" in script

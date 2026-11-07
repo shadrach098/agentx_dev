@@ -130,6 +130,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **"Open in Safari" opens the app window, not a box saying to start agentx.** The page took its key out of
+  the address, so opening it in another browser, a new tab or from a bookmark had none, and the box could not be
+  closed. The key now stays in the address after a `#` (never sent to the server). Without a key, or with one from
+  an earlier start, the box says which, and takes the link agentx printed pasted in.
 - **`agentx --remote` opens the terminal with remote control on.** Before, `--remote` needed `--ui` and gave the app
   window only; now `agentx --remote` is `agentx` followed by `/remote-control` (`--ui --remote` still serves the
   window only).
