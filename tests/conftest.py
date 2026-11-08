@@ -125,6 +125,19 @@ def make_final_response():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_tailscale(monkeypatch):
+    """No test reaches the Tailscale on the machine running the tests (a test once shared a port through it and
+    cleared that machine's own entries): Tailscale is "not installed" unless a test stands in for it."""
+    try:
+        from agentx_dev.cli import webui
+    except Exception:                                   # the CLI's packages are not installed: nothing to guard
+        yield
+        return
+    monkeypatch.setattr(webui, "_tailscale_exe", lambda: None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _forget_learned_endpoints():
     """Which OpenAI models need the Responses API is remembered for the whole process; each test starts fresh."""
     from agentx_dev.ChatModel import forget_learned_endpoints

@@ -902,7 +902,9 @@ passes on Tailscale's own link when Tailscale asks to allow Serve). agentx then 
   `https://<computer>.<your-tailnet>.ts.net:<port>/?t=...` and prints that link: open it in Safari or Chrome there, from
   anywhere. agentx itself stays on 127.0.0.1; Tailscale carries the window to your own devices only, with a real
   certificate (so Safari's HTTPS-only setting is happy) and no firewall rule to add. The link's secret key is still
-  needed, and the link stops when agentx does (`tailscale serve reset` clears a leftover one after a crash).
+  needed, and the link stops when agentx does. If the computer sleeps, or Tailscale restarts, and Tailscale stops
+  sharing agentx, agentx shares it again within 30 seconds (the same link works); at start it clears entries earlier
+  runs left shared with nothing behind them.
 - **From another computer: SSH.** Run the printed `ssh -N -L <port>:127.0.0.1:<port> you@<address>` there and leave
   it open. The address is the computer's address on your Wi-Fi or office network; its Tailscale address (100.x, also
   printed) answers only a computer signed in to your Tailscale, which can open the Tailscale link instead. Keep it open (it prints nothing while it works), then open the printed `http://127.0.0.1:<port>/?t=...` in that

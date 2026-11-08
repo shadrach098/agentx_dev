@@ -833,6 +833,12 @@ saved: **Open it again** carries on.
 **The Details panel scrolls sideways on an iPad** *(fixed)*
 A long MCP server name or address stretched it. Names now wrap, and on an iPad the panel slides over the chat.
 
+**`--remote`: the iPad's link stopped working after the computer slept, though the terminal still runs** *(fixed)*
+Tailscale had stopped sharing agentx's port (it can after a sleep or a Tailscale restart), so the link pointed at
+nothing, while the address on the computer itself still worked. agentx now checks every 30 seconds that Tailscale
+still shares it and shares it again (the same link works, and the terminal says so); at start it also clears what
+earlier runs left shared. On an older version, quit agentx and start it again, and open the new link.
+
 **`--remote`: the Tailscale link does not load on a device**
 That device must be signed in to the same Tailscale account and switched on (the Tailscale app shows it connected; on
 the agentx computer, `tailscale status` lists it). agentx's terminal prints a line when a window connects.

@@ -68,7 +68,8 @@ MODEL_SUGGESTIONS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5",
 MODES_SHOWN = ("default", "accept-edits", "plan", "auto")
 KEEP_ALIVE_SEC = 4.0                # a closed window is noticed when this write fails
 CLOSE_GRACE_SEC = 8.0               # how long the window may be gone (a reload) before agentx quits
-ROOM_IDLE_SEC = 15 * 60             # a device's own conversation no window used for this long is closed (and saved)
+SHARE_CHECK_SEC = 30.0              # remote use: how often agentx checks Tailscale still shares it (after a sleep)
+ROOM_IDLE_SEC = 15 * 60            # a device's own conversation no window used for this long is closed (and saved)
 ROOM_REMOTE_NOTE = ("Remote control is turned on and off on the computer agentx runs on; this device has its own "
                     "conversation there.")
 _DEVICE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
@@ -441,6 +442,45 @@ def tailscale_serve(port: int) -> str:
 
 def tailscale_unserve(port: int) -> None:
     _tailscale(["serve", f"--https={int(port)}", "off"], timeout=10)
+
+
+def tailscale_agentx_ports() -> Optional[set]:
+    """The ports Tailscale shares the way agentx does (``https://<name>:N`` passed to ``http://127.0.0.1:N``), or
+    None when Tailscale cannot say."""
+    code, out = _tailscale(["serve", "status", "--json"], timeout=10)
+    if code != 0:
+        return None
+    try:
+        data = json.loads(out or "{}") or {}
+    except ValueError:
+        return None
+    ports = set()
+    for site, config in ((data.get("Web") or {}) if isinstance(data, dict) else {}).items():
+        port = str(site).rpartition(":")[2]
+        proxy = (((config or {}).get("Handlers") or {}).get("/") or {}).get("Proxy", "")
+        if port.isdigit() and proxy == f"http://127.0.0.1:{port}":
+            ports.add(int(port))
+    return ports
+
+
+def _listening(port: int) -> bool:
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def tailscale_clear_leftovers(keep: Optional[int] = None) -> List[int]:
+    """Take away what earlier agentx runs left shared (a run that was killed, or a computer that slept through it):
+    agentx-style entries whose port nothing listens on any more. Returns the ports cleared."""
+    cleared = []
+    for port in sorted(tailscale_agentx_ports() or ()):
+        if port != keep and not _listening(port):
+            tailscale_unserve(port)
+            cleared.append(port)
+    return cleared
 
 
 def windows_ssh_blocked() -> str:
@@ -1463,11 +1503,36 @@ class WebFront:
         """Tailscale serves ``https://<name>:<port>`` to your own devices and passes it to this server on
         127.0.0.1 (agentx itself never listens on another address; Tailscale handles the firewall and HTTPS)."""
         port = self._server.server_address[1]
+        try:
+            tailscale_clear_leftovers(keep=port)
+        except Exception:                               # tidying up must never stop remote use
+            pass
         problem = tailscale_serve(port)
         if problem:
             self.tailnet_problem, self.tailnet = problem, None
             return
         self._serving = port
+        threading.Thread(target=self._keep_shared, args=(port,), name="agentx-tailscale", daemon=True).start()
+
+    def _keep_shared(self, port: int) -> None:
+        """While remote use is on: Tailscale must still share this port. After the computer slept, or Tailscale
+        restarted, it can stop doing so and the iPad's link goes dead; then share it again (the same link)."""
+        while not self._closed and self._serving == port:
+            time.sleep(SHARE_CHECK_SEC)
+            if self._closed or self._serving != port:
+                return
+            try:
+                shared = tailscale_agentx_ports()
+                if shared is None or port in shared:
+                    continue
+                problem = tailscale_serve(port)
+                stamp = datetime.now().strftime("%H:%M:%S")
+                line = (f"[{stamp}] Tailscale had stopped sharing agentx (the computer slept, or Tailscale "
+                        f"restarted); shared again: the same link works." if not problem else
+                        f"[{stamp}] Tailscale stopped sharing agentx and could not share it again: {problem}")
+                (self.on_window or (lambda text: print(text, flush=True)))(line)
+            except Exception:
+                pass
 
     def _stop_tailnet(self) -> None:
         port, self._serving = self._serving, None

@@ -139,6 +139,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **The iPad's link keeps working after the computer sleeps.** Tailscale could stop sharing agentx's port (after a
+  sleep or a Tailscale restart) while agentx still ran, so the link was dead. agentx now checks every 30 seconds
+  and shares it again (the same link), saying so in the terminal, and at start clears entries earlier runs left
+  shared with nothing behind them. The tests no longer reach the Tailscale of the machine they run on.
 - **The ssh command for another computer uses the Wi-Fi address again.** With Tailscale on, it used this computer's
   Tailscale address (100.x), which times out from a laptop without Tailscale; the Tailscale address is now offered
   as the one to use from a computer with Tailscale on.

@@ -256,3 +256,45 @@ def test_a_window_says_when_another_conversation_works_in_the_folder(host):
         assert h.front._status()["othersWorking"] == 0             # its own work is not "another"
     finally:
         h.app.progress._shown = False
+
+
+class TestTailscaleKeepsSharing:
+    """The computer slept overnight: Tailscale no longer shared agentx's port, so the iPad's link was dead while the
+    terminal still ran, and two earlier runs' entries were still shared, pointing at nothing."""
+
+    STATUS = json.dumps({"Web": {
+        "pc.tail.ts.net:10659": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:10659"}}},
+        "pc.tail.ts.net:14928": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:14928"}}},
+        "pc.tail.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:3000"}}}}})
+
+    def test_the_ports_shared_the_agentx_way(self, monkeypatch):
+        from agentx_dev.cli import webui
+        monkeypatch.setattr(webui, "_tailscale", lambda args, timeout=20: (0, self.STATUS))
+        assert webui.tailscale_agentx_ports() == {10659, 14928}        # not the user's own :443 -> :3000
+
+    def test_leftovers_with_nothing_behind_them_are_cleared(self, monkeypatch):
+        from agentx_dev.cli import webui
+        calls = []
+        monkeypatch.setattr(webui, "_tailscale", lambda args, timeout=20: calls.append(args) or (0, self.STATUS))
+        monkeypatch.setattr(webui, "_listening", lambda port: port == 14928)
+        assert webui.tailscale_clear_leftovers(keep=14902) == [10659]   # 14928 still has something behind it
+        assert ["serve", "--https=10659", "off"] in calls
+
+    def test_a_lost_share_is_shared_again(self, tmp_path, monkeypatch):
+        from agentx_dev.cli import webui
+        monkeypatch.setattr(webui, "SHARE_CHECK_SEC", 0.05)
+        monkeypatch.setattr(webui, "tailscale_agentx_ports", lambda: {10659})   # ours (14902) is gone
+        served, said = [], []
+        monkeypatch.setattr(webui, "tailscale_serve", lambda port: served.append(port) or "")
+        front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False, remote=True)
+        front.on_window = said.append
+        front._serving = 14902
+        thread = threading.Thread(target=front._keep_shared, args=(14902,), daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while not served and time.monotonic() < deadline:
+            time.sleep(0.02)
+        front._serving = None                                          # remote use ends: the check stops
+        thread.join(2)
+        assert served and served[0] == 14902 and "shared again" in said[0]
+        assert not thread.is_alive()
