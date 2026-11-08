@@ -251,3 +251,18 @@ def test_in_the_terminal_each_device_gets_its_own_conversation_and_can_join(term
     prompt.typed.put("/remote-control off")
     wait_for(lambda: getattr(app, "_remote", "x") is None)
     wait_for(lambda: phone.ended)
+
+
+def test_on_a_vps_the_ssh_command_is_the_one_you_logged_in_with():
+    """A VPS with SSH on port 2222: the printed command used port 22 and the public address agentx guessed, so it
+    timed out. In an SSH session the address and port that session came in on are used."""
+    from agentx_dev.cli.webui import remote_instructions, ssh_login
+    assert ssh_login({"SSH_CONNECTION": "203.0.113.9 51234 147.79.101.66 2222"}) == ("147.79.101.66", 2222)
+    assert ssh_login({}) == ("", 0)
+    text = remote_instructions("http://127.0.0.1:45093/?t=k", ssh_running=True, firewall="",
+                               addresses=["10.1.0.4"], login=("147.79.101.66", 2222))
+    assert "ssh -p 2222 -N -L 45093:127.0.0.1:45093 " in text and "@147.79.101.66" in text
+    assert "ssh -p 2222 -N -L 9000:127.0.0.1:45093" in text
+    plain = remote_instructions("http://127.0.0.1:45093/?t=k", ssh_running=True, firewall="",
+                                addresses=["10.1.0.4"], login=("10.1.0.4", 22))
+    assert "ssh -N -L 45093" in plain and "-p 22 " not in plain

@@ -357,6 +357,16 @@ def local_addresses() -> List[str]:
     return sorted(found, key=is_tailnet_ip)
 
 
+def ssh_login(env: Optional[Mapping[str, str]] = None) -> "tuple[str, int]":
+    """When agentx runs in an SSH session (a VPS): the address and port that session came in on, from
+    ``SSH_CONNECTION`` ("client-ip client-port server-ip server-port"), so the printed ssh command is the one that
+    already works (a server on port 2222 needs ``-p 2222``). ("", 0) outside SSH."""
+    parts = str((os.environ if env is None else env).get("SSH_CONNECTION") or "").split()
+    if len(parts) != 4 or not parts[3].isdigit():
+        return "", 0
+    return parts[2], int(parts[3])
+
+
 def is_tailnet_ip(address: Any) -> bool:
     """An address Tailscale gives a device (100.64.0.0/10, or its IPv6 range): only your own devices have them."""
     import ipaddress
@@ -526,7 +536,8 @@ ENABLE_SSH_SERVER = {
 
 def remote_instructions(url: str, ssh_running: Optional[bool] = None,
                         addresses: Optional[Sequence[str]] = None, tailnet_url: Optional[str] = None,
-                        tailnet_problem: str = "", firewall: Optional[str] = None) -> str:
+                        tailnet_problem: str = "", firewall: Optional[str] = None,
+                        login: Optional["tuple[str, int]"] = None) -> str:
     """``agentx --ui --remote``: the window stays on this machine's 127.0.0.1 (never on the network); the person
     reaches it through an SSH tunnel from their own computer. This says how, with this machine's names filled in, and
     says first when no SSH server runs here (then the ssh command is refused)."""
@@ -541,6 +552,10 @@ def remote_instructions(url: str, ssh_running: Optional[bool] = None,
     host = socket.gethostname() or "this-server"
     running = ssh_server_running() if ssh_running is None else ssh_running
     found = sorted(local_addresses() if addresses is None else addresses, key=is_tailnet_ip)
+    came_in, ssh_port = ssh_login() if login is None else login
+    if came_in and ":" not in came_in:                 # the address this SSH session used: it already works
+        found = [came_in, *[a for a in found if a != came_in]]
+    port_flag = f"-p {ssh_port} " if ssh_port and ssh_port != 22 else ""
     target = found[0] if found else host
     nearby = [a for a in found[1:] if not is_tailnet_ip(a)]
     tailnet_ips = [a for a in found if is_tailnet_ip(a)]
@@ -574,7 +589,7 @@ def remote_instructions(url: str, ssh_running: Optional[bool] = None,
             lines += ["First: " + blocked, ""]
     lines += ["On the other computer (the one you use the window from):", "",
               "  1. Run this, and leave it open. It prints nothing while it works; that silence is the connection:", "",
-              f"       ssh -N -L {port}:127.0.0.1:{port} {user}@{target}", "",
+              f"       ssh {port_flag}-N -L {port}:127.0.0.1:{port} {user}@{target}", "",
               "  2. Open this in that computer's browser (it carries this run's secret key; do not share it):", "",
               f"       {url}", "",
               f"     It says 127.0.0.1 because step 1 makes that computer's port {port} lead here.", "",
@@ -587,7 +602,7 @@ def remote_instructions(url: str, ssh_running: Optional[bool] = None,
                 [f"{target} is this computer's Tailscale address: it answers only computers signed in to your Tailscale."]),
               f"The port changes with each start; add --port {port} to keep this one. Port {port} busy on the other "
               f"computer? Use",
-              f"ssh -N -L 9000:127.0.0.1:{port} ... and open http://127.0.0.1:9000/?t=... instead.",
+              f"ssh {port_flag}-N -L 9000:127.0.0.1:{port} ... and open http://127.0.0.1:9000/?t=... instead.",
               f"(Sitting at this computer instead? The same address works here directly, without ssh.)"]
     return "\n".join(lines)
 

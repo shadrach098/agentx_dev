@@ -792,6 +792,11 @@ Windows, in PowerShell as administrator: `Add-WindowsCapability -Online -Name Op
 address `--remote` prints (the machine's name may not resolve from another computer). On the same computer you need
 no ssh: open the address directly.
 
+**`--remote` on a VPS: the ssh command times out, though you log in to the server fine**
+The server's SSH runs on another port than 22 (2222, say) and the command did not say so. Add the port you log
+in with: `ssh -p 2222 -N -L <port>:127.0.0.1:<port> you@<server>`. Since 3.8.1, agentx run inside an SSH session
+prints the address and port that session came in on.
+
 **`--remote`: ssh times out from the other computer, and the agentx computer's SSH log shows nothing**
 Windows Firewall drops it: the network is set to Public and the OpenSSH rule only lets SSH in on Private networks.
 At home, set the Wi-Fi to Private (Settings > Network & internet > Wi-Fi > your network). agentx says so when it

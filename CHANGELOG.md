@@ -6,6 +6,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--remote` on a VPS prints the ssh command that works.** It assumed SSH on port 22 and guessed the address, so
+  a server on another port (2222, say) timed out. In an SSH session agentx now uses the address and port that
+  session came in on (`ssh -p 2222 ...`).
+
 ## [3.8.0] - 2026-11-08
 
 ### Added
