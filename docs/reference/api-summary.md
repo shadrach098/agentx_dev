@@ -11,8 +11,8 @@ from agentx_dev import X
 | Symbol | Kind | Doc |
 |---|---|---|
 | `BaseChatModel` | ABC | [concepts/models](../concepts/models.md) (3.4.2: `invoke` / `ainvoke` take `media=[...]`) |
-| `GPT` | class | OpenAI Chat Completions wrapper (3.4: `adapt_params` — adapts to per-model parameter support, e.g. `reasoning_effort` values; 3.4.1: `use_responses_api` — tool calls move to `/v1/responses` when a model requires it) |
-| `Claude` | class | Anthropic Messages wrapper (3.1: `enable_prompt_cache`; 3.4: `top_p`, `top_k`, `thinking`, `stop_sequences`, `adapt_params`; `temperature` defaults to unset) |
+| `GPT` | class | OpenAI Chat Completions wrapper (3.4: `adapt_params` — adapts to per-model parameter support, e.g. `reasoning_effort` values; 3.4.1: `use_responses_api` — tool calls move to `/v1/responses` when a model requires it; 3.8: `show_reasoning` — a reasoning model's summary as a `reasoning` event, see [streaming](../guides/streaming.md#runner-level-event-streaming)) |
+| `Claude` | class | Anthropic Messages wrapper (3.1: `enable_prompt_cache`; 3.4: `top_p`, `top_k`, `thinking`, `stop_sequences`, `adapt_params`; `temperature` defaults to unset; 3.8: `show_reasoning` — the reasoning summary of Opus 5.5 / Sonnet 5.5 / Fable 5.1, same cost) |
 | `Media` *(3.4)* | class | Image / PDF / audio input, rendered per provider. `Media.image()`, `.document()`, `.audio()`, `.from_path()`, `.from_url()`, `.from_bytes()`; 3.4.2: `.text()` and `.spreadsheet()` for CSV / text / Excel. See [Media reference](../media/reference.md) |
 | `StructuredOutputRunnable` | class | Result of `.with_structured_output(schema)` (3.4.2: `invoke` / `ainvoke` take `media=[...]`) |
 | `TokenBucket` | class | Rate limiter |
@@ -142,7 +142,7 @@ CLI: `python -m agentx_dev.Evals run <dir> --config <yaml>`
 | `Session` | class | Serializable conversation state |
 | `Session.stream(user_input, **kw)` *(3.7)* | method | Like `invoke`, but yields the runner's events (`thought`, `tool_call`, `tool_result`, `final`, `completion`) and absorbs the result on the `completion` event. A turn abandoned before then (Ctrl+C, closing the generator) is not recorded |
 
-## Skills *(next release)*
+## Skills *(3.8)*
 
 Import from `agentx_dev.Skills`. See the [Skills guide](../guides/skills.md).
 

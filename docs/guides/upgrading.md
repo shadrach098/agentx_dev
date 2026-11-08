@@ -13,7 +13,7 @@ module stays imported until you do, which shows up as errors like
 
 ---
 
-## Upgrading to the release after 3.7.0 (skills)
+## Upgrading to 3.8.0
 
 **One install change and one new default; no removed API.**
 
@@ -45,6 +45,16 @@ module stays imported until you do, which shows up as errors like
 - **New in `agentx`, a token limit:** once a message has used 200,000 tokens, `agentx` asks `Keep going for up to 200,000 more? [y/N]`. A no wraps up: tool calls are refused from then on and the agent answers with what it has found; only if that runs long too is the turn stopped like Ctrl+C. `/limit <tokens>` changes it and saves it in `~/.agentx/settings.json` as `"tokenLimit"`; `/limit 0` turns it off. `/usage` now also shows how much input came from the provider's cache.
 - **New in `agentx`, web tools:** the agent has `web_search` and `web_fetch`, and the `web-research` skill is listed. In `default` and `plan` mode each lookup asks first (answer `a` to allow them for the session); `accept-edits` and `auto` do not ask. Add a deny rule such as `"web_fetch:*"` to turn fetching off.
 - **New in `agentx`, model requests:** a request waits up to 5 minutes (was 60 seconds, retried by the client 3 times, then by agentx 3 times: about 12 minutes for one stuck request). A timeout is now retried once at most, and every retry is shown.
+- **New in `agentx`, the app window and remote use:** `agentx --ui` opens a window; `agentx --remote` (or
+  `/remote-control`) also serves it to your other devices. With Tailscale on, agentx runs `tailscale serve` for its
+  port while remote use is on (and takes it away when it stops, or at the next start when a run was killed); it
+  never listens on anything but 127.0.0.1. Each device gets its own conversation, which uses its own tokens and
+  starts its own MCP servers. Each conversation gets a short title from the model after its first answer (one small
+  request).
+- **New, the reasoning shown:** `agentx` asks Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 for a summary of their
+  reasoning (`thinking` with `display: "summarized"`, same cost) and GPT reasoning models for OpenAI's reasoning
+  summary. In the framework it is off unless you pass `show_reasoning=True` to `Claude()` or `GPT()`;
+  `call_with_tools` then returns it as `"reasoning"` and the runner yields a `reasoning` event.
 - **New in `agentx`, MCP servers:** `/mcp add`, `/mcp remove`, `/mcp login`, `/mcp logout`. Servers are kept in `~/.agentx/mcp.json` and connected at startup (a sign-in is never started by itself). Sign-ins go to the system's credential store. The `mcp` extra now needs `mcp>=1.10,<2` (the 2.x line changed its client API and is not supported yet) and adds `keyring`: `pip install -U "agentx-dev[mcp]"`.
 - **Changed in code:** `BaseChatModel` retries a timed-out request once at most (the client has usually retried it already), waits for a 429's `Retry-After` (or a few seconds), and calls `model.on_retry(attempt, error, delay)` before each retry.
 - **New in code, all off by default:** `AgentRunner(trim_results=True)` or `trim_results=TrimPolicy(...)` (`step_chars=`, `shrink_exempt_at=`), `Permissions.read_max_chars`, `Skills(remember_reads=True, observer=fn)`, and `model.on_usage = fn`, called after every reply that reports usage. OpenAI's cached input tokens are now recorded in `model.usage.total_cache_read_tokens` (Anthropic's already were).

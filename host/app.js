@@ -451,8 +451,8 @@ result = runner.<span class="fn">invoke</span>(<span class="str">"What is MVCC?"
       <h2 class="section-title">What's new</h2>
       <ul class="whats-new-list">
         <li>
-          <strong>Next</strong>
-          <div class="desc">In <code>agentx</code>: skills, MCP servers, agents that look at screenshots, <code>/voice</code> to speak instead of typing, and typing while it works. <a href="#whats-new">See what's new</a>.</div>
+          <strong>3.8</strong>
+          <div class="desc">In <code>agentx</code>: skills, MCP servers, the app window (<code>agentx --ui</code>), use from your iPad or phone with a conversation per device (<code>agentx --remote</code>), the model's reasoning shown, agents that look at screenshots and <code>/voice</code>. <a href="#whats-new">See what's new</a>.</div>
         </li>
         <li>
           <strong>3.7</strong>

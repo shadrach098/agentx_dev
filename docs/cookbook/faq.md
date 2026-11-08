@@ -209,7 +209,7 @@ A job is also at most 6 plan steps. A failed step is not retried and the
 steps that depend on it are skipped. See [pattern 35](patterns.md) and
 [Team jobs](../guides/cli.md#team-jobs).
 
-## What is on the `agentx` start screen? *(next release)*
+## What is on the `agentx` start screen? *(3.8)*
 
 A box with the version, the model and its provider, the mode and the folder on the left, and tips for this folder and
 what's new on the right; then warnings (MCP servers that need a sign-in), then notes such as the auto-mode reminder.
@@ -354,7 +354,7 @@ llm = Claude().configure_limits(
 
 Halts with `CostBudgetExceeded` when spend crosses. The call that crossed it is not retried.
 
-## How do I stop a run that has used too many tokens? *(next release)*
+## How do I stop a run that has used too many tokens? *(3.8)*
 
 Prices change too often to bake in, so count tokens instead. `model.on_usage` is called with the model after every
 reply that reports usage; raise to stop:
@@ -375,7 +375,7 @@ An exception raised there is never retried (the reply was already paid for). A t
 catch an ordinary exception and carry on; to stop everything the way Ctrl+C does, raise a subclass of
 `KeyboardInterrupt` instead, which is what the `agentx` token limit does.
 
-## Why did `agentx` ask "Keep going for up to 200,000 more?" *(next release)*
+## Why did `agentx` ask "Keep going for up to 200,000 more?" *(3.8)*
 
 The message had used 200,000 tokens (input and output, every model, team helpers included; input served from
 the provider's cache counts as a tenth, about what it costs, so a long turn is not stopped for tokens it barely paid for). Every step of a turn
@@ -386,7 +386,7 @@ is kept. Only if wrapping up runs long too is the turn stopped like Ctrl+C.
 `/limit` shows the limit, `/limit 400k` raises it, `/limit 0` turns it off. See
 [The token limit](../guides/cli.md#the-token-limit).
 
-## Why did my team job read the same file again and again? *(next release)*
+## Why did my team job read the same file again and again? *(3.8)*
 
 Its helpers kept too few tool results whole (12,000 to 24,000 characters), so a file read early was left out of
 later requests and the helper read it again, eight to ten times on an audit. Helpers now keep 20,000 to 40,000, like
@@ -395,19 +395,19 @@ grep it for the part you need, or read a part with offset and limit"); and each 
 used one token limit's worth (at least 100,000). See
 [Each step's limits](../guides/cli.md#each-steps-limits).
 
-## Do I have to restart agentx after an MCP sign-in or a change to mcp.json? *(next release)*
+## Do I have to restart agentx after an MCP sign-in or a change to mcp.json? *(3.8)*
 
 No. `/mcp login <name>` reconnects that server when the sign-in is done, and `/mcp reload` (or `/mcp reload <name>`)
 reads `~/.agentx/mcp.json` again and reconnects with the saved sign-ins, keeping your conversation. On Windows it also
 finds a key you saved with `setx` after agentx started.
 
-## Can the header and the input stay put while the conversation scrolls? *(next release)*
+## Can the header and the input stay put while the conversation scrolls? *(3.8)*
 
 Yes, in full-screen mode: `agentx --fullscreen` for one run, or `/fullscreen on` to keep it from the next start. Only
 the conversation scrolls (mouse wheel, PgUp / PgDn); hold Shift to select text with the mouse. The normal screen
 scrolls like any terminal program. See [Full-screen mode](../guides/cli.md#full-screen-mode).
 
-## Can the team make its own helpers? *(next release)*
+## Can the team make its own helpers? *(3.8)*
 
 Yes. Besides `explorer`, `coder` and `runner`, the supervisor may make a helper for a step: a name for its job (`security-reviewer`), instructions, and tools picked from agentx's own gated tools
 (never delete, move or another team). The plan shows each one and its tools before anything runs, and one that only
@@ -415,14 +415,14 @@ reads runs beside other reading steps. It may run on any of your helper models (
 its name then shows which (`security-reviewer@gpt-6-luna`). Up to 6 per job. See
 [Helpers the supervisor makes](../guides/cli.md#helpers-the-supervisor-makes).
 
-## Can team helpers run at the same time? *(next release)*
+## Can team helpers run at the same time? *(3.8)*
 
 Reading steps can. Explorer steps that do not depend on each other run side by side, up to three, so "audit the
 security, the payments and the admin pages" reads all three areas at once. A coder or runner step runs alone, so
 nothing reads a file while it is being changed, and every approval still comes one at a time. See
 [Steps side by side](../guides/cli.md#steps-side-by-side).
 
-## How do I make `agentx` cost less? *(next release)*
+## How do I make `agentx` cost less? *(3.8)*
 
 `/usage` shows where the tokens went, per model, with the share served from the provider's cache. Then:
 
@@ -435,7 +435,7 @@ nothing reads a file while it is being changed, and every approval still comes o
 - **Use `/clear` between unrelated tasks** and ask for small, specific changes: input grows with every step of a turn.
 - **Keep the token limit on** so a runaway message asks before it spends more.
 
-## Can `agentx` search the web? *(next release)*
+## Can `agentx` search the web? *(3.8)*
 
 Yes: `web_search` (DuckDuckGo) and `web_fetch`, which returns a page's readable text, at most 30,000 characters. The
 built-in `web-research` skill explains how to use them, and in a team job the explorer does the web research. In
@@ -443,7 +443,7 @@ built-in `web-research` skill explains how to use them, and in a team job the ex
 `a` to allow them for the session. `accept-edits` and `auto` do not ask. Page text is marked as data from the
 internet, so instructions written on a page cannot steer the agent. `"deny": ["web_fetch:*example.com*"]` blocks a site.
 
-## Can `agentx` use MCP servers? *(next release)*
+## Can `agentx` use MCP servers? *(3.8)*
 
 Yes. `/mcp add <name> <url>` (or `/mcp add <name> -- <command> [args]` for a program on your computer) adds one;
 its tools appear as `<name>__<tool>` for the agent and the team helpers. Tools the server marks read-only run without
@@ -452,7 +452,7 @@ needs a sign-in: `/mcp login <name>` opens the browser, and the sign-in is kept 
 and renewed by itself. The agent cannot add a server or sign in on its own. Servers added in another program's own MCP
 settings are not seen by `agentx`; add them here with `/mcp add`. See [MCP servers](../guides/cli.md#mcp-servers).
 
-## How do I add the GitHub MCP server to `agentx`? *(next release)*
+## How do I add the GitHub MCP server to `agentx`? *(3.8)*
 
 GitHub's server does not support the browser sign-in `agentx` uses (`/mcp add` fails with `Registration failed: 404`),
 so give it a token. Create a fine-grained personal access token limited to the repositories and permissions you want,
@@ -466,20 +466,20 @@ run `setx GITHUB_MCP_TOKEN "<token>"` in PowerShell, open a new terminal, and ad
 `agentx` reads the token from the environment when it connects; `mcp.json` holds only the variable's name.
 `/mcp tools github` then lists its tools: the ones GitHub marks read-only run without asking, the rest ask.
 
-## Which MCP tools run without asking? *(next release)*
+## Which MCP tools run without asking? *(3.8)*
 
 The ones the server marks read-only, decided the first time `agentx` sees each tool and saved in `mcp.json`. Tools
 that change, delete or cancel things ask first, in every mode. `/mcp tools <server>` shows the list,
 `/mcp allow <server> <tool>` and `/mcp ask <server> <tool>` change it. An allow rule like `"<server>__*"` in your
 settings lets every tool of that server through, including ones that delete, so prefer the per-tool list.
 
-## Why is `agentx` taking so long? *(next release)*
+## Why is `agentx` taking so long? *(3.8)*
 
 A reasoning model can take minutes on a big request; `agentx` waits up to 5 minutes for each answer. When a request
 fails or times out you see `A model request ... trying again (attempt 2).`; a timeout is retried once at most. Ctrl+C
 stops the turn at any time.
 
-## Why does a tool result say "left out of this request to save tokens"? *(next release)*
+## Why does a tool result say "left out of this request to save tokens"? *(3.8)*
 
 Older tool results are replaced by a one-line note in what the model is sent (the saved conversation keeps them). A
 file's note names the file and says to grep it or read only the lines needed rather than read it all again. A skill's
@@ -551,8 +551,8 @@ runner can consume, regardless of provider.
 ## How do I run multiple agents in parallel?
 
 In the `agentx` terminal app this is automatic: a team job's reading helpers run side by side and the supervisor can
-make helpers of its own (see [Can team helpers run at the same time?](#can-team-helpers-run-at-the-same-time-next-release)
-and [pattern 40](patterns.md#40-let-helpers-work-in-parallel-next-release)). In your own code:
+make helpers of its own (see [Can team helpers run at the same time?](#can-team-helpers-run-at-the-same-time-38)
+and [pattern 40](patterns.md#40-let-helpers-work-in-parallel-38)). In your own code:
 
 - **`AsyncSupervisor` with a `depends_on` DAG *(3.3)*** — the default
   answer. Steps with no shared edges run concurrently, and a step
@@ -759,25 +759,25 @@ absorbed silently. `.run()` and `.arun()` are now thin wrappers over
 `.stream()` / `.astream()`, so there's zero overhead choosing one
 or the other.
 
-## How do I see what my agent does in production? *(next release)*
+## How do I see what my agent does in production? *(3.8)*
 
 `AgentRunner(..., log=logging.getLogger("myapp.agent"))`: one line per model call and tool result, the start and the
 end, with secrets redacted. `log=True` prints to stderr, `log="agent.jsonl"` writes JSON lines. See
-[pattern 41](patterns.md#41-watch-a-run-while-it-goes-next-release).
+[pattern 41](patterns.md#41-watch-a-run-while-it-goes-38).
 
-## Where does `agentx` keep what its team helpers found? *(next release)*
+## Where does `agentx` keep what its team helpers found? *(3.8)*
 
 In `<project>/.agentx/team/<date>-<task>/`: `job.md` and one file per step with the helper's whole report, written as
 each step ends. The finished reports are searched by `recall` with the project's notes. See
-[pattern 44](patterns.md#44-keep-what-the-helpers-found-next-release).
+[pattern 44](patterns.md#44-keep-what-the-helpers-found-38).
 
-## How do I give `agentx`'s team helpers other models? *(next release)*
+## How do I give `agentx`'s team helpers other models? *(3.8)*
 
 `/team-models claude-sonnet-5-5="reading and search" claude-haiku-5-5="simple lookups" --folder` (or `"teamModels"` in
 `~/.agentx/settings.json`). The planner reads the notes when it picks a model for each step. See
-[pattern 36](patterns.md) and [pattern 43](patterns.md#43-move-agentx-from-gpt-to-claude-next-release).
+[pattern 36](patterns.md) and [pattern 43](patterns.md#43-move-agentx-from-gpt-to-claude-38).
 
-## Can I add to the task while `agentx` is working? *(next release)*
+## Can I add to the task while `agentx` is working? *(3.8)*
 
 Yes. Type while the spinner runs (it says `type to add to the task`) and press Enter: the agent reads the message at
 its next step. Until then it waits under the spinner as `◌ your message · waiting for the agent's next step`; once
@@ -787,13 +787,13 @@ to the main agent in the job's result, so work you add gets done; `/skip 3` (or 
 started yet. A command typed then (`/model ...`) runs when the agent is done. A note does not change a plan already
 made. See [Typing while it works](../guides/cli.md#typing-while-it-works).
 
-## Why does a team job not use my GPT model? *(next release)*
+## Why does a team job not use my GPT model? *(3.8)*
 
 It now does: when `teamModels` lists both Claude and GPT models, the planner is told to give at least one step to each
 provider and to share the steps by each model's note. Before, a Claude planner kept every step on Claude. If a model
 is listed under `Not used:` above the plan, its key is missing (see troubleshooting).
 
-## Can the agent look at screenshots? *(next release)*
+## Can the agent look at screenshots? *(3.8)*
 
 Yes. `read_path` on a PNG, JPEG, GIF or WebP file shows the model the picture itself, on Claude and GPT. In `agentx`,
 point it at one by its location (`look at playwright-tests/artifacts/after-account.png`), or let it, or a team helper,
@@ -803,14 +803,14 @@ screenshot costs about 1,500 to 4,800 tokens each time it is sent, so only the n
 your own code, a tool can return `agentx_dev.Pictures.picture_result(path)`. See
 [Pictures](../guides/cli.md#what-it-can-do) and [Media in agents](../media/agents.md).
 
-## Can I talk to `agentx` instead of typing? *(next release)*
+## Can I talk to `agentx` instead of typing? *(3.8)*
 
 Yes: type `/voice`, speak, press Enter. The words land in the input line for you to check or change, then Enter sends
 them; nothing is sent by itself. OpenAI's speech-to-text writes them out (about $0.006 a minute), because Claude
 models take no audio, so it needs `OPENAI_API_KEY` whatever model you chat with. The microphone needs
 `pip install "agentx-dev[voice]"`. See [Voice](../guides/cli.md#voice).
 
-## Can several devices use one `agentx` at the same time? *(next release)*
+## Can several devices use one `agentx` at the same time? *(3.8)*
 
 Yes. With `agentx --remote` (or `--ui --remote`), each device that opens the window gets its own conversation and
 its own agent, so nobody waits for anyone else's task or interrupts it. The computer's conversation is listed on
@@ -819,7 +819,7 @@ change the same file at once; each window says when another conversation is work
 can do what you can on that computer: only open it on your own devices. See
 [Remote control](../guides/cli.md#remote-control-from-an-ipad-a-phone-or-another-computer).
 
-## Is there a desktop app for `agentx`? *(next release)*
+## Is there a desktop app for `agentx`? *(3.8)*
 
 `agentx --ui` opens it in an app window: the conversations on the left, the steps and answers in the middle,
 approvals as cards, Settings, a Details panel (tokens, the team's work, MCP servers with sign-in buttons, memory), and
@@ -827,7 +827,7 @@ a message box with the mode and model menus. It is the same agentx underneath (s
 conversations), served on 127.0.0.1 with a secret key for each start. Closing the window quits it. See
 [The app window](../guides/cli.md#the-app-window) and pattern 45.
 
-## Can I control `agentx` on my server from home? *(next release)*
+## Can I control `agentx` on my server from home? *(3.8)*
 
 Yes. From an iPad or phone, use Tailscale on both devices: `agentx --remote` (the terminal, with remote control
 on), `agentx --ui --remote` (the app window only) or `/remote-control` in a running session prints a link to open

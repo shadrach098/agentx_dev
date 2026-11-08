@@ -12,7 +12,7 @@ Skills list before choosing tools and follow the skills that fit. This file is s
 - `docs/`: user docs. The full agent guide (guardrails, tools, Supervisor rules) is `docs/reference/agent-guide.md`.
 
 ## Checks
-- Run `python -m pytest -q` (about 2,700 tests, under two minutes) after a change and report the result.
+- Run `python -m pytest -q` (about 3,300 tests, about three minutes) after a change and report the result.
 - New behaviour gets a test with `MockModel`; never call a real API in tests.
 - After editing `docs/`, run `python host/build_data.py`.
 - Add a line to `CHANGELOG.md` under `[Unreleased]` for anything a user would notice.

@@ -6,6 +6,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-11-08
+
 ### Added
 
 - **One conversation per device in remote use.** Each device that opens the window (an iPad, a laptop, the

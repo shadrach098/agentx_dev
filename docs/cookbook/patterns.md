@@ -753,7 +753,7 @@ Why it's built this way:
 - **Attach what the model needs from the start.** `media=` shows it the
   PDF and the photo in the first request. The agent could also open
   `receipt.jpg` itself with `read_path`, which shows pictures (PNG, JPEG,
-  GIF, WebP) since the release after 3.7.0, but not the PDF: for that
+  GIF, WebP) since 3.8.0, but not the PDF: for that
   it answers "file is not utf-8 text". Attaching costs no extra step.
 - **Media paths are relative to your program**, not the workspace — hence
   `./inbox/receipt.jpg`, not `receipt.jpg`.
@@ -1237,7 +1237,7 @@ Things to know:
 
 ## 35. Hand a big job to a team of helpers *(3.7)*
 
-"Survey this project, add a docstring to each module and run the tests" is too much for one conversation to keep straight. In `agentx` the model can hand it to a team: a supervisor plans up to six steps and helpers carry them out: `explorer` reads, `coder` edits, `runner` runs commands, and the supervisor may make a helper of its own for a step. **Helpers run in parallel:** reading steps that do not depend on each other run side by side, up to three; a step that edits or runs commands runs alone. See [pattern 40](#40-let-helpers-work-in-parallel-next-release).
+"Survey this project, add a docstring to each module and run the tests" is too much for one conversation to keep straight. In `agentx` the model can hand it to a team: a supervisor plans up to six steps and helpers carry them out: `explorer` reads, `coder` edits, `runner` runs commands, and the supervisor may make a helper of its own for a step. **Helpers run in parallel:** reading steps that do not depend on each other run side by side, up to three; a step that edits or runs commands runs alone. See [pattern 40](#40-let-helpers-work-in-parallel-38).
 
 Usually you just ask, and the agent decides. To ask for a team on purpose:
 
@@ -1384,7 +1384,7 @@ Things to know:
 - **Team jobs are one log line** (`Team job: <task> (<outcome>)`); the files the helpers changed are not listed.
 - See [Project memory](../guides/cli.md#project-memory).
 
-## 38. Keep a long agent run cheap *(next release)*
+## 38. Keep a long agent run cheap *(3.8)*
 
 Every step sends the conversation again, so cost grows with the steps of a run. Trim what is sent, keep the start of
 each request the same so the provider's cache can bill it at its cheaper rate, and stop a run that goes too far:
@@ -1435,7 +1435,7 @@ print(result.content, llm.usage.total_cache_read_tokens, "input tokens came from
   (one 50-step run sent 3 million input tokens). `agentx` turns it on for every Claude model it builds.
 - See [Keeping requests small](../guides/cli.md#keeping-requests-small) for how the terminal app sets this up.
 
-## 39. Give `agentx` an MCP server *(next release)*
+## 39. Give `agentx` an MCP server *(3.8)*
 
 Add the server once; `agentx` connects it at every start and its tools reach the chat and the team helpers.
 
@@ -1456,7 +1456,7 @@ Add the server once; `agentx` connects it at every start and its tools reach the
 
 ---
 
-## 40. Let helpers work in parallel *(next release)*
+## 40. Let helpers work in parallel *(3.8)*
 
 Independent pieces of a job should not wait for each other. Both halves of the package run them at the same time.
 
@@ -1510,7 +1510,7 @@ result = asyncio.run(supervisor.run("Compare the pricing of three vector databas
 
 ---
 
-## 41. Watch a run while it goes *(next release)*
+## 41. Watch a run while it goes *(3.8)*
 
 In production or in a test you want to see what the agent is doing, step by step, without turning on the global
 event system. Give the runner a `log`:
@@ -1541,7 +1541,7 @@ runner = AgentRunner(..., log=lambda event: metrics.send(event))              # 
   instead of an empty answer (see [troubleshooting](troubleshooting.md#claude-models-opus-5-5-sonnet-5-5-fable-5-1)).
 - See [Watching one runner](../concepts/observability.md#watching-one-runner-log).
 
-## 42. Regression-test an agent or a team *(next release)*
+## 42. Regression-test an agent or a team *(3.8)*
 
 Before a prompt change or a model switch goes out, run the same cases on the old and the new setup and compare:
 
@@ -1574,7 +1574,7 @@ audit      2/3 -> 3/3      84000 -> 61000    -27%
 - From the command line: `python -m agentx_dev.Evals run cases/ --config agent.yaml --repeat 3 --json-out after.json`,
   then `python -m agentx_dev.Evals compare before.json after.json`. See [Evals](../advanced/evals.md).
 
-## 43. Move `agentx` from GPT to Claude *(next release)*
+## 43. Move `agentx` from GPT to Claude *(3.8)*
 
 Remove `OPENAI_API_KEY`, set `ANTHROPIC_API_KEY`, and start `agentx`. When your saved model is a GPT one, it does not
 stop: it lists the Claude models, uses the one you pick, and offers to save it.
@@ -1601,7 +1601,7 @@ Then give the team helpers Claude models too (a GPT one is skipped without its k
   it did, and a short `continue` carries on from the last step.
 - See [Switching providers](../guides/cli.md#settings) and [Helper models](../guides/cli.md#helper-models).
 
-## 44. Keep what the helpers found *(next release)*
+## 44. Keep what the helpers found *(3.8)*
 
 Research a team job does is written to disk as it happens, so a closed terminal does not lose it:
 
@@ -1622,7 +1622,7 @@ Research a team job does is written to disk as it happens, so a closed terminal 
 
 ---
 
-## 45. Use `agentx` in a window, or from another computer *(next release)*
+## 45. Use `agentx` in a window, or from another computer *(3.8)*
 
 The same agentx, drawn as a desktop app instead of in the terminal:
 

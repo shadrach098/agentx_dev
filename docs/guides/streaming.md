@@ -82,6 +82,22 @@ The LAST event is always `{"type": "completion", "completion": ...}` —
 callers that need both real-time updates AND the final aggregate can
 consume it in one loop.
 
+**The model's reasoning** *(3.8)*. Build the model with `show_reasoning=True` and each step that comes with a
+readable summary of the model's reasoning yields `{"type": "reasoning", "content": ...}` before its tool call:
+
+```python
+runner = AgentRunner(model=Claude(model="claude-opus-5-5", show_reasoning=True),
+                     agent=AgentType.ReAct, tools=[weather_tool])
+for event in runner.stream("What's the weather in NYC?"):
+    if event["type"] == "reasoning":
+        print("[reasoning]", event["content"])
+```
+
+On Claude it applies to the models that always think (Opus 5.5, Sonnet 5.5, Fable 5.1): it asks for
+`display: "summarized"`, at no extra cost, and the thinking is not sent back on later steps. On `GPT()` it asks a
+reasoning model on the Responses API for OpenAI's reasoning summary; an account that cannot have one is asked once,
+then not again. Other models yield no `reasoning` events.
+
 ## Both at once — text_delta + step events
 
 `text_delta` events require **text mode**. Since 3.1.7

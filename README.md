@@ -36,7 +36,7 @@ Every code block below is something you can paste and run.
 
 ---
 
-## Next release — skills
+## What's new in 3.8 — skills, the app window and remote use
 
 An agent can now read short **skills**: guides for a kind of work ("how to explore a project", "how to change
 files safely"). The prompt carries one line per skill; the model opens the full text only when it needs it, by
@@ -74,6 +74,13 @@ runner = AgentRunner(model=llm, agent=AgentType.ReAct,
 | **Input colours** | In `agentx`, the `/name` you type is coloured (command cyan, skill magenta, unknown red) and the selected row of the `/` pop-up is highlighted. |
 | **Notes and recall** | `agentx` writes a readable note per worthwhile turn to `.agentx/notes/` and indexes it (OpenAI embeddings with `OPENAI_API_KEY`, local search otherwise). The agent searches them with a `recall` tool, a fresh conversation starts with the closest ones, and `/memory [words]` shows or searches them. |
 | **Only you install** | The agent has no tool to install or remove a skill, and its file tools cannot write to `.agentx` or `~/.agentx`. Downloads are unpacked with path, link and size limits. |
+| **The app window** | `agentx --ui` opens the same agentx in a desktop-style window: conversations on the left (each with a short title the model writes), model and mode menus, approvals as cards with buttons, a Stop button, what it is doing with its time and tokens, team progress, a **Details** panel (context, tokens, team work, MCP servers with their own Sign in buttons, memory), **Settings**, paste a screenshot into the message, and a microphone button. Light or dark follows the system; closing the window quits agentx. See [The app window](docs/guides/cli.md#the-app-window). |
+| **Use it from your iPad or phone** | `agentx --remote` (or `/remote-control` in a running session) prints a link for your own devices through Tailscale, and the `ssh` command for another computer; nothing is opened to your Wi-Fi or the internet. The terminal keeps working and shows the same conversation. MCP sign-ins open as a card on the device you use. The link keeps working after the computer sleeps. See [Remote control](docs/guides/cli.md#remote-control-from-an-ipad-a-phone-or-another-computer). |
+| **One conversation per device** | Each device that opens the window gets its own conversation and agent, working at the same time in the same folder; the computer's conversation is listed as **Live** and can be opened to share it. A window says when another conversation is working in the folder. |
+| **The model's reasoning, shown** | On Claude Opus 5.5, Sonnet 5.5 and Fable 5.1, and on GPT reasoning models through the Responses API, agentx asks for a readable summary of the reasoning the model does anyway (same cost) and shows it as **Thinking**, in the window and before an edit or a command in the terminal. In the framework: `Claude(show_reasoning=True)`, `GPT(show_reasoning=True)`. |
+| **Agents can look at pictures** | `read_path` on a PNG, JPEG, GIF or WebP file shows the model the picture itself, on Claude and GPT, so an agent or a team helper that takes a screenshot (Playwright, say) can see how the page really looks. In `agentx`, point it at one by its location; the tool line reads `⎿ Picture, 1440x900`. Big pictures are made smaller or refused; each request carries the newest three. See [Pictures](docs/guides/cli.md#what-it-can-do). |
+| **`/voice`** | In `agentx`, type `/voice`, speak, press Enter: the words land in the input line to check before you send them. OpenAI's speech-to-text writes them out (Claude takes no audio), so it needs `OPENAI_API_KEY`; the microphone needs `pip install "agentx-dev[voice]"`. See [Voice](docs/guides/cli.md#voice). |
+| **Type while it works** | In `agentx`, what you type while the spinner runs goes to the agent at its next step (to a team job's helpers during one); it waits under the spinner as `◌ ...` and leaves one line once read: `❯ text  ✓ read by <helper>`. `/skip <step>` drops a team step not started yet. |
 | **Opt in** | `skills=None` (the default) changes nothing for existing code. The terminal app turns skills on. |
 
 [Skills guide](docs/guides/skills.md) · [in the `agentx` command](docs/guides/cli.md#skills). Nothing breaks when you upgrade.

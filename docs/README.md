@@ -41,7 +41,7 @@ Task guides:
 - [Author your own tools](guides/custom-tools.md)
 - [The `agentx` terminal assistant](guides/cli.md) *(3.7)* — approvals and
   modes, AGENTX.md, sessions, team jobs, helper models, project memory
-- [Skills](guides/skills.md) *(next release)* — short guides the agent reads on
+- [Skills](guides/skills.md) *(3.8)* — short guides the agent reads on
   demand; built-in skills, your own, and installing from a GitHub link
 - [Upgrading between releases](guides/upgrading.md)
 
@@ -131,7 +131,9 @@ operational lever (memory, caching, budgets, rate limits).
   parameter support (`adapt_params`); new Claude settings; workspace-
   rooted paths and `run_python` starting in the workspace. See
   [media](media/overview.md) and [upgrading](guides/upgrading.md).
-- **Next release** — skills: `AgentRunner(skills=True)` gives an agent a
+- **3.8** — skills, the app window (`agentx --ui`) and remote use from an iPad,
+  a phone or another computer (`agentx --remote`, one conversation per device);
+  skills: `AgentRunner(skills=True)` gives an agent a
   `use_skill` tool and a short skill list; five skills ship for the default
   tools; `/skills install <github link>` in `agentx`. See the
   [guide](guides/skills.md) and [upgrading](guides/upgrading.md).

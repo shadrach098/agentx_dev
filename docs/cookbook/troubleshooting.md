@@ -107,7 +107,7 @@ agent's workspace. Use `./my_workspace/bruce.jpeg` or an absolute path.
 
 **The model says it can't see the image**
 It was never shown one. Attach the file with `media=`, or let the agent
-open it with `read_path`: since the release after 3.7.0, `read_path` on a
+open it with `read_path`: since 3.8.0, `read_path` on a
 PNG, JPEG, GIF or WebP file hands the model the picture itself. The
 agent needs `read_path` (`Permissions` with `read_files`) and the file
 inside its allowed folders. A PDF or other binary file still comes back
@@ -139,7 +139,7 @@ an agent load the file with pandas through `run_python`.
 
 **`ImportError: Reading spreadsheets needs pandas and openpyxl`**
 pandas and openpyxl come with the `[excel]` extra (they left the base
-install in the release after 3.7.0). Run `pip install "agentx-dev[excel]"`
+install in 3.8.0). Run `pip install "agentx-dev[excel]"`
 in the Python that runs your code. `.xls` files also need
 `xlrd`, and `.ods` files need `odfpy`.
 
