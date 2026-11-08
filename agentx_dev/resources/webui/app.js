@@ -178,17 +178,35 @@
     ["Write notes for agentx <code>/init</code>", "/init"],
   ];
   let folderName = "";
+  // The opening (as on the docs site): the mark, then "agentx" typed letter by letter, then a blinking cursor.
+  let heroShown = false;                       // it plays once per page; later welcomes show it still
+  const HERO = () => `<div class="hero-mark">${MARK}</div><div class="hero-name" aria-label="agentx">` +
+    "agentx".split("").map((c, n) => `<span class="glyph" aria-hidden="true" style="animation-delay:${200 + n * 45}ms">${c}</span>`).join("") +
+    '<span class="hero-cursor" aria-hidden="true">|</span></div>';
+  function showStarting() {                    // before agentx has said hello: the opening and "Starting..."
+    if (column.children.length) return;
+    const s = el("section", "welcome splash");
+    s.innerHTML = HERO() + '<p class="starting hero-in" style="animation-delay:600ms" role="status">Starting' +
+      '<span class="tick">.</span><span class="tick">.</span><span class="tick">.</span></p>';
+    heroShown = true;
+    column.append(s);
+    syncView();
+  }
   function showWelcome() {
+    const splash = column.querySelector(".welcome.splash");
+    if (splash) splash.remove();                 // the welcome grows out of the starting screen
     if (!welcome || column.children.length) return;
-    const w = el("section", "welcome");
+    const w = el("section", heroShown ? "welcome still" : "welcome");
     const tips = (welcome.tips || []).map((t) => `<li>${esc(t)}</li>`).join("");
     const news = (welcome.news || []).map((t) => `<li>${esc(t)}</li>`).join("");
     const where = folderName || welcome.folder || "";
-    w.innerHTML = `${MARK}<h1>What should we work on${where ? ` in ${esc(where)}` : ""}?</h1>
-      <p class="meta">${esc(welcome.model || "")}</p>
-      <div class="starters">${STARTERS.map(([label], n) => `<button type="button" class="starter" data-starter="${n}">${label}</button>`).join("")}</div>
-      ${tips || news ? `<details><summary>Tips and what's new</summary>${tips ? `<ul>${tips}</ul>` : ""}` +
+    const late = heroShown ? 0 : 520;            // after the name has typed itself, the first time
+    w.innerHTML = `${HERO()}<h1 class="hero-in" style="animation-delay:${late}ms">What should we work on${where ? ` in ${esc(where)}` : ""}?</h1>
+      <p class="meta hero-in" style="animation-delay:${late + 80}ms">${esc(welcome.model || "")}</p>
+      <div class="starters hero-in" style="animation-delay:${late + 160}ms">${STARTERS.map(([label], n) => `<button type="button" class="starter" data-starter="${n}">${label}</button>`).join("")}</div>
+      ${tips || news ? `<details class="hero-in" style="animation-delay:${late + 240}ms"><summary>Tips and what's new</summary>${tips ? `<ul>${tips}</ul>` : ""}` +
         `${news ? `<h2>What's new</h2><ul>${news}</ul>` : ""}</details>` : ""}`;
+    heroShown = true;
     w.addEventListener("click", (e) => {
       const b = e.target.closest("[data-starter]");
       if (!b) return;
@@ -1300,6 +1318,7 @@
     source.onerror = () => { if (closed) source.close(); };
   }
 
+  showStarting();                          // the opening, until agentx says hello
   loadState();
   loadSessions();
   setComposer();

@@ -6,6 +6,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+### Changed
+
+- **The app window opens like the docs site.** The mark rises with a soft glow, `agentx` types itself in letter by
+  letter and a lime cursor keeps blinking after it; "Starting..." (dots lighting up in turn) shows until agentx is
+  ready, and the welcome grows out of it. While it works, that blinking cursor replaces the round spinner.
+
 ### Fixed
 
 - **`--remote` on a VPS prints the ssh command that works.** It assumed SSH on port 22 and guessed the address, so

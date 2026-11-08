@@ -863,6 +863,8 @@ on the left and in `/resume`; until then, and for older conversations, the first
   show-only commands run at once, as in the terminal. A picture pasted, dropped or added with **+** (PNG, JPEG,
   GIF, WebP, up to 10 MB) is saved in `.agentx/uploads/` and its path is put in your message, so the agent opens it
   with `read_path`.
+- It opens as the docs site does: the mark, `agentx` typed letter by letter and a blinking lime cursor, with
+  "Starting..." until agentx is ready; while it works, that cursor blinks beside what it is doing.
 - Light or dark follows your system, and changes when the system does.
 
 **Safety.** The window talks to agentx over `http://127.0.0.1` only, never the network. Each start makes a new random

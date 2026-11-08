@@ -659,3 +659,16 @@ def test_the_window_shows_agentx_at_work_and_its_header():
     assert '"Starting…"' in script and "sentAt = Date.now()" in script        # moving as soon as a message goes
     assert "tokens`" in script and ".composer.busy::before" in css            # the tokens, and a moving line
     assert "function syncBanner" in script and ".banner {" in css             # the agentx header on top
+
+
+def test_the_window_opens_like_the_docs_site():
+    """The opening of the docs site in the window: the mark, the name typed letter by letter, a blinking lime cursor;
+    "Starting..." until agentx says hello, and the welcome grows out of it; the working spinner is that cursor."""
+    from agentx_dev.cli.webui import RESOURCES
+    script = (RESOURCES / "app.js").read_text(encoding="utf-8")
+    css = (RESOURCES / "style.css").read_text(encoding="utf-8")
+    assert "function showStarting" in script and "showStarting();" in script
+    assert 'class="hero-cursor"' in script and 'class="glyph"' in script
+    assert "@keyframes cursor-blink" in css and "@keyframes glyph-in" in css
+    assert "animation: cursor-blink" in css.split(".spinner {", 1)[1].split("}", 1)[0]
+    assert ".starting .tick" in css and ".starting .dot" not in css     # not the MCP state dots
