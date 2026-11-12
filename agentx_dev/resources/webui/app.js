@@ -14,7 +14,10 @@
     return m ? decodeURIComponent(m[1]) : /^[\w-]{16,}$/.test(s) ? s : "";
   };
   let token = keyFrom(location.search) || keyFrom(location.hash);
-  try { token = token || sessionStorage.getItem("agentx-token") || ""; } catch (_) { /* no storage */ }
+  // The window agentx opens has a one-time code instead (?c=...): another account on the computer could read the
+  // key from the browser's command line. The page trades the code for the key once (claimLaunch, below).
+  const launchCode = token ? "" : ((location.search.match(/[?&]c=([\w-]+)/) || [])[1] || "");
+  try { token = token || (launchCode ? "" : sessionStorage.getItem("agentx-token")) || ""; } catch (_) { /* no storage */ }
   function keepKey() {
     try { sessionStorage.setItem("agentx-token", token); } catch (_) { /* no storage */ }
     if (token) history.replaceState(null, "", `/#t=${encodeURIComponent(token)}`);
@@ -56,14 +59,21 @@
   }
 
   // -- markdown, for the agent's answers (escaped first, so nothing in an answer can become live HTML) -----------
+  // Each link is built once and put aside (like the code spans) before the next pass, so no pass ever looks inside
+  // an href already made: model text could otherwise end an href early and add its own attributes (a style).
+  // A link's address stops at a space, ( ) < > and a quote (escaped by then as &quot; or &#39;).
+  const URL_PART = String.raw`https?:\/\/(?:(?!&quot;|&#39;)[^\s()<>"'\u0000\u0001])+`;
+  const LINK = new RegExp(String.raw`\[([^\]]+)\]\((${URL_PART})\)`, "g"), BARE = new RegExp(String.raw`(^|[\s(])(${URL_PART})`, "g");
   function inline(text) {
-    let s = esc(text);
-    const codes = [];
+    let s = esc(text).replace(/[\u0000\u0001]/g, "");
+    const codes = [], links = [];
+    const link = (url, label) => { links.push(`<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`); return `\u0001${links.length - 1}\u0001`; };
     s = s.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
     s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/__([^_]+)__/g, "<strong>$1</strong>");
     s = s.replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>").replace(/(^|[\s(])_([^_\s][^_]*)_/g, "$1<em>$2</em>");
-    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-    s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
+    s = s.replace(LINK, (_, label, url) => link(url, label));
+    s = s.replace(BARE, (_, before, url) => before + link(url, url));
+    s = s.replace(/\u0001(\d+)\u0001/g, (_, i) => links[+i]);
     return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`);
   }
   function markdown(src) {
@@ -545,6 +555,8 @@
   }
 
   let ready = null;          // the app's open "message" request: your next message answers it
+  // typing: in a text field (the message box, a card's answer box, a dialog), or a message is in the box
+  const typingNow = () => /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement?.tagName || "") || !!input.value.trim();
   function onAsk(ev) {
     if (ready === ev.id || cards.has(ev.id)) return;          // already shown (a reload plays it twice)
     if (ev.kind === "message") {
@@ -560,7 +572,14 @@
     // an approval sits under the step it is about, so its result comes after it
     const step = ev.kind === "approval" ? [...pending].reverse().find((s) => s.dataset.name === ev.tool && s.isConnected) : null;
     if (step && !step.closest(".group")) step.append(card); else column.append(card);
-    requestAnimationFrame(() => (card.querySelector(".btn.primary, input") || card).focus({preventScroll: true}));
+    // Focus moves to the card only when you are not typing: a key meant for the message box (Enter, Space) must
+    // never answer a card that opened under it. The default answer the app gives is the highlighted button.
+    // From an empty message box focus goes to the card itself, not a button: 1, 2, 3 answer it, Space and Enter don't.
+    requestAnimationFrame(() => {
+      const fromEmptyBox = document.activeElement === input && !input.value.trim();
+      if (fromEmptyBox && !card.querySelector("input")) { card.tabIndex = -1; card.focus({preventScroll: true}); }
+      else if (!typingNow()) (card.querySelector(".btn.primary, input") || card).focus({preventScroll: true});
+    });
     setComposer();
   }
   function onAnswered(ev) {
@@ -1262,6 +1281,18 @@
   let closed = false;
   function showClosed(ev) {
     closed = true;
+    if (ev && ev.keyChanged) {                 // someone used the start link again: agentx made a new key
+      try { sessionStorage.removeItem("agentx-token"); } catch (_) { /* no storage */ }
+      askForKey("agentx changed its key", "The one-time link this window was opened with was used again, " +
+        "perhaps by another program on this computer, so agentx made a new key. Paste the link the terminal shows now.");
+      return;
+    }
+    if (ev && ev.remoteOff) {                  // remote control was turned off on the computer agentx runs on
+      $("overlayBox").innerHTML = "<h2>Remote control is off</h2><p>It was turned off on the computer agentx runs " +
+        "on. Your conversation is saved; when remote control is on again, reload this page to carry on.</p>";
+      $("overlay").hidden = false;
+      return;
+    }
     if (ev && ev.room) {                       // this device's own conversation ended; agentx still runs
       $("overlayBox").innerHTML = (ev.idle
         ? "<h2>This conversation was put away</h2><p>No window used it for a while, so agentx closed it. It is saved: open it again to carry on.</p>"
@@ -1295,7 +1326,24 @@
     });
   }
 
+  let launchProblem = "";
+  async function claimLaunch() {
+    if (!launchCode || token) return;
+    const res = await fetch("/api/launch", {method: "POST", headers: {"Content-Type": "application/json"},
+                                            body: JSON.stringify({code: launchCode})}).catch(() => null);
+    const data = res ? await res.json().catch(() => ({})) : {};
+    if (data.token) { token = data.token; keepKey(); return; }
+    launchProblem = data.error || "unknown";
+    history.replaceState(null, "", location.pathname);   // the code is used up either way
+  }
+
   async function connect() {
+    if (!token && launchProblem) {
+      askForKey(launchProblem === "expired" ? "This start link has expired" : "This start link was already used",
+        "The link agentx opened this window with works once, for a short time. Open the link the terminal shows " +
+        "(the one with ?t=), or paste it here.");
+      return;
+    }
     if (!token) {
       askForKey("This page has no key", "It was opened without the end of its link (the part with ?t=). Open the " +
         "whole link agentx printed in the terminal, or paste it here.");
@@ -1319,9 +1367,7 @@
   }
 
   showStarting();                          // the opening, until agentx says hello
-  loadState();
-  loadSessions();
   setComposer();
-  connect();
   input.focus();
+  claimLaunch().then(() => { loadState(); loadSessions(); connect(); });
 })();

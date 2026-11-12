@@ -306,7 +306,15 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         self._team_log: List[Any] = []        # every step of the last team job, for /team log
         self._team_jobs = 0                # team jobs started for the current message
         self._team_stalled = False         # the last job in this message finished no step
-        asker = make_asker(console, self.read_short, self.gate.cwd, select=select,
+        # self.select / self.read_short are looked up at each question, so the type-ahead hold that
+        # _start_typeahead wraps them in later also covers approvals.
+        def select_now(*args: Any, **kwargs: Any) -> Any:
+            return self.select(*args, **kwargs)
+
+        def read_short_now(*args: Any, **kwargs: Any) -> Any:
+            return (self.read_short or input)(*args, **kwargs)
+
+        asker = make_asker(console, read_short_now, self.gate.cwd, select=None if select is None else select_now,
                            helper=current_helper, helper_models=self.helper_models_line)
 
         def ask_with_spinner_paused(request: Any) -> Any:           # a prompt must not fight the spinner
@@ -439,6 +447,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         self.notice("\n".join(lines))
         if self._yes("Honour these project rules? [y/N] "):
             return
+        # Kept, so that saving the window's Settings (which reloads the rules) does not switch them back on.
+        self.declined_project_allow = list(self.project_allow)
         for rule in self.project_allow:                     # one occurrence each: the user may have written it too
             for index in range(len(self.gate.allow) - 1, -1, -1):
                 if self.gate.allow[index] == rule:
@@ -534,11 +544,12 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         return runner
 
     def _new_conversation_state(self) -> None:
-        """A new conversation is a clean slate for "don't ask again": the session-wide command grants are
-        emptied, and accept-edits that came from answering "a" at an edit prompt goes back to the mode that was
-        in force when the user answered. A mode the user chose since (``/mode``, Shift+Tab) is kept."""
+        """A new conversation is a clean slate for "don't ask again": the session-wide command grants and the
+        web grant are emptied, and accept-edits that came from answering "a" at an edit prompt goes back to the
+        mode that was in force when the user answered. A mode the user chose since (``/mode``, Shift+Tab) is kept."""
         self._compact_wait = 0
         self.gate.grants.clear()
+        self.gate.web_allowed = False
         if self._mode_before_grant is not None and self.gate.mode == "accept-edits":
             self.gate.set_mode(self._mode_before_grant)
         self._mode_before_grant = None
@@ -630,7 +641,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         if not typeahead.available:
             return
         self.progress.typeahead = typeahead
-        for name in ("read_short", "select"):        # a question asked while it works gets every key
+        for name in ("read_short", "select"):        # no key is read for the chat while a question is open
             ask = getattr(self, name)
             if callable(ask):
                 setattr(self, name, _held(typeahead, ask))
@@ -1557,7 +1568,7 @@ def setup_logging(home: Path) -> None:
     root.addHandler(quiet)
     try:
         folder = Path(home) / ".agentx"
-        folder.mkdir(parents=True, exist_ok=True)
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)    # yours only: it holds logs and conversations
         handler = _QuietFileHandler(folder / LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS,
                                     encoding="utf-8", delay=True)
     except (OSError, ValueError):

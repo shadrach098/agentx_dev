@@ -499,6 +499,14 @@ def test_clear_forgets_the_always_allow_grants(tmp_path):
     assert app.gate.grants == set()
 
 
+def test_clear_also_forgets_the_web_grant(tmp_path):
+    lines = Lines("/clear", "/exit")
+    app, _, _, _ = make_app(tmp_path, lines, MockModel(script=[]))
+    app.gate.web_allowed = True
+    app.start()
+    assert app.gate.web_allowed is False
+
+
 def test_a_command_granted_for_the_session_asks_again_after_clear(tmp_path):
     shell = make_react_response("run_shell", {"command": "echo hi"})
     model = MockModel(script=[shell, make_final("ran"), shell, make_final("ran again")])

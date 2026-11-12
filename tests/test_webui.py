@@ -421,7 +421,11 @@ class TestThePanels:
         res = w.request("POST", "/api/open-folder", {"path": str(other)})[1]
         assert res["ok"] is True and len(started) == 1
         (command,), kwargs = started[0]
-        assert command[-2:] == ["agentx_dev", "--ui"] and kwargs["cwd"] == str(other.resolve())
+        # not "-m agentx_dev" started in the folder (that imports from it before the trust question): the folder is
+        # passed on, and the new agentx moves into it itself (see tests/test_audit_fix_window.py)
+        assert "-m" not in command and command[-2] == str(other.resolve())
+        assert "main(['--ui'])" in command[command.index("-c") + 1]
+        assert kwargs["cwd"] != str(other.resolve())
 
 
 def test_remote_use_goes_through_an_ssh_tunnel():

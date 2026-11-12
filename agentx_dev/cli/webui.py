@@ -20,7 +20,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import subprocess
 import sys
 import threading
@@ -37,6 +36,7 @@ from urllib.parse import parse_qs, urlparse
 
 from rich.console import Console
 
+from agentx_dev import safe_exe
 from agentx_dev.cli.approval import DECLINED, Answer
 from agentx_dev.cli.preview import preview_for
 from agentx_dev.cli.ui import CANCELLED, Screen, plain
@@ -69,6 +69,7 @@ MODES_SHOWN = ("default", "accept-edits", "plan", "auto")
 KEEP_ALIVE_SEC = 4.0                # a closed window is noticed when this write fails
 CLOSE_GRACE_SEC = 8.0               # how long the window may be gone (a reload) before agentx quits
 SHARE_CHECK_SEC = 30.0              # remote use: how often agentx checks Tailscale still shares it (after a sleep)
+LAUNCH_CODE_SEC = 120.0             # how long the one-time code the browser is started with can be used
 ROOM_IDLE_SEC = 15 * 60            # a device's own conversation no window used for this long is closed (and saved)
 ROOM_REMOTE_NOTE = ("Remote control is turned on and off on the computer agentx runs on; this device has its own "
                     "conversation there.")
@@ -281,6 +282,31 @@ def _text_mode_thought(text: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+# Open another folder: the new agentx must not import anything from that folder before it asks whether you trust
+# it. ``python -m agentx_dev`` started there would put the folder first on sys.path (a planted agentx_dev or rich
+# would run), so the child starts in agentx's own folder, drops the current folder from sys.path, adds the folder
+# this agentx was imported from, and only then moves into the chosen folder and starts.
+SAFE_START = ("import os, sys\n"
+              "sys.path[:] = [p for p in sys.path if p and os.path.isabs(p)]\n"
+              "if sys.argv[2] not in sys.path: sys.path.append(sys.argv[2])\n"
+              "os.chdir(sys.argv[1])\n")
+OPEN_FOLDER_START = (SAFE_START + "sys.argv = ['agentx', '--ui']\n"
+                     "from agentx_dev.cli import main\n"
+                     "raise SystemExit(main(['--ui']))\n")
+
+
+def _agentx_root() -> str:
+    """The folder that holds the agentx_dev package this agentx runs from."""
+    return str(Path(__file__).resolve().parent.parent.parent)
+
+
+def open_folder_command(folder: Path, code: str = OPEN_FOLDER_START) -> "tuple[List[str], str]":
+    """``(command, cwd)`` for ``agentx --ui`` in ``folder``, started so that nothing in ``folder`` is imported."""
+    root = _agentx_root()
+    flags = ["-P"] if sys.version_info >= (3, 11) else []     # Python 3.11+: never put a folder first on sys.path
+    return [sys.executable, *flags, "-c", code, str(folder), root], root
+
+
 def _app_window_command(url: str) -> Optional[List[str]]:
     """Edge or Chrome started as an app window (no tabs or address bar), when one is installed."""
     candidates: List[str] = []
@@ -294,7 +320,7 @@ def _app_window_command(url: str) -> Optional[List[str]]:
                        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
                        "/Applications/Chromium.app/Contents/MacOS/Chromium"]
     for name in ("msedge", "google-chrome", "chrome", "chromium", "chromium-browser", "microsoft-edge"):
-        found = shutil.which(name)
+        found = safe_exe.which(name)                    # never a program left in the project folder
         if found:
             candidates.append(found)
     for path in candidates:
@@ -389,7 +415,9 @@ TAILSCALE_SERVE_HELP = ("No link for your iPad or phone this time: Tailscale's s
 
 
 def _tailscale_exe() -> Optional[str]:
-    candidates = [shutil.which("tailscale")]
+    # safe_exe.which, not shutil.which: on Windows that looks in the current folder (the project) first, so a
+    # tailscale.cmd in a cloned repository would run before the folder is trusted.
+    candidates = [safe_exe.which("tailscale")]
     if os.name == "nt":
         candidates.append(os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Tailscale", "tailscale.exe"))
     elif sys.platform == "darwin":
@@ -503,7 +531,7 @@ def windows_ssh_blocked() -> str:
               "$p = if ($r -and $r.Enabled -eq 'True') { [string]$r.Profile } else { 'none' };"
               "Write-Output \"$c|$p\"")
     try:
-        done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        done = subprocess.run([safe_exe.powershell(), "-NoProfile", "-NonInteractive", "-Command", script],
                               capture_output=True, text=True, timeout=10,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
@@ -607,6 +635,25 @@ def remote_instructions(url: str, ssh_running: Optional[bool] = None,
     return "\n".join(lines)
 
 
+def _allowed_for(app: Any, effective: Any, added: Sequence[str] = ()) -> List[str]:
+    """A conversation's allow rules after the settings were saved: the user's own rules, the project rules it
+    accepted at start and those just typed in the panel (``added``). A project rule declined at start, or put in
+    the project file since by something else, stays off, as the start said: "ignored for this session"."""
+    allow = list(effective.allow)
+    declined = list(getattr(app, "declined_project_allow", None) or [])
+    accepted = [] if declined else list(getattr(app, "project_allow", []) or [])
+    accepted += [rule for rule in added if rule not in declined]
+    for rule in list(getattr(effective, "project_allow", []) or []):
+        if rule in accepted:
+            accepted.remove(rule)
+            continue
+        for index in range(len(allow) - 1, -1, -1):        # the project's copy (read last); the user's stays
+            if allow[index] == rule:
+                del allow[index]
+                break
+    return allow
+
+
 class WebFront:
     """The window's side of agentx: ``console``, ``read``, ``read_short`` and ``select`` for the app, ``wire(app)``
     once it is built, and ``run(work)``, which serves the window while ``work`` (the app) runs on a worker thread."""
@@ -620,6 +667,9 @@ class WebFront:
         self.remote = remote
         self.opener = opener
         self.token = secrets.token_urlsafe(24)
+        # The browser agentx starts gets a one-time code in its address, not the token: another account on this
+        # computer can read a program's command line. The page trades the code for the token once (claim_launch).
+        self._launch: Optional[Dict[str, Any]] = None
         self.bus = Bus()
         self.app: Any = None
         self._partial = ""
@@ -633,6 +683,10 @@ class WebFront:
         self.tailnet: Optional[str] = None                  # --remote: this computer's Tailscale address, when on
         self.tailnet_problem = ""
         self._serving: Optional[int] = None                # the port Tailscale serves as https, while it does
+        self._share_lock = threading.Lock()                 # sharing again and remote off never overlap
+        self._share_turn = 0                                # +1 each time remote use starts or ends
+        self._streams: List[Dict[str, Any]] = []            # open event streams: whether Tailscale served them
+        self.remote_off = False                             # on a room: put away because remote use was turned off
         self._handler: Any = None
         self.on_window: Optional[Callable[[str], None]] = None   # where "a window connected" goes (default: print)
         self._windows = 0                                   # windows connected now (their event streams)
@@ -729,6 +783,20 @@ class WebFront:
             truncated, reason = preview.truncated, preview.reason
         except Exception:
             title, body, kind, truncated, reason = request.tool, "", "text", False, ""
+        # The card shows the whole title, subject and body or nothing: a cut could drop " and everything inside it",
+        # " (replaces the existing ...)" or the "... N more lines" count, which say what Yes really does.
+        shown: Dict[str, str] = {}
+        for key, value, limit, what in (("title", title, 2000, "action"), ("subject", getattr(request, "subject", ""),
+                                         2000, "target"), ("body", body, 400_000, "preview")):
+            if truncated:
+                break
+            text = _text(value, limit + 1)
+            if len(text) > limit:
+                truncated = True
+                reason = (f"its {what} is too long to show in the window in full (over {limit:,} characters), so "
+                          f"nothing was run; use a shorter path or smaller pieces")
+                break
+            shown[key] = text
         if truncated:
             self.bus.emit("notice", level="error",
                           text=f"Declined without asking ({_text(request.tool, 60)}): "
@@ -740,13 +808,14 @@ class WebFront:
             helper = str(current_helper() or "")
         except Exception:
             pass
-        always = bool(getattr(request, "remember", False) and getattr(request, "grant", ""))
-        grant = _text(getattr(request, "grant", ""), 200)
+        grant = _text(getattr(request, "grant", ""), 201)
+        # "don't ask again" is offered only for a grant shown whole
+        always = bool(getattr(request, "remember", False) and getattr(request, "grant", "")) and len(grant) <= 200
         if always and getattr(request, "kind", "") == "command":
             grant = f"{_text(request.tool, 40)} commands starting with '{grant}'"
-        return {"tool": _text(request.tool, 80), "title": _text(title, 2000),
-                "subject": _text(getattr(request, "subject", ""), 2000), "body": _text(body, 400_000),
-                "body_kind": str(kind), "helper": _text(helper, 120), "always": always, "grant": grant}
+        return {"tool": _text(request.tool, 80), "title": shown["title"], "subject": shown["subject"],
+                "body": shown["body"], "body_kind": str(kind), "helper": _text(helper, 120), "always": always,
+                "grant": grant}
 
     def insert(self, words: str) -> bool:
         self.bus.emit("insert", text=_text(words, 20_000))
@@ -879,19 +948,35 @@ class WebFront:
             return {"error": "the picture could not be read"}
         if not raw or len(raw) > MAX_UPLOAD:
             return {"error": "the picture is empty or over 10 MB"}
-        folder = self.cwd / ".agentx" / "uploads"
-        try:
-            folder.mkdir(parents=True, exist_ok=True)
-        except OSError:
+        from agentx_dev.cli.safepaths import safe_location
+        folder: Optional[Path] = None
+        # A cloned project may make .agentx (or .agentx/uploads) a link to somewhere else: then the picture goes to
+        # ~/.agentx/uploads instead, never through the link. Checked again after mkdir.
+        if safe_location(self.cwd, "uploads"):
+            try:
+                (self.cwd / ".agentx" / "uploads").mkdir(parents=True, exist_ok=True)
+                if safe_location(self.cwd, "uploads"):
+                    folder = self.cwd / ".agentx" / "uploads"
+            except OSError:
+                pass
+        if folder is None:
             folder = self.home / ".agentx" / "uploads"
-            folder.mkdir(parents=True, exist_ok=True)
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                return {"error": "the picture could not be saved"}
         stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(str(name or "picture")).stem)[:40].strip("-.") or "picture"
         path = folder / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}-{stem}{suffix}"
-        path.write_bytes(raw)
         try:
-            shown = path.relative_to(self.cwd).as_posix()
+            with open(path, "xb") as stream:                # a new file, never one already there
+                stream.write(raw)
+            real = path.resolve()
+        except OSError:
+            return {"error": "the picture could not be saved"}
+        try:                                                # where the file really is, not where a link points
+            shown = real.relative_to(self.cwd.resolve()).as_posix()
         except ValueError:
-            shown = str(path)
+            shown = str(real)
         return {"path": shown}
 
     # -- what the window reads ---------------------------------------------------------------------------------
@@ -1117,6 +1202,10 @@ class WebFront:
                 if not low <= number <= high:
                     return {"ok": False, "message": f"{key} must be between {low:,} and {high:,}."}
                 changes[key] = number
+        added: List[str] = []                               # folder rules typed in the panel now: the user's own
+        if scope == "folder" and "allow" in changes:
+            before = list(load_settings(self.cwd, self.home).project_allow)
+            added = [rule for rule in changes["allow"] if rule not in before]
         path, message = write_settings(self.home if scope == "user" else self.cwd, changes)
         if path is None:
             return {"ok": False, "message": message}
@@ -1125,12 +1214,15 @@ class WebFront:
             effective = load_settings(self.cwd, self.home)
             for app in apps:
                 try:
-                    app.gate.allow = list(effective.allow)
+                    app.gate.allow = _allowed_for(app, effective, added)
                     app.gate.deny = [*default_deny(self.home), *effective.deny]
                     app.max_steps = max(1, int(effective.max_steps))
                     app.token_limit = int(effective.token_limit)
                 except Exception:
                     pass
+            if any(getattr(app, "declined_project_allow", None) for app in apps):
+                message += (" This project's allow rules you turned down at start stay off until agentx starts "
+                            "again.")
         return {"ok": True, "message": message, "view": self.settings_view()}
 
     # -- files to mention, and another folder ------------------------------------------------------------------
@@ -1171,12 +1263,12 @@ class WebFront:
             return {"ok": False, "message": f"{folder} is not a folder."}
         if folder == self.cwd.resolve():
             return {"ok": False, "message": "agentx is already open in this folder."}
-        command = [sys.executable, "-m", "agentx_dev", "--ui"]
+        command, start_in = open_folder_command(folder)     # it moves into the folder itself, after the imports
         try:
             if os.name == "nt":
-                subprocess.Popen(command, cwd=str(folder), creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+                subprocess.Popen(command, cwd=start_in, creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
             else:
-                subprocess.Popen(command, cwd=str(folder), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                subprocess.Popen(command, cwd=start_in, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL, start_new_session=True)
         except OSError as error:
             return {"ok": False, "message": f"agentx could not be started there: {error}"}
@@ -1499,6 +1591,53 @@ class WebFront:
         port = self._server.server_address[1] if self._server is not None else self.port
         return f"http://127.0.0.1:{port}/?t={self.token}"
 
+    def launch_address(self) -> str:
+        """The address the browser is started with: a one-time code that the page trades for the token, so the
+        token itself is never on a command line."""
+        code = secrets.token_urlsafe(18)
+        with self._lock:
+            self._launch = {"code": code, "until": time.monotonic() + LAUNCH_CODE_SEC, "used": False}
+        port = self._server.server_address[1] if self._server is not None else self.port
+        return f"http://127.0.0.1:{port}/?c={code}"
+
+    def claim_launch(self, code: Any) -> Dict[str, Any]:
+        """The page opened with the one-time code asks for the token, once. A second try with the same code means
+        another program may have read it: refused, and the token is changed (the terminal says so)."""
+        code = str(code or "")
+        with self._lock:
+            launch = self._launch
+            if launch is None or not code or not secrets.compare_digest(code, launch["code"]):
+                return {"error": "unknown"}
+            if not launch["used"] and time.monotonic() <= launch["until"]:
+                launch["used"] = True
+                return {"token": self.token}
+            again = launch["used"]
+            launch["used"] = True
+        if not again:
+            return {"error": "expired"}
+        self.new_token()
+        stamp = datetime.now().strftime("%H:%M:%S")
+        line = (f"[{stamp}] Warning: the window's one-time start link was used a second time (another program on "
+                f"this computer may have read it). agentx refused it and changed its key; open agentx again with: "
+                f"{self.address()}")
+        try:
+            (self.on_window or (lambda text: print(text, flush=True)))(line)
+        except Exception:
+            pass
+        return {"error": "used"}
+
+    def new_token(self) -> None:
+        """A new key for this run: requests and event streams with the old one stop working."""
+        token = secrets.token_urlsafe(24)
+        with self._lock:
+            self.token = token
+            rooms = list(self.rooms.values())
+        for room in rooms:
+            room.token = token
+        self.bus.wake()
+        for room in rooms:
+            room.bus.wake()
+
     def start_server(self) -> str:
         front = self
 
@@ -1526,21 +1665,32 @@ class WebFront:
         if problem:
             self.tailnet_problem, self.tailnet = problem, None
             return
-        self._serving = port
-        threading.Thread(target=self._keep_shared, args=(port,), name="agentx-tailscale", daemon=True).start()
+        with self._share_lock:
+            self._share_turn += 1
+            self._serving, turn = port, self._share_turn
+        threading.Thread(target=self._keep_shared, args=(port, turn), name="agentx-tailscale", daemon=True).start()
 
-    def _keep_shared(self, port: int) -> None:
+    def _keep_shared(self, port: int, turn: Optional[int] = None) -> None:
         """While remote use is on: Tailscale must still share this port. After the computer slept, or Tailscale
-        restarted, it can stop doing so and the iPad's link goes dead; then share it again (the same link)."""
-        while not self._closed and self._serving == port:
+        restarted, it can stop doing so and the iPad's link goes dead; then share it again (the same link).
+        ``turn``: the remote use this loop belongs to; once remote use ends (or starts again), it stops."""
+        turn = self._share_turn if turn is None else turn
+
+        def still_on() -> bool:
+            return not self._closed and self._serving == port and self._share_turn == turn
+
+        while still_on():
             time.sleep(SHARE_CHECK_SEC)
-            if self._closed or self._serving != port:
+            if not still_on():
                 return
             try:
                 shared = tailscale_agentx_ports()
                 if shared is None or port in shared:
                     continue
-                problem = tailscale_serve(port)
+                with self._share_lock:                   # remote off may have come during the slow check above
+                    if not still_on():
+                        return
+                    problem = tailscale_serve(port)
                 stamp = datetime.now().strftime("%H:%M:%S")
                 line = (f"[{stamp}] Tailscale had stopped sharing agentx (the computer slept, or Tailscale "
                         f"restarted); shared again: the same link works." if not problem else
@@ -1550,9 +1700,11 @@ class WebFront:
                 pass
 
     def _stop_tailnet(self) -> None:
-        port, self._serving = self._serving, None
-        if port:
-            tailscale_unserve(port)
+        with self._share_lock:                          # waits for a share-again in progress, then undoes it
+            port, self._serving = self._serving, None
+            self._share_turn += 1
+            if port:
+                tailscale_unserve(port)
 
     def enable_remote(self) -> str:
         """``/remote-control`` in the app window: the window already served here can also be opened from your iPad,
@@ -1579,7 +1731,27 @@ class WebFront:
         self.open_it = getattr(self, "_open_it_before", self.open_it)
         self._stop_tailnet()
         self.tailnet = None
-        return "Remote control is off: the Tailscale link no longer works. An SSH tunnel to this computer still would."
+        ended = self._end_tailnet_windows()
+        closed = (f", and the {ended} window{'s' if ended != 1 else ''} opened through it "
+                  f"{'were' if ended != 1 else 'was'} closed" if ended else "")
+        return (f"Remote control is off: the Tailscale link no longer works{closed}. An SSH tunnel to this computer "
+                "still would. Turned on again, it uses the same link, so a device that has it can come back.")
+
+    def _end_tailnet_windows(self) -> int:
+        """Remote off: the windows that came through Tailscale stop (their event streams end, saying why), and
+        the conversations of devices that came that way are put away (saved, and reopened if they come back)."""
+        with self._lock:
+            streams = [stream for stream in self._streams if stream["tailnet"]]
+            devices = {stream["device"] for stream in streams if stream["device"]}
+            rooms = [room for device, room in self.rooms.items() if device in devices]
+            self.joined -= devices
+        for stream in streams:
+            stream["stop"] = "remote-off"
+        for room in rooms:
+            room.idle, room.remote_off = True, True
+            room.close()
+        self.bus.wake()
+        return len(streams)
 
     def tailnet_address(self) -> Optional[str]:
         if not self.tailnet or not self._serving:
@@ -1639,7 +1811,7 @@ class WebFront:
                 request["future"].set_exception(EOFError())
         if self.host is not None:                       # a device's own conversation ends; the window stays served
             if not already:
-                self.bus.emit("closed", room=True, idle=self.idle)
+                self.bus.emit("closed", room=True, idle=self.idle, **({"remoteOff": True} if self.remote_off else {}))
             return
         for room in rooms:
             room.close()
@@ -1666,7 +1838,7 @@ class WebFront:
             print(remote_instructions(url, tailnet_url=self.tailnet_address(), tailnet_problem=self.tailnet_problem),
                   flush=True)
         else:
-            how = self.opener(url) if self.open_it else ""
+            how = self.opener(self.launch_address()) if self.open_it else ""
             print(f"agentx is open {'in an ' + how if how == 'app window' else 'in your browser' if how else 'at'}: {url}",
                   flush=True)
         print("Closing the window quits agentx; so does Ctrl+C here." if self.open_it else
@@ -1708,6 +1880,16 @@ class _Handler(BaseHTTPRequestHandler):
         elif name in ("127.0.0.1", "localhost"):
             return True
         tailnet = (self.front.tailnet or "").lower()        # Tailscale serve passes the browser's name through
+        return bool(tailnet) and name == tailnet
+
+    def _via_tailnet(self) -> bool:
+        """The request came through Tailscale (its Serve names this computer's Tailscale name, or the account)."""
+        if (self.headers.get("Tailscale-User-Login") or "").strip():
+            return True
+        host = self.headers.get("Host", "").strip().lower()
+        name, sep, port = host.rpartition(":")
+        name = name if sep and port.isdigit() else host
+        tailnet = (self.front.tailnet or "").lower()
         return bool(tailnet) and name == tailnet
 
     def _who(self) -> str:
@@ -1762,9 +1944,9 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/events":
             after = self.headers.get("Last-Event-ID") or (query.get("after") or ["0"])[0] or "0"
             try:
-                return self._events(max(0, int(after)), front)
+                return self._events(max(0, int(after)), front, device)
             except ValueError:
-                return self._events(0, front)
+                return self._events(0, front, device)
         if url.path == "/api/state":
             return self._json({**front.state(), "live": self.front.live_info(device)})
         if url.path == "/api/sessions":
@@ -1784,7 +1966,8 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._host_ok():
             return self._json({"error": "wrong host"}, 403)
         url = urlparse(self.path)
-        if not self._token_ok(parse_qs(url.query)):
+        launching = url.path == "/api/launch"              # the one-time code of the window agentx opened
+        if not launching and not self._token_ok(parse_qs(url.query)):
             return self._json({"error": "forbidden"}, 403)
         if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
             return self._json({"error": "send JSON"}, 415)
@@ -1800,6 +1983,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json({"error": "bad JSON"}, 400)
         if not isinstance(data, dict):
             return self._json({"error": "bad JSON"}, 400)
+        if launching:
+            claimed = self.front.claim_launch(data.get("code"))
+            return self._json(claimed, 200 if "token" in claimed else 403)
         device = self._device(parse_qs(url.query))
         if url.path == "/api/join":                         # open the main conversation, or go back to its own
             return self._json(self.front.join(device, bool(data.get("live")), str(data.get("then") or "")))
@@ -1827,8 +2013,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(front.finish_signin(str(data.get("url", ""))))
         return self._json({"error": "not found"}, 404)
 
-    def _events(self, after: int, front: Optional[WebFront] = None) -> None:
-        """Server-sent events: everything after ``after``, then each new one as it comes."""
+    def _events(self, after: int, front: Optional[WebFront] = None, device: str = "") -> None:
+        """Server-sent events: everything after ``after``, then each new one as it comes. The stream ends when the
+        run's key changes, or, for a window that came through Tailscale, when remote use is turned off."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -1836,10 +2023,27 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         last = after
         front = front or self.front
+        host = self.front
+        token = host.token
+        stream = {"tailnet": self._via_tailnet(), "device": device, "stop": ""}
+        with host._lock:
+            host._streams.append(stream)
         front.window_connected(True, self._who())
+
+        def ended() -> bool:
+            why = ({"type": "closed", "remoteOff": True} if stream["stop"] else
+                   {"type": "closed", "keyChanged": True} if host.token != token else None)
+            if why is not None:
+                self.wfile.write(f"data: {json.dumps(why)}\n\n".encode("utf-8"))
+                self.wfile.flush()
+            return why is not None
         try:
             while True:
+                if ended():
+                    return
                 events = front.bus.after(last, wait=KEEP_ALIVE_SEC)
+                if ended():
+                    return
                 if not events:
                     self.wfile.write(b": keep-alive\n\n")
                 for event in events:
@@ -1852,4 +2056,6 @@ class _Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             return
         finally:
+            with host._lock:
+                host._streams = [other for other in host._streams if other is not stream]
             front.window_connected(False, self._who())
