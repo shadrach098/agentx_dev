@@ -82,7 +82,7 @@ The framework:
 | `delete_path` | `delete_files` | Delete file or dir (`recursive=True` for non-empty dirs). |
 | `move_file` | `move_files` | Rename / move within sandbox. |
 | `run_python` | `execute_python` | Execute a Python snippet in a fresh subprocess. |
-| `run_shell` | `execute_shell` | One-shot shell command (bash on Unix, git-bash / PowerShell on Windows). |
+| `run_shell` | `execute_shell` | One-shot shell command (bash on Unix, git-bash / PowerShell on Windows, never taken from the project folder). |
 
 ## Read-before-write safety
 

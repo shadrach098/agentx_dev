@@ -103,9 +103,9 @@ agentx                          # or: python -m agentx_dev
 
 | Feature | What you get |
 |---|---|
-| **Approvals and modes** | Reads run; edits, commands, delete and move ask first, with a diff or the full command shown. Modes `default`, `accept-edits`, `plan` and `auto` (set on purpose only, never from Shift+Tab or a project file). `a` ("don't ask again") remembers all edits, or a plain command prefix, for the conversation. |
-| **Trust a folder** | The first start in a folder asks "Accessing workspace ... Yes / No". Nothing from the folder (`AGENTX.md`, its settings) is read before you say yes. `.git`, `.agentx` and shell/git config files are never written, in any mode. |
-| **`AGENTX.md`** | Instructions for the model (how to run the tests, the layout, conventions), read from your home folder and from the working folder up. `/init` drafts one. |
+| **Approvals and modes** | Reads run; edits, commands, delete and move ask first, with a diff or the full command shown. Modes `default`, `accept-edits`, `plan` and `auto` (set on purpose only, never from Shift+Tab or a project file). "Don't ask again" (`2` in the menu) remembers all edits, or a plain command prefix, for the conversation. |
+| **Trust a folder** | The first start in a folder asks "Accessing workspace ... Yes / No", with No highlighted, so Enter alone exits. Nothing from the folder (`AGENTX.md`, its settings) is read before you say yes. `.git`, `.agentx` and shell/git config files are never written, in any mode. |
+| **`AGENTX.md`** | Instructions for the model (how to run the tests, the layout, conventions), read from your home folder and from the working folder up (a parent folder's file only when you trust that folder). `/init` drafts one. |
 | **Sessions** | Conversations autosave. `--continue`, `--resume [ID]` and `/resume` pick one up again. |
 | **Slash commands** | `/help`, `/clear`, `/model`, `/mode`, `/settings`, `/resume`, `/sessions`, `/init`, `/team`, `/team-models`, `/exit`. Typing `/` shows the list. |
 | **Team jobs** | For a big job the agent calls `start_team_job` (or you type `/team <task>`): a supervisor plans up to six steps and three helpers (explorer reads, coder edits, runner runs commands) carry them out through the same approval gate. One message may run up to 5 team jobs, so a big task continues batch after batch. A helper that runs out of its 100 steps hands on its partial work. |

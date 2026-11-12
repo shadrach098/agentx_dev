@@ -389,6 +389,10 @@ never appear as tools, so the LLM cannot call them.
 - **Use when:** the agent needs content search across a codebase.
 - **ReDoS guard** — 500-char pattern cap + 10-second wall-clock scan
   budget, so a catastrophic-backtracking regex can't freeze the agent.
+- **Links** — a linked file whose target is outside the allowed paths
+  is skipped, and linked folders (symlinks, Windows junctions) are
+  never entered, so a planted link cannot pull an outside file into
+  the results. `find_files` walks the same way.
 
 #### `write_file`
 
@@ -455,8 +459,12 @@ never appear as tools, so the LLM cannot call them.
 - **Capability:** `execute_shell`
 - **Args:** `command: str, cwd: str = None`
 - **Returns:** captured stdout + stderr + exit code
-- **Isolation:** fresh subprocess (bash on Unix, git-bash / PowerShell
-  on Windows). Timeout + output cap.
+- **Isolation:** fresh subprocess (bash on Unix; on Windows git-bash
+  from Program Files, a per-user Git install or `PATH` without the
+  current folder, else System32's PowerShell, so a `bash.cmd` left in
+  the project never runs). Timeout + output cap. `$AGENTX_SHELL`
+  overrides the shell; on Windows a bare name in it is found on
+  `PATH` (never in the project), and ignored when it is not there.
 - **Use when:** invoking system CLIs (git, curl, ffmpeg), build tools.
 - **Prefer `run_python`** for portability when possible — shell
   semantics differ across OSes.
@@ -483,7 +491,11 @@ Not registered by `DefaultTools`; import and pass them explicitly.
 - **Args to the tool:** `url: str, max_chars: int = 50000`
 - **SSRF guard** — refuses non-public destinations (loopback,
   RFC1918, 169.254.169.254 cloud-metadata, link-local, multicast).
-  Re-validates every redirect hop.
+  Re-validates every redirect hop, and each connection goes to the
+  address that was checked (no second lookup), so DNS rebinding
+  cannot reach a local address. A redirect to a private address reads
+  `ERROR: refused`. Through a proxy set in the environment, the proxy
+  does the lookup.
 - **Disk cache** — with `cache_dir=`, the FULL response lands on disk
   and the tool reply includes a `open(cached_path).read()` snippet.
   The agent can drop that into `run_python` instead of pasting the

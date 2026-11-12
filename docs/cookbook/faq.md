@@ -152,8 +152,9 @@ input) cannot add to it. Tune `memory_min_score` to the embeddings (about
 
 Pick a mode. `agentx --mode accept-edits` (or `/mode accept-edits`, or
 Shift+Tab) runs edits without asking; commands and delete / move still
-ask. Answering `a` ("don't ask again") at an edit prompt switches to the
-same mode for the rest of the conversation. `/mode auto` also runs shell
+ask. Answering "don't ask again" (`2` in the menu) at an edit prompt
+switches to the same mode for the rest of the conversation, for edits
+only (web lookups still ask). `/mode auto` also runs shell
 commands and Python without asking, and team jobs; delete, move and tools
 it does not know still ask. `auto` is only entered on purpose (never from
 Shift+Tab, an `a` answer or a project's settings file), so use it in
@@ -468,9 +469,10 @@ run `setx GITHUB_MCP_TOKEN "<token>"` in PowerShell, open a new terminal, and ad
 
 ## Which MCP tools run without asking? *(3.8)*
 
-The ones the server marks read-only, decided the first time `agentx` sees each tool and saved in `mcp.json`. Tools
-that change, delete or cancel things ask first, in every mode. `/mcp tools <server>` shows the list,
-`/mcp allow <server> <tool>` and `/mcp ask <server> <tool>` change it. An allow rule like `"<server>__*"` in your
+The ones the server marks read-only, checked against the server's label on every connect and saved in `mcp.json`;
+one that stops being read-only asks again. Tools that change, delete or cancel things ask first, in every mode.
+`/mcp tools <server>` shows the list, `/mcp allow <server> <tool>` and `/mcp ask <server> <tool>` change it; your
+`/mcp allow` choices are kept separately and the server cannot change them. An allow rule like `"<server>__*"` in your
 settings lets every tool of that server through, including ones that delete, so prefer the per-tool list.
 
 ## Why is `agentx` taking so long? *(3.8)*

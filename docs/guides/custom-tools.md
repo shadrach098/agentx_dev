@@ -204,7 +204,9 @@ it on.
 
 **SSRF guard** (3.0.6) — `web_fetch` rejects non-public destinations
 (loopback, RFC1918, 169.254.169.254 cloud metadata, link-local,
-multicast) and re-validates every redirect hop.
+multicast) and re-validates every redirect hop. Each connection goes to
+the address that was checked, on every hop, so DNS rebinding cannot
+reach a local address; through a proxy the proxy does the lookup.
 
 ## Testing tools
 

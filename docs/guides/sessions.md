@@ -76,7 +76,11 @@ Requires `AsyncAgentRunner` (or any runner exposing `.ainvoke`).
 ## Atomic save
 
 `session.save(path)` writes to `path.tmp` then renames — a crashed
-process can't leave a half-written session file.
+process can't leave a half-written session file. The file is created
+readable by you only (`0o600`), and folders `save` creates are yours
+only (`0o700`); folders that already exist are left as they are. The
+modes are ignored on Windows, where your profile's own permissions
+apply.
 
 ## Version migration
 

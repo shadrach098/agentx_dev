@@ -11,12 +11,86 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **The app window opens like the docs site.** The mark rises with a soft glow, `agentx` types itself in letter by
   letter and a lime cursor keeps blinking after it; "Starting..." (dots lighting up in turn) shows until agentx is
   ready, and the welcome grows out of it. While it works, that blinking cursor replaces the round spinner.
+- **The folder trust question highlights "No, exit".** Enter alone now exits; trust a folder with `1`, `y`, or Up
+  then Enter. The app window's trust card does the same.
+- **"Don't ask again" is `2` in approval menus.** The `a` shortcut is gone from the arrow-key menu (it still works in
+  the typed `[y/a/n]` prompt), so a word typed for the chat cannot pick it.
+- **Menus wait a moment before they take keys.** Keys typed before a menu appeared are thrown away, and keys pressed
+  in its first 0.4 seconds are ignored (Ctrl+C still cancels). In full-screen mode a menu waits while the input line
+  holds text (`Clear or send your message to answer`); keys keep editing the message and Enter sends it.
+- **App window cards do not take the focus while you type.** When the message box holds text, or another field has
+  the focus, a new card leaves the focus where it is; from an empty message box `1`, `2`, `3` answer it but Enter and
+  Space do not.
+- **Some granted commands ask again.** A "don't ask again" command grant no longer covers a call that uses an option
+  through which the program runs another program (`git fetch --upload-pack`, `make -f`, `rg --pre` and similar), and
+  `find`, `sed`, `tar`, `rsync`, `vim`, `git submodule`, `git rebase` and similar are never remembered.
+- **An MCP server launcher that exists only as a `.ps1` script needs its full path.** A bare `"command"` is now looked
+  up on `PATH` only; one not found reads `not connected: <name> not found on PATH`.
+- **A parent folder's `AGENTX.md` needs that folder trusted.** To use a repository's top-level file when you start
+  in a subfolder, trust the top folder once.
 
 ### Fixed
 
 - **`--remote` on a VPS prints the ssh command that works.** It assumed SSH on port 22 and guessed the address, so
   a server on another port (2222, say) timed out. In an SSH session agentx now uses the address and port that
   session came in on (`ssh -p 2222 ...`).
+
+### Security
+
+- **Keys typed for the chat never answer an approval.** Keys still waiting when a prompt opens go to your message
+  line, never to the prompt; menus throw away keys typed before they appeared and ignore the first 0.4 seconds.
+- **A stray Enter never trusts a folder.** The trust question opens on "No, exit", and keys typed while agentx
+  started are thrown away.
+- **A command grant cannot approve another program.** "Don't ask again" on a command no longer approves a later call
+  that runs another program through its options (`git fetch --upload-pack`, `git grep -O`, `git -c`, `make -f` or
+  `VAR=value`, `go test -exec`, `cargo --config`, `rg --pre`, `npm --script-shell`) or holds `$ * ? [ {` for such a
+  program. Programs that run others through their options or scripts (`find`, `sed`, `tar`, `rsync`, `scp`, `zip`,
+  `vim`, `parallel`, `crontab`, `at`...) and git sub-commands such as `submodule`, `rebase`, `difftool`, `config` and
+  `hook` are approved once and never remembered.
+- **An edit grant covers edits only.** Answering "don't ask again" at an edit prompt no longer lets web searches and
+  page fetches run unasked; they still ask until you choose `accept-edits` yourself or allow the web at a web prompt.
+- **`/clear` and `/resume` also end a web "don't ask again" grant.**
+- **The approval diff shows every hidden line break.** Lines split at LF only: a line break swapped for a form feed,
+  a vertical tab, U+2028 or a lone CR shows as a changed line with an escape such as `\x0c`, not as "only line
+  endings change".
+- **Backslash paths on Linux and macOS.** A backslash is part of a file name there, so the deny rules (and the
+  prompt) also judge the file the name really reaches: a link named `x\y` cannot lead past the `.git` protection.
+- **The window's key is never on a command line.** The window agentx opens gets a one-time start link (`?c=`) that
+  works once, for 2 minutes; the page trades it for the key. A second use is refused, the key is changed and the
+  terminal prints a warning with the new link.
+- **An approval too long to show in full is declined.** A card whose action, target or preview would be cut is
+  declined without asking, with a notice saying why; "don't ask again" is not offered for a rule too long to show.
+- **Links in answers cannot add attributes.** A link's address ends at a space, `(`, `)` or a quote, and each link is
+  built once, so model text cannot break out of it.
+- **Saving Settings keeps declined project rules off.** Project allow rules you turned down at start, and rules added
+  to the project file since, stay off for the session after the window saves the settings.
+- **Open another folder imports nothing from that folder** before the new agentx asks whether you trust it.
+- **Pictures are never saved through a planted link.** When the project's `.agentx` or `.agentx/uploads` is a link,
+  a picture goes to `~/.agentx/uploads/`; the message names where the file really is.
+- **Turning remote control off closes the windows opened through Tailscale** (their conversations are saved), and
+  the 30-second re-share check can no longer share the window again afterwards.
+- **Nothing is started from the project folder on Windows.** `run_shell` takes git-bash from Program Files, a
+  per-user Git install or `PATH` without the current folder, else System32's PowerShell; stopping a command runs
+  System32's `taskkill`; Tailscale, Edge, Chrome and PowerShell for the app window are found the same way.
+- **MCP stdio servers' bare commands are found on `PATH` only**, never in the project folder (the server still
+  starts in the current folder).
+- **Read-only auto-allows are re-checked on every connect.** Tools allowed because the server marked them read-only
+  are kept in `"auto"` in `mcp.json`, apart from your own `/mcp allow` choices; one the server stops marking read-only
+  asks again, with a warning. On the first connect after upgrading, saved `"allow"` entries the server marks
+  read-only move to `"auto"`.
+- **A sign-in is tied to the server's address.** When a server's URL changes, the old sign-in is deleted instead of
+  being sent there; a server taken out of `mcp.json` is disconnected and its sign-in deleted; `/mcp add` under a
+  name used before starts signed out.
+- **A parent folder's `AGENTX.md` is read only when you trust that folder.** The folder you start in and your home
+  folder's file are always read.
+- **`grep` and `find_files` do not follow links out of the project.** A linked file that leads outside is skipped and
+  linked folders (Windows junctions included) are never entered.
+- **`web_fetch` connects only to the address it checked**, on every redirect, so DNS rebinding cannot reach a local
+  address; a redirect to a private address reads `ERROR: refused`.
+- **Saved conversations and their titles are readable by you only** (`0600`, new folders `0700`), and `~/.agentx` is
+  created yours only.
+- **`/skills install` refuses a repository whose skill files have `:` in their paths** (another drive, or an NTFS
+  stream, on Windows) and never writes outside its download folder.
 
 ## [3.8.0] - 2026-11-08
 

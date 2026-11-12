@@ -66,11 +66,12 @@ Accessing workspace:
  C:/Users/you/projects/site
 
 Quick safety check: is this a project you created or one you trust? ...
-> 1. Yes, I trust this folder
-  2. No, exit
+  1. Yes, I trust this folder
+> 2. No, exit
 ```
 
-Nothing in the folder is read until you say yes, and it does not ask again for that folder. Then you see the start
+"No, exit" is highlighted at first, so a stray Enter never trusts a folder: press `1` or `y` (or Up, then Enter) to
+say yes. Nothing in the folder is read until you say yes, and it does not ask again for that folder. Then you see the start
 screen (the model, the folder, tips) and the input line:
 
 ```text
@@ -168,8 +169,9 @@ Do you want to proceed?
 ```
 
 - **Yes** (Enter, `1` or `y`): this one change.
-- **Yes, and don't ask again** (`a`): every edit for the rest of this conversation. For a command, `a` remembers its
-  first word (`pytest`, or two words such as `git status`).
+- **Yes, and don't ask again** (`2`; it has no letter, so a word typed for the chat cannot pick it): every edit for
+  the rest of this conversation (web lookups still ask). For a command, it remembers its first word (`pytest`, or two
+  words such as `git status`).
 - **No** (`n`): nothing happens, and you can type what it should do instead; the agent is told and adjusts.
 
 Commands work the same way: `run_shell` shows the exact command, `run_python` shows the code. Delete and move

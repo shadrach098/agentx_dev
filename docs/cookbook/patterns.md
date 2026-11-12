@@ -1192,7 +1192,7 @@ cd my-project
 agentx
 ```
 
-The first start in a folder asks whether you trust it (`1. Yes, I trust this folder` / `2. No, exit`). Nothing from the folder is read until you say yes, and the answer is kept in `~/.agentx/trusted.json`.
+The first start in a folder asks whether you trust it (`1. Yes, I trust this folder` / `2. No, exit`, with "No, exit" highlighted, so Enter alone exits; press `1` or `y` to trust it). Nothing from the folder is read until you say yes, and the answer is kept in `~/.agentx/trusted.json`.
 
 Then it shows its start screen: a box with the model, the folder, tips for this folder and what's new, any warnings
 (an MCP server that needs a sign-in, say), and the input with the mode under it
@@ -1228,8 +1228,8 @@ Things to know:
 
 - **Protected files.** Writes, edits, deletes and moves of `.git`, of `.agentx/*` and of git and shell config files in your home folder are refused in every mode, `auto` included.
 - **Shell and Python are not sandboxed.** They ask, and what they can do is what your account can. Keep secrets out of the project folder and read each command before you approve it.
-- **`a` is narrow.** It remembers all edits, or a plain command prefix such as `pytest`, for the conversation; never `run_python`, delete, move, interpreters or compound commands. `/clear` forgets it.
-- **Session files hold file contents.** Conversations in `~/.agentx/sessions/` include what the model read and the output of commands, unencrypted.
+- **"Don't ask again" is narrow.** Press `2` in the menu (it has no letter). It remembers all edits (web lookups still ask), or a plain command prefix such as `pytest`, for the conversation; never `run_python`, delete, move, interpreters, compound commands, programs that run other programs through their options (`find`, `sed`, `tar`), or a later command that uses such an option (`git fetch --upload-pack=...`). `/clear` forgets it.
+- **Session files hold file contents.** Conversations in `~/.agentx/sessions/` include what the model read and the output of commands, unencrypted (readable by you only).
 - **A cloned repository's `.agentx/settings.json` is untrusted.** It cannot turn on `accept-edits` or `auto`, and its allow rules need your yes at startup.
 - See [The `agentx` command](../guides/cli.md) for the settings, rules and limits.
 

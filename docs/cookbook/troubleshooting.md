@@ -406,6 +406,19 @@ The server wants you to sign in. Run `/mcp login <name>`; the browser opens. It 
 `/mcp reload` (on Windows a variable saved with `setx` or the Environment Variables dialog is found without a restart;
 elsewhere, or for one set only in another terminal, start `agentx` again from a terminal that has it).
 
+**`MCP <name>: not connected: npx not found on PATH`**
+A server's bare command (`npx`, `uvx`, `node`) is looked up on `PATH` only, never in the project folder, and it is
+not there. Put the program's folder on `PATH`, or give the full path in `"command"` in `~/.agentx/mcp.json`. A
+launcher that exists only as a `.ps1` script also needs its full path now.
+
+**`MCP <name>: its address is not the one you signed in at, so the saved sign-in was deleted instead of being sent there.`**
+The server's `"url"` changed (you edited `mcp.json`, or used the name again for another server), so the old sign-in
+was not sent to the new address. Run `/mcp login <name>` to sign in there.
+
+**`MCP <name>: <tool> now asks first: the server no longer marks it read-only.`**
+A tool that ran without asking because the server marked it read-only lost that label on this connect, so it asks
+again. If you trust it, `/mcp allow <name> <tool>` lets it run without asking as your own choice.
+
 **`/mcp login` says the address is in use (port 33418)**
 Another program, or another `agentx` signing in, is using the port the sign-in page sends the browser back to.
 Close it and try again.
@@ -780,7 +793,16 @@ The `agentx` window was started before the version that reads keys while it work
 it again. The spinner line ends with `type to add to the task` when typing is read. A message you
 send waits under the spinner (`◌ ... · waiting for the agent's next step`) and is replaced by
 `❯ ... ✓ read by the agent` (or by a helper) once read. Approval prompts and questions get the keys
-while they are open, and nothing is read on a pipe.
+pressed while they are open (keys typed before one opened stay with your message), and nothing is read on a pipe.
+
+**An approval menu ignores the first keys I press**
+On purpose: keys pressed in the first 0.4 seconds after a menu appears are ignored (Ctrl+C still cancels), so a key
+typed for the chat cannot answer it. In full-screen mode a menu also waits while the input line holds text: send or
+clear your message, then answer. "Don't ask again" has no letter any more: press `2`.
+
+**The repository's top-level `AGENTX.md` is not used when I start in a subfolder**
+A parent folder's `AGENTX.md` is read only when you trust that folder. Start `agentx` once in the repository's top
+folder and answer yes; from then on its subfolders are trusted too and the file is read.
 
 **The spinner showed `683s`** *(fixed)*
 It shows minutes and hours now: `11m 23s`, `1h 02m`.
@@ -818,6 +840,18 @@ command instead. From a laptop with Tailscale, open the Tailscale link and skip 
 The page was opened without the end of its link (`?t=...`), or with the link of an earlier start: open the link
 the terminal shows now, or paste it into the box. Before this version, "Open in Safari" or a new tab showed a box
 saying "Open agentx from your terminal" that could not be closed *(fixed: the key now stays in the address)*.
+
+**The window says "This start link has expired" or "This start link was already used"**
+The window agentx opens gets a one-time start link (`?c=...`) instead of the key; it works once, for 2 minutes. Open
+the `?t=` link the terminal shows, or paste it into the box.
+
+**The window says "agentx changed its key", and the terminal warns that the start link was used a second time**
+Something opened the one-time start link again (another program on the computer may have read it), so agentx
+refused it and made a new key. Open the new link the terminal printed, or paste it into the box.
+
+**The window says "Remote control is off"**
+Remote control was turned off on the computer agentx runs on, which closes the windows opened through Tailscale. The
+conversation is saved: when remote control is on again (same link), reload the page to carry on.
 
 **The window says "Waiting for agentx…" and nothing moves while the terminal works** *(fixed)*
 In `/remote-control` from the terminal the window did not see the terminal's spinner. It now shows the same line

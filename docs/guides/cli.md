@@ -27,9 +27,11 @@ Accessing workspace:
  C:/Users/you/projects/site
 
 Quick safety check: is this a project you created or one you trust? ...
-> 1. Yes, I trust this folder
-  2. No, exit
+  1. Yes, I trust this folder
+> 2. No, exit
 ```
+
+"No, exit" is highlighted at first, so Enter alone exits. To trust the folder press `1` or `y`, or move up to it and press Enter. Keys typed before the question appeared (while agentx started) are thrown away, so they cannot answer it.
 
 Nothing in the folder (its `AGENTX.md`, its `.agentx/settings.json`) is read until you say yes. The answer is kept in `~/.agentx/trusted.json`, and subfolders of a trusted project are trusted too. Your home folder and a drive root cover only themselves, and the question warns you when you start there.
 
@@ -91,7 +93,7 @@ Keys are read from the environment only. With no `--model`, the first key found 
 
 ## What it can do
 
-The main agent gets the ten tools from [`DefaultTools`](../concepts/tools.md), `web_search` and `web_fetch`, plus `start_team_job`, `use_skill` and `recall`, fifteen in all (`recall` only in a project folder, see [Notes and recall](#notes-and-recall)). `web_fetch` returns a page's readable text (no markup), at most 30,000 characters, and both web tools start their result with a note that it is data from the internet, not instructions. The ten are limited to the folder you started in (plus any extra folders, see [Extra folders](#extra-folders)). A path outside those folders fails inside the tool.
+The main agent gets the ten tools from [`DefaultTools`](../concepts/tools.md), `web_search` and `web_fetch`, plus `start_team_job`, `use_skill` and `recall`, fifteen in all (`recall` only in a project folder, see [Notes and recall](#notes-and-recall)). `web_fetch` returns a page's readable text (no markup), at most 30,000 characters, and both web tools start their result with a note that it is data from the internet, not instructions. The ten are limited to the folder you started in (plus any extra folders, see [Extra folders](#extra-folders)). A path outside those folders fails inside the tool. `grep` and `find_files` skip a linked file that leads outside them and never enter a linked folder (a Windows junction included), so a planted link cannot pull an outside file into a search.
 
 | Kind | Tools | What happens |
 |---|---|---|
@@ -118,7 +120,7 @@ Every tool call goes through a gate before it runs. The gate runs it, asks you, 
 | Mode | Behaviour |
 |---|---|
 | `default` | Edits, commands, web lookups and destructive actions ask. |
-| `accept-edits` | Edits and web lookups run without asking. Commands and destructive actions still ask. |
+| `accept-edits` | Edits and web lookups run without asking. Commands and destructive actions still ask. When the mode came from answering "don't ask again" at an edit prompt, it covers edits only: web lookups still ask until you choose the mode yourself (`--mode`, `/mode`, Shift+Tab) or answer "don't ask again" at a web prompt. |
 | `plan` | Reads only, and web lookups after asking. Anything else, team jobs included, is refused and the model is told to propose a plan in its answer instead. |
 | `auto` | File edits, shell commands, Python and web lookups run without asking, and so do team jobs. Delete, move and tools the gate does not know (such as MCP tools) still ask. The built-in protections and your deny rules still apply. |
 
@@ -147,13 +149,13 @@ Do you want to proceed?
   3. No, and tell the model what to do instead
 ```
 
-Move with the Up and Down arrow keys and press Enter, or press the number (or `y`, `a`, `n`). Esc, Ctrl+C and Ctrl+D count as no. On a terminal that cannot draw the menu (or when input is piped) the same question is asked as a typed `[y/a/n]` line.
+Move with the Up and Down arrow keys and press Enter, or press the number (or `y`, `n`). "Don't ask again" has no letter: press `2` or move to it, so a word typed for the chat cannot pick it. Esc, Ctrl+C and Ctrl+D count as no. Keys typed before the menu appeared are thrown away, and keys pressed in its first 0.4 seconds are ignored (Ctrl+C still cancels), so an answer is always one you gave after the menu was on screen. On a terminal that cannot draw the menu (or when input is piped) the same question is asked as a typed `[y/a/n]` line.
 
 (The real box is drawn by `rich`, and the diff is coloured: green for added lines, red for removed.)
 
 - **Action** is the full description of what will happen ("Edit src/app.py", "Delete build and everything inside it", "Run shell command in tools").
 - **Subject** is a second line, shown when it adds something: it is the text the gate actually judged, in its resolved form (for a path, resolved against the project folder with links followed). Both lines wrap; neither is ever cut, so a long command or a hostile-looking tail past the screen width is still fully visible.
-- The body is a unified diff for `write_file` and `edit_file` (computed against the file on disk; a new file shows as all additions), the exact command for `run_shell`, the code for `run_python`, and nothing more for delete and move (the paths are in Action and Subject).
+- The body is a unified diff for `write_file` and `edit_file` (computed against the file on disk; a new file shows as all additions; lines are split at LF only, a CRLF counting as one break, so a form feed, a vertical tab, U+2028 or a lone CR stays inside its line and shows as an escape such as `\x0c`; "(only line endings or the final newline change)" appears only when CRLF against LF or the final newline is the whole difference), the exact command for `run_shell`, the code for `run_python`, and nothing more for delete and move (the paths are in Action and Subject).
 - A **move into an existing folder** lands at `folder/<name>`, and the prompt says so ("Move a to b/a"); a move onto an existing file says "(replaces the existing b)". The gate judges the final path, so a protected name cannot be reached by moving it into a folder.
 
 Answers (typed, or the menu entries above):
@@ -161,10 +163,10 @@ Answers (typed, or the menu entries above):
 | Key | Meaning |
 |---|---|
 | `y` | Allow this call. |
-| `a` | Allow, and do not ask again (see below). Offered only when the gate can remember something; otherwise the prompt shows `[y] yes   [n] no`. |
+| `a` | Allow, and do not ask again (see below). Offered only when the gate can remember something; otherwise the prompt shows `[y] yes   [n] no`. This letter works in the typed `[y/a/n]` prompt only; in the menu press `2`. |
 | `n` | Refuse. You are then asked for an optional reason, which the model is told. |
 
-`yes`, `no` and `always` also work when typed. In the typed prompt, bare Enter, end of input (Ctrl+D) and Ctrl+C count as no, and any other word is not guessed at: the question is asked again. In the menu, "Yes" is highlighted at first, so Enter alone approves; move down to refuse.
+`yes`, `no` and `always` also work when typed. In the typed prompt, bare Enter, end of input (Ctrl+D) and Ctrl+C count as no, and any other word is not guessed at: the question is asked again. In the menu, "Yes" is highlighted at first, so Enter alone approves; move down to refuse. Only keys pressed after the menu is shown count.
 
 A refusal is an ordinary tool result, never an error: the model receives "The user declined: <your reason>" (or "The user declined this action.") and is expected to adjust or ask you what you want.
 
@@ -172,11 +174,12 @@ A refusal is an ordinary tool result, never an error: the model receives "The us
 
 The prompt prints exactly what `a` will remember.
 
-- **An edit prompt:** switches the gate to `accept-edits` for the rest of the conversation. `/clear` and `/resume` put the mode back to the one that was in force when you answered `a`. A mode you set yourself afterwards (`--mode`, `/mode`, Shift+Tab) is yours and is kept.
-- **A shell command:** remembers a plain command prefix for the rest of the conversation: the first word, or the first two for `git`, `npm`, `pnpm`, `yarn`, `pip`, `cargo`, `go`, `docker` and `make`. So `a` on `pytest -x` skips the next `pytest ...`, and `a` on `git status` skips `git status ...` but not `git push`.
-- **Nothing is remembered** (so `a` is not offered) for: `run_python` (each call is approved on its own), `delete_path` and `move_file`, compound commands, interpreters, shells and wrappers (`python`, `node`, `bash`, `sudo`, `ssh`, `npx`, `env`, `xargs` and similar, including versioned names such as `python3.12`), a first word that is not made only of letters, digits and `. _ + / -` (so `CI=1 pytest` and quoted or expanded commands grant nothing), `git -c ...` or any two-word command whose second word is an option, and package runners (`npm exec`, `pnpm dlx`, `yarn dlx` and so on).
+- **An edit prompt:** switches the gate to `accept-edits` for the rest of the conversation, for edits only: web lookups keep asking. `/clear` and `/resume` put the mode back to the one that was in force when you answered `a`. A mode you set yourself afterwards (`--mode`, `/mode`, Shift+Tab) is yours and is kept (and then covers web lookups too).
+- **A web lookup:** lets every web search and page fetch run without asking for the rest of the conversation.
+- **A shell command:** remembers a plain command prefix for the rest of the conversation: the first word, or the first two for `git`, `npm`, `pnpm`, `yarn`, `pip`, `cargo`, `go`, `docker` and `make`. So `a` on `pytest -x` skips the next `pytest ...`, and `a` on `git status` skips `git status ...` but not `git push`. A remembered prefix never approves a later command that uses an option through which the program runs another program, or that holds `$ * ? [ {` for such a program (the shell could turn those into an option the text does not show): `git fetch --upload-pack=...` (or `-u`), `git grep -O...`, `git -c`/`--config`, `--exec`, `--template`, `make -f`/`--eval`/`VAR=value`, `go test -exec`/`-toolexec`, `cargo --config`, `rg --pre`, `npm --script-shell`. Those ask.
+- **Nothing is remembered** (so `a` is not offered) for: `run_python` (each call is approved on its own), `delete_path` and `move_file`, compound commands, interpreters, shells and wrappers (`python`, `node`, `bash`, `sudo`, `ssh`, `npx`, `env`, `xargs` and similar, including versioned names such as `python3.12`), programs that run other programs through their options or scripts (`find`, `sed`, `tar`, `rsync`, `scp`, `zip`, `vim`, `parallel`, `crontab`, `at` and similar), a first word that is not made only of letters, digits and `. _ + / -` (so `CI=1 pytest` and quoted or expanded commands grant nothing), `git -c ...` or any two-word command whose second word is an option, the git sub-commands that run a program they are handed (`git submodule`, `rebase`, `difftool`, `mergetool`, `filter-branch`, `bisect`, `config`, `send-email`, `hook` and similar), package runners (`npm exec`, `pnpm dlx`, `yarn dlx` and so on), and a command that uses one of the options above. Such a command is approved once, without `a`.
 
-`/clear` and `/resume` clear these session-wide grants. Rules from your settings files stay.
+`/clear` and `/resume` clear these session-wide grants, the web one included. Rules from your settings files stay.
 
 ### When a prompt is skipped
 
@@ -217,8 +220,10 @@ You do not have to wait for the agent to finish. While the spinner runs (it says
   `/clear`, `/resume`, `/init`, `/team <task>`, `/exit`, installing or removing a skill or an MCP server, and setting
   a value (`/limit 300k`, `/team-models ...`, `/fullscreen on`). They show `◌ /clear · runs when the agent is done`.
 
-Backspace, Esc (clears the line), Ctrl+U and Ctrl+W work while typing. Approval prompts and questions get the keys as
-before: nothing is read from the keyboard while one is open. On a pipe (not a terminal) nothing is read.
+Backspace, Esc (clears the line), Ctrl+U and Ctrl+W work while typing. What you type while it works stays with your
+message: when an approval or a question opens meanwhile, the keys already typed stay on your line (an Enter among them
+sends it), and they never answer the prompt. Nothing is read for the chat while a prompt is open. On a pipe (not a
+terminal) nothing is read.
 
 ## Default protections
 
@@ -228,7 +233,7 @@ These deny rules are always on, in every mode, `accept-edits` included. They ref
 - **`.agentx` and everything under it** at the top of the project (`.agentx/*`, where the project settings live), and `~/.agentx`. A model must not rewrite its own permissions.
 - **In your home folder:** `~/.gitconfig`, `~/.config/git` and everything under it, `~/.bashrc`, `~/.bash_profile`, `~/.bash_login`, `~/.profile`, `~/.zshrc`, `~/.zprofile` and `~/.config/fish/config.fish`. These matter only when the tools can reach the home folder (the project is the home folder, or it is an extra folder).
 
-Names that merely start alike (`.gitignore`, `.github/`) are not covered. Reading these files is still allowed. The rules match every spelling of a path they can compute: relative, absolute, `./`, `..`, backslashes, links followed, and case folded on Windows and macOS.
+Names that merely start alike (`.gitignore`, `.github/`) are not covered. Reading these files is still allowed. The rules match every spelling of a path they can compute: relative, absolute, `./`, `..`, backslashes, links followed, and case folded on Windows and macOS. On Linux and macOS a backslash is part of a file name, so the rules also match the file the name reaches as written (a link named `x\y` is followed), and the prompt names that file.
 
 ### What deny and allow rules are not
 
@@ -314,7 +319,7 @@ A repository you just cloned can contain `.agentx/settings.json`. So:
 `AGENTX.md` files tell the model how to work in your project: what it is, how to run the tests, the layout, the conventions. `agentx` reads:
 
 1. `~/.agentx/AGENTX.md` (yours, applies everywhere), then
-2. `AGENTX.md` in the current folder and each of its parents, from the top down, so the nearest file comes last and wins. The climb stops at the first of: the folder that holds a `.git` entry (that folder's own file is read), your home folder, or the filesystem root. A file in a folder the project merely sits inside is not taken for the project's.
+2. `AGENTX.md` in the current folder and each of its parents, from the top down, so the nearest file comes last and wins. The climb stops at the first of: the folder that holds a `.git` entry (that folder's own file is read), your home folder, or the filesystem root. A file in a folder the project merely sits inside is not taken for the project's. A parent folder's file is read only when you trust that folder too (the trust question covers the folder you start in and what is inside it, not the folders around it, which someone else may be able to write to); the current folder's file and your home folder's `AGENTX.md` are always read. To use a repository's top-level `AGENTX.md` when you start in one of its subfolders, trust the repository's top folder (start `agentx` there once and answer yes).
 
 Together with the working folder and the operating system they are passed to the model as its instructions, cut at 20,000 characters in total. Your own `~/.agentx/AGENTX.md` gets room first, so a cloned repository with a huge `AGENTX.md` cannot push your instructions out; then the nearest project files are kept, and a farther file that does not fit is dropped. Project files are marked as coming from the project and cannot override the base rules or the approval prompts. Binary files are skipped, and a link that leads out of its folder is left out.
 
@@ -357,7 +362,7 @@ Accepts `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>
 | `/skills install [name ...] <link or folder>` | As above. Names before a GitHub link install only those skills: `/skills install brag https://github.com/latent-spaces/brag`. |
 | `/skills remove <name>` | Asks, then deletes the skill's folder from `~/.agentx/skills/`. A project skill is not removed by this: it belongs to the project. |
 
-**Only you can install.** The agent has no tool to install or remove a skill, and its file tools can never write to `.agentx` or `~/.agentx` (see [Default protections](#default-protections)). A skill is instructions the agent will follow, so install only skills you trust. A skill from a link or a project is shown to the model with a note that it cannot override the rules or the approval prompts. Only the skill folders are fetched: `agentx` asks GitHub for the repository's file list and downloads just the files of the folders holding a `SKILL.md` (hidden ones such as `.agents/skills` included), or of the folder the link names; a `/blob/` link to a skill's file works too. A repository with more than 500 skill files is downloaded as an archive (up to 100 MB) and only its skill folders are unpacked. Limits: 3,000 files, 10 MB a file, 50 MB in all, 50 skills; paths that leave the folder and links are refused, and a downloaded skill cannot take the name of a built-in one.
+**Only you can install.** The agent has no tool to install or remove a skill, and its file tools can never write to `.agentx` or `~/.agentx` (see [Default protections](#default-protections)). A skill is instructions the agent will follow, so install only skills you trust. A skill from a link or a project is shown to the model with a note that it cannot override the rules or the approval prompts. Only the skill folders are fetched: `agentx` asks GitHub for the repository's file list and downloads just the files of the folders holding a `SKILL.md` (hidden ones such as `.agents/skills` included), or of the folder the link names; a `/blob/` link to a skill's file works too. A repository with more than 500 skill files is downloaded as an archive (up to 100 MB) and only its skill folders are unpacked. Limits: 3,000 files, 10 MB a file, 50 MB in all, 50 skills; paths that leave the folder and links are refused, and so is any skill file path with a `:` in it when files are fetched one by one (nothing is installed); nothing is ever written outside the download folder, and a downloaded skill cannot take the name of a built-in one.
 
 ## MCP servers
 
@@ -380,19 +385,27 @@ to plant one.
 `/mcp reload` is for when something changed while agentx was running: you edited `~/.agentx/mcp.json` by hand, a
 server dropped, a sign-in finished after agentx stopped waiting, or you set a key a server needs. It reconnects with
 the saved sign-ins (it never opens the browser), drops servers no longer in the file, and gives the conversation the
-new tools without losing it. On Windows it also reads the variables saved for your user since agentx started (with
+new tools without losing it. A server you took out of the file is disconnected and its saved sign-in is deleted, so a
+server added later under that name does not get it; if the file cannot be read, nothing is deleted. On Windows it also reads the variables saved for your user since agentx started (with
 `setx` or the Environment Variables dialog), which a running program otherwise does not see, so a `${GITHUB_MCP_TOKEN}`
 set after the start is found.
 
 Servers are kept in `~/.agentx/mcp.json` and connected when `agentx` starts; one that does not answer within 20
 seconds is reported and skipped. A server run on your computer is asked about when you add it (it runs each time
-`agentx` starts); its own messages go to `~/.agentx/mcp-logs/<name>.log`, not over the chat.
+`agentx` starts); its own messages go to `~/.agentx/mcp-logs/<name>.log`, not over the chat. A bare command such as
+`npx` is looked up on `PATH` only, never in the project folder (on Windows the usual search tries the current folder
+first, so a cloned repository's own `npx.cmd` would run instead). One that is not on `PATH` is reported as
+`not connected: npx not found on PATH`: give the full path in `"command"`. That includes a launcher that exists only
+as a `.ps1` script. The server itself still starts in the current folder.
 
 **Signing in.** A server that wants a sign-in is never opened by itself at startup: it is listed as
 `needs sign-in: /mcp login <name>`. `/mcp login` (or a yes when you add it) opens the sign-in page in your browser,
 which sends you back to `http://localhost:33418/callback`. The tokens are kept in your system's credential store
 (Windows Credential Manager, the macOS keychain, the Secret Service on Linux), not in a file, and renewed by
-themselves until `/mcp logout`. A server that takes a key instead is set up in `mcp.json` with the key's
+themselves until `/mcp logout`. A sign-in is kept with the server address it was made for: if the name later points
+at another address (you edited `"url"` by hand, or used the name again after removing the server), the old sign-in
+is deleted, not sent there, and `agentx` says to run `/mcp login <name>`. `/mcp add` under a name used before starts
+signed out. A server that takes a key instead is set up in `mcp.json` with the key's
 environment variable, so the key itself is never written down:
 
 ```json
@@ -423,7 +436,11 @@ server, in the chat and for every team helper.
 
 **Which run without asking.** A server labels each tool (MCP's `readOnlyHint` and `destructiveHint`). The first time
 `agentx` sees a tool, it lets the ones the server marks read-only run without asking, and saves that per server in
-`mcp.json` (`"allow"`, with every tool seen so far in `"seen"`). The rest ask first, in every mode, `auto` included:
+`mcp.json` (`"auto"`, with every tool seen so far in `"seen"`; your own `/mcp allow` choices go in `"allow"`). Each
+connect and `/mcp reload` checks `"auto"` against the server's current labels: a tool it no longer marks read-only
+asks first again, with a warning. `"allow"` is never changed by the server. When you upgrade, the first connect moves
+each saved `"allow"` entry whose tool the server marks read-only into `"auto"` (it still runs without asking, and is
+checked from then on). The rest ask first, in every mode, `auto` included:
 tools that change things, tools that delete or cancel, and tools the server did not label. You do not need to know
 the names:
 
@@ -455,7 +472,7 @@ Each conversation is saved as it goes, to `~/.agentx/sessions/<project>/<UTC tim
 
 A missing or unreadable session file is reported in one line and a new conversation starts.
 
-Two things to know about the files on disk. The session files hold the full history, **including tool results, so the contents of files the model read and the output of commands**. They are plain JSON and are not encrypted. The input history (`~/.agentx/history`, what Up arrow recalls) stores everything you type; `agentx` makes that file readable by you only where the platform allows. Do not paste secrets into the chat, and treat `~/.agentx` as sensitive.
+Two things to know about the files on disk. The session files hold the full history, **including tool results, so the contents of files the model read and the output of commands**. They are plain JSON and are not encrypted; `agentx` saves them, and the conversation titles, readable by you only where the platform has file modes (and creates `~/.agentx` and new session folders yours only). The input history (`~/.agentx/history`, what Up arrow recalls) stores everything you type; `agentx` makes that file readable by you only where the platform allows. Do not paste secrets into the chat, and treat `~/.agentx` as sensitive.
 
 ### The log
 
@@ -468,7 +485,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | Command | Does | Example |
 |---|---|---|
 | `/help` | List the commands. | `/help` |
-| `/clear` | Save this conversation and start a new one, which begins from the newest entries of the [work log](#the-work-log). Clears the "don't ask again" grants and undoes an edit grant; the mode and your settings rules stay. | `/clear` |
+| `/clear` | Save this conversation and start a new one, which begins from the newest entries of the [work log](#the-work-log). Clears the "don't ask again" grants (commands and web lookups) and undoes an edit grant; the mode and your settings rules stay. | `/clear` |
 | `/model [name] [--folder]` | Show or switch the model. The conversation is kept. A model that cannot be built (no key) leaves the old one in place. `/model <name>` lasts for this session only; `/model <name> --folder` also saves it for this folder (see [Project memory](#project-memory)). | `/model claude-opus-5-5 --folder` |
 | `/mode [name]` | Show or set the mode: `default`, `accept-edits`, `plan` or `auto` (see [Modes](#modes)). | `/mode plan` |
 | `/settings` | Show the model, mode, rules and helper models in force, and the paths of your settings file and the project's. | `/settings` |
@@ -536,7 +553,7 @@ Every tool call a helper makes goes through the same gate as the chat: the modes
 | ...                                                    |
 ```
 
-Answering `a` ("don't ask again: all edits this session") at a helper's edit prompt does what it does in the chat: it switches the whole session to `accept-edits` until `/clear` or `/resume`, so the rest of the job's edits (and later edits in the chat) run without asking. Answer `y` if you want to approve each one.
+Answering "don't ask again: all edits this session" (`2` in the menu, `a` when typed) at a helper's edit prompt does what it does in the chat: it switches the whole session to `accept-edits`, for edits only, until `/clear` or `/resume`, so the rest of the job's edits (and later edits in the chat) run without asking; web lookups still ask. Answer `y` if you want to approve each one.
 
 ### Helpers the supervisor makes
 
@@ -834,11 +851,14 @@ on the left and in `/resume`; until then, and for older conversations, the first
   (`.agentx/settings.json`): the default model and mode, the always-allow and never-allow rules, the steps and the
   token limit per message. Rules and limits take effect at once; the model and mode are used from the next start (the
   menus under the message box change the current conversation). A folder's own settings cannot turn on Accept edits
-  or Auto, as in the file.
+  or Auto, as in the file. Project allow rules you turned down at start stay off for the session after you save, and
+  so do rules something else added to the project file since the start; rules you type in the **This folder** tab
+  take effect at once.
 - **The conversation** starts with the agentx header (version, model, folder), like the box the terminal opens
   with. Then your messages on the right, the agent's steps as short rows (**Read**, **Edit**, **Run**
   and the file or command; look-around steps fold into one **Explored** row you can open), its notes, and the
-  answer rendered as markdown. Click a step to see what the tool gave back (the first 120 lines). What the model is thinking shows as it happens: its
+  answer rendered as markdown (a link's address ends at a space, `(`, `)` or a quote, so text in an answer cannot
+  add anything to the link). Click a step to see what the tool gave back (the first 120 lines). What the model is thinking shows as it happens: its
   reasoning and its notes between steps appear as **Thinking** blocks (the newest open), and a moving **Thinking…**
   line shows while it works on its next step. On Claude Opus 5.5, Sonnet 5.5 and Fable 5.1, agentx asks for a
   readable summary of the reasoning these models do on every step anyway (same cost); on GPT models it asks for
@@ -850,18 +870,23 @@ on the left and in `/resume`; until then, and for older conversations, the first
 - **Approvals** are cards under the step they are about: the diff or the command, then **Yes**, **Yes, don't ask
   again** (when it can be remembered) and **No**, which asks what it should do instead. Keys `1`, `2`, `3` answer
   when you are not typing; the other questions (the folder trust question, team questions, the token limit) are
-  cards too.
+  cards too. A card never takes the focus while you are typing (a text field has the focus, or the message box holds
+  text), so Enter or Space meant for your message cannot answer it; from an empty message box `1`, `2`, `3` answer
+  it but Enter and Space do not. A request whose action, target or preview is too long to show in the window in full
+  is declined without asking, and a notice says why; "don't ask again" is not offered when the rule it would remember
+  is too long to show. The folder trust card highlights **No, exit**, as in the terminal.
 - **Above the message box:** what it is doing, for how long and the tokens this message has used so far (the
   terminal's spinner line), from the moment you send; a soft light runs along the top of the message box while it
   works. Also the team's running steps, and the messages you
   typed while it works, each with ✕ to take it back (`/unsend`).
 - **The message box:** Enter sends, Shift+Enter adds a line, `/` opens the commands and skills. Under the text: **+**
   (add a picture, mention a file by searching for it, or open another folder: agentx starts there in a new window and
-  this one keeps running), then the mode and the model as menus (they send `/mode` and `/model`), the microphone (`/voice`)
+  this one keeps running; the new agentx loads nothing from that folder before its trust question), then the mode and the model as menus (they send `/mode` and `/model`), the microphone (`/voice`)
   and the send button. While it works and the box is empty, the send button is **Stop** (as is Esc): it stops the
   turn and the command it runs, like Ctrl+C. A message typed while it works goes to the agent at its next step, and
   show-only commands run at once, as in the terminal. A picture pasted, dropped or added with **+** (PNG, JPEG,
-  GIF, WebP, up to 10 MB) is saved in `.agentx/uploads/` and its path is put in your message, so the agent opens it
+  GIF, WebP, up to 10 MB) is saved in `.agentx/uploads/` (or in `~/.agentx/uploads/` when the project's `.agentx` or
+  `uploads` folder is a link) and the path where the file really is goes into your message, so the agent opens it
   with `read_path`.
 - It opens as the docs site does: the mark, `agentx` typed letter by letter and a blinking lime cursor, with
   "Starting..." until agentx is ready; while it works, that cursor blinks beside what it is doing.
@@ -875,6 +900,17 @@ Once the page is open, the key stays in the address after a `#` (the part a brow
 tab, **Open in Safari** or a bookmark keeps working until agentx stops. A page opened without its key, or with the
 key of an earlier start, says which and takes the link agentx printed, pasted in.
 
+The window agentx opens itself is not given the key on the browser's command line (another account on the computer
+can read a program's command line): it gets a one-time start link (`/?c=...`), which the page trades for the key. It
+works once, for 2 minutes. If it has expired or was already used, the window says "This start link has expired" or
+"This start link was already used" and asks for the `?t=` link printed in the terminal. A second use of the start
+link is refused, and agentx changes its key, prints a warning with the new link in the terminal, and the windows
+already open say "agentx changed its key" and ask for that link.
+
+On Windows agentx never starts Tailscale, Edge, Chrome or PowerShell from the project folder: they are found on
+`PATH` outside the project (PowerShell by its System32 path), so a program of that name left in a cloned repository
+does not run.
+
 ### Remote control: from an iPad, a phone or another computer
 
 The computer that runs agentx does the work (your files, your keys, the agent); the other device is only a screen.
@@ -883,7 +919,9 @@ The computer that runs agentx does the work (your files, your keys, the agent); 
   --remote` (the app window only), or type `/remote-control` in a session that is already running: in the terminal, the terminal keeps showing everything live and the window mirrors it (a
   message, an answer or a menu choice from either side shows in both; an approval is a card in the window and the
   menu in the terminal, and the first answer wins); in the app window, the same window becomes reachable from your
-  other devices. `/remote-control off` ends it. While it is on, closing a window does not quit agentx. Started from
+  other devices. `/remote-control off` ends it: windows opened through Tailscale are closed (they say "Remote control
+  is off") and their conversations saved; an SSH tunnel still works, and turned on again it uses the same link, so a
+  device that has it can come back. While it is on, closing a window does not quit agentx. Started from
   the terminal, the link and the ssh steps show in the terminal only: whoever opens the window got there already.
 - **Each device has its own conversation.** Every device that opens the window (an iPad, a laptop, the computer's
   own window) gets a conversation of its own, with its own agent, approvals, Stop button and status, working at
@@ -941,7 +979,9 @@ the status line stay at the bottom, while only the conversation between them scr
   scrolled up a line above the input says so.
 - To select text with the mouse, hold **Shift** while you drag (the mouse wheel belongs to agentx in this mode).
 - Questions (approvals, the token limit, pick-lists) are asked in the fixed area above the input, so they never
-  scroll away; the keys are the same as on the normal screen.
+  scroll away; the keys are the same as on the normal screen. While the input line holds text, an open question
+  waits: keys keep editing your message and Enter sends it, and the menu shows `Clear or send your message to
+  answer`. Once the line is empty (and after any change to it), menu keys wait 0.4 seconds before they count.
 - You can type while the agent works: a message reaches the agent at its next step, or the team during a team job,
   and `/skip <step>` skips a team step, as on the normal screen (see "Typing while it works").
 - Ctrl+C stops the agent as before; Ctrl+D on an empty input leaves.
@@ -1007,8 +1047,8 @@ A checklist for the maintainer to run once on a real terminal before release. Te
 5. Shift+Tab cycles the mode and the line under the input updates.
 6. Ask for a change to a file: the approval box shows an `Action:` line (and a `Subject:` line where it differs), a coloured diff, and `y` writes the file.
 7. Answer `n` with a reason: the model adjusts instead of repeating the edit.
-8. Answer `a` on an edit, make a second edit (it runs without asking), then type `/clear` and ask for another edit: it asks again.
-9. Ask it to run `pytest`, answer `a`: the next `pytest` runs without asking. After `/clear` it asks again.
+8. Answer `2` ("don't ask again") on an edit, make a second edit (it runs without asking), then type `/clear` and ask for another edit: it asks again.
+9. Ask it to run `pytest`, answer `2`: the next `pytest` runs without asking. After `/clear` it asks again.
 10. Put `{"mode": "accept-edits"}` in `.agentx/settings.json` in a test project and start `agentx` there: a warning says it was ignored, and the bar shows `default`.
 11. Ask the model to run a command that is wider than the screen with a dangerous-looking tail (for example `echo ok`, a very long string, then `; rm -rf x`): the approval box shows the whole command, wrapped, so the tail is visible.
 12. Press Ctrl+C at an approval prompt: only that call is declined, and the turn carries on.
@@ -1021,7 +1061,7 @@ A checklist for the maintainer to run once on a real terminal before release. Te
 19. Ask the model to move a file into an existing folder: the prompt says `Move a to b/a`. Ask it to move a folder named `.agentx` into the project root: it is refused with the deny-rule message.
 20. Start `agentx --mode auto` in a scratch folder: a notice explains what auto does, a file write and a Python run go through without a prompt, and a delete still asks. Press Shift+Tab: the bar returns to `default`, and Shift+Tab again never lands on `auto`.
 21. Ask the agent to run a script that takes 15 seconds (for example `import time; time.sleep(15)`): a spinner reads "Running run_python... Ns" while it works, disappears when the output is printed, and is not drawn over an approval prompt.
-22. Start `agentx` in a folder you have never used it in: the "Accessing workspace" question appears with `1. Yes, I trust this folder` highlighted; Down then Enter exits with code 1 and reads nothing from the folder; Yes starts, and the next start in that folder does not ask. Try it in your home folder: the extra warning shows.
+22. Start `agentx` in a folder you have never used it in: the "Accessing workspace" question appears with `2. No, exit` highlighted; Enter exits with code 1 and reads nothing from the folder; `1` (or Up then Enter) starts, and the next start in that folder does not ask. Try it in your home folder: the extra warning shows.
 23. At an approval prompt press Down, Down, Enter (No), then type a reason; then repeat and press 1 (Yes). Press Esc at a prompt: it counts as no. `/resume` with no id shows an arrow-key list of conversations.
 24. Watch the cursor at the `>` prompt: it blinks and the prompt is cyan. While the agent works there is a spinner instead. (A terminal that ignores cursor-shape requests keeps its own cursor, but the prompt colour still differs from the working spinner.)
 25. Ask for something big ("survey this project, then add a docstring to each module and run the tests"): the hand-off prompt appears with the task, the helpers and the cost warning, and "don't ask again" is not offered. Approve it: the plan, the `-> explorer: ...` lines and the `[helper]` tool bullets show, and the spinner reads "Running <helper>".
