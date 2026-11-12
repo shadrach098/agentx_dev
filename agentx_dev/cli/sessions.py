@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional
 
+from agentx_dev.Session import _make_private_dirs
+
 TITLE_CHARS = 60
 MIN_PREFIX = 4
 MAX_SESSION_BYTES = 50 * 1024 * 1024      # a larger file is not listed
@@ -138,10 +140,17 @@ def _save_title(home: Path, cwd: Path, path: Path, session_file: str, title: str
         titles[session_file] = title
         if len(titles) > MAX_TITLES:                       # the oldest names (by their timestamp) go first
             titles = dict(sorted(titles.items())[-MAX_TITLES:])
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _make_private_dirs(path.parent)
         tmp = path.with_name(f".titles-{os.getpid()}-{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps(titles, indent=1, ensure_ascii=False), encoding="utf-8")
+        # Owner-only like the transcripts (the titles say what each conversation was about).
+        fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(titles, indent=1, ensure_ascii=False))
         os.replace(tmp, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
         return True
     except (OSError, ValueError, TypeError):
         return False

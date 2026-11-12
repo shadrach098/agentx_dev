@@ -62,10 +62,55 @@ _UA = "Mozilla/5.0 (compatible; agentx_dev/1.0; +https://github.com/shadrach098/
 _MAX_REDIRECTS = 5
 
 
-def _assert_public_url(url: str) -> None:
+class _Blocked(urllib.error.URLError):
+    """The SSRF guard refused a URL (said as 'refused', not as a network error)."""
+
+
+def _is_public(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    except ValueError:
+        return False
+    # An IPv4 address written as IPv6 (::ffff:127.0.0.1) is judged as the IPv4 one.
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    # is_global excludes: private, loopback, link_local, multicast,
+    # reserved, unspecified. Exactly the SSRF sink set.
+    return ip.is_global
+
+
+def _public_addresses(host: str) -> List[str]:
+    """Look ``host`` up once and return its addresses, or raise _Blocked if
+    any of them is not public (happy-eyeballs may try any of them).
+
+    The connection is then made to these exact addresses (see
+    _PinnedHTTPHandler), so a second lookup that answers 127.0.0.1 (DNS
+    rebinding) is never used."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as e:
+        raise urllib.error.URLError(f"DNS lookup failed for {host!r}: {e}") from e
+    addrs: List[str] = []
+    for _family, _type, _proto, _canon, sockaddr in infos:
+        addr = str(sockaddr[0])
+        if not _is_public(addr):
+            raise _Blocked(
+                f"blocked: {host} resolves to non-public address {addr} "
+                f"(SSRF guard)"
+            )
+        if addr not in addrs:
+            addrs.append(addr)
+    if not addrs:
+        raise urllib.error.URLError(f"DNS lookup for {host!r} returned no address")
+    return addrs
+
+
+def _assert_public_url(url: str) -> List[str]:
     """Reject non-http(s) schemes and any URL whose host resolves to a
     non-public IP (loopback, RFC1918, link-local, multicast, reserved).
     Called once for the user URL AND again for every redirect hop.
+    Returns the checked addresses; the request connects to those.
 
     Blocks the classic SSRF payloads: 169.254.169.254 (cloud metadata),
     127.0.0.1 / ::1 (loopback), 10.*/172.16-31.*/192.168.* (RFC1918),
@@ -73,34 +118,79 @@ def _assert_public_url(url: str) -> None:
     module flags as non-global."""
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        raise urllib.error.URLError(
+        raise _Blocked(
             f"scheme not allowed: {parsed.scheme!r} (only http/https)"
         )
     host = parsed.hostname
     if not host:
-        raise urllib.error.URLError("URL has no host component")
+        raise _Blocked("URL has no host component")
+    return _public_addresses(host)
 
-    # Resolve every address the host maps to and reject if ANY is
-    # non-public — DNS rebinding + happy-eyeballs both mean the address
-    # actually used later could differ from the first one returned, so
-    # be strict about all of them.
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror as e:
-        raise urllib.error.URLError(f"DNS lookup failed for {host!r}: {e}") from e
-    for family, _type, _proto, _canon, sockaddr in infos:
-        addr = sockaddr[0]
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
-            continue
-        # is_global excludes: private, loopback, link_local, multicast,
-        # reserved, unspecified. Exactly the SSRF sink set.
-        if not ip.is_global:
-            raise urllib.error.URLError(
-                f"blocked: {host} resolves to non-public address {addr} "
-                f"(SSRF guard)"
-            )
+
+def _url_host(req: urllib.request.Request) -> str:
+    return (urllib.parse.urlparse(req.full_url).hostname or "").lower()
+
+
+def _pin(req: urllib.request.Request, addrs: Optional[List[str]]) -> None:
+    """Remember the checked addresses on ``req`` for its connection to use."""
+    if addrs:
+        req._agentx_pinned = (_url_host(req), list(addrs))
+
+
+def _pinned_addresses(req: urllib.request.Request) -> List[str]:
+    """The checked addresses for ``req``'s host: the ones _pin stored, or a
+    fresh lookup checked the same way."""
+    host = _url_host(req)
+    if not host:
+        raise _Blocked("URL has no host component")
+    stored = getattr(req, "_agentx_pinned", None)
+    if stored and stored[0] == host and stored[1]:
+        return list(stored[1])
+    return _public_addresses(host)
+
+
+def _connect_to(addrs: List[str]):
+    """A stand-in for socket.create_connection that ignores the host name it
+    is given and connects to the checked addresses, in order."""
+    def create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, *rest, **kw):
+        port = address[1]
+        last: Optional[OSError] = None
+        for addr in addrs:
+            try:
+                return socket.create_connection((addr, port), timeout, source_address)
+            except OSError as e:
+                last = e
+        raise last if last is not None else OSError("no address to connect to")
+    return create_connection
+
+
+def _pinned_class(http_class, req: urllib.request.Request):
+    """``http_class`` (HTTPConnection or HTTPSConnection) made to connect only
+    to the checked addresses of ``req``'s host. The host name is kept for the
+    Host header and, for https, for SNI and the certificate check.
+
+    Through a proxy set in the environment the connection goes to the proxy,
+    which does its own lookup, so nothing is pinned there (as before); the
+    URL's host was still checked before the request was made."""
+    if req._tunnel_host or req.has_proxy():
+        return http_class
+    addrs = _pinned_addresses(req)
+
+    def make(host, *args, **kwargs):
+        conn = http_class(host, *args, **kwargs)
+        conn._create_connection = _connect_to(addrs)
+        return conn
+    return make
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def do_open(self, http_class, req, **kwargs):
+        return super().do_open(_pinned_class(http_class, req), req, **kwargs)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def do_open(self, http_class, req, **kwargs):
+        return super().do_open(_pinned_class(http_class, req), req, **kwargs)
 
 
 class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -110,7 +200,7 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # Reguard the target BEFORE building the next request.
-        _assert_public_url(newurl)
+        addrs = _assert_public_url(newurl)
         new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new_req is None:
             return None
@@ -123,10 +213,17 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
                 headers, fp,
             )
         new_req._agentx_redirects = hops
+        _pin(new_req, addrs)          # the next hop connects to the address just checked
         return new_req
 
 
-_GUARDED_OPENER = urllib.request.build_opener(_GuardedRedirectHandler())
+def _build_opener() -> urllib.request.OpenerDirector:
+    """build_opener keeps its default ProxyHandler, so a proxy from the
+    environment is still used; the two pinned handlers replace the plain ones."""
+    return urllib.request.build_opener(_GuardedRedirectHandler(), _PinnedHTTPHandler(), _PinnedHTTPSHandler())
+
+
+_GUARDED_OPENER = _build_opener()
 
 
 class _WebFetchArgs(BaseModel):
@@ -180,7 +277,7 @@ def _do_fetch(url: str, cache_dir: Optional[Path], max_chars: int, text_only: bo
     # link-local metadata IPs, etc.) before we ever open a socket, and
     # again on every redirect hop via _GuardedRedirectHandler.
     try:
-        _assert_public_url(url)
+        addrs = _assert_public_url(url)
     except urllib.error.URLError as e:
         return f"ERROR: refused — {e.reason if hasattr(e, 'reason') else e}"
     req = urllib.request.Request(url, headers={
@@ -188,11 +285,14 @@ def _do_fetch(url: str, cache_dir: Optional[Path], max_chars: int, text_only: bo
         "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
         "Accept-Encoding": "identity",
     })
+    _pin(req, addrs)                  # connect to the address just checked, not to a new lookup
     try:
         with _GUARDED_OPENER.open(req, timeout=15) as response:
             raw = response.read()
     except urllib.error.HTTPError as e:
         return f"ERROR: HTTP {e.code} {e.reason} — {url}"
+    except _Blocked as e:
+        return f"ERROR: refused — {e.reason} — {url}"
     except urllib.error.URLError as e:
         return f"ERROR: network — {e.reason} — {url}"
     except TimeoutError:
@@ -254,7 +354,7 @@ def _search_duckduckgo(query: str, num_results: int) -> list[tuple[str, str]]:
         method="POST",
     )
     try:
-        _assert_public_url("https://html.duckduckgo.com/html/")
+        _pin(req, _assert_public_url("https://html.duckduckgo.com/html/"))
         with _GUARDED_OPENER.open(req, timeout=15) as r:
             body = r.read().decode("utf-8", errors="replace")
     except Exception:

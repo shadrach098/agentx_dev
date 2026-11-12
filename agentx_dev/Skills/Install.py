@@ -50,8 +50,10 @@ _GITHUB = re.compile(
     r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?(?:/(tree|blob)/([^/]+)(?:/(.+?))?)?/?$")
 _FILE_NAME = re.compile(r"\.[A-Za-z0-9]{1,8}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
-# Windows treats these names (with or without an extension) as devices in every folder.
-_DEVICE_NAME = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$", re.IGNORECASE)
+# Windows treats these names (with or without an extension) as devices in every folder: also with trailing
+# spaces or dots, with the superscript digits Windows counts as digits, and the console's CONIN$ / CONOUT$.
+_DEVICE_NAME = re.compile(r"^(CON|PRN|AUX|NUL|COM[0-9\u00b9\u00b2\u00b3]|LPT[0-9\u00b9\u00b2\u00b3]|CONIN\$|CONOUT\$)"
+                          r"[ .]*(\..*)?$", re.IGNORECASE)
 
 HttpGet = Callable[[str, int, Optional[str]], bytes]
 
@@ -251,6 +253,15 @@ def open_source(text: str, *, get: HttpGet = http_get) -> Iterator[Fetched]:
         yield Fetched(root, f"https://github.com/{source.owner}/{source.repo}", sha, source.subpath)
 
 
+def _inside(target: Path, base: Path) -> bool:
+    """True if ``target`` resolves to a place inside ``base`` (already resolved)."""
+    try:
+        target.resolve().relative_to(base)
+        return True
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
 def _skill_files_only(source: Source, sha: str, get: HttpGet, dest: Path) -> Optional[Path]:
     """Fetch only the skill folders' files (or the linked folder's) of commit ``sha``, one by one, using GitHub's
     list of the repository's files, so a big repository (demo videos, thousands of source files) costs only what
@@ -267,29 +278,37 @@ def _skill_files_only(source: Source, sha: str, get: HttpGet, dest: Path) -> Opt
              if isinstance(entry, dict) and entry.get("type") == "blob" and entry.get("mode") != "120000"
              and isinstance(entry.get("path"), str)]
     keep = skill_parts([f"top/{path}" for path, _ in blobs], source.subpath or "")
+    root = dest / source.repo
+    base = root.resolve()
     chosen = []
     total = 0
     for path, size in blobs:
         parts = PurePosixPath(path).parts
         if not keep(("top",) + parts):
             continue
-        if not parts or path.startswith("/") or ".." in parts or ":" in parts[0] or "\\" in path:
+        # ':' in any part, not just the first: on Windows a part such as 'D:x' throws the staging folder away
+        # and writes to another drive ('D:x\file'); 'name:stream' is an NTFS alternate stream.
+        if (not parts or path.startswith("/") or ".." in parts or "\\" in path
+                or any(":" in part for part in parts)):
             raise SkillInstallError("The repository has an unsafe path, so nothing was installed.")
         if size > MAX_FILE_BYTES or any(_DEVICE_NAME.match(part) for part in parts):
             continue                                       # skipped, as in an archive
+        if not _inside(root.joinpath(*parts), base):
+            raise SkillInstallError("The repository has an unsafe path, so nothing was installed.")
         total += size
         chosen.append(path)
     if len(chosen) > MAX_DIRECT_FILES:
         return None
     if total > MAX_TOTAL_BYTES:
         raise SkillInstallError("The skill folders are bigger than the limit, so nothing was installed.")
-    root = dest / source.repo
     root.mkdir(parents=True, exist_ok=True)
 
     def fetch(path: str) -> None:
+        target = root.joinpath(*PurePosixPath(path).parts)
+        if not _inside(target, base):                      # checked again right before anything is written
+            raise SkillInstallError("The repository has an unsafe path, so nothing was installed.")
         data = get(f"https://raw.githubusercontent.com/{source.owner}/{source.repo}/{sha}/"
                    + urllib.parse.quote(path), MAX_FILE_BYTES, None)
-        target = root.joinpath(*PurePosixPath(path).parts)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
 

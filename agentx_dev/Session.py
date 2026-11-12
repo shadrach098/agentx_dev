@@ -54,6 +54,7 @@ Design choices:
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,6 +70,25 @@ _SESSION_SCHEMA_VERSION = 1
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _make_private_dirs(folder: Path) -> None:
+    """Create ``folder`` and any missing parents as owner-only (0o700).
+
+    Folders that already exist are left as they are. The mode is ignored on
+    Windows, where the user profile's own permissions apply."""
+    folder = Path(folder)
+    missing = []
+    current = folder
+    while not current.exists() and current.parent != current:
+        missing.append(current)
+        current = current.parent
+    for part in reversed(missing):
+        try:
+            part.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+    folder.mkdir(parents=True, exist_ok=True)      # raises the usual error if it still is not a folder
 
 
 class Session(BaseModel):
@@ -233,13 +253,28 @@ class Session(BaseModel):
         """Atomically write the session to ``path`` as JSON. Returns the
         resolved path so callers can chain / log it."""
         target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        _make_private_dirs(target.parent)
         # Write to a temp sibling then rename so a crashed write can't
-        # leave a half-written session file behind.
+        # leave a half-written session file behind. The transcript holds
+        # everything typed and every tool result, so only its owner may
+        # read it (0o600; the mode is ignored on Windows).
         tmp = target.with_suffix(target.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=2, default=str)
+        fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.to_dict(), f, indent=2, default=str)
+        except BaseException:
+            try:
+                os.unlink(str(tmp))
+            except OSError:
+                pass
+            raise
         tmp.replace(target)
+        # The temp file may have existed already with a wider mode.
+        try:
+            os.chmod(str(target), 0o600)
+        except OSError:
+            pass
         return target
 
     @classmethod

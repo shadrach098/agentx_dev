@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time as _time
@@ -63,6 +64,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from agentx_dev import safe_exe
 from agentx_dev.Pictures import is_picture_path, picture_result
 from agentx_dev.Tools import StructuredTool
 
@@ -1099,10 +1101,50 @@ def _matches_glob(rel_posix: str, glob: str) -> bool:
     return False
 
 
-def _iter_files_for_search(root: Path, glob: str):
+_REPARSE_POINT = 0x400                 # FILE_ATTRIBUTE_REPARSE_POINT
+_NAME_SURROGATE = 0x20000000           # reparse tag bit of symlinks and junctions (not of OneDrive files)
+
+
+def _link_kind(path: Path) -> str:
+    """'' for a plain entry, 'link' for a symlink or a Windows junction, 'reparse' for another Windows reparse
+    point (such as a OneDrive file), 'gone' when it cannot be looked at."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return "gone"
+    if stat.S_ISLNK(st.st_mode):
+        return "link"
+    if getattr(st, "st_file_attributes", 0) & _REPARSE_POINT:
+        return "link" if getattr(st, "st_reparse_tag", 0) & _NAME_SURROGATE else "reparse"
+    return ""
+
+
+def _links_outside(fp: Path, allowed: Optional[List[str]]) -> bool:
+    """True if ``fp`` is a link (or other Windows reparse point) whose target
+    is outside ``allowed``. Plain files under the walked root are never
+    resolved, so the walk stays fast."""
+    if allowed is None:
+        return False
+    kind = _link_kind(fp)
+    if kind == "":
+        return False
+    if kind == "gone":
+        return True
+    try:
+        return not _is_inside_any(fp.resolve(), allowed)
+    except (OSError, RuntimeError):
+        return True
+
+
+def _iter_files_for_search(root: Path, glob: str, allowed: Optional[List[str]] = None):
     """Yield paths under ``root`` matching ``glob``, skipping noise
     directories. Iterative walk (not Path.rglob) so we can prune
-    entire subtrees like .git without descending into them."""
+    entire subtrees like .git without descending into them.
+
+    Linked folders (symlinks, and junctions on Windows, which os.walk would
+    enter) are not entered. A linked file whose target is outside
+    ``allowed`` (the sandbox) is skipped, so grep cannot read a file outside
+    the project through a planted link."""
     if root.is_file():
         try:
             if _matches_glob(root.name, glob) or root.match(glob):
@@ -1113,15 +1155,16 @@ def _iter_files_for_search(root: Path, glob: str):
 
     for dirpath, dirnames, filenames in os.walk(root):
         # Prune noise dirs in-place so os.walk skips them entirely.
-        dirnames[:] = [d for d in dirnames if d not in _GREP_SKIP_DIRS]
         base = Path(dirpath)
+        dirnames[:] = [d for d in dirnames if d not in _GREP_SKIP_DIRS
+                       and _link_kind(base / d) != "link" and not _links_outside(base / d, allowed)]
         for fn in filenames:
             fp = base / fn
             try:
                 rel = fp.relative_to(root)
             except ValueError:
                 continue
-            if _matches_glob(rel.as_posix(), glob):
+            if _matches_glob(rel.as_posix(), glob) and not _links_outside(fp, allowed):
                 yield fp
 
 
@@ -1180,7 +1223,9 @@ def _kill_tree(proc: "subprocess.Popen") -> None:
     """Stop ``proc`` and every program it started (Windows: ``taskkill /T``; elsewhere its process group)."""
     if sys.platform == "win32":
         try:
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
+            # By full path: the bare name is looked up in the current (project) folder first.
+            subprocess.run([safe_exe.system32("taskkill.exe"), "/T", "/F", "/PID", str(proc.pid)],
+                           stdin=subprocess.DEVNULL,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         except Exception:
             pass
@@ -1935,7 +1980,7 @@ def _build_find_files(perms: Permissions) -> StructuredTool:
         hits: List[Path] = []
         truncated = False
         try:
-            for fp in _iter_files_for_search(resolved, glob):
+            for fp in _iter_files_for_search(resolved, glob, perms.effective_allowed_paths()):
                 hits.append(fp)
                 if len(hits) >= max_results:
                     truncated = True
@@ -2027,7 +2072,7 @@ def _build_grep(perms: Permissions) -> StructuredTool:
         files_scanned = 0
         truncated = False
         try:
-            for fp in _iter_files_for_search(resolved, glob):
+            for fp in _iter_files_for_search(resolved, glob, perms.effective_allowed_paths()):
                 if _time.monotonic() >= _deadline:
                     timed_out = True
                     break
@@ -2101,7 +2146,8 @@ def _resolve_shell_interpreter() -> List[str]:
          (``AGENTX_SHELL="bash -euo pipefail -c"`` works).
       2. On non-Windows: ``bash -c`` (fall back to ``sh -c``).
       3. On Windows: git-bash if installed (checks common install
-         locations + PATH), else PowerShell (``powershell -Command``).
+         locations, the per-user install, then PATH but never the
+         current folder), else System32's PowerShell (``-Command``).
 
     Returns a list suitable for the front of ``subprocess.run(...)`` —
     the actual command string gets appended as the final element.
@@ -2120,20 +2166,28 @@ def _resolve_shell_interpreter() -> List[str]:
         return ["sh", "-c"]
 
     # Windows: git-bash gives POSIX semantics the model likely knows.
-    # Common install locations:
-    for candidate in (
+    # Common install locations (machine-wide, then a per-user install):
+    candidates = [
         r"C:\Program Files\Git\bin\bash.exe",
         r"C:\Program Files (x86)\Git\bin\bash.exe",
-    ):
+    ]
+    local = os.environ.get("LOCALAPPDATA")
+    if local and os.path.isabs(local):
+        candidates.append(os.path.join(local, "Programs", "Git", "bin", "bash.exe"))
+    for candidate in candidates:
         if os.path.isfile(candidate):
             return [candidate, "-c"]
-    which_bash = shutil.which("bash")
+    # PATH, but never the current (project) folder: shutil.which and
+    # Windows itself look there first, so a bash.cmd shipped in a cloned
+    # repo would run every approved command.
+    which_bash = safe_exe.which("bash")
     if which_bash:
         return [which_bash, "-c"]
 
-    # PowerShell fallback. -NoProfile skips user profile scripts
-    # (faster, more predictable). -Command runs the command string.
-    return ["powershell", "-NoProfile", "-Command"]
+    # PowerShell fallback, by its full System32 path for the same reason.
+    # -NoProfile skips user profile scripts (faster, more predictable).
+    # -Command runs the command string.
+    return [safe_exe.powershell(), "-NoProfile", "-Command"]
 
 
 def _build_run_shell(perms: Permissions) -> StructuredTool:
