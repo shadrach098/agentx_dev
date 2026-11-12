@@ -89,9 +89,12 @@ def test_with_no_bash_powershell_is_named_by_its_system32_path(tmp_path, monkeyp
     assert not Path(shell[0]).resolve().is_relative_to(project.resolve())
 
 
-def test_agentx_shell_is_still_the_users_choice(monkeypatch):
-    monkeypatch.setenv("AGENTX_SHELL", "mysh -x -c")
-    assert DT._resolve_shell_interpreter() == ["mysh", "-x", "-c"]
+def test_agentx_shell_is_still_the_users_choice(tmp_path, monkeypatch):
+    shell = tmp_path / "bin" / ("mysh.cmd" if sys.platform == "win32" else "mysh")
+    shell.parent.mkdir()
+    shell.write_text("", encoding="utf-8")
+    monkeypatch.setenv("AGENTX_SHELL", f'"{shell}" -x -c')
+    assert DT._resolve_shell_interpreter() == [str(shell), "-x", "-c"]
 
 
 @windows_only
@@ -476,3 +479,20 @@ def test_the_containment_check_follows_the_resolved_path(tmp_path):
     assert _inside(tmp_path / "stage" / "r" / "s" / "a.md", base) is True
     assert _inside(tmp_path / "stage" / "r" / ".." / "x.md", base) is False
     assert _inside(tmp_path / "elsewhere.md", base) is False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the current-folder lookup is Windows only")
+def test_agentx_shell_bare_name_is_found_on_path_never_in_the_project(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "fakesh.cmd").write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("AGENTX_SHELL", "fakesh -c")
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(tmp_path / "bin")]))
+    picked = DT._resolve_shell_interpreter()
+    assert not str(picked[0]).lower().startswith(str(project).lower())
+    assert "fakesh" not in str(picked[0]).lower()          # not on PATH: the override is ignored
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "fakesh.cmd").write_text("@echo off\n", encoding="utf-8")
+    picked = DT._resolve_shell_interpreter()
+    assert os.path.samefile(picked[0], tmp_path / "bin" / "fakesh.cmd") and picked[1:] == ["-c"]

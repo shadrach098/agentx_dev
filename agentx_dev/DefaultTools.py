@@ -2157,7 +2157,14 @@ def _resolve_shell_interpreter() -> List[str]:
     if override:
         parts = shlex.split(override)
         if parts:
-            return parts
+            # On Windows a bare name ("bash") would be looked up in the project folder first, so it is
+            # found on PATH instead; when it is not on PATH the override is ignored.
+            if sys.platform == "win32" and not os.path.dirname(parts[0]):
+                found = safe_exe.which(parts[0])
+                if found:
+                    return [found, *parts[1:]]
+            else:
+                return parts
 
     if sys.platform != "win32":
         # Unix / Mac. bash is standard; sh is the guaranteed fallback.
