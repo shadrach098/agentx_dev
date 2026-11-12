@@ -55,6 +55,28 @@ class NeedsLogin(Exception):
     """The server asked for a browser sign-in, which only ``/mcp login`` may start."""
 
 
+class CommandNotFound(Exception):
+    """A stdio server's program (a bare name such as ``npx``) is not on PATH."""
+
+    def __init__(self, command: str) -> None:
+        super().__init__(f"{command} not found on PATH")
+        self.command = command
+
+
+def stdio_command(command: str) -> str:
+    """The program to start for a stdio server. A bare name (``npx``) is looked up on PATH only, never in the
+    current folder: agentx runs in the user's project, and on Windows the usual search tries the current folder
+    first, so a cloned repo's own ``npx.cmd`` would be started instead. A command with a folder in it is used as
+    written. Raises ``CommandNotFound`` when a bare name is not on PATH."""
+    if os.path.dirname(command):
+        return command
+    from agentx_dev import safe_exe
+    found = safe_exe.which(command)
+    if found is None:
+        raise CommandNotFound(command)
+    return found
+
+
 class MissingVariable(Exception):
     def __init__(self, name: str) -> None:
         super().__init__(f"${{{name}}} is not set in the environment")
@@ -70,11 +92,16 @@ class ServerConfig:
     args: List[str] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
     headers: Dict[str, str] = field(default_factory=dict)
-    # The server's tools (its own names) that run without asking, and every tool agentx has seen from it. A tool
-    # seen for the first time is added to ``allow`` when the server marks it read-only; one the user took out of
-    # ``allow`` is in ``seen``, so it is not added back.
+    # The server's tools (its own names) that run without asking, and every tool agentx has seen from it.
+    # ``allow`` is the user's own choice (/mcp allow). ``auto`` is filled by agentx: a tool seen for the first time
+    # goes there when the server marks it read-only, and is taken out again on any later connect where the server
+    # no longer says so. One the user took out of either list is in ``seen``, so it is not added back.
     allow: List[str] = field(default_factory=list)
     seen: List[str] = field(default_factory=list)
+    auto: List[str] = field(default_factory=list)
+    # Read from a file written before ``auto`` existed, when ``allow`` held the automatic choices as well: the
+    # first review after a connect moves the ones the server marks read-only into ``auto`` (once).
+    allow_before_auto: bool = field(default=False, compare=False, repr=False)
 
     def describe(self) -> str:
         if self.transport == "stdio":
@@ -94,6 +121,8 @@ class ServerConfig:
                 data["headers"] = dict(self.headers)
         if self.allow:
             data["allow"] = sorted(self.allow)
+        if self.auto or (self.allow and not self.allow_before_auto):
+            data["auto"] = sorted(self.auto)            # also when empty: the file then says it has the list
         if self.seen:
             data["seen"] = sorted(self.seen)
         return data
@@ -127,7 +156,7 @@ def parse_server(name: str, data: Any) -> Tuple[Optional[ServerConfig], str]:
     if headers is None or env is None:
         return None, f"{name}: 'headers' and 'env' must map text to text"
     lists = {}
-    for key in ("allow", "seen"):
+    for key in ("allow", "seen", "auto"):
         value = data.get(key, [])
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             return None, f"{name}: '{key}' must be a list of tool names"
@@ -136,14 +165,18 @@ def parse_server(name: str, data: Any) -> Tuple[Optional[ServerConfig], str]:
         args = data.get("args", [])
         if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
             return None, f"{name}: 'args' must be a list of text"
-        return ServerConfig(name, "stdio", command=data["command"].strip(), args=list(args), env=env, **lists), ""
+        config = ServerConfig(name, "stdio", command=data["command"].strip(), args=list(args), env=env, **lists)
+        config.allow_before_auto = "auto" not in data and bool(lists["allow"])
+        return config, ""
     url = data.get("url")
     if not isinstance(url, str) or not url.startswith(("https://", "http://")):
         return None, f"{name}: needs a 'url' (http:// or https://) or a 'command'"
     transport = data.get("transport", "http")
     if transport not in ("http", "sse"):
         return None, f"{name}: 'transport' must be http or sse"
-    return ServerConfig(name, transport, url=url.strip(), headers=headers, **lists), ""
+    config = ServerConfig(name, transport, url=url.strip(), headers=headers, **lists)
+    config.allow_before_auto = "auto" not in data and bool(lists["allow"])
+    return config, ""
 
 
 def load_servers(home: Path) -> Tuple[Dict[str, ServerConfig], List[str]]:
@@ -167,6 +200,20 @@ def load_servers(home: Path) -> Tuple[Dict[str, ServerConfig], List[str]]:
         else:
             servers[config.name] = config
     return servers, problems
+
+
+def names_in_file(home: Path) -> Optional[set]:
+    """Every server name in ``~/.agentx/mcp.json``, also the ones skipped as broken; an empty set when there is no
+    file, None when it cannot be read (then nothing counts as taken out of it)."""
+    path = config_path(home)
+    try:
+        if not path.is_file():
+            return set()
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    servers = data.get("servers") if isinstance(data, dict) else None
+    return {str(name) for name in servers} if isinstance(servers, dict) else None
 
 
 def save_servers(home: Path, servers: Mapping[str, ServerConfig]) -> Path:
@@ -269,11 +316,16 @@ def _secret_sent(client_info: Any) -> Any:
 
 class KeyringStorage:
     """The MCP SDK's ``TokenStorage`` over the system's credential store: one server's tokens and its registered
-    client. Kept in memory as well, so a machine without a credential store still signs in for the session."""
+    client. Kept in memory as well, so a machine without a credential store still signs in for the session.
+
+    The sign-in is kept under the server's name, so the address it was made for is kept with it (``url``): a
+    name pointed at another address (mcp.json edited by hand, or a name used again) must not send the old
+    service's token there. ``bind`` checks that before each connect."""
 
     def __init__(self, server: str) -> None:
         self.server = server
         self._memory: Dict[str, str] = {}
+        self._url: Optional[str] = None          # the address of the connection under way, set by ``bind``
 
     def _get(self, what: str) -> Optional[str]:
         return self._memory.get(what) or _kr_get(f"{self.server}:{what}")
@@ -284,6 +336,31 @@ class KeyringStorage:
 
     def has_tokens(self) -> bool:
         return bool(self._get("tokens"))
+
+    def url(self) -> Optional[str]:
+        """The server address the saved sign-in was made for, or None when none is kept."""
+        return self._get("url")
+
+    def bind(self, url: str) -> bool:
+        """Tie this sign-in to ``url`` before connecting there. A sign-in saved for another address is deleted
+        (returns True), so it is never sent to this one. One saved before agentx kept the address is taken to be
+        for ``url`` and the address is kept from now on, so nobody is signed out by the change."""
+        self._url = url
+        saved = self.url()
+        if saved == url:
+            return False
+        had = bool(self._get("tokens") or self._get("client"))
+        if saved is None:
+            if had:
+                self._set("url", url)
+            return False
+        self.clear()
+        self._url = url
+        return had
+
+    def _keep_url(self) -> None:
+        if self._url and self._get("url") != self._url:
+            self._set("url", self._url)
 
     def expires_at(self) -> Optional[float]:
         """When the stored access token runs out (seconds since the epoch, a minute early), or None when that is
@@ -314,6 +391,7 @@ class KeyringStorage:
         if getattr(tokens, "expires_in", None):
             self._set("expires_at", str(time.time() + float(tokens.expires_in) - 60))
         self._set("tokens", tokens.model_dump_json())
+        self._keep_url()
 
     async def get_client_info(self) -> Any:
         from mcp.shared.auth import OAuthClientInformationFull
@@ -322,10 +400,11 @@ class KeyringStorage:
 
     async def set_client_info(self, client_info: Any) -> None:
         self._set("client", _secret_sent(client_info).model_dump_json())
+        self._keep_url()
 
     def clear(self) -> None:
         self._memory.clear()
-        for what in ("tokens", "client", "expires_at", "metadata"):
+        for what in ("tokens", "client", "expires_at", "metadata", "url"):
             _kr_delete(f"{self.server}:{what}")
 
 
@@ -600,6 +679,8 @@ class MCPManager:
         self._live: Dict[str, _Live] = {}
         self._storage: Dict[str, KeyringStorage] = {}
         self._needs_login: set = set()
+        self._notes: List[str] = []             # what the user should be told after a connect or reload
+        self._notes_lock = threading.Lock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -623,6 +704,16 @@ class MCPManager:
             self._storage[name] = KeyringStorage(name)
         return self._storage[name]
 
+    def take_notes(self) -> List[str]:
+        """Lines to show the user (a sign-in deleted because the address changed, say), each once."""
+        with self._notes_lock:
+            notes, self._notes = self._notes, []
+        return notes
+
+    def _note(self, text: str) -> None:
+        with self._notes_lock:
+            self._notes.append(text)
+
     # -- connecting ----------------------------------------------------------------------------------------------
 
     async def _transport(self, stack: AsyncExitStack, config: ServerConfig, interactive: bool) -> Tuple[Any, Any]:
@@ -630,7 +721,9 @@ class MCPManager:
             from mcp import StdioServerParameters
             from mcp.client.stdio import get_default_environment, stdio_client
             env = {**get_default_environment(), **{k: expand(v, self.env) for k, v in config.env.items()}}
-            params = StdioServerParameters(command=expand(config.command, self.env),
+            # The child still starts in the current folder (a filesystem server may rely on it); only the program
+            # itself is found on PATH, never there.
+            params = StdioServerParameters(command=stdio_command(expand(config.command, self.env)),
                                            args=[expand(a, self.env) for a in config.args], env=env)
             # The server's own messages go to ~/.agentx/mcp-logs/<name>.log, not over the chat.
             log_dir = self.home / FOLDER / "mcp-logs"
@@ -639,19 +732,24 @@ class MCPManager:
             read, write = await stack.enter_async_context(stdio_client(params, errlog=errlog))
             return read, write
         headers = {k: expand(v, self.env) for k, v in config.headers.items()}
+        url = expand(config.url, self.env)
         auth = None
         if not any(k.lower() == "authorization" for k in headers):
-            auth = oauth_provider(config, self.storage(config.name), interactive, show=self.show,
+            storage = self.storage(config.name)
+            if storage.bind(url):
+                self._note(f"{config.name}: its address is not the one you signed in at, so the saved sign-in was "
+                           f"deleted instead of being sent there. /mcp login {config.name} signs in again.")
+            auth = oauth_provider(config, storage, interactive, show=self.show,
                                   open_browser=self.open_browser,
                                   needs_login=lambda: self._needs_login.add(config.name))
         if config.transport == "sse":
             from mcp.client.sse import sse_client
             read, write = await stack.enter_async_context(
-                sse_client(expand(config.url, self.env), headers=headers or None, timeout=30, auth=auth))
+                sse_client(url, headers=headers or None, timeout=30, auth=auth))
             return read, write
         from mcp.client.streamable_http import streamablehttp_client
         read, write, _ = await stack.enter_async_context(
-            streamablehttp_client(expand(config.url, self.env), headers=headers or None, timeout=30, auth=auth))
+            streamablehttp_client(url, headers=headers or None, timeout=30, auth=auth))
         return read, write
 
     async def _serve(self, config: ServerConfig, ready: "asyncio.Future", stop: "asyncio.Event",
@@ -707,7 +805,7 @@ class MCPManager:
             inner = inner.exceptions[0]
         if name in self._needs_login or isinstance(inner, NeedsLogin):
             return f"needs sign-in: /mcp login {name}"
-        if isinstance(inner, MissingVariable):
+        if isinstance(inner, (MissingVariable, CommandNotFound)):
             return f"not connected: {inner}"
         if isinstance(inner, _TIMEOUTS):
             return "not connected: no answer in time"
@@ -757,16 +855,34 @@ class MCPManager:
         if env is not None:
             self.env = dict(env)
         servers, self.problems = load_servers(self.home)
+        in_file = names_in_file(self.home)
         if name is not None:
             if name not in servers:
+                if name in self.servers and in_file is not None and name not in in_file:
+                    self._drop(name)
                 return {}
             self.servers[name] = servers[name]
             return {name: self.connect(name)}
         for gone in [known for known in self.servers if known not in servers]:
-            self._submit(self._close(gone)).result(10)
-            self.status.pop(gone, None)
+            if in_file is not None and gone not in in_file:
+                self._drop(gone)
+            else:                                      # still in the file, only unreadable: keep its sign-in
+                self._submit(self._close(gone)).result(10)
+                self.status.pop(gone, None)
         self.servers = servers
         return self.connect_all()
+
+    def _drop(self, name: str) -> None:
+        """A server taken out of mcp.json by hand: disconnect it and delete its saved sign-in, so a server added
+        later under the same name does not get it."""
+        self._submit(self._close(name)).result(10)
+        self.status.pop(name, None)
+        self.servers.pop(name, None)
+        storage = self.storage(name)
+        had = storage.has_tokens()
+        storage.clear()
+        if had:
+            self._note(f"{name} is no longer in mcp.json: disconnected, and its saved sign-in was deleted.")
 
     def login(self, name: str) -> str:
         """Sign in to ``name`` in the browser and connect it. The only place a browser is opened."""
@@ -784,32 +900,65 @@ class MCPManager:
 
     def note_new_tools(self, name: str) -> List[str]:
         """Record the tools of ``name`` seen for the first time and allow the read-only ones among them; saves
-        mcp.json when anything changed. Returns the tools just allowed."""
+        mcp.json when anything changed. Returns the tools just allowed (``review_tools`` also says which lost it)."""
+        return self.review_tools(name)[0]
+
+    def review_tools(self, name: str) -> Tuple[List[str], List[str]]:
+        """Run after each connect of ``name``: tools seen for the first time that the server marks read-only are
+        allowed (in ``auto``), and a tool allowed that way earlier that the server no longer marks read-only is
+        taken out, so it asks first again. The user's own ``/mcp allow`` choices are left alone. Saves mcp.json
+        when anything changed. Returns ``(just allowed, no longer allowed)``.
+
+        A file from before ``auto`` existed kept the automatic choices in ``allow``: the first time, the entries the
+        server marks read-only now are moved to ``auto`` (they still run without asking, but are checked from then
+        on); the others stay in ``allow`` as the user's own."""
         config, kinds = self.servers.get(name), self.tool_kinds(name)
         if config is None or not kinds:
-            return []
+            return [], []
+        migrated = False
+        if config.allow_before_auto:
+            moved = [tool for tool in config.allow if kinds.get(tool) == "read-only" and tool not in config.auto]
+            config.allow = [tool for tool in config.allow if tool not in moved]
+            config.auto = [*config.auto, *moved]
+            config.allow_before_auto, migrated = False, True
+        dropped = [tool for tool in config.auto if tool in kinds and kinds[tool] != "read-only"]
         new = [tool for tool in kinds if tool not in config.seen]
-        if not new:
-            return []
-        allowed = [tool for tool in new if kinds[tool] == "read-only" and tool not in config.allow]
+        allowed = [tool for tool in new if kinds[tool] == "read-only"
+                   and tool not in config.allow and tool not in config.auto]
+        if not new and not dropped and not migrated:
+            return [], []
         config.seen = [*config.seen, *new]
-        config.allow = [*config.allow, *allowed]
+        config.auto = [*[tool for tool in config.auto if tool not in dropped], *allowed]
         try:
             save_servers(self.home, self.servers)
         except (OSError, ValueError):
             pass
-        return allowed
+        return allowed, dropped
+
+    def allowed_tools(self, name: str) -> List[str]:
+        """The tools of ``name`` (the server's names) that run without asking now: the user's own choices, and the
+        automatic ones the server still marks read-only. Empty when it is not connected."""
+        config, kinds = self.servers.get(name), self.tool_kinds(name)
+        if config is None:
+            return []
+        return [tool for tool, kind in kinds.items()
+                if tool in config.allow or (tool in config.auto and kind == "read-only")]
 
     def set_allowed(self, name: str, tools: List[str], allowed: bool) -> Path:
+        """The user's ``/mcp allow`` (kept as their own choice) or ``/mcp ask`` (takes a tool out of both lists)."""
         config = self.servers[name]
         if allowed:
             config.allow = [*config.allow, *[t for t in tools if t not in config.allow]]
         else:
             config.allow = [t for t in config.allow if t not in tools]
+        config.auto = [t for t in config.auto if t not in tools]
         config.seen = [*config.seen, *[t for t in tools if t not in config.seen]]
         return save_servers(self.home, self.servers)
 
     def add(self, config: ServerConfig) -> Path:
+        """Save a new server. A sign-in left under the same name (from a server taken out of mcp.json by hand) is
+        deleted first: it belongs to whatever that name pointed at before."""
+        self.storage(config.name).clear()
         self.servers[config.name] = config
         return save_servers(self.home, self.servers)
 

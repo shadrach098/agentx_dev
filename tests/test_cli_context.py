@@ -3,6 +3,7 @@
 import pytest
 
 from agentx_dev.cli.context import MAX_CONTEXT_CHARS, build_addendum, find_context_files
+from agentx_dev.cli.trust import remember_trust
 
 
 def write(path, text):
@@ -18,6 +19,7 @@ def test_files_are_found_farthest_first_with_the_user_file_before_them(tmp_path)
     inner = write(tmp_path / "work" / "app" / "AGENTX.md", "app rules")
     cwd = tmp_path / "work" / "app" / "src"
     cwd.mkdir(parents=True)
+    remember_trust(tmp_path / "work", home)              # a parent folder's file is read only when it is trusted
     ours = [p.resolve() for p in (user, top, inner)]
     found = [p.resolve() for p in find_context_files(cwd, home)]
     assert [p for p in found if p in ours] == ours        # any AGENTX.md above the temp folder is not ours
@@ -33,6 +35,7 @@ def test_instructions_are_included_nearest_last(tmp_path):
     home = tmp_path / "home"
     write(tmp_path / "work" / "AGENTX.md", "TOP-RULE")
     write(tmp_path / "work" / "app" / "AGENTX.md", "APP-RULE")
+    remember_trust(tmp_path / "work", home)
     text = build_addendum(tmp_path / "work" / "app", home, system="X")
     assert "Project instructions" in text
     assert text.index("TOP-RULE") < text.index("APP-RULE")
@@ -42,6 +45,7 @@ def test_the_cut_keeps_the_nearest_files(tmp_path):
     home = tmp_path / "home"
     write(tmp_path / "work" / "AGENTX.md", "FAR" + "f" * (MAX_CONTEXT_CHARS - 10))
     write(tmp_path / "work" / "app" / "AGENTX.md", "NEAR" + "n" * (MAX_CONTEXT_CHARS - 10))
+    remember_trust(tmp_path / "work", home)
     text = build_addendum(tmp_path / "work" / "app", home, system="X")
     assert "NEAR" in text and "FAR" not in text
 
@@ -209,6 +213,7 @@ def test_a_smaller_user_file_leaves_room_for_the_nearest_project_file(tmp_path):
     write(home / ".agentx" / "AGENTX.md", user_rule)
     write(tmp_path / "work" / "AGENTX.md", "FAR" + "f" * MAX_CONTEXT_CHARS)
     write(tmp_path / "work" / "app" / "AGENTX.md", "NEAR" + "n" * MAX_CONTEXT_CHARS)
+    remember_trust(tmp_path / "work", home)
     text = build_addendum(tmp_path / "work" / "app", home, system="X")
     assert text.index(user_rule) < text.index(OPEN) < text.index("NEAR")
     assert text.count("n") >= MAX_CONTEXT_CHARS - len(user_rule) - 10
@@ -255,6 +260,7 @@ def test_the_search_stops_at_the_folder_that_holds_dot_git(tmp_path):
     (tmp_path / "work" / "repo" / ".git").mkdir()
     cwd = tmp_path / "work" / "repo" / "sub" / "deep"
     cwd.mkdir(parents=True)
+    remember_trust(tmp_path / "work", tmp_path / "home")  # trusted, yet the climb still stops at .git
     assert names(find_context_files(cwd, tmp_path / "home"), tmp_path) == [
         "work/repo/AGENTX.md", "work/repo/sub/AGENTX.md"]
     text = build_addendum(cwd, tmp_path / "home", system="X")
@@ -267,6 +273,7 @@ def test_a_dot_git_file_counts_too(tmp_path):
     write(tmp_path / "wt" / ".git", "gitdir: ../elsewhere")
     cwd = tmp_path / "wt" / "src"
     cwd.mkdir()
+    remember_trust(tmp_path / "wt", tmp_path / "home")
     assert names(find_context_files(cwd, tmp_path / "home"), tmp_path) == ["wt/AGENTX.md"]
 
 
@@ -278,6 +285,7 @@ def test_the_search_stops_at_the_home_folder(tmp_path):
     write(home / ".agentx" / "AGENTX.md", "USER-OWN")
     cwd = home / "proj" / "src"
     cwd.mkdir(parents=True)
+    remember_trust(home / "proj", home)
     assert names(find_context_files(cwd, home), tmp_path) == ["h/.agentx/AGENTX.md", "h/AGENTX.md", "h/proj/AGENTX.md"]
     text = build_addendum(cwd, home, system="X")
     assert "ABOVE-HOME" not in text and "USER-OWN" in text and "PROJ" in text
@@ -290,6 +298,7 @@ def test_the_git_folder_below_home_wins_over_home(tmp_path):
     (home / "proj" / ".git").mkdir()
     cwd = home / "proj" / "src"
     cwd.mkdir()
+    remember_trust(home / "proj", home)
     assert names(find_context_files(cwd, home), tmp_path) == ["h/proj/AGENTX.md"]
 
 
@@ -300,11 +309,12 @@ def test_the_working_folder_may_be_the_home_folder(tmp_path):
     assert names(find_context_files(home, home), tmp_path) == ["h/AGENTX.md"]
 
 
-def test_without_a_git_folder_or_home_the_search_goes_on_up(tmp_path):
+def test_without_a_git_folder_or_home_the_search_goes_on_up_through_trusted_folders(tmp_path):
     write(tmp_path / "AGENTX.md", "TOP")
     write(tmp_path / "a" / "AGENTX.md", "A")
     cwd = tmp_path / "a" / "b"
     cwd.mkdir()
+    remember_trust(tmp_path, tmp_path / "elsewhere")      # the parents are trusted (untrusted ones: test_audit_fix_mcp.py)
     resolved = [p.resolve() for p in find_context_files(cwd, tmp_path / "elsewhere")]
     assert resolved[-2:] == [(tmp_path / "AGENTX.md").resolve(), (tmp_path / "a" / "AGENTX.md").resolve()]
 

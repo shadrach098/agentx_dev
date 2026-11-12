@@ -85,6 +85,12 @@ class FakeKeyring:
         self.data.pop((service, key), None)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_keyring(monkeypatch):
+    """Adding, removing or reloading a server deletes its saved sign-in; never let a test reach the real store."""
+    monkeypatch.setattr(mcp_module, "_keyring", lambda: FakeKeyring())
+
+
 class TestSignInStorage:
     @needs_mcp
     def test_tokens_go_to_the_credential_store_split_when_long_and_clear_removes_them(self, monkeypatch):
@@ -452,7 +458,8 @@ class TestTheAllowList:
         try:
             run_command(app, f'/mcp add echo -- "{sys.executable}" "{ECHO_SERVER}"')
             config = load_servers(home)[0]["echo"]
-            assert config.allow == ["echo"] and set(config.seen) == {"echo", "add", "wipe"}
+            # Allowed because the server marks it read-only: kept apart from the user's own /mcp allow choices.
+            assert config.auto == ["echo"] and config.allow == [] and set(config.seen) == {"echo", "add", "wipe"}
             asked = []
             app.gate.ask = lambda request: asked.append(request.tool) or Answer("n")
             tools = {t.name: t for t in app.tools}
@@ -503,6 +510,6 @@ class TestTheAllowList:
         try:
             run_command(app, f'/mcp add echo -- "{sys.executable}" "{ECHO_SERVER}"')
             run_command(app, "/mcp allow echo nope")
-            assert "has no tool called nope" in out.getvalue() and load_servers(home)[0]["echo"].allow == ["echo"]
+            assert "has no tool called nope" in out.getvalue() and load_servers(home)[0]["echo"].auto == ["echo"]
         finally:
             app.mcp.close()

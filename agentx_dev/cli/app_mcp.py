@@ -52,6 +52,7 @@ class McpCommands:
             statuses = manager.connect_all()
         finally:
             self.progress.stop()
+        self._show_mcp_notes()
         signin = [name for name, status in statuses.items() if status.startswith("needs sign-in")]
         down = [name for name, status in statuses.items()
                 if not status.startswith("connected") and name not in signin]
@@ -67,14 +68,26 @@ class McpCommands:
                 self._note_new_mcp_tools(name, quiet_if_none=True)
         self._refresh_mcp_tools(attach=False)
 
+    def _show_mcp_notes(self) -> None:
+        """Say what the manager did by itself (a sign-in deleted because the server's address changed, say)."""
+        for note in self._mcp_manager().take_notes():
+            self.screen.warning(f"MCP {self._safe(note, 400)}", "run /mcp")
+
     def _note_new_mcp_tools(self, name: str, quiet_if_none: bool = False) -> None:
-        """Allow the read-only tools ``name`` shows for the first time, and say what runs without asking."""
+        """After a connect: allow the read-only tools ``name`` shows for the first time, take back the automatic
+        allow of any the server no longer marks read-only, and say what runs without asking."""
         manager = self._mcp_manager()
-        added = manager.note_new_tools(name)
+        added, dropped = manager.review_tools(name)
+        if dropped:
+            self.screen.warning(f"MCP {self._safe(name, 40)}: {self._safe(', '.join(dropped[:12]), 600)}"
+                                f"{' ...' if len(dropped) > 12 else ''} now ask{'s' if len(dropped) == 1 else ''} "
+                                "first: the server no longer marks "
+                                f"{'it' if len(dropped) == 1 else 'them'} read-only.",
+                                f"/mcp tools {name} lists them; /mcp allow {name} <tool> lets one run without asking")
         if quiet_if_none and not added:
             return
         kinds = manager.tool_kinds(name)
-        allowed = [tool for tool in kinds if tool in manager.servers[name].allow]
+        allowed = manager.allowed_tools(name)
         asking = len(kinds) - len(allowed)
         self.notice(f"MCP {self._safe(name, 40)}: {len(allowed)} of its {len(kinds)} tools run without asking (the "
                     f"server marks them read-only); {asking} ask first. /mcp tools {name} lists them; /mcp allow and "
@@ -92,10 +105,10 @@ class McpCommands:
             fresh.append(wrapped)
         self._mcp_tools = fresh
         self.tools.extend(fresh)
-        # The servers' allowed tools run without asking: exact names, kept apart from the user's own rules.
-        servers = self.mcp.servers if self.mcp is not None else {}
-        self.gate.extra_allow = [tool.name for tool in fresh
-                                 if tool.mcp_remote in getattr(servers.get(tool.mcp_server), "allow", [])]
+        # The servers' allowed tools run without asking: exact names, kept apart from the user's own rules. A tool
+        # allowed because the server marked it read-only counts only while the server still says so.
+        allowed = {server: set(self.mcp.allowed_tools(server)) for server in {tool.mcp_server for tool in fresh}}
+        self.gate.extra_allow = [tool.name for tool in fresh if tool.mcp_remote in allowed.get(tool.mcp_server, ())]
         if attach and self.session is not None and self.model is not None:
             self.session.attach(self._make_runner(self.model))
 
@@ -150,6 +163,7 @@ class McpCommands:
         if status.startswith("needs sign-in") and self._yes(
                 f"{name} wants you to sign in. Open the sign-in page in your browser now? [y/N] "):
             status = manager.login(name)
+        self._show_mcp_notes()
         self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
         if status.startswith("connected"):
             self._note_new_mcp_tools(name)
@@ -172,7 +186,7 @@ class McpCommands:
             self.notice(f"{name} is not connected ({self._safe(manager.status.get(name, 'not connected'), 200)}), so "
                         "its tools are not known yet.")
             return
-        allow = manager.servers[name].allow
+        allow = set(manager.allowed_tools(name))
         free = [tool for tool in kinds if tool in allow]
         asking = [tool for tool in kinds if tool not in allow]
         lines = [f"{name}: {len(kinds)} tools. Run without asking ({len(free)}):"]
@@ -247,6 +261,7 @@ class McpCommands:
             status = manager.login(name)
         finally:
             self._signing_in = ""
+        self._show_mcp_notes()
         self.notice(f"MCP {self._safe(name, 40)}: {self._safe(status, 300)}")
         if status.startswith("connected"):
             self._note_new_mcp_tools(name, quiet_if_none=True)
@@ -269,10 +284,12 @@ class McpCommands:
             statuses = manager.reload(name, env=env)
         finally:
             self.progress.stop()
+        self._show_mcp_notes()
         for problem in manager.problems:
             self.error(self._safe(problem, 300))
         if name is not None and not statuses:
             self.error(f"No MCP server named {self._safe(name, 40)!r}. /mcp lists them.")
+            self._refresh_mcp_tools()
             return
         if not statuses:
             self.notice(f"No MCP servers in {self._safe(config_path(self.home), 300)}. Add one with /mcp add.")

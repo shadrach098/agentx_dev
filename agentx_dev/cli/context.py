@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from agentx_dev.cli.team import MAX_TEAM_JOBS_PER_MESSAGE
+from agentx_dev.cli.trust import is_trusted
 
 MAX_CONTEXT_CHARS = 20000
 MAX_PATH_CHARS = 1000                             # the working folder shown in the prompt is cut to its last this many characters
@@ -96,8 +97,11 @@ def find_context_files(cwd: Path, home: Path) -> List[Path]:
     """The AGENTX.md files that apply: ``~/.agentx/AGENTX.md`` first, then the working folder and its ancestors
     from the top down (nearest last). The climb stops at the first of: the folder that holds a ``.git`` entry,
     the user's home folder, the filesystem root; that folder's own file is included, nothing above it is, so a
-    file in some parent folder the project merely sits inside is not taken for the project's. A symlinked file that points outside its own folder is left out,
-    and a file reached twice (the working folder is ``~/.agentx``) is listed once."""
+    file in some parent folder the project merely sits inside is not taken for the project's. A parent folder's
+    file is read only when the user trusts that folder too (the trust question covers the working folder and
+    what is inside it, not the folders around it, which someone else may be able to write to, such as /tmp or a
+    folder at the top of a drive); the home folder's own file is the user's and is always read. A symlinked file that points outside its
+    own folder is left out, and a file reached twice (the working folder is ``~/.agentx``) is listed once."""
     found: List[Path] = []
     seen = set()
     user_file = _user_file(home)
@@ -112,6 +116,8 @@ def find_context_files(cwd: Path, home: Path) -> List[Path]:
         if directory == stop or _has_git(directory):
             break
     for directory in reversed(chain):
+        if directory != folder and directory != stop and not is_trusted(directory, home):
+            continue                                             # a parent folder the user did not trust
         candidate = directory / FILE_NAME
         if _is_file(candidate) and _stays_inside(candidate, directory) and _resolve(candidate) not in seen:
             found.append(candidate)
