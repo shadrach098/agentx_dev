@@ -6,6 +6,7 @@ import fnmatch
 import os
 import posixpath
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,7 @@ _PATH_TOOLS = frozenset({
     "read_path", "list_directory", "find_files", "grep", "write_file", "edit_file", "delete_path", "move_file",
 })
 _FOLDS_CASE = sys.platform in ("win32", "darwin")
+_BACKSLASH_IN_NAMES = os.name != "nt"      # off Windows a backslash is part of a file name, not a separator
 # "Don't ask again" is never offered for a first word that is, or starts with, one of these stems: they
 # run whatever they are handed next (``python3.12-dbg``, ``php8.2``, ``ts-node``, ``pythonw``...).
 NO_GRANT_PREFIXES = (
@@ -43,12 +45,40 @@ NO_GRANT_PREFIXES = (
     "source",
 )
 # Short stems that would also catch harmless names (``shellcheck``, ``environment-cli``) match by equality only.
+# The second group runs another program through its ordinary options or script (``find -exec``, sed's ``e``
+# command, ``tar --to-command``, ``rsync -e``, ``vim -c '!x'``...), so a grant for it could approve any program.
 NO_GRANT_EXACT = frozenset({"sh", "su", "cmd", "time", "env", "call", "start", "py", "pyw", ".",
                              "nice", "doas", "setsid", "stdbuf", "watch", "busybox", "dash", "ksh", "tclsh",
-                             "julia", "osascript", "rundll32", "forfiles"})
+                             "julia", "osascript", "rundll32", "forfiles",
+                             "find", "sed", "gsed", "tar", "gtar", "bsdtar", "mawk", "nawk", "parallel", "rsync",
+                             "scp", "sftp", "zip", "vi", "vim", "nvim", "ex", "emacs", "flock", "chroot", "script",
+                             "strace", "ltrace", "gdb", "valgrind", "taskset", "ionice", "systemd-run", "runuser",
+                             "pkexec", "expect", "command", "builtin", "crontab", "at", "batch"})
 NO_GRANT = frozenset(NO_GRANT_PREFIXES) | NO_GRANT_EXACT
-# Two-word prefixes that run a package the model names.
+# Two-word prefixes that run a package or a program the model names, or set what later commands run.
 _NO_GRANT_RUNNERS = frozenset({"npm exec", "npm x", "pnpm dlx", "pnpm exec", "yarn dlx", "yarn exec"})
+_NO_GRANT_SUBCOMMANDS = frozenset({
+    "git submodule", "git rebase", "git difftool", "git mergetool", "git filter-branch", "git filter-repo",
+    "git bisect", "git config", "git send-email", "git instaweb", "git hook",
+})
+# Options through which a program a grant covers runs another program it is handed, or takes settings that do.
+# A grant never approves a call that uses one: (short option letters, also inside a cluster such as ``-iO``;
+# long option names, with or without ``=value``, abbreviations included since git, make and GNU tools accept them).
+_LAUNCH_OPTIONS = {
+    "git": ("c", frozenset({"config", "config-env", "exec", "upload-pack", "receive-pack", "extcmd",
+                            "open-files-in-pager", "template"})),
+    "make": ("fE", frozenset({"file", "makefile", "eval"})),
+    "go": ("", frozenset({"exec", "toolexec", "vettool", "ldflags", "compiler"})),
+    "cargo": ("Z", frozenset({"config"})),
+    "rg": ("", frozenset({"pre"})),
+    "npm": ("", frozenset({"script-shell", "shell", "node-options", "git", "editor", "browser", "userconfig",
+                           "globalconfig"})),
+}
+_LAUNCH_OPTIONS["pnpm"] = _LAUNCH_OPTIONS["yarn"] = _LAUNCH_OPTIONS["npm"]
+# More short options per git sub-command: ``git fetch -u <program>`` (--upload-pack), ``git grep -O<program>``.
+_GIT_LAUNCH_LETTERS = {"fetch": "u", "clone": "u", "pull": "u", "ls-remote": "u", "grep": "O"}
+# Shell expansion (variables, globs, braces) can make words, options included, that the command text does not show.
+_EXPANSION = re.compile(r"[$*?\[{]")
 _EXECUTABLE_SUFFIXES = (".exe", ".cmd", ".bat", ".com", ".ps1")
 _PLAIN_WORD = re.compile(r"[A-Za-z0-9._+/-]+")
 _MAX_SUBJECTS = 200        # strings of an unknown tool's arguments a rule is matched against
@@ -169,13 +199,26 @@ def path_forms(path: Any, cwd: Optional[Union[str, Path]] = None) -> list:
     * the resolved form (only with ``cwd``): the path resolved against ``cwd``, links followed, relative to
       ``cwd`` when it lies inside and absolute otherwise.
 
-    Letter case is folded on Windows and macOS. The list holds one entry when the two agree."""
-    text = _text(path).replace("\\", "/")
+    Letter case is folded on Windows and macOS. The list holds one entry when the two agree.
+
+    Off Windows a backslash is an ordinary character in a file name, and the tools read it so: ``x\\y`` may be a
+    link that leads somewhere else than ``x/y``. So there the text as written is resolved too, and the file it
+    reaches is added last (it is what the tool touches, and what a prompt shows)."""
+    raw = _text(path)
+    text = raw.replace("\\", "/")
     forms = [_finish(_lexical(text, cwd))]
     if cwd is not None:
         resolved = _resolve(text, cwd)
         if resolved is not None and _finish(resolved) not in forms:
             forms.append(_finish(resolved))
+        if _BACKSLASH_IN_NAMES and "\\" in raw:
+            reached = _resolve(raw, cwd)
+            if reached is not None:
+                # spelled with "/" like the other forms (rule matching reads a backslash as "/" anyway)
+                reached = _finish(reached.replace("\\", "/"))
+                if reached in forms:
+                    forms.remove(reached)
+                forms.append(reached)
     return forms
 
 
@@ -374,26 +417,73 @@ def _is_compound(tool: str, args: Mapping[str, Any]) -> bool:
     return kind_of(tool) == "command" and isinstance(command, str) and _is_marked(command)
 
 
+def _program_name(word: str) -> str:
+    """The program a first word names: ``/usr/bin/git`` and ``GIT.EXE`` are both ``git``."""
+    name = word.rsplit("/", 1)[-1].casefold()
+    for suffix in _EXECUTABLE_SUFFIXES:
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+    return name
+
+
 def _grantable_prefix(command: str) -> Optional[str]:
     """What answering "a" to ``command`` may remember, or None when it must approve only that one call: the
     first word is not plain (letters, digits and ``. _ + / -`` only, so no assignment, quote, expansion,
-    glob, brace or backslash), is an interpreter, shell or wrapper, or the command is a two-word one whose
-    second word is an option or a package runner."""
+    glob, brace or backslash), is an interpreter, shell or wrapper or runs other programs through its options,
+    or the command is a two-word one whose second word is an option, a package runner or a sub-command that
+    runs a program it is handed (``git submodule foreach``, ``git rebase --exec``)."""
     words = re.split(r"[ \t]+", command.strip(" \t"))
     first = words[0]
     if not _PLAIN_WORD.fullmatch(first):
         return None
-    name = first.rsplit("/", 1)[-1].casefold()
-    for suffix in _EXECUTABLE_SUFFIXES:
-        if name.endswith(suffix):
-            name = name[: -len(suffix)]
+    name = _program_name(first)
     if name in NO_GRANT_EXACT or name.startswith(NO_GRANT_PREFIXES):
         return None
-    prefix = command_prefix(command)
-    if first in _TWO_WORD_COMMANDS and len(words) > 1:
-        if words[1].startswith("-") or prefix in _NO_GRANT_RUNNERS:
+    if name in _TWO_WORD_COMMANDS and len(words) > 1:
+        pair = f"{name} {words[1].casefold()}"
+        if words[1].startswith("-") or pair in _NO_GRANT_RUNNERS or pair in _NO_GRANT_SUBCOMMANDS:
             return None
-    return prefix
+    return command_prefix(command)
+
+
+def _long_option(name: str, names: frozenset, abbreviated: bool) -> bool:
+    name = name.casefold().replace("_", "-")
+    if abbreviated:
+        return bool(name) and any(option.startswith(name) for option in names)
+    return name in names
+
+
+def _launches_programs(command: str) -> bool:
+    """Whether ``command`` uses one of its program's options that run another program (see ``_LAUNCH_OPTIONS``),
+    so a grant for its prefix must not approve it. True when unsure: the words cannot be split, or a shell
+    expansion could make an option the text does not show."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return True
+    if not words:
+        return True
+    name = _program_name(words[0])
+    if name not in _LAUNCH_OPTIONS:
+        return False
+    if _EXPANSION.search(command):
+        return True
+    letters, names = _LAUNCH_OPTIONS[name]
+    if name == "git" and len(words) > 1:
+        letters += _GIT_LAUNCH_LETTERS.get(words[1].casefold(), "")
+    for word in words[1:]:
+        if name == "make" and "=" in word and not word.startswith("-"):
+            return True                         # a variable such as SHELL= or CC= picks what make runs
+        if word.startswith("--"):
+            if _long_option(word[2:].split("=", 1)[0], names, abbreviated=True):
+                return True
+        elif word.startswith("-") and len(word) > 1:
+            if name == "go":                    # go spells long options with one dash: -exec, -toolexec=x
+                if _long_option(word[1:].split("=", 1)[0], names, abbreviated=False):
+                    return True
+            elif any(letter in letters for letter in word[1:]):
+                return True
+    return False
 
 
 class Gate:
@@ -423,22 +513,32 @@ class Gate:
         # this text instead of running, so the agent answers with what it has.
         self.closed: Optional[str] = None
         self._mode = "default"
+        # True while accept-edits is on because the user answered "a" at an edit prompt, not because they chose
+        # the mode: then web lookups still ask. Any mode the user sets (set_mode, cycle_mode) clears it.
+        self._edits_granted = False
         self.set_mode(mode)
 
     @property
     def mode(self) -> str:
         return self._mode
 
+    @property
+    def edits_granted(self) -> bool:
+        """Whether accept-edits came from an "a" at an edit prompt (edits only; web lookups still ask)."""
+        return self._edits_granted and self._mode == "accept-edits"
+
     def set_mode(self, mode: str) -> None:
         if mode not in MODES:
             raise ValueError(f"mode must be one of: {', '.join(MODES)}")
         self._mode = mode
+        self._edits_granted = False
 
     def cycle_mode(self) -> str:
         if self._mode in CYCLE_MODES:
             self._mode = CYCLE_MODES[(CYCLE_MODES.index(self._mode) + 1) % len(CYCLE_MODES)]
         else:                                   # leaving auto with Shift+Tab always lands on the careful mode
             self._mode = CYCLE_MODES[0]
+        self._edits_granted = False
         return self._mode
 
     def check(self, tool: str, args: Mapping[str, Any]) -> Optional[str]:
@@ -461,7 +561,9 @@ class Gate:
         if kind == "read":
             return None
         # Web lookups read, but a URL or a query can carry text out of the project, so the careful modes ask.
-        if kind == "web" and (self._mode in ("auto", "accept-edits") or self.web_allowed):
+        # accept-edits covers them only when the user chose that mode; an "a" at an edit prompt grants edits only.
+        if kind == "web" and (self._mode == "auto" or self.web_allowed
+                              or (self._mode == "accept-edits" and not self._edits_granted)):
             return None
         if self._mode == "auto" and tool in TOOL_KINDS and kind in ("edit", "command", "team"):
             return None             # auto: only delete / move and tools the gate does not know still ask
@@ -498,24 +600,31 @@ class Gate:
         return []
 
     def _granted(self, tool: str, subject: str) -> bool:
-        return tool == "run_shell" and command_prefix(subject) in self.grants
+        """A remembered prefix approves a later command only when that command could have been granted itself
+        and uses none of its program's options that run another program (``find -exec``, ``git fetch
+        --upload-pack``): those always ask."""
+        return (tool == "run_shell" and command_prefix(subject) in self.grants
+                and _grantable_prefix(subject) is not None and not _launches_programs(subject))
 
     @staticmethod
     def _grant_for(tool: str, kind: str, subject: str, compound: bool) -> Optional[str]:
         """What answering "a" will remember, or None when it cannot be honoured: never for destructive
-        tools, compound commands, interpreters/shells/wrappers, unusual first words, or ``run_python``
-        (which approves only that one call)."""
+        tools, compound commands, interpreters/shells/wrappers, unusual first words, commands that use an
+        option that runs another program, or ``run_python`` (which approves only that one call)."""
         if kind == "edit":
             return "all edits this session"
         if kind == "web":
             return WEB_GRANT
-        if tool == "run_shell" and not compound:
+        if tool == "run_shell" and not compound and not _launches_programs(subject):
             return _grantable_prefix(subject)
         return None
 
     def _remember(self, kind: str, grant: str) -> None:
         if kind == "edit":
+            # The edits, not the whole mode: web lookups keep asking (``edits_granted``), since a URL or a query
+            # can carry text out of the project and the user agreed to edits only.
             self._mode = "accept-edits"
+            self._edits_granted = True
         elif kind == "web":
             self.web_allowed = True
         else:

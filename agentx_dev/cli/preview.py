@@ -114,12 +114,26 @@ def _whole(text: str) -> tuple:
     return f"{text[:MAX_COMMAND_CHARS]}\n... [{len(text) - MAX_COMMAND_CHARS} more characters hidden]", True
 
 
+def _without_line_endings(text: str) -> str:
+    """``text`` with CR LF as LF and one final newline dropped: what is left when only line endings differ."""
+    text = text.replace("\r\n", "\n")
+    return text[:-1] if text.endswith("\n") else text
+
+
+def _lines(text: str) -> list:
+    """The lines of ``text``, split on LF only (CR LF counts as one). ``str.splitlines`` would also break at a
+    form feed, a vertical tab, \\x1c-\\x1e, \\x85, U+2028, U+2029 and a lone CR, which neither Python nor a shell
+    takes as the end of a line (a comment goes on past them); kept inside the line, the prompt shows them as
+    escapes such as ``\\x0c``."""
+    return _without_line_endings(text).split("\n") if text else []
+
+
 def _diff(old: str, new: str, shown: str) -> str:
     if old == new:
         return "(no change)"
-    old_lines, new_lines = old.splitlines(), new.splitlines()
-    if old_lines == new_lines:
+    if _without_line_endings(old) == _without_line_endings(new):
         return "(only line endings or the final newline change)"
+    old_lines, new_lines = _lines(old), _lines(new)
     stream = difflib.unified_diff(old_lines, new_lines,
                                   fromfile=f"a/{shown}", tofile=f"b/{shown}", lineterm="")
     lines = list(islice(stream, MAX_PREVIEW_LINES + 1))
