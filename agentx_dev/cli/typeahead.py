@@ -2,8 +2,9 @@
 
 While the spinner runs, nothing reads the keyboard, so what the user typed used to wait for the next prompt (or was
 lost). ``TypeAhead`` reads keys on a background thread only while it is *resumed* (the app resumes it with the
-spinner and pauses it whenever the spinner stops, so a question or an approval prompt gets every key). The line being
-typed is drawn under the spinner (``line``); Enter hands it to ``on_submit``.
+spinner and pauses it whenever the spinner stops). Keys typed while it reads are for the chat: a question or an
+approval prompt opened next never gets them as its answer (see ``pause``). The line being typed is drawn under the
+spinner (``line``); Enter hands it to ``on_submit``.
 
 Windows reads keys with ``msvcrt``; elsewhere stdin is put in cbreak mode (Ctrl+C still interrupts) while resumed.
 Nothing runs when stdin is not a terminal."""
@@ -34,6 +35,7 @@ class TypeAhead:
         self._holds = 0
         self._closed = False
         self._thread: Optional[threading.Thread] = None
+        self._changed_last = False                  # the last read in pause / hold changed the line
         # While set (``/voice`` is recording), Enter on an empty line is handed over too, as "", to stop it.
         self.submit_empty = False
 
@@ -77,24 +79,59 @@ class TypeAhead:
             self._thread.start()
 
     def pause(self) -> None:
-        """Stop reading keys; returns once no key is being read, so a prompt opened next gets every key."""
+        """Stop reading keys; returns once no key is being read. Keys typed while the agent worked were typed for
+        the chat, not for whatever is asked next: what was read stays on the line (``line``), keys still waiting
+        are read onto it one last time here, and a menu opened next throws away anything left
+        (``ui.discard_typed_ahead``) and ignores keys in its first moments, so none of them can answer it."""
         if self._keys is None:
             return
         with self._lock:
+            submitted = None
             if self._active and self._holds == 0:
+                submitted = self._last_keys()
                 self._keys.leave()
             self._active = False
+        self._after_last_keys(submitted)
+
+    def _last_keys(self) -> Optional[str]:
+        """Read what is still waiting onto the line, before reading stops (called with the lock held)."""
+        try:
+            chunk = self._keys.read()
+        except Exception:
+            return None
+        if not chunk:
+            return None
+        submitted, changed = self._feed(chunk)
+        self._changed_last = self._changed_last or changed
+        return submitted
+
+    def _after_last_keys(self, submitted: Optional[str]) -> None:
+        changed, self._changed_last = self._changed_last, False
+        if changed and self.on_change is not None:
+            try:
+                self.on_change()
+            except Exception:
+                pass
+        if submitted is not None:                    # Enter was typed for the chat: it goes to the chat
+            try:
+                self.on_submit(submitted)
+            except Exception:
+                pass
 
     def hold(self):
-        """``with typeahead.hold():`` no key is read inside the block, even if the spinner starts (a prompt)."""
+        """``with typeahead.hold():`` no key is read inside the block, even if the spinner starts (a prompt).
+        Like ``pause``, keys still waiting go onto the chat line first."""
         from contextlib import contextmanager
 
         @contextmanager
         def block():
+            submitted = None
             with self._lock:
                 if self._holds == 0 and self._active and self._keys is not None:
+                    submitted = self._last_keys()
                     self._keys.leave()
                 self._holds += 1
+            self._after_last_keys(submitted)
             try:
                 yield
             finally:

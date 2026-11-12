@@ -16,6 +16,14 @@ from agentx_dev.cli.ui import CANCELLED, Progress, Screen
 from tests.conftest import MockModel, make_final
 
 
+@pytest.fixture(autouse=True)
+def menus_take_keys_at_once(monkeypatch):
+    """These tests type the moment a menu opens; the short wait before a menu takes keys is tested in
+    test_audit_fix_keys.py."""
+    from agentx_dev.cli import ui
+    monkeypatch.setattr(ui, "MENU_ARM_SEC", 0)
+
+
 @pytest.fixture
 def keys():
     with create_pipe_input() as pipe:

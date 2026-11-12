@@ -25,6 +25,7 @@ import io
 import shutil
 import sys
 import threading
+import time
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -33,6 +34,7 @@ from rich.console import Console
 from rich.rule import Rule
 from rich.text import Text
 
+from agentx_dev.cli import ui as _ui
 from agentx_dev.cli.ui import (ACCENT, CANCELLED, input_style, make_completer, make_lexer, plain, safe_toolbar)
 
 MAX_LINES = 20_000                  # conversation rows kept on screen (the transcript keeps everything)
@@ -159,12 +161,36 @@ class FullScreen:
         return self._wait("short", prompt=plain(prompt))
 
     def select(self, options: Sequence[str], default: int = 0, hotkeys: Optional[Mapping[str, int]] = None):
+        """A menu in the fixed input area. Keys typed for the chat never answer it: while the input line holds
+        text, keys keep editing that text and Enter sends it (the menu waits), and for ``ui.MENU_ARM_SEC`` after
+        the menu appears, or after the input line changes, menu keys do nothing."""
         labels = [plain(option) for option in options]
         if not labels:
             return None
         return self._wait("select", options=labels, position=default if 0 <= default < len(labels) else 0,
                           hotkeys={str(k): int(v) for k, v in (hotkeys or {}).items()
-                                   if len(str(k)) == 1 and 0 <= int(v) < len(labels)})
+                                   if len(str(k)) == 1 and 0 <= int(v) < len(labels)},
+                          shown=time.monotonic())
+
+    def typing(self) -> bool:
+        """Whether the input line holds text (a message being written)."""
+        buffer = getattr(self, "chat_buffer", None)
+        return bool(buffer is not None and buffer.text)
+
+    def menu_armed(self) -> bool:
+        """Whether the open menu takes keys now: the input line is empty and the menu has been up long enough."""
+        with self._lock:
+            request = self._request
+            if not request or request["kind"] != "select":
+                return False
+            shown = request.get("shown", 0.0)
+        return not self.typing() and time.monotonic() - shown >= _ui.MENU_ARM_SEC
+
+    def _rearm(self, _buffer: Any = None) -> None:
+        """The input line changed while a menu is open: menu keys wait a moment again."""
+        with self._lock:
+            if self._request and self._request["kind"] == "select":
+                self._request["shown"] = time.monotonic()
 
     def invalidate(self) -> None:
         try:
@@ -304,7 +330,10 @@ class FullScreen:
                 mark = ">" if number == request["position"] else " "
                 text = f"{mark} {number + 1}. {label}"
                 lines.append(f"\x1b[1;36m{text}\x1b[0m" if number == request["position"] else text)
-            lines.append("\x1b[90mUp / Down to move, Enter to confirm, Esc to cancel\x1b[0m")
+            if self.typing():
+                lines.append("\x1b[33mClear or send your message to answer\x1b[0m")
+            else:
+                lines.append("\x1b[90mUp / Down to move, Enter to confirm, Esc to cancel\x1b[0m")
             return lines
         if request is not None and request["kind"] == "short":
             return [f"\x1b[1;33m{request['prompt']}\x1b[0m"] if request["prompt"] else []
@@ -513,7 +542,7 @@ class FullScreen:
             history = InMemoryHistory()
         self.chat_buffer = Buffer(multiline=True, history=history,
                                   completer=make_completer(commands, descriptions, extra_commands),
-                                  complete_while_typing=True)
+                                  complete_while_typing=True, on_text_changed=self._rearm)
         self.short_buffer = Buffer(multiline=False)
 
         class Conversation(UIControl):
@@ -578,34 +607,54 @@ class FullScreen:
         def _answer(event):
             screen.submit_short()
 
-        @bindings.add("up", filter=selecting)
-        @bindings.add("k", filter=selecting)
-        def _up(event):
-            screen.move(-1)
+        # A menu takes keys only while the input line is empty (menu_open) and it has been up a moment
+        # (menu_armed): while a message is being written its keys edit it, so they cannot answer the menu.
+        menu_open = selecting & ~Condition(screen.typing)
 
-        @bindings.add("down", filter=selecting)
-        @bindings.add("j", filter=selecting)
+        @bindings.add("up", filter=menu_open)
+        @bindings.add("k", filter=menu_open)
+        def _up(event):
+            if screen.menu_armed():
+                screen.move(-1)
+
+        @bindings.add("down", filter=menu_open)
+        @bindings.add("j", filter=menu_open)
         def _down(event):
-            screen.move(1)
+            if screen.menu_armed():
+                screen.move(1)
 
         @bindings.add("enter", filter=selecting)
         def _pick(event):
-            screen.choose()
+            if screen.typing():                     # Enter sends the message being written; it is not an answer
+                buffer = screen.chat_buffer
+                state = buffer.complete_state
+                if state is not None and state.current_completion is not None:
+                    buffer.apply_completion(state.current_completion)
+                    return
+                screen.submit_chat()
+                screen._rearm()
+            elif screen.menu_armed():
+                screen.choose()
 
-        @bindings.add("escape", filter=selecting, eager=True)
+        @bindings.add("escape", filter=menu_open, eager=True)
         def _cancel(event):
-            screen.console.print(Text("(cancelled)", style="dim"))
-            screen._answer(CANCELLED)
+            if screen.menu_armed():
+                screen.console.print(Text("(cancelled)", style="dim"))
+                screen._answer(CANCELLED)
 
-        @bindings.add(Keys.Any, filter=selecting)
+        @bindings.add(Keys.Any, filter=menu_open)
         def _key(event):
             key = event.data
             with screen._lock:
                 request = screen._request or {}
             if key in request.get("hotkeys", {}):
-                screen.choose(request["hotkeys"][key])
+                if screen.menu_armed():
+                    screen.choose(request["hotkeys"][key])
             elif key.isdigit() and 1 <= int(key) <= min(9, len(request.get("options", []))):
-                screen.choose(int(key) - 1)
+                if screen.menu_armed():
+                    screen.choose(int(key) - 1)
+            elif len(key) == 1 and key.isprintable():
+                screen.chat_buffer.insert_text(key)     # not a menu key: it starts a message, as without a menu
 
         @bindings.add("s-tab")
         def _cycle(event):

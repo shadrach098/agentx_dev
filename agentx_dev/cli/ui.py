@@ -735,6 +735,45 @@ def _request_body(request: Request, preview: Preview, helper: str = "") -> Text:
 
 
 CANCELLED = -1          # what a selection menu returns when the user pressed Esc, Ctrl+C or Ctrl+D
+# Keys pressed this soon after a menu is shown are ignored (tests set it to 0): they were typed before the user
+# could read it, so they are not an answer to it. Ctrl+C still cancels.
+MENU_ARM_SEC = 0.4
+
+
+def discard_typed_ahead() -> None:
+    """Throw away keys waiting in the terminal that nothing has read yet (typed for the chat, or before agentx
+    started), so a menu shown next does not take them as its answer. Only a real terminal; never raises."""
+    try:
+        if not sys.stdin or not sys.stdin.isatty():
+            return
+    except Exception:
+        return
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetStdHandle.restype = ctypes.c_void_p
+            kernel32.GetStdHandle.argtypes = [ctypes.c_uint32]
+            kernel32.FlushConsoleInputBuffer.argtypes = [ctypes.c_void_p]
+            handle = kernel32.GetStdHandle(0xFFFFFFF6)                  # STD_INPUT_HANDLE (-10)
+            if handle and handle != ctypes.c_void_p(-1).value and kernel32.FlushConsoleInputBuffer(handle):
+                return
+        except Exception:
+            pass
+        try:                                         # no console buffer to flush: read what msvcrt can see
+            import msvcrt
+            for _ in range(4096):
+                if not msvcrt.kbhit():
+                    break
+                msvcrt.getwch()
+        except Exception:
+            pass
+        return
+    try:
+        import termios
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        pass
 
 
 def select_menu(options: Sequence[str], default: int = 0,
@@ -742,9 +781,13 @@ def select_menu(options: Sequence[str], default: int = 0,
     """A numbered list the user moves through with the arrow keys (or j / k), confirms with Enter, or picks by
     typing its number (or a hotkey such as ``y``). Returns the index chosen, ``CANCELLED`` for Esc / Ctrl+C /
     Ctrl+D, or None when no menu can be shown (not a terminal, or prompt_toolkit cannot start): the caller
-    then asks in plain text. Option texts are printed through ``plain``."""
+    then asks in plain text. Option texts are printed through ``plain``.
+
+    Keys typed before the menu was shown are thrown away, and keys pressed in its first ``MENU_ARM_SEC`` are
+    ignored (Ctrl+C and Ctrl+D still cancel): an answer must come after the menu could be read."""
     if not options or not is_terminal():
         return None
+    discard_typed_ahead()
     try:
         from prompt_toolkit import Application
         from prompt_toolkit.formatted_text import FormattedText
@@ -756,6 +799,10 @@ def select_menu(options: Sequence[str], default: int = 0,
         labels = [plain(option) for option in options]
         position = [default if 0 <= default < len(labels) else 0]
         bindings = KeyBindings()
+        shown = [time.monotonic()]                   # set again when the menu starts reading keys
+
+        def armed() -> bool:
+            return time.monotonic() - shown[0] >= MENU_ARM_SEC
 
         def render():
             parts = []
@@ -770,29 +817,38 @@ def select_menu(options: Sequence[str], default: int = 0,
         @bindings.add("up")
         @bindings.add("k")
         def _up(event):
-            position[0] = (position[0] - 1) % len(labels)
+            if armed():
+                position[0] = (position[0] - 1) % len(labels)
 
         @bindings.add("down")
         @bindings.add("j")
         def _down(event):
-            position[0] = (position[0] + 1) % len(labels)
+            if armed():
+                position[0] = (position[0] + 1) % len(labels)
 
         @bindings.add("enter")
         def _enter(event):
-            event.app.exit(result=position[0])
+            if armed():
+                event.app.exit(result=position[0])
 
         for number in range(min(len(labels), 9)):
             @bindings.add(str(number + 1))
             def _digit(event, number=number):
-                event.app.exit(result=number)
+                if armed():
+                    event.app.exit(result=number)
 
         for key, index in (hotkeys or {}).items():
             if 0 <= index < len(labels) and len(key) == 1:
                 @bindings.add(key)
                 def _hot(event, index=index):
-                    event.app.exit(result=index)
+                    if armed():
+                        event.app.exit(result=index)
 
         @bindings.add("escape", eager=True)
+        def _escape(event):
+            if armed():
+                event.app.exit(result=CANCELLED)
+
         @bindings.add("c-c")
         @bindings.add("c-d")
         def _cancel(event):
@@ -803,8 +859,12 @@ def select_menu(options: Sequence[str], default: int = 0,
             key_bindings=bindings, full_screen=False, erase_when_done=False)
         global _OPEN_MENU
         _OPEN_MENU = application                         # remote control may pick an answer in it (pick_in_menu)
+
+        def started() -> None:                       # the menu is on screen and about to read keys
+            shown[0] = time.monotonic()
+
         try:
-            result = application.run()
+            result = application.run(pre_run=started)
         finally:
             _OPEN_MENU = None
         return result if isinstance(result, int) else CANCELLED
@@ -847,9 +907,13 @@ def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
     form), never cut. A command, code or tool-argument text longer than ``MAX_COMMAND_CHARS`` cannot be shown
     whole, so it is declined unseen ("command too long to review") rather than approved on a partial view.
 
-    Fails closed: bare Enter, end of input (Ctrl-D), Ctrl-C and any error reading an answer are all a "no".
-    "Don't ask again" is offered only when the gate says it can remember it (``Request.remember``), and the
-    prompt prints the exact rule (``Request.grant``) that answering ``a`` will remember."""
+    With an arrow-key menu (``select``), Enter takes the highlighted entry, which is "Yes" when the menu opens.
+    ``y`` and ``1`` are Yes and ``n`` is No; "Yes, and don't ask again" has no letter (it is ``2`` or the arrow
+    keys and Enter), so a word typed for the chat cannot give it. The menu throws away keys typed before it was
+    shown and ignores keys in its first moments (``select_menu``). In the typed fallback, bare Enter is a "no".
+    In both, end of input (Ctrl-D), Ctrl-C, Esc in the menu and any error reading an answer are a "no". "Don't ask again"
+    is offered only when the gate says it can remember it (``Request.remember``), and the prompt prints the
+    exact rule (``Request.grant``) it will remember."""
     read_line = read_line or input
 
     def ask(request: Request) -> Answer:
@@ -884,9 +948,7 @@ def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
             if always:
                 labels.append(f"Yes, and don't ask again: {what}")
             labels.append("No, and tell the model what to do instead")
-            hotkeys = {"y": 0, "n": len(labels) - 1}
-            if always:
-                hotkeys["a"] = 1
+            hotkeys = {"y": 0, "n": len(labels) - 1}     # no letter for "don't ask again": 2 or the arrows
             _print(console, Text("Do you want to proceed?", style="bold"))
             try:
                 picked = select(labels, 0, hotkeys)

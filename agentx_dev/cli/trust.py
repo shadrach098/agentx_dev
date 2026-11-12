@@ -16,10 +16,11 @@ from typing import Any, Callable, List, Optional, Sequence
 from rich.console import Console
 from rich.text import Text
 
-from agentx_dev.cli.ui import CANCELLED, plain
+from agentx_dev.cli.ui import CANCELLED, discard_typed_ahead, plain
 
 TRUST_FILE = "trusted.json"
 TRUST_OPTIONS = ("Yes, I trust this folder", "No, exit")
+TRUST_DEFAULT = 1                     # the menu opens on "No, exit"; Yes is y, 1 or a deliberate pick
 
 
 def trust_file(home: Path) -> Path:
@@ -87,7 +88,9 @@ def ensure_trusted(cwd: Path, home: Path, console: Console,
                    select: Optional[Callable[..., Optional[int]]] = None,
                    read_line: Optional[Callable[[str], str]] = None) -> bool:
     """True when the user trusts ``cwd`` (already on file, or just said yes); False when they declined or the
-    question could not be answered. Anything but a clear yes is a no."""
+    question could not be answered. Anything but a clear yes is a no: the menu opens on "No, exit"
+    (``TRUST_DEFAULT``), so Enter alone declines, and keys typed before the question was shown are thrown away.
+    Yes is ``y``, ``1``, or moving to it and pressing Enter."""
     if is_trusted(cwd, home):
         return True
     where = plain(str(cwd))
@@ -105,9 +108,10 @@ def ensure_trusted(cwd: Path, home: Path, console: Console,
                        "approve them (or without asking, if you choose the accept-edits or auto mode). "
                        "Instructions and settings in this folder will be used.\n"))
     answer: Optional[int] = None
+    discard_typed_ahead()             # an Enter typed while agentx started is not an answer to this
     try:
-        if select is not None:
-            answer = select(list(TRUST_OPTIONS), 0, {"y": 0, "n": 1})
+        if select is not None:        # "No, exit" is highlighted: a stray Enter never trusts a folder
+            answer = select(list(TRUST_OPTIONS), TRUST_DEFAULT, {"y": 0, "n": 1})
         if answer is None:
             reader = read_line or input
             raw = str(reader("Trust this folder? [y/N] ")).strip().lower()

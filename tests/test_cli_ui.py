@@ -630,7 +630,7 @@ class TestArrowKeySelection:
         options, default, hotkeys = seen[0]
         assert options[0] == "Yes" and options[1].startswith("Yes, and don't ask again")
         assert "pytest" in options[1] and options[2].startswith("No")
-        assert default == 0 and hotkeys == {"y": 0, "a": 1, "n": 2}
+        assert default == 0 and hotkeys == {"y": 0, "n": 2}      # no letter for "don't ask again"
 
     def test_picking_the_second_entry_remembers_and_the_third_declines_with_a_reason(self):
         ask, _, _ = self.asker(1)
@@ -683,6 +683,7 @@ class TestSelectMenuKeys:
         from prompt_toolkit.output import DummyOutput
         from agentx_dev.cli import ui
         monkeypatch.setattr(ui, "is_terminal", lambda: True)
+        monkeypatch.setattr(ui, "MENU_ARM_SEC", 0)       # keys are sent before the menu opens
         with create_pipe_input() as pipe:
             with create_app_session(input=pipe, output=DummyOutput()):
                 pipe.send_text(keys)
