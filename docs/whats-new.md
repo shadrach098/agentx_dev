@@ -3,6 +3,26 @@
 The newest release first. For what to change when you upgrade, see [Upgrading](guides/upgrading.md); every
 change in detail is in the [changelog](https://github.com/shadrach098/agentx_dev/blob/main/CHANGELOG.md).
 
+## 3.8.1 — a security release
+
+A review of the `agentx` app closed gaps where a cloned project, a web page or keys typed at the wrong moment could
+get something past you. Upgrade if you use `agentx` on projects you did not write. The ones you will notice:
+
+- **The trust question highlights "No, exit".** Enter alone no longer trusts a folder; press `1`, `y`, or Up then
+  Enter.
+- **"Don't ask again" is `2` in the approval menu** (the `a` key is gone there), and keys you were typing for the
+  chat never answer a menu: a new menu ignores keys for its first 0.4 s.
+- **"Don't ask again" means what it says.** An edit grant covers edits only (web lookups still ask), and a command
+  grant never covers options that start another program (`find -exec`, `git --upload-pack`, `git -c`).
+- **Nothing is started from the project folder on Windows**: not bash, PowerShell, taskkill, Tailscale, a browser
+  or an MCP server's `npx`.
+- **The app window** opens with a one-time start code instead of its key, and turning remote control off changes
+  the key.
+- **MCP**: sign-ins are tied to the server's address, and tools allowed because they were read-only are checked
+  again on every connect.
+
+Everything else is in [Upgrading](guides/upgrading.md) and the changelog.
+
 ## 3.8 — skills, the app window and remote use
 
 An agent can now read short **skills**: guides for a kind of work ("how to explore a project", "how to change

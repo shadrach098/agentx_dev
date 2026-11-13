@@ -36,6 +36,13 @@ Every code block below is something you can paste and run.
 
 ---
 
+## What's new in 3.8.1 — a security release
+
+3.8.1 closes gaps in the `agentx` app where a cloned project, a web page or keys typed at the wrong moment could get
+something past you: the trust question now defaults to "No", "don't ask again" covers only what it says, nothing is
+started from the project folder on Windows, and the app window no longer puts its key on a command line. See
+[What's new](docs/whats-new.md) and [Upgrading](docs/guides/upgrading.md).
+
 ## What's new in 3.8 — skills, the app window and remote use
 
 An agent can now read short **skills**: guides for a kind of work ("how to explore a project", "how to change

@@ -1,7 +1,7 @@
 [project]
 
 name = "agentx-dev"
-version = "3.8.0"
+version = "3.8.1"
 description = "Build LLM agents in Python, and get agentx: a coding assistant for your terminal. GPT and Claude, permission-gated tools, skills, MCP, team jobs with helpers that run in parallel, RAG, memory and evals."
 keywords = ["llm", "agents", "ai-agents", "multi-agent", "coding-assistant", "terminal", "cli",
             "openai", "anthropic", "claude", "gpt", "mcp", "rag", "tool-calling", "supervisor", "skills"]

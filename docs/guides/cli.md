@@ -38,7 +38,7 @@ Nothing in the folder (its `AGENTX.md`, its `.agentx/settings.json`) is read unt
 Then the start screen, and the input line:
 
 ```text
-╭─ agentx v3.8.0 ──────────────────────────────────────────────────────────────────────────╮
+╭─ agentx v3.8.1 ──────────────────────────────────────────────────────────────────────────╮
 │        Welcome back you!        │ Tips for getting started                               │
 │                                 │ Run /init to create an AGENTX.md with notes about ...  │
 │           █▄      ██            │ Type / to see the commands and skills; Alt+Enter ...   │

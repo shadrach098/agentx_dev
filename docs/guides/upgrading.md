@@ -13,6 +13,28 @@ module stays imported until you do, which shows up as errors like
 
 ---
 
+## Upgrading to 3.8.1
+
+**A security release for the `agentx` app; no change to the Python API.** What you may notice:
+
+- **Trust question:** "No, exit" is highlighted, so Enter alone exits. Trust a folder with `1`, `y`, or Up then Enter.
+- **Approval menus:** "Don't ask again" is `2` (the `a` key only works in the typed `[y/a/n]` prompt). Every menu
+  ignores keys for its first 0.4 s, and keys typed before it appeared are thrown away. In full-screen mode a menu
+  waits while your message box has text.
+- **Grants:** answering "don't ask again" at an edit prompt covers edits only; web lookups still ask (choosing
+  accept-edits yourself still includes them). `/clear` and `/resume` also end a web grant. Some commands now ask
+  even with a grant, such as `make all V=1` or `git log -c`, and `find`, `sed`, `tar` and similar are never
+  remembered.
+- **AGENTX.md:** a parent folder's file is read only when you trust that folder. To use a repo's root file from a
+  subfolder, trust the repo root.
+- **MCP:** a bare command such as `npx` is found on `PATH` only, never in the project folder; a server launched only
+  through a `.ps1` file needs its full path in `mcp.json`. Sign-ins are tied to the server's address: change the
+  address and agentx asks you to `/mcp login` again. Read-only tools allowed automatically move to a new `"auto"`
+  list on first connect and are checked again each time.
+- **App window:** the window agentx opens gets a one-time start link (`?c=`); if it has expired, open the `?t=`
+  link the terminal prints. Turning remote control off changes the key, so links shared before stop working.
+- **Files:** saved conversations and `~/.agentx` are readable by you only.
+
 ## Upgrading to 3.8.0
 
 **One install change and one new default; no removed API.**

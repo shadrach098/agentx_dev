@@ -6,6 +6,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-11-13
+
 ### Changed
 
 - **The app window opens like the docs site.** The mark rises with a soft glow, `agentx` types itself in letter by
