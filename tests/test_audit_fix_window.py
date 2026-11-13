@@ -502,16 +502,27 @@ def test_remote_off_ends_the_windows_that_came_through_tailscale(tmp_path, monke
         front.rooms[room.device] = room
         with front._lock:
             front._streams.append({"tailnet": True, "device": room.device, "stop": ""})
+        old_key = front.token
         message = front.disable_remote()
-        assert "windows opened through it were closed" in message and "same link" in message
+        assert "windows opened through it were closed" in message and "changed its key" in message
+        assert front.token != old_key                             # links shared before stop working
         seen = ""
         deadline = time.monotonic() + 8
         while "remoteOff" not in seen and time.monotonic() < deadline:
             seen += far.readline().decode()
-        assert '"remoteOff": true' in seen
+        assert '"remoteOff": true' in seen and front.token not in seen
         assert any(e["type"] == "closed" and e.get("remoteOff") for e in room.bus.after(0)) and room.idle
-        time.sleep(0.3)
-        assert any(not s["tailnet"] for s in front._streams)      # the window on this computer stays
+        # the window on this computer is handed the new key and keeps going
+        near_seen = ""
+        deadline = time.monotonic() + 8
+        while '"type": "key"' not in near_seen and time.monotonic() < deadline:
+            near_seen += near.readline().decode()
+        assert f'"token": "{front.token}"' in near_seen and "closed" not in near_seen
+        assert any(not s["tailnet"] for s in front._streams)
+        check = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        check.request("GET", f"/api/state", headers={"Host": f"127.0.0.1:{port}", "X-Agentx-Token": old_key})
+        assert check.getresponse().status == 403                  # the old key is refused
+        check.close()
         far_conn.close()
         near_conn.close()
     finally:

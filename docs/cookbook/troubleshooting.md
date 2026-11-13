@@ -850,8 +850,8 @@ Something opened the one-time start link again (another program on the computer 
 refused it and made a new key. Open the new link the terminal printed, or paste it into the box.
 
 **The window says "Remote control is off"**
-Remote control was turned off on the computer agentx runs on, which closes the windows opened through Tailscale. The
-conversation is saved: when remote control is on again (same link), reload the page to carry on.
+Remote control was turned off on the computer agentx runs on, which closes the windows opened through Tailscale and
+changes agentx's key. The conversation is saved: when remote control is on again, open the new link it prints.
 
 **The window says "Waiting for agentx…" and nothing moves while the terminal works** *(fixed)*
 In `/remote-control` from the terminal the window did not see the terminal's spinner. It now shows the same line

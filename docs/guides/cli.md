@@ -920,8 +920,9 @@ The computer that runs agentx does the work (your files, your keys, the agent); 
   message, an answer or a menu choice from either side shows in both; an approval is a card in the window and the
   menu in the terminal, and the first answer wins); in the app window, the same window becomes reachable from your
   other devices. `/remote-control off` ends it: windows opened through Tailscale are closed (they say "Remote control
-  is off") and their conversations saved; an SSH tunnel still works, and turned on again it uses the same link, so a
-  device that has it can come back. While it is on, closing a window does not quit agentx. Started from
+  is off") and their conversations saved, and agentx changes its key, so links shared before stop working (the
+  windows on this computer, or through an SSH tunnel, get the new key and keep going). Turned on again, it prints a
+  new link. While it is on, closing a window does not quit agentx. Started from
   the terminal, the link and the ssh steps show in the terminal only: whoever opens the window got there already.
 - **Each device has its own conversation.** Every device that opens the window (an iPad, a laptop, the computer's
   own window) gets a conversation of its own, with its own agent, approvals, Stop button and status, working at

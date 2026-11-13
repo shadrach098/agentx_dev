@@ -1732,10 +1732,17 @@ class WebFront:
         self._stop_tailnet()
         self.tailnet = None
         ended = self._end_tailnet_windows()
+        with self._lock:                                # windows on this computer (or through SSH) get the new key
+            for stream in self._streams:
+                if not stream["tailnet"] and not stream["stop"]:
+                    stream["carry"] = True
+        self.new_token()                                # the old link stops working, even if remote use comes back
         closed = (f", and the {ended} window{'s' if ended != 1 else ''} opened through it "
                   f"{'were' if ended != 1 else 'was'} closed" if ended else "")
-        return (f"Remote control is off: the Tailscale link no longer works{closed}. An SSH tunnel to this computer "
-                "still would. Turned on again, it uses the same link, so a device that has it can come back.")
+        print(f"Remote control is off. agentx changed its key; this computer's link is now: {self.address()}",
+              flush=True)
+        return (f"Remote control is off: the Tailscale link no longer works{closed}, and agentx changed its key, so "
+                "links shared before stop working. This window keeps going. Turned on again, it prints a new link.")
 
     def _end_tailnet_windows(self) -> int:
         """Remote off: the windows that came through Tailscale stop (their event streams end, saying why), and
@@ -2031,6 +2038,14 @@ class _Handler(BaseHTTPRequestHandler):
         front.window_connected(True, self._who())
 
         def ended() -> bool:
+            nonlocal token
+            if host.token != token and stream.get("carry") and not stream["stop"]:
+                # remote use was turned off: a window on this computer keeps going with the new key
+                stream["carry"] = False
+                token = host.token
+                self.wfile.write(f"data: {json.dumps({'type': 'key', 'token': token})}\n\n".encode("utf-8"))
+                self.wfile.flush()
+                return False
             why = ({"type": "closed", "remoteOff": True} if stream["stop"] else
                    {"type": "closed", "keyChanged": True} if host.token != token else None)
             if why is not None:

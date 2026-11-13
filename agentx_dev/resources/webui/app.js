@@ -1359,9 +1359,22 @@
         return;
       }
     }
-    const source = new EventSource(`/events?t=${encodeURIComponent(token)}&d=${DEVICE}`);
+    openStream(0);
+  }
+
+  // The event stream. When remote use is turned off agentx changes its key and sends the new one to windows on
+  // this computer: the window keeps it and picks the stream up where it left off.
+  let lastSeen = 0;
+  function openStream(after) {
+    const source = new EventSource(`/events?t=${encodeURIComponent(token)}&d=${DEVICE}${after ? `&after=${after}` : ""}`);
     source.onmessage = (m) => {
-      try { onEvent(JSON.parse(m.data)); } catch (error) { console.error("agentx: an event could not be shown", error); }
+      if (m.lastEventId) lastSeen = Math.max(lastSeen, Number(m.lastEventId) || 0);
+      let ev;
+      try { ev = JSON.parse(m.data); } catch (_) { return; }
+      if (ev && ev.type === "key" && ev.token) {
+        token = ev.token; keepKey(); source.close(); openStream(lastSeen); return;
+      }
+      try { onEvent(ev); } catch (error) { console.error("agentx: an event could not be shown", error); }
     };
     source.onerror = () => { if (closed) source.close(); };
   }

@@ -68,7 +68,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **Pictures are never saved through a planted link.** When the project's `.agentx` or `.agentx/uploads` is a link,
   a picture goes to `~/.agentx/uploads/`; the message names where the file really is.
 - **Turning remote control off closes the windows opened through Tailscale** (their conversations are saved), and
-  the 30-second re-share check can no longer share the window again afterwards.
+  the 30-second re-share check can no longer share the window again afterwards. agentx also changes its key, so a
+  link shared with another device stops working; windows on this computer get the new key and keep going.
 - **Nothing is started from the project folder on Windows.** `run_shell` takes git-bash from Program Files, a
   per-user Git install or `PATH` without the current folder, else System32's PowerShell; stopping a command runs
   System32's `taskkill`; Tailscale, Edge, Chrome and PowerShell for the app window are found the same way.
