@@ -106,7 +106,7 @@ class TestTheServer:
         assert "default-src 'self'" in response.getheader("Content-Security-Policy")
         response.read()
         conn.close()
-        for name in ("/app.js", "/style.css", "/icon.svg"):
+        for name in ("/app.js", "/orb.js", "/style.css", "/icon.svg"):
             assert w.request("GET", name, token=False)[0] == 200
 
     def test_the_api_needs_the_token(self, window):
@@ -666,13 +666,16 @@ def test_the_window_shows_agentx_at_work_and_its_header():
 
 
 def test_the_window_opens_like_the_docs_site():
-    """The opening of the docs site in the window: the mark, the name typed letter by letter, a blinking lime cursor;
-    "Starting..." until agentx says hello, and the welcome grows out of it; the working spinner is that cursor."""
+    """The opening of the docs site in the window: the dot orb, the name typed letter by letter, a blinking lime
+    cursor; "Starting..." until agentx says hello, and the welcome grows out of it; the orb shows what agentx does."""
     from agentx_dev.cli.webui import RESOURCES
     script = (RESOURCES / "app.js").read_text(encoding="utf-8")
     css = (RESOURCES / "style.css").read_text(encoding="utf-8")
     assert "function showStarting" in script and "showStarting();" in script
     assert 'class="hero-cursor"' in script and 'class="glyph"' in script
     assert "@keyframes cursor-blink" in css and "@keyframes glyph-in" in css
-    assert "animation: cursor-blink" in css.split(".spinner {", 1)[1].split("}", 1)[0]
+    orb = (RESOURCES / "orb.js").read_text(encoding="utf-8")
+    assert 'class="orb"' in script and "AgentxOrb" in orb               # the working spinner is now the dot orb
+    for state in ("thinking", "working", "success", "idle", "stuck"):
+        assert f'"{state}"' in orb
     assert ".starting .tick" in css and ".starting .dot" not in css     # not the MCP state dots

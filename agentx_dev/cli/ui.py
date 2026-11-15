@@ -70,6 +70,34 @@ def _print(console: Console, *renderables: Any) -> None:
     console.file.flush()
 
 
+class _OrbSpinner:
+    """The spinner on a terminal that can show braille: the agentx orb (``orb.py``), 3 lines tall, with the words
+    beside its middle line. Thinking makes it bubble; a running step turns two rings of its dots."""
+
+    DIM = "#6f9a25"                          # the orb's resting dots; the lifted or turning ones are the lime
+
+    def __init__(self, state: str, text: Any) -> None:
+        self.state = state
+        self.text = text
+        self._since = time.monotonic()
+
+    def update(self, text: Any = None) -> None:
+        if text is not None:
+            self.text = text
+
+    def __rich_console__(self, console: Any, options: Any):
+        from agentx_dev.cli import orb
+        rows = orb.frame(self.state, time.monotonic() - self._since)
+        for number, cells in enumerate(rows):
+            line = Text()
+            for char, lit in cells:
+                line.append(char, style=ACCENT if lit else self.DIM)
+            if number == len(rows) // 2:
+                line.append("  ")
+                line.append_text(self.text if isinstance(self.text, Text) else Text(str(self.text)))
+            yield line
+
+
 class Progress:
     """A line with a moving spinner and the seconds elapsed ("Running run_python... 12s") shown while the agent
     works, so a long model call or script does not look like a hang. It only draws on a real terminal (nothing
@@ -164,13 +192,18 @@ class Progress:
         self._label = plain(label)
         self._since = time.monotonic()
         utf = (getattr(self.console, "encoding", "") or "").lower().startswith("utf")
-        self._spinner = Spinner("dots" if utf else "line", text=Text(f"{self._label}...", style="dim"))
+        words = Text(f"{self._label}...", style="dim")
+        if utf:                                  # the dot orb: bubbling while it thinks, rings turning on a step
+            state = "working" if self._label.startswith("Running") else "thinking"
+            self._spinner = _OrbSpinner(state, words)
+        else:
+            self._spinner = Spinner("line", text=words)
         if self.drawn_by is not None:
             self._shown = True
             self._redraw()
             return
         try:
-            self._live = Live(self, console=self.console, transient=True, refresh_per_second=10)
+            self._live = Live(self, console=self.console, transient=True, refresh_per_second=12)
             self._live.start()
         except Exception:
             self._live = None
@@ -934,8 +967,11 @@ def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
             who = str(helper() or "") if helper is not None else ""
         except Exception:
             who = ""
-        _print(console, Panel(_request_body(request, preview, who), title=Text(plain(request.tool)),
-                              title_align="left"))
+        title = Text(plain(request.tool))
+        if (getattr(console, "encoding", "") or "").lower().startswith("utf"):
+            from agentx_dev.cli.orb import CUBE_MARK
+            title = Text.assemble((f"{CUBE_MARK} ", ACCENT), title)   # the orb's cube: agentx waits for you
+        _print(console, Panel(_request_body(request, preview, who), title=title, title_align="left"))
         always = bool(request.remember and request.grant)
         what = ""
         if always:

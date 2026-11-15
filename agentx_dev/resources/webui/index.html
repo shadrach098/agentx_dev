@@ -61,7 +61,7 @@
           <ul class="waiting" id="waiting" hidden></ul>
           <div class="others" id="others" role="status" hidden></div>
           <div class="status" id="status" hidden>
-            <span class="spinner" aria-hidden="true"></span>
+            <canvas class="orb" id="statusOrb" data-size="20" aria-hidden="true"></canvas>
             <span class="status-label" id="statusLabel"></span>
             <span class="status-time" id="statusTime"></span>
             <span class="status-key">Esc to stop</span>
@@ -130,6 +130,7 @@
     </section>
   </div>
   <div class="overlay" id="overlay" hidden><div class="overlay-box" id="overlayBox" role="dialog" aria-modal="true"></div></div>
+  <script src="/orb.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

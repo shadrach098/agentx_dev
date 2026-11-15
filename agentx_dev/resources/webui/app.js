@@ -190,7 +190,8 @@
   let folderName = "";
   // The opening (as on the docs site): the mark, then "agentx" typed letter by letter, then a blinking cursor.
   let heroShown = false;                       // it plays once per page; later welcomes show it still
-  const HERO = () => `<div class="hero-mark">${MARK}</div><div class="hero-name" aria-label="agentx">` +
+  const HERO = () => '<div class="hero-mark"><canvas class="orb" data-size="64" aria-hidden="true"></canvas></div>' +
+    '<div class="hero-name" aria-label="agentx">' +
     "agentx".split("").map((c, n) => `<span class="glyph" aria-hidden="true" style="animation-delay:${200 + n * 45}ms">${c}</span>`).join("") +
     '<span class="hero-cursor" aria-hidden="true">|</span></div>';
   function showStarting() {                    // before agentx has said hello: the opening and "Starting..."
@@ -200,6 +201,7 @@
       '<span class="tick">.</span><span class="tick">.</span><span class="tick">.</span></p>';
     heroShown = true;
     column.append(s);
+    mountOrbs(s, () => "thinking");
     syncView();
   }
   function showWelcome() {
@@ -217,6 +219,7 @@
       ${tips || news ? `<details class="hero-in" style="animation-delay:${late + 240}ms"><summary>Tips and what's new</summary>${tips ? `<ul>${tips}</ul>` : ""}` +
         `${news ? `<h2>What's new</h2><ul>${news}</ul>` : ""}</details>` : ""}`;
     heroShown = true;
+    requestAnimationFrame(() => mountOrbs(w, orbState));
     w.addEventListener("click", (e) => {
       const b = e.target.closest("[data-starter]");
       if (!b) return;
@@ -367,7 +370,7 @@
     let live = column.querySelector(".thinking-now");
     const show = !!status.working && !pending.length && !liveCard() && !column.querySelector(".welcome");
     if (!show) { if (live) live.remove(); return; }
-    if (!live) live = el("div", "thinking-now", '<span class="spinner" aria-hidden="true"></span><span class="thinking-now-label">Thinking…</span>');
+    if (!live) { live = el("div", "thinking-now", '<canvas class="orb" data-size="16" aria-hidden="true"></canvas><span class="thinking-now-label">Thinking…</span>'); mountOrbs(live, orbState); }
     if (column.lastElementChild !== live) column.append(live);
   }
 
@@ -595,17 +598,37 @@
 
   // -- the status, team and waiting messages under the conversation -----------------------------------------------
   let status = {}, startedAt = 0, sentAt = 0;   // sentAt: a message went off and agentx has not picked it up yet
+  let doneAt = 0;                                // a turn just finished: the orb rests with a glow for a moment
+  const DONE_MS = 2600;
+  // what the orb shows: stuck on a question or approval, working on a step, thinking, done, or resting
+  function orbState() {
+    if (liveCard()) return "stuck";
+    if (status.working) return pending.length || !/^thinking/i.test(String(status.label || "")) ? "working" : "thinking";
+    if (sentAt) return "thinking";
+    return doneAt && Date.now() - doneAt < DONE_MS ? "success" : "idle";
+  }
+  function mountOrbs(root, stateOf) {
+    if (!window.AgentxOrb) return;
+    for (const canvas of root.querySelectorAll("canvas.orb:not([data-on])")) {
+      canvas.dataset.on = "1";
+      window.AgentxOrb.create(canvas, stateOf);
+    }
+  }
   function drawStatus() {
     const open = liveCard();
     const starting = sentAt && !status.working && !open && !ready && Date.now() - sentAt < 60000;
     if (!starting) sentAt = 0;
-    $("status").hidden = !status.working && !open && !starting;
+    const done = !status.working && !open && !starting && doneAt && Date.now() - doneAt < DONE_MS;
+    $("status").hidden = !status.working && !open && !starting && !done;
+    $("status").classList.toggle("done", !!done);
     $("statusLabel").textContent = status.working ? friendlyLabel(status.label) + "…"
-      : open ? "Waiting for your answer" : starting ? "Starting…" : "";
+      : open ? "Waiting for your answer" : starting ? "Starting…" : done ? "Done" : "";
     $("composer").classList.toggle("busy", !!(status.working || starting));
     tickTime();
   }
   function onStatus(ev) {
+    if (status.working && !ev.working) { doneAt = Date.now(); setTimeout(drawStatus, DONE_MS + 50); }
+    else if (ev.working) doneAt = 0;
     status = ev;
     if (ev.working) sentAt = 0;
     startedAt = ev.working ? ev.startedAt || 0 : 0;
@@ -1380,6 +1403,7 @@
   }
 
   showStarting();                          // the opening, until agentx says hello
+  mountOrbs($("status"), orbState);         // the orb next to the status line
   setComposer();
   input.focus();
   claimLaunch().then(() => { loadState(); loadSessions(); connect(); });

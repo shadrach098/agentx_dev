@@ -6,6 +6,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+### Changed
+
+- **The agentx orb.** A sphere of lime dots now shows what agentx is doing, in the app window and in the terminal.
+  While it thinks, its surface bubbles, dots pushing out and settling back; while a step runs, rings of dots light
+  up and turn on their own axes in opposite directions; when a turn finishes it rests in a slow turn with a soft
+  glow ("Done" shows for a moment); while it waits for your answer it folds into a still cube. In the window it
+  replaces the blinking bar on the opening screen, in the "Thinking..." line and in the status line; in the
+  terminal it is a small braille orb beside the spinner's words, and an approval's box carries the cube (⬢).
+
 ## [3.8.1] - 2026-11-13
 
 ### Changed

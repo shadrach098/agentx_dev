@@ -312,6 +312,11 @@ svg { width: 16px; height: 16px; flex: none; }
 .status-label { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
 .status-time { font-variant-numeric: tabular-nums; color: var(--faint); }
 .status-key { margin-left: auto; color: var(--faint); font-size: 12.5px; white-space: nowrap; }
+/* the orb: a sphere of lime dots that shows what agentx is doing (orb.js draws it; its glow spills past its box) */
+.orb { display: block; flex: none; pointer-events: none; }
+.status .orb { margin-right: 2px; }
+.status.done .status-key, .status.done .status-time { display: none; }
+.status.done .status-label { color: var(--muted); }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
