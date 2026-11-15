@@ -849,7 +849,9 @@ on the left and in `/resume`; until then, and for older conversations, the first
   reports), and the mode in force with what it allows. MCP servers that need signing in are listed here only (not in
   the conversation): a yellow dot on **Details** says so, and each has its **Sign in** button. On a wide window it
   is a column on the right; on an iPad, a phone or a half-screen window it slides over the chat, and tapping beside
-  it (or Esc) closes it. Long server names and addresses wrap, so it never scrolls sideways.
+  it (or Esc) closes it. Long server names and addresses wrap, so it never scrolls sideways. Drag its left edge
+  to make it wider or narrower (from 260 pixels to 60% of the window; with the edge focused, the arrow keys move it);
+  the width is remembered, and a double-click on the edge puts it back.
 - **Settings** edits the settings files, for **All folders** (`~/.agentx/settings.json`) or **This folder**
   (`.agentx/settings.json`): the default model and mode, the always-allow and never-allow rules, the steps and the
   token limit per message. Rules and limits take effect at once; the model and mode are used from the next start (the

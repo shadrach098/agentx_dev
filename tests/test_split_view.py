@@ -141,4 +141,20 @@ def test_the_sides_can_be_resized_and_details_belongs_to_its_side():
     assert "(ev.clientX - grab - left - details) / room" in script
     # a side's own Details is a column like the left one, not a tinted overlay, unless the side is narrow
     assert 'matchMedia(EMBED ? "(max-width: 639px)" : "(max-width: 1199px)")' in script
-    assert "html.embedded .details { position: static;" in css and "html.embedded .details-scrim { display: none" in css
+    assert "html.embedded .details { position: relative;" in css and "html.embedded .details-scrim { display: none" in css
+
+
+def test_details_can_be_resized_by_its_edge():
+    """Details' left edge is dragged (or moved with the arrow keys) to make it wider or narrower, in a column or
+    lying over the chat, on either side of the split view; the width is remembered and a double-click resets it."""
+    from agentx_dev.cli.webui import RESOURCES
+    html = (RESOURCES / "index.html").read_text(encoding="utf-8")
+    script = (RESOURCES / "app.js").read_text(encoding="utf-8")
+    css = (RESOURCES / "style.css").read_text(encoding="utf-8")
+    assert 'id="detailsGrip" role="separator"' in html
+    assert "function setDetailsWidth" in script and 'localStorage.setItem("agentx-details-w"' in script
+    assert '$("detailsGrip").addEventListener("dblclick", () => setDetailsWidth(0, true))' in script
+    assert "DETAILS_MIN = 260" in script and "window.innerWidth * 0.6" in script
+    assert "var(--details-w, 320px)" in css and "width: min(var(--details-w, 360px), 100%)" in css
+    # the column's positioning must not undo the slide-over panel on a smaller window
+    assert "@media (min-width: 1200px) { .details { position: relative; } }" in css

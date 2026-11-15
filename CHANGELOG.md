@@ -16,6 +16,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   side covers the chat until you close it. Drag the line between the sides to give either one more room (double-click it
   for half and half; the split is remembered). Each side's **Details** belongs to that side: the left one opens
   beside the left conversation, not past the other side.
+- **Details can be resized.** Drag its left edge to make the panel wider or narrower (from 260 pixels to 60% of
+  the window); the width is remembered, and a double-click on the edge puts it back. It works as a column, when it
+  slides over the chat, and on either side of the split view.
 
 - **API keys in the app window.** Settings has an **API keys** tab: paste your Claude or OpenAI key to save it,
   replace it later, or remove it. Keys are kept encrypted by your system's credential store (Windows Credential

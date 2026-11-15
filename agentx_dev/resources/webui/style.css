@@ -467,8 +467,8 @@ svg { width: 16px; height: 16px; flex: none; }
 .dot.run { background: var(--info); animation: breathe 1.4s ease-in-out infinite; }
 
 /* the side panel */
-.app.with-details { grid-template-columns: 260px minmax(0, 1fr) 320px; }
-.app.side-hidden.with-details { grid-template-columns: 0 minmax(0, 1fr) 320px; }
+.app.with-details { grid-template-columns: 260px minmax(0, 1fr) var(--details-w, 320px); }
+.app.side-hidden.with-details { grid-template-columns: 0 minmax(0, 1fr) var(--details-w, 320px); }
 .details { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--side); border-left: 1px solid var(--line); }
 .details-head { display: flex; align-items: center; justify-content: space-between; height: 48px; padding: 0 10px 0 18px; flex: none; }
 .details-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
@@ -554,7 +554,7 @@ svg { width: 16px; height: 16px; flex: none; }
 @media (max-width: 1199px) {
   .app.with-details { grid-template-columns: 260px minmax(0, 1fr); }
   .app.side-hidden.with-details { grid-template-columns: 0 minmax(0, 1fr); }
-  .details { position: fixed; inset: 0 0 0 auto; width: min(360px, 100%); z-index: 12; box-shadow: var(--shadow); }
+  .details { position: fixed; inset: 0 0 0 auto; width: min(var(--details-w, 360px), 100%); z-index: 12; box-shadow: var(--shadow); }
   .details-scrim { display: block; position: fixed; inset: 0; z-index: 11; background: rgba(0, 0, 0, 0.32); }
 }
 @media (max-width: 860px) {
@@ -622,8 +622,8 @@ svg { width: 16px; height: 16px; flex: none; }
   .app.split.with-details > .details { grid-column: 3; border-right: 1px solid var(--line); }
   .app.split.with-details > .split-handle { grid-column: 4; }
   .app.split.with-details > .beside { grid-column: 5; }
-  .app.split.with-details { grid-template-columns: 260px minmax(0, var(--split-left, 1fr)) 320px 7px minmax(0, var(--split-right, 1fr)); }
-  .app.split.side-hidden.with-details { grid-template-columns: 0 minmax(0, var(--split-left, 1fr)) 320px 7px minmax(0, var(--split-right, 1fr)); }
+  .app.split.with-details { grid-template-columns: 260px minmax(0, var(--split-left, 1fr)) var(--details-w, 320px) 7px minmax(0, var(--split-right, 1fr)); }
+  .app.split.side-hidden.with-details { grid-template-columns: 0 minmax(0, var(--split-left, 1fr)) var(--details-w, 320px) 7px minmax(0, var(--split-right, 1fr)); }
 }
 @media (min-width: 861px) and (max-width: 1199px) {
   .app.split.with-details { grid-template-columns: 260px minmax(0, var(--split-left, 1fr)) 7px minmax(0, var(--split-right, 1fr)); }
@@ -662,7 +662,16 @@ html.embedded .app, html.embedded .app.side-hidden, html.embedded .app.with-deta
 /* a side of the split view: its Details is a column beside its conversation, as on the left, not a tinted overlay
    (only a side narrower than 640 pixels lays it over the chat) */
 @media (min-width: 640px) {
-  html.embedded .app.with-details, html.embedded .app.side-hidden.with-details { grid-template-columns: minmax(0, 1fr) min(320px, 45%); }
-  html.embedded .details { position: static; inset: auto; width: auto; z-index: auto; box-shadow: none; }
+  html.embedded .app.with-details, html.embedded .app.side-hidden.with-details { grid-template-columns: minmax(0, 1fr) min(var(--details-w, 320px), 60%); }
+  html.embedded .details { position: relative; inset: auto; width: auto; z-index: auto; box-shadow: none; }
   html.embedded .details-scrim { display: none !important; }
 }
+
+/* Details' left edge: drag it to make the panel wider or narrower (remembered); a double-click puts it back */
+@media (min-width: 1200px) { .details { position: relative; } }   /* a column: the grip sits on its edge */
+.details-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 9px; z-index: 3; cursor: col-resize; touch-action: none; outline: none; }
+.details-grip::before { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: transparent; transition: background 0.12s, width 0.12s, left 0.12s; }
+.details-grip:hover::before, .details-grip:focus-visible::before, .app.resizing-details .details-grip::before { left: 3px; width: 3px; background: var(--brand); box-shadow: 0 0 8px var(--brand-glow); }
+.app.resizing-details, .app.resizing-details * { cursor: col-resize !important; user-select: none; }
+.app.resizing-details iframe { pointer-events: none; }
+@media (max-width: 860px) { .details-grip { display: none; } }

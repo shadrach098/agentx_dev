@@ -1005,13 +1005,52 @@
       const main = document.querySelector(".main").getBoundingClientRect();
       const fromRight = Math.max(0, window.innerWidth - main.right);
       panel.style.right = `${fromRight}px`;
-      panel.style.width = `${Math.min(360, main.width)}px`;
+      panel.style.width = `${Math.min(detailsWidth || 360, main.width)}px`;
       scrim.style.right = `${fromRight}px`;
     } else {
       panel.style.right = panel.style.width = scrim.style.right = "";
     }
   }
   window.addEventListener("resize", placeDetails);
+  // Details' width: drag its left edge (or, with it focused, the arrow keys); double-click for the usual width.
+  // Kept per window (each side of the split view has its own). 0 means the usual width.
+  const DETAILS_MIN = 260;
+  let detailsWidth = 0;
+  try { const kept = Number(localStorage.getItem("agentx-details-w")); if (kept >= DETAILS_MIN) detailsWidth = kept; } catch (_) { /* no storage */ }
+  const detailsMax = () => Math.max(DETAILS_MIN, Math.round(window.innerWidth * 0.6));
+  function setDetailsWidth(width, keep) {
+    detailsWidth = width ? Math.round(Math.min(detailsMax(), Math.max(DETAILS_MIN, width))) : 0;
+    const root = document.documentElement;
+    if (detailsWidth) root.style.setProperty("--details-w", `${detailsWidth}px`); else root.style.removeProperty("--details-w");
+    placeDetails();
+    if (keep) { try { if (detailsWidth) localStorage.setItem("agentx-details-w", String(detailsWidth)); else localStorage.removeItem("agentx-details-w"); } catch (_) { /* no storage */ } }
+  }
+  setDetailsWidth(detailsWidth, false);
+  $("detailsGrip").addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const grip = $("detailsGrip"), app = document.querySelector(".app");
+    try { grip.setPointerCapture(e.pointerId); } catch (_) { /* a pointer the page cannot hold: moves still come */ }
+    app.classList.add("resizing-details");          // a side's frame must not take the pointer while dragging
+    const startX = e.clientX, startW = $("details").getBoundingClientRect().width;
+    const move = (ev) => setDetailsWidth(startW + (startX - ev.clientX), false);   // its left edge: left is wider
+    const up = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      grip.removeEventListener("pointercancel", up);
+      app.classList.remove("resizing-details");
+      setDetailsWidth(detailsWidth, true);
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+    grip.addEventListener("pointercancel", up);
+  });
+  $("detailsGrip").addEventListener("dblclick", () => setDetailsWidth(0, true));
+  $("detailsGrip").addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const now = $("details").getBoundingClientRect().width;
+    setDetailsWidth(now + (e.key === "ArrowLeft" ? 24 : -24), true);
+  });
   $("detailsScrim").addEventListener("click", () => setDetails(false));
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && detailsOpen && detailsOver() && $("settingsWrap").hidden) setDetails(false);
@@ -1434,7 +1473,7 @@
   $("splitHandle").addEventListener("pointerdown", (e) => {
     e.preventDefault();
     const handle = $("splitHandle"), app = document.querySelector(".app");
-    handle.setPointerCapture(e.pointerId);
+    try { handle.setPointerCapture(e.pointerId); } catch (_) { /* a pointer the page cannot hold: moves still come */ }
     app.classList.add("resizing");                 // the side's frame must not take the pointer while dragging
     const grab = e.clientX - handle.getBoundingClientRect().left;   // where on the line it was taken: it stays there
     const move = (ev) => {
