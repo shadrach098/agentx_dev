@@ -123,7 +123,7 @@ svg { width: 16px; height: 16px; flex: none; }
 .main.empty .stage { display: none; }
 @media (max-height: 760px) { .stage.on .stage-inner { padding: 44px 24px 14px; gap: 20px; } }
 @media (prefers-reduced-motion: reduce) { .stage, .stage-inner { transition: none; } }
-.column { width: 100%; max-width: 768px; margin: 0 auto; padding: 0 24px; }
+.column { width: 100%; max-width: 1000px; margin: 0 auto; padding: 0 24px; }
 .log .column { padding-top: 8px; padding-bottom: 32px; display: flex; flex-direction: column; }
 
 /* the empty state */
@@ -586,3 +586,7 @@ svg { width: 16px; height: 16px; flex: none; }
 .s-key-row { display: flex; gap: 8px; align-items: center; }
 .s-key-row input { flex: 1; min-width: 0; font-family: var(--mono); font-size: 13.5px; background: var(--bg); border: 1px solid var(--line-strong); border-radius: 10px; padding: 7px 11px; outline: none; color: var(--text); }
 .s-key-row input:focus { border-color: var(--muted); }
+
+/* Details > Team work: a saved job's title above its steps */
+.d-job { margin: 10px 0 4px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.d-job:first-child { margin-top: 0; }

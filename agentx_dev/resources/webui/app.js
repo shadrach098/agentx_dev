@@ -989,7 +989,7 @@
     const u = d.usage;
     if (u) {
       const last = u.lastTurn && u.lastTurn.length ? u.lastTurn : null;
-      out.push(section("Tokens this session", `<dl class="d-grid">
+      out.push(section("Tokens in this conversation", `<dl class="d-grid">
         <dt>Sent</dt><dd>${num(u.input)}</dd><dt>Received</dt><dd>${num(u.output)}</dd>
         <dt>From cache</dt><dd>${num(u.cached)}</dd><dt>Requests</dt><dd>${num(u.requests)}</dd>
         ${last ? `<dt>Last message</dt><dd>${num(last[1] + last[2])}</dd>` : ""}
@@ -997,9 +997,9 @@
         `<button type="button" class="link" data-cmd="/usage">Full report</button>`));
     }
     const t = d.team;
-    out.push(section("Team work", t && t.steps.length ? t.steps.map((s) => `<details class="d-step"${s.done ? "" : " open"}>
-        <summary><span class="dot ${s.done ? "ok" : "run"}"></span><span class="d-who">${esc(s.helper)}${s.label && s.label !== s.helper ? ` · ${esc(s.label)}` : ""}</span>
-        <span class="d-num">${s.seconds}s · ${num(s.tokens)} tok</span></summary>
+    out.push(section("Team work", t && t.steps.length ? t.steps.map((s, n) => `${s.job && (n === 0 || t.steps[n - 1].job !== s.job) ? `<p class="d-job">${esc(s.job)}</p>` : ""}<details class="d-step"${s.done ? "" : " open"}>
+        <summary><span class="dot ${s.state === "failed" ? "failed" : s.done ? "ok" : "run"}"></span><span class="d-who">${esc(s.helper)}${s.label && s.label !== s.helper ? ` · ${esc(s.label)}` : ""}</span>
+        <span class="d-num">${s.seconds ? `${s.seconds}s · ` : ""}${s.toolUses && !s.seconds ? `${num(s.toolUses)} steps · ` : ""}${num(s.tokens)} tok</span></summary>
         <p class="d-note">${esc(s.query)}</p>
         ${s.actions.length ? `<ul class="d-acts">${s.actions.map((a) => `<li class="${a.failed ? "failed" : ""}">${esc(toolLook(a.name)[0])} <code>${esc(a.subject)}</code></li>`).join("")}</ul>` : ""}
       </details>`).join("") : `<p class="d-empty">No team job in this conversation yet. Ask for a big job and agentx can split it across helpers.</p>`,

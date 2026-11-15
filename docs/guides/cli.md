@@ -841,8 +841,10 @@ on the left and in `/resume`; until then, and for older conversations, the first
   conversation** (`/clear`). At the bottom: the folder (click it to open another folder or copy its path) and
   **Settings**.
 - **Details** (top right; the ring beside it shows how full the conversation is): how close the conversation is to
-  being summarised, the tokens used this session, the last team job (each helper, what it is doing, and every file
-  and command it touched), your MCP servers by name with their state and their own **Sign in**, **Reconnect**,
+  being summarised, the tokens this conversation has used (sent, received, from cache, requests: added up across
+  every start, so a conversation opened again with `--continue` keeps its numbers), the last team job (each helper,
+  what it is doing, and every file and command it touched; for a conversation opened again, the jobs it ran before,
+  read from `.agentx/team` with each helper's state, tool uses and tokens), your MCP servers by name with their state and their own **Sign in**, **Reconnect**,
   **Tools** and **Sign out** buttons, and the project memory (the `AGENTX.md` files in force, saved notes, team
   reports), and the mode in force with what it allows. MCP servers that need signing in are listed here only (not in
   the conversation): a yellow dot on **Details** says so, and each has its **Sign in** button. On a wide window it

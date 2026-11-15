@@ -60,6 +60,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# The session's usage keys and the model counters they add up (``TokenUsage``).
+USAGE_FIELDS = (("calls", "total_calls"), ("input_tokens", "total_input_tokens"),
+                ("output_tokens", "total_output_tokens"), ("cached_input_tokens", "total_cache_read_tokens"))
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from agentx_dev.Agents.Agent import AgentCompletion
@@ -134,6 +138,9 @@ class Session(BaseModel):
 
     # --- Non-persisted runner handle (live, can't be JSON'd) -----------
     runner: Any = Field(default=None, exclude=True, repr=False)
+    # What each model's counters read when this session last counted them (by ``id(model)``), so a turn adds only
+    # what it used: the model's counters start at zero after a load and are shared when it serves two sessions.
+    usage_seen: Dict[int, Any] = Field(default_factory=dict, exclude=True, repr=False)
 
     # --- Constructors --------------------------------------------------
 
@@ -145,6 +152,7 @@ class Session(BaseModel):
         """
         s = cls(metadata=dict(metadata or {}))
         s.runner = runner
+        s._usage_baseline(runner)
         try:
             s.model_class_name = type(runner.model).__name__
         except AttributeError:
@@ -163,6 +171,7 @@ class Session(BaseModel):
         Returns self so callers can chain: ``Session.load(p).attach(r)``.
         """
         self.runner = runner
+        self._usage_baseline(runner)
         return self
 
     # --- Invocation ----------------------------------------------------
@@ -197,18 +206,52 @@ class Session(BaseModel):
             "steps": list(result.steps or []),
             "tool_calls_count": len(result.tool_calls or []),
         })
-        # Snapshot model.usage if the model tracks it (every BaseChatModel
-        # does as of #22, but defensively .get).
-        runner = self.runner
-        model = getattr(runner, "model", None)
-        u = getattr(model, "usage", None) if model is not None else None
-        if u is not None:
-            self.usage = {
-                "input_tokens": int(u.total_input_tokens),
-                "output_tokens": int(u.total_output_tokens),
-                "calls": int(u.total_calls),
-            }
+        # Add what this turn used to the session's total. The total survives a save and load (the model's own
+        # counters start at zero again), and a model switched to mid-conversation adds to it, not over it.
+        self._count_usage(getattr(self.runner, "model", None))
         self.updated_at = _now_iso()
+
+    @staticmethod
+    def _counts(model: Any) -> Optional[tuple]:
+        u = getattr(model, "usage", None) if model is not None else None
+        if u is None:
+            return None
+        try:
+            return tuple(int(getattr(u, attr, 0) or 0) for _, attr in USAGE_FIELDS)
+        except (TypeError, ValueError):
+            return None
+
+    def _usage_baseline(self, runner: Any) -> None:
+        """A runner attached: what its model has counted so far belongs to whatever it did before."""
+        model = getattr(runner, "model", None)
+        counts = self._counts(model)
+        if counts is not None:
+            self.usage_seen[id(model)] = counts
+
+    def _count_usage(self, model: Any) -> None:
+        counts = self._counts(model)
+        if counts is None:
+            return
+        before = self.usage_seen.get(id(model)) or (0,) * len(counts)
+        if any(now < was for now, was in zip(counts, before)):     # the counters were reset: all of it is new
+            before = (0,) * len(counts)
+        total = dict(self.usage or {})
+        for (key, _), now, was in zip(USAGE_FIELDS, counts, before):
+            total[key] = int(total.get(key, 0) or 0) + (now - was)
+        self.usage = total
+        self.usage_seen[id(model)] = counts
+
+    def usage_now(self) -> Dict[str, int]:
+        """The session's total, with what the turn running now has used so far."""
+        total = {key: int((self.usage or {}).get(key, 0) or 0) for key, _ in USAGE_FIELDS}
+        model = getattr(self.runner, "model", None)
+        counts = self._counts(model)
+        if counts is not None:
+            before = self.usage_seen.get(id(model)) or (0,) * len(counts)
+            if not any(now < was for now, was in zip(counts, before)):
+                for (key, _), now, was in zip(USAGE_FIELDS, counts, before):
+                    total[key] += now - was
+        return total
 
     def invoke(self, user_input: str) -> AgentCompletion:
         """Run a sync turn and absorb the result into session state."""

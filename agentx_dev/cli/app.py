@@ -821,10 +821,11 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         ``.agentx/team`` (the agent can read it later, after the terminal closed say), or, for the home folder or
         a drive root, ``~/.agentx/team/<folder>``. None when nothing can be written."""
         try:
+            conversation = str(getattr(self.session, "session_id", "") or "")   # Details lists it with its chat
             if self._memory_on:
-                return TeamRecord.for_project(self.cwd, task, redact=self._hide)
+                return TeamRecord.for_project(self.cwd, task, redact=self._hide, conversation=conversation)
             record = TeamRecord(self.home / ".agentx" / "team" / sessions_dir(self.home, self.cwd).name, task,
-                                redact=self._hide)
+                                redact=self._hide, conversation=conversation)
             return record if record.folder is not None else None
         except Exception:                             # a record must never stop a team job
             return None

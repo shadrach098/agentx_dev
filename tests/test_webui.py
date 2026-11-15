@@ -688,3 +688,34 @@ def test_the_window_opens_like_the_docs_site():
     for state in ("thinking", "working", "success", "idle", "stuck"):
         assert f'"{state}"' in orb
     assert ".starting .tick" in css and ".starting .dot" not in css     # not the MCP state dots
+
+
+def test_a_saved_step_wrapped_in_the_response_format_reads_as_its_tool(tmp_path):
+    """Some models call the response format (``React_``) as a function, with the real step inside
+    (``{"action": "run_shell", "action_input": {...}}``). The runner unwraps it while it works; a conversation
+    opened again (``--continue``, a reload) must show the same rows: the tool, its note and the final answer, not
+    a "React" row with the tool's name as text."""
+    import json as _json
+    from types import SimpleNamespace
+    from agentx_dev.cli.webui import WebFront
+
+    def wrapped(ident, action, action_input, thought=""):
+        args = {"Thought": thought, "action": action, "action_input": action_input}
+        return {"role": "assistant", "content": "", "tool_calls": [
+            {"id": ident, "type": "function", "function": {"name": "React_", "arguments": _json.dumps(args)}}]}
+    history = [
+        {"role": "user", "content": "deploy it"},
+        wrapped("c1", "run_shell", {"command": "git status", "cwd": "."}, thought="Check the tree first."),
+        {"role": "tool", "tool_call_id": "c1", "name": "React_", "content": "On branch main\nnothing to commit"},
+        wrapped("c2", "Final_Answer", "Deployed."),
+        {"role": "tool", "tool_call_id": "c2", "name": "React_", "content": "(final answer delivered)"},
+    ]
+    front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False)
+    front.app = SimpleNamespace(session=SimpleNamespace(history=history))
+    items = front.history()
+    assert [i["type"] for i in items] == ["user", "thought", "tool_call", "tool_result", "final"]
+    assert items[1]["text"] == "Check the tree first."
+    assert items[2]["name"] == "run_shell" and items[2]["subject"] == "git status"
+    assert items[3]["name"] == "run_shell" and not items[3]["failed"]
+    assert items[4] == {"type": "final", "text": "Deployed."}
+    assert "React" not in repr(items)

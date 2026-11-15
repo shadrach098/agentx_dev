@@ -256,6 +256,27 @@ class WebScreen(Screen):
         self.bus.emit("team_plan", steps=shown)
 
 
+def _team_tasks(history: List[Any]) -> List[str]:
+    """The tasks of the team jobs a conversation's history asked for (``start_team_job``, also when a model wrapped
+    the call in its response format)."""
+    tasks: List[str] = []
+    for message in history:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") or {} if isinstance(call, dict) else {}
+            try:
+                args = json.loads(function.get("arguments") or "{}")
+            except (TypeError, ValueError):
+                continue
+            name = str(function.get("name") or "")
+            if isinstance(args, dict) and isinstance(args.get("action"), str):
+                name, args = args["action"], args.get("action_input")
+            if name == "start_team_job" and isinstance(args, dict) and isinstance(args.get("task"), str):
+                tasks.append(args["task"])
+    return tasks
+
+
 def _text_mode_step(text: str) -> Optional[tuple]:
     """``(action, action_input)`` when an assistant message is a text-mode step (``{"action": ..., ...}``), else
     None (ordinary text)."""
@@ -1048,6 +1069,11 @@ class WebFront:
             pass
         try:
             requests, tokens_in, tokens_out, cached = app._usage_totals()
+            session = getattr(app, "session", None)
+            if session is not None and hasattr(session, "usage_now"):     # this conversation, across every start
+                total = session.usage_now()
+                requests, tokens_in, tokens_out, cached = (total["calls"], total["input_tokens"],
+                                                           total["output_tokens"], total["cached_input_tokens"])
             last = getattr(getattr(app, "model", None), "usage", None)
             out["usage"] = {"requests": requests, "input": tokens_in, "output": tokens_out, "cached": cached,
                             "lastInput": int(getattr(last, "last_input_tokens", 0) or 0),
@@ -1094,12 +1120,48 @@ class WebFront:
         except (ValueError, OSError):
             return str(path)
 
+    def _saved_team_jobs(self) -> Optional[Dict[str, Any]]:
+        """This conversation's team jobs as saved on disk (``.agentx/team``): for a conversation opened again, whose
+        jobs ran in an earlier start. A job names its conversation; an older one is matched by when it ran."""
+        app = self.app
+        session = getattr(app, "session", None)
+        if session is None:
+            return None
+        from datetime import datetime
+        from agentx_dev.cli.team_record import FOLDER as _F, TEAM, read_jobs
+
+        def local(stamp: Any) -> Optional[datetime]:
+            try:
+                when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                return None
+            return when.astimezone().replace(tzinfo=None) if when.tzinfo else when
+        try:
+            if getattr(app, "_memory_on", True):
+                folder = self.cwd / _F / TEAM
+            else:
+                from agentx_dev.cli.sessions import sessions_dir
+                folder = self.home / ".agentx" / "team" / sessions_dir(self.home, self.cwd).name
+            jobs = read_jobs(folder, str(getattr(session, "session_id", "") or ""),
+                             local(getattr(session, "created_at", None)), local(getattr(session, "updated_at", None)),
+                             tasks=_team_tasks(getattr(session, "history", None) or []))
+        except Exception:
+            return None
+        if not jobs:
+            return None
+        shown = [{"helper": _text(step["helper"], 80), "label": _text(step["label"], 120),
+                  "query": _text(step["query"], 600), "done": step["state"] != "running", "state": step["state"],
+                  "seconds": 0, "tokens": step["tokens"], "toolUses": step["toolUses"], "files": 0, "actions": [],
+                  "job": _text(job["title"], 160)} for job in jobs for step in job["steps"]][-12:]
+        return {"steps": shown, "running": False, "saved": True, "jobs": len(jobs)}
+
     def _team_details(self) -> Optional[Dict[str, Any]]:
-        """The last team job: each step, its numbers and what it did (newest steps last)."""
+        """The last team job: each step, its numbers and what it did (newest steps last); for a conversation opened
+        again with no job since, the jobs it ran before, from disk."""
         app = self.app
         steps = list(getattr(app, "_team_log", None) or [])
         if not steps:
-            return None
+            return self._saved_team_jobs()
         try:
             from agentx_dev.cli.approval import subject_of
         except Exception:                                   # pragma: no cover - the module is always there
@@ -1312,7 +1374,8 @@ class WebFront:
         calls: Dict[str, str] = {}
         last_action = ""
         from agentx_dev.Pictures import content_text
-        from agentx_dev.Runner.AgentRun import INTERJECTION_PREFIX
+        from agentx_dev.Runner.AgentRun import _FORMAT_NAMES, INTERJECTION_PREFIX
+        _ANSWERED = "\x00answered"                 # a format call that carried the final answer: no result row
         for message in messages:
             if not isinstance(message, dict):
                 continue
@@ -1348,6 +1411,20 @@ class WebFront:
                         args = json.loads(function.get("arguments") or "{}")
                     except ValueError:
                         args = {}
+                    if name in _FORMAT_NAMES and isinstance(args, dict) and isinstance(args.get("action"), str):
+                        # the response format called as a function (React_): the step it carries, as the runner
+                        # ran it; its result is filed under the format's name, so the call id leads to the tool
+                        note = args.get("Thought", args.get("thought", ""))
+                        if isinstance(note, str) and note.strip():
+                            items.append({"type": "thought", "text": _text(note.strip(), 20_000)})
+                        name, inner = args["action"], args.get("action_input")
+                        if name.lower().replace("_", "") in ("finalanswer", "final", "respond"):
+                            answer = inner.get("answer", inner) if isinstance(inner, dict) else inner
+                            items.append({"type": "final", "text": _text(
+                                answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False), 200_000)})
+                            calls[str(call.get("id"))] = _ANSWERED
+                            continue
+                        args = inner if isinstance(inner, dict) else {}
                     calls[str(call.get("id"))] = name
                     try:
                         from agentx_dev.cli.approval import subject_of
@@ -1378,6 +1455,8 @@ class WebFront:
                     items.append({"type": "final", "text": _text(text, 200_000)})
             elif role == "tool":
                 name = calls.get(str(message.get("tool_call_id")), str(message.get("name") or ""))
+                if name == _ANSWERED:                              # "(final answer delivered)": the answer is shown
+                    continue
                 failed = text.lstrip().startswith(("ERROR", "Error:", "Refused", "The user declined"))
                 summary = "" if failed else summarize_result(name, text)[0]
                 items.append({"type": "tool_result", "name": name, "summary": _text(summary, 300), "failed": failed,

@@ -35,6 +35,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **A conversation opened again shows what it did.** In the app window, steps that a model wrapped in its response
+  format (`React_`) showed as "React" rows with the tool's name, or its note, as text; they now read as the tool
+  they ran (Run, Edit, Read...), with its note and the final answer. Details counts the tokens of the whole
+  conversation, across every start: a conversation's saved total was replaced by the last start's count each
+  turn, so an old one showed zeros or too little; it now adds up (tokens from the cache too). And Details lists the
+  team jobs a conversation ran before: each job now names its conversation in `job.md`, and an older one is matched
+  by its task (or, when the history has been summarised since, by when it ran).
+- **A wider conversation in the app window.** The conversation and the message box use up to 1000 pixels instead
+  of 768, so a wide window has less empty space on each side.
 - **Esc stops agentx in the app window while you type.** "Esc to stop" did nothing while the cursor was in the
   message box; now it stops the turn from there too (what you typed stays), and the orb's pill reads "Stopping…"
   until the turn ends. A stop during the pause before a model request is sent again (a rate limit asks for seconds)
