@@ -104,34 +104,29 @@ svg { width: 16px; height: 16px; flex: none; }
 /* the stage: the orb large at the top while agentx works, a card under it with what it does; it folds away after */
 .stage { flex: none; display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 460ms var(--ease-out), opacity 320ms var(--ease-out); }
 .stage.on { grid-template-rows: 1fr; opacity: 1; }
-.stage-inner { min-height: 0; overflow: hidden; display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 0 24px; }
-.stage.on .stage-inner { padding: 58px 24px 18px; }
+.stage-inner { min-height: 0; overflow: hidden; display: flex; flex-direction: column; align-items: center; gap: 26px; padding: 0 24px; }
+.stage.on .stage-inner { padding: 60px 24px 22px; }
 .stage-inner { transition: padding 460ms var(--ease-out); }
-.stage-card { width: min(440px, 100%); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
-.stage-head { display: flex; align-items: baseline; gap: 12px; padding: 11px 14px 10px; font-size: 13.5px; }
-.stage-label { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+/* a small note centred under the orb: what it does, and for how long */
+.stage-pill { display: inline-flex; align-items: baseline; gap: 10px; max-width: min(360px, 100%); padding: 5px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); font-size: 13px; }
+.stage[data-state="idle"] .stage-label { color: var(--muted); }
+.stage-label { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
 .stage-time { color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.stage-bar { height: 2px; background: var(--line); overflow: hidden; }
-.stage-bar i { display: block; height: 100%; width: 32%; background: var(--brand); box-shadow: 0 0 8px var(--brand-glow); animation: stage-run 1.5s var(--ease-out) infinite; }
-.stage[data-state="thinking"] .stage-bar i { animation-duration: 2.4s; opacity: 0.6; }
-.stage[data-state="stuck"] .stage-bar i { animation: none; width: 100%; opacity: 0.3; }
-.stage[data-state="success"] .stage-bar i { animation: none; width: 100%; transition: width 300ms var(--ease-out); }
+.stage-time:empty { display: none; }
 .stage[data-state="stuck"] .stage-label { color: var(--warn); }
-@keyframes stage-run { from { transform: translateX(-100%); } to { transform: translateX(320%); } }
+.stage[data-state="success"] .stage-label { color: var(--brand); }
 .stage.on ~ .log .thinking-now { display: none; }     /* the stage says it: no second "Thinking..." line */
+/* nor a second state line over the message box: only "Esc to stop" stays there */
+.main:has(.stage.on) .status :is(.orb, .status-label, .status-time) { display: none; }
+.main:has(.stage.on) .status.done { display: none; }
+.main:has(.stage.on) .status .status-key { margin-left: auto; }
 .main.empty .stage { display: none; }
-@media (max-height: 620px) { .stage.on .stage-inner { padding: 44px 24px 12px; gap: 14px; } }
-@media (prefers-reduced-motion: reduce) { .stage, .stage-inner { transition: none; } .stage-bar i { animation: none; width: 100%; opacity: 0.5; } }
+@media (max-height: 760px) { .stage.on .stage-inner { padding: 44px 24px 14px; gap: 20px; } }
+@media (prefers-reduced-motion: reduce) { .stage, .stage-inner { transition: none; } }
 .column { width: 100%; max-width: 768px; margin: 0 auto; padding: 0 24px; }
 .log .column { padding-top: 8px; padding-bottom: 32px; display: flex; flex-direction: column; }
 
 /* the empty state */
-.banner { display: flex; align-items: center; gap: 12px; margin: 22px 0 6px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--side); }
-.banner .mark { width: 22px; height: 22px; }
-.banner-text { min-width: 0; }
-.banner-name { font-family: var(--display); font-weight: 600; font-size: 15px; line-height: 1.3; }
-.banner-version { font-family: var(--sans); font-weight: 400; font-size: 12.5px; color: var(--faint); }
-.banner-meta { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 /* The opening, as on the docs site: the mark rises with a soft glow, the name types itself letter by letter, and a
    lime cursor keeps blinking after it. While agentx starts it reads "Starting" with dots lighting up in turn; the
    welcome then grows out of it (the mark and the name stay put, the question and the buttons fade in). */

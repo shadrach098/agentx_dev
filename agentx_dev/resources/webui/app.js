@@ -181,7 +181,6 @@
     return turn;
   }
   function dropWelcome() { const w = column.querySelector(".welcome"); if (w) { w.remove(); syncView(); } }
-  const MARK = '<svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M6 8 16 16 6 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><rect x="21" y="8" width="3" height="16" rx=".5" fill="currentColor"/></svg>';
   const STARTERS = [
     ["Explain how this project fits together", "Explain how this project fits together"],
     ["Find a bug and fix it", "Find a bug in this project and fix it"],
@@ -238,6 +237,8 @@
     const command = /^\/\w/.test(text);              // a command (often from a menu) is not a chat message
     const u = el("div", command ? "user command" : "user");
     u.textContent = text;
+    // once you write, the orb takes the top: the mode note goes (Details keeps it)
+    if (!command) for (const chip of column.querySelectorAll(":scope > .notice-chip-row")) chip.remove();
     column.append(u);
     if (!command && !$("topTitle").dataset.fixed) $("topTitle").textContent = text.split("\n")[0].slice(0, 90) || "Conversation";
   }
@@ -618,7 +619,7 @@
   // -- the status, team and waiting messages under the conversation -----------------------------------------------
   let status = {}, startedAt = 0, sentAt = 0;   // sentAt: a message went off and agentx has not picked it up yet
   let doneAt = 0;                                // a turn just finished: the orb rests with a glow for a moment
-  const DONE_MS = 3500;
+  const DONE_MS = 6000;
   // what the orb shows: stuck on a question or approval, working on a step, thinking, done, or resting
   function orbState() {
     if (liveCard()) return "stuck";
@@ -633,11 +634,12 @@
       window.AgentxOrb.create(canvas, stateOf, options);
     }
   }
-  // the stage: the orb large at the top while agentx works (and for a moment after, glowing), with what it does
+  // the stage: once you have written, the orb large at the top, with a small note under it naming what the orb
+  // shows now: thinking, the step it runs, waiting for you, done (while it glows), then ready; it stays after a turn
   let doneTook = "";
   function drawStage() {
     const stage = $("stage"), state = orbState();
-    const on = state !== "idle" && !column.querySelector(".welcome");
+    const on = !column.querySelector(".welcome") && (state !== "idle" || !!column.querySelector(":scope > .user:not(.command)"));
     if (on !== stage.classList.contains("on")) {
       const stick = nearBottom();                 // the conversation keeps its end in view as the stage opens or folds
       stage.classList.toggle("on", on);
@@ -650,8 +652,9 @@
     stage.dataset.state = state;
     if (!on) return;
     $("stageLabel").textContent = state === "stuck" ? "Waiting for your answer" : state === "success" ? "Done"
-      : status.working ? friendlyLabel(status.label) + "…" : "Starting…";
-    $("stageTime").textContent = state === "success" ? doneTook : startedAt ? shortTime(Date.now() / 1000 - startedAt) : "";
+      : state === "idle" ? "Ready" : status.working ? friendlyLabel(status.label) + "…" : "Starting…";
+    $("stageTime").textContent = state === "success" ? doneTook : startedAt ? [shortTime(Date.now() / 1000 - startedAt),
+      status.working && status.tokens ? `${shortTokens(status.tokens)} tokens` : ""].filter(Boolean).join(" · ") : "";
   }
   function drawStatus() {
     const open = liveCard();
@@ -1267,21 +1270,7 @@
     syncView();
   }
   // the empty screen puts the message box in the middle; scrolled up, a button jumps back to the latest
-  // Once a conversation has started, its top carries the agentx header, like the box the terminal opens with.
-  function syncBanner() {
-    const has = column.querySelector(":scope > .banner");
-    const empty = !column.children.length || (has && column.children.length === 1);
-    if (!welcome || column.querySelector(".welcome") || empty) { if (has) has.remove(); return; }
-    if (has && column.firstElementChild === has) return;
-    const b = has || el("header", "banner");
-    const where = folderName || welcome.folder || "";
-    b.innerHTML = `${MARK}<div class="banner-text"><div class="banner-name">agentx` +
-      `${welcome.version ? ` <span class="banner-version">${esc(welcome.version)}</span>` : ""}</div>` +
-      `<div class="banner-meta">${[welcome.model, where].filter(Boolean).map(esc).join(" · ")}</div></div>`;
-    column.prepend(b);
-  }
   function syncView() {
-    syncBanner();
     updateLive();
     document.querySelector(".main").classList.toggle("empty", !!column.querySelector(".welcome"));
     $("jump").hidden = nearBottom();
@@ -1293,7 +1282,7 @@
   // A conversation opened (start, /resume, /clear): its earlier messages come from /api/history; what happens in it
   // from now on comes as events. The first one keeps what is already shown (startup notices) below its history.
   let knownConversation = null;
-  function resetView() { column.innerHTML = ""; cards.clear(); turn = null; group = null; pending = []; lastPrint = null; ready = null; }
+  function resetView() { column.innerHTML = ""; cards.clear(); turn = null; group = null; pending = []; lastPrint = null; ready = null; doneAt = 0; doneTook = ""; }
   async function switchConversation(ev) {
     const mine = ++loading;
     let data = null;
@@ -1335,7 +1324,7 @@
     try {
       const data = await get("/api/history");
       if (mine !== loading) return;
-      column.innerHTML = ""; cards.clear(); turn = null; group = null; pending = []; lastPrint = null; ready = null;
+      resetView();
       for (const item of data.items) handle({...item, seq: Infinity});
       skipUpTo = data.seq;
       for (const ev of data.pending || []) handle({...ev, seq: Infinity});

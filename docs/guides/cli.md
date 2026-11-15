@@ -855,8 +855,8 @@ on the left and in `/resume`; until then, and for older conversations, the first
   or Auto, as in the file. Project allow rules you turned down at start stay off for the session after you save, and
   so do rules something else added to the project file since the start; rules you type in the **This folder** tab
   take effect at once.
-- **The conversation** starts with the agentx header (version, model, folder), like the box the terminal opens
-  with. Then your messages on the right, the agent's steps as short rows (**Read**, **Edit**, **Run**
+- **The conversation**: once you write, the mode chip goes (Details keeps the mode) and the orb takes the top.
+  Then your messages on the right, the agent's steps as short rows (**Read**, **Edit**, **Run**
   and the file or command; look-around steps fold into one **Explored** row you can open), its notes, and the
   answer rendered as markdown (a link's address ends at a space, `(`, `)` or a quote, so text in an answer cannot
   add anything to the link). Click a step to see what the tool gave back (the first 120 lines). What the model is thinking shows as it happens: its
@@ -891,13 +891,15 @@ on the left and in `/resume`; until then, and for older conversations, the first
   with `read_path`.
 - The mode note at the start ("Auto mode is on.") is a small chip in the conversation: hover it to read what the
   mode allows, click it to open **Details**.
-- It opens with `agentx` typed letter by letter and a blinking lime cursor, then the question, the model and the
+- It opens with `agentx` typed letter by letter and a blinking lime cursor, then the question and the
   **orb**: a sphere of lime dots that shows what agentx is doing ("Starting..." shows until agentx is ready).
-- **While it works, the orb moves to the top**, large, with a card under it saying what it is doing and for how long.
+- **Once you write, the orb moves to the top**, large, with a small pill under it naming what it shows now and for
+  how long.
   It bubbles while agentx thinks (dots push out and settle back), lights rings of dots that turn on their own axes
-  while a step runs, folds into a still cube while it waits for your answer (the card says "Waiting for your
-  answer") and rests in a slow turn with a soft glow when the turn ends ("Done"), before folding away. A small orb
-  beside the line above the message box does the same. Grab the large orb with the mouse to spin it; let go and it
+  while a step runs, folds into a still cube while it waits for your answer (the pill says "Waiting for your
+  answer") and rests in a slow turn with a soft glow when the turn ends ("Done" and how long it took),
+  then reads "Ready"; it stays at the top for the rest of the conversation. The line above the message box keeps
+  only "Esc to stop" while the orb is up. Grab the large orb with the mouse to spin it; let go and it
   keeps the flick's momentum, then turns slowly the way you threw it.
 - Light or dark follows your system, and changes when the system does.
 

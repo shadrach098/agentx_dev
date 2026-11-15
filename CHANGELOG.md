@@ -12,16 +12,17 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   While it thinks, its surface bubbles, dots pushing out and settling back; while a step runs, rings of dots light
   up and turn on their own axes in opposite directions; when a turn finishes it rests in a slow turn with a soft
   glow ("Done" shows for a moment); while it waits for your answer it folds into a still cube. In the window, a new
-  conversation shows it large under "What should we work on?"; while agentx works it moves to the top, large, with a
-  card under it saying what it is doing, and folds away when the turn ends (a small one sits beside the line above
-  the message box). In the terminal it is a small braille orb beside the spinner's words, and an approval's box
+  conversation shows it large under "What should we work on?"; once you write it moves to the top, large, with a
+  small pill under it naming what it shows (Thinking, the step it runs, Waiting for your answer, Done and how long
+  it took, then Ready), and stays there for the rest of the conversation. In the terminal it is a small braille orb beside the spinner's words, and an approval's box
   carries the cube (⬢). The large orb can be grabbed with the mouse and spun; let go and it keeps the flick's
   momentum, then settles into its slow turn in the direction you threw it.
 - **A tidier conversation in the app window.** The mode note ("Auto mode is on.") is now a small chip: hover it
   to read what the mode allows, click it to open Details. MCP servers that need signing in are listed in Details
   only, with a yellow dot on its button, instead of a notice in the conversation. A new conversation no longer
   repeats the model, its maker and the mode under the question (the message box already shows the model and the
-  mode), which leaves room for a larger orb.
+  mode), which leaves room for a larger orb. Once you write, the agentx header box (version, model, folder) and the mode
+  chip are gone, and the line over the message box no longer repeats what the orb's pill says.
 
 ## [3.8.1] - 2026-11-13
 

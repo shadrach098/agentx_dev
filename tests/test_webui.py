@@ -656,13 +656,18 @@ def test_the_key_stays_in_the_address_for_open_in_safari():
     assert "Paste the link agentx printed" in script
 
 
-def test_the_window_shows_agentx_at_work_and_its_header():
+def test_the_window_shows_agentx_at_work_under_the_orb():
     from agentx_dev.cli.webui import RESOURCES
     script = (RESOURCES / "app.js").read_text(encoding="utf-8")
     css = (RESOURCES / "style.css").read_text(encoding="utf-8")
+    html = (RESOURCES / "index.html").read_text(encoding="utf-8")
     assert '"Starting…"' in script and "sentAt = Date.now()" in script        # moving as soon as a message goes
     assert "tokens`" in script and ".composer.busy::before" in css            # the tokens, and a moving line
-    assert "function syncBanner" in script and ".banner {" in css             # the agentx header on top
+    # once you write: no header box, the mode chip goes, and the orb's state sits in a small pill under it
+    assert "banner" not in script and ".banner" not in css
+    assert 'querySelectorAll(":scope > .notice-chip-row")' in script
+    assert 'class="stage-pill"' in html and ".stage-pill {" in css
+    assert '"Done"' in script and '"Ready"' in script and '"Waiting for your answer"' in script
 
 
 def test_the_window_opens_like_the_docs_site():
