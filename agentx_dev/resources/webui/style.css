@@ -337,6 +337,8 @@ svg { width: 16px; height: 16px; flex: none; }
 .status-key { margin-left: auto; color: var(--faint); font-size: 12.5px; white-space: nowrap; }
 /* the orb: a sphere of lime dots that shows what agentx is doing (orb.js draws it; its glow spills past its box) */
 .orb { display: block; flex: none; pointer-events: none; }
+.orb-grip { display: block; flex: none; position: relative; border-radius: 50%; cursor: grab; touch-action: none; user-select: none; }
+.orb-grip.held { cursor: grabbing; }
 .status .orb { margin-right: 2px; }
 .status.done .status-key, .status.done .status-time { display: none; }
 .status.done .status-label { color: var(--muted); }

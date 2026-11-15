@@ -15,7 +15,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   conversation shows it large under "What should we work on?"; while agentx works it moves to the top, large, with a
   card under it saying what it is doing, and folds away when the turn ends (a small one sits beside the line above
   the message box). In the terminal it is a small braille orb beside the spinner's words, and an approval's box
-  carries the cube (⬢).
+  carries the cube (⬢). The large orb can be grabbed with the mouse and spun; let go and it keeps the flick's
+  momentum, then settles into its slow turn in the direction you threw it.
 
 ## [3.8.1] - 2026-11-13
 

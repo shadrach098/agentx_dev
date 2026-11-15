@@ -894,7 +894,8 @@ on the left and in `/resume`; until then, and for older conversations, the first
   It bubbles while agentx thinks (dots push out and settle back), lights rings of dots that turn on their own axes
   while a step runs, folds into a still cube while it waits for your answer (the card says "Waiting for your
   answer") and rests in a slow turn with a soft glow when the turn ends ("Done"), before folding away. A small orb
-  beside the line above the message box does the same.
+  beside the line above the message box does the same. Grab the large orb with the mouse to spin it; let go and it
+  keeps the flick's momentum, then turns slowly the way you threw it.
 - Light or dark follows your system, and changes when the system does.
 
 **Safety.** The window talks to agentx over `http://127.0.0.1` only, never the network. Each start makes a new random

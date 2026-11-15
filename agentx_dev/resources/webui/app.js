@@ -203,7 +203,7 @@
       '<span class="tick">.</span><span class="tick">.</span><span class="tick">.</span></p>' + HERO_ORB(700);
     heroShown = true;
     column.append(s);
-    mountOrbs(s, () => "thinking");
+    mountOrbs(s, () => "thinking", {interactive: true});
     syncView();
   }
   function showWelcome() {
@@ -222,7 +222,6 @@
       ${tips || news ? `<details class="hero-in" style="animation-delay:${late + 240}ms"><summary>Tips and what's new</summary>${tips ? `<ul>${tips}</ul>` : ""}` +
         `${news ? `<h2>What's new</h2><ul>${news}</ul>` : ""}</details>` : ""}`;
     heroShown = true;
-    requestAnimationFrame(() => mountOrbs(w, orbState));
     w.addEventListener("click", (e) => {
       const b = e.target.closest("[data-starter]");
       if (!b) return;
@@ -230,6 +229,7 @@
       grow(); setComposer(); input.focus();
     });
     column.append(w);
+    mountOrbs(w, orbState, {interactive: true});   // once on the page, so it reads the theme's lime
     syncView();
   }
 
@@ -611,11 +611,11 @@
     if (sentAt) return "thinking";
     return doneAt && Date.now() - doneAt < DONE_MS ? "success" : "idle";
   }
-  function mountOrbs(root, stateOf) {
+  function mountOrbs(root, stateOf, options) {
     if (!window.AgentxOrb) return;
     for (const canvas of root.querySelectorAll("canvas.orb:not([data-on])")) {
       canvas.dataset.on = "1";
-      window.AgentxOrb.create(canvas, stateOf);
+      window.AgentxOrb.create(canvas, stateOf, options);
     }
   }
   // the stage: the orb large at the top while agentx works (and for a moment after, glowing), with what it does
@@ -1434,7 +1434,7 @@
 
   showStarting();                          // the opening, until agentx says hello
   mountOrbs($("status"), orbState);         // the orb next to the status line
-  mountOrbs($("stage"), orbState);          // and large on the stage while agentx works
+  mountOrbs($("stage"), orbState, {interactive: true});   // and large on the stage while agentx works
   setComposer();
   input.focus();
   claimLaunch().then(() => { loadState(); loadSessions(); connect(); });
