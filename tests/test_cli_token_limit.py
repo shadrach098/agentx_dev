@@ -273,7 +273,9 @@ class TestRetriesAreShownAndTimeoutsRetriedOnce:
             if len(calls) < 2:
                 raise RateLimited()
             return "ok"
-        assert model._with_retry(busy, max_retries=3, base_delay=0.1) == "ok" and waits == [7.0]
+        assert model._with_retry(busy, max_retries=3, base_delay=0.1) == "ok"
+        # the 7 seconds asked for, slept in short naps (so a stop lands at once)
+        assert sum(waits) == pytest.approx(7.0) and max(waits) <= 0.1 + 1e-9
 
     def test_the_app_prints_a_line_for_a_retry(self, tmp_path):
         model = MockModel()
@@ -285,3 +287,37 @@ class TestRetriesAreShownAndTimeoutsRetriedOnce:
     def test_agentx_waits_five_minutes_and_its_client_does_not_retry_by_itself(self):
         from agentx_dev.cli.models import CLIENT_RETRIES, MODEL_TIMEOUT_SEC
         assert MODEL_TIMEOUT_SEC == 300.0 and CLIENT_RETRIES == 0
+
+
+class TestAStopReachesARetryPause:
+    """Esc in the app window (Ctrl+C in the full screen) raises KeyboardInterrupt in the worker thread; it lands at the
+    worker's next Python instruction, so the pause before a retry (a rate limit asks for seconds) must not be one
+    long sleep, or the stop waits for the whole pause."""
+
+    def test_a_stop_during_a_long_retry_pause_lands_at_once(self):
+        import threading
+        import time as clock
+        from agentx_dev.cli.fullscreen import raise_in
+        model = MockModel()
+        paused = threading.Event()
+        model.on_retry = lambda attempt, error, delay: paused.set()
+        outcome = {}
+
+        def failing():
+            raise ConnectionError("blip")
+
+        def work():
+            started = clock.monotonic()
+            try:
+                model._with_retry(failing, max_retries=2, base_delay=30)
+                outcome["result"] = "returned"
+            except KeyboardInterrupt:
+                outcome["result"] = "stopped"
+            outcome["took"] = clock.monotonic() - started
+        worker = threading.Thread(target=work, daemon=True)
+        worker.start()
+        assert paused.wait(5)
+        clock.sleep(0.2)
+        assert raise_in(worker)
+        worker.join(5)
+        assert outcome.get("result") == "stopped" and outcome["took"] < 3

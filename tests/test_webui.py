@@ -668,6 +668,10 @@ def test_the_window_shows_agentx_at_work_under_the_orb():
     assert 'querySelectorAll(":scope > .notice-chip-row")' in script
     assert 'class="stage-pill"' in html and ".stage-pill {" in css
     assert '"Done"' in script and '"Ready"' in script and '"Waiting for your answer"' in script
+    # a new conversation shows the mode chip again (it goes once you write)
+    assert "function modeChip" in script and "column.append(modeChip())" in script
+    # Esc stops from the message box too, and the pill says so until the turn ends
+    assert 'e.key === "Escape" && !e.isComposing && busyNow()' in script and '"Stopping…"' in script
 
 
 def test_the_window_opens_like_the_docs_site():

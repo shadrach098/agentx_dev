@@ -889,8 +889,8 @@ on the left and in `/resume`; until then, and for older conversations, the first
   GIF, WebP, up to 10 MB) is saved in `.agentx/uploads/` (or in `~/.agentx/uploads/` when the project's `.agentx` or
   `uploads` folder is a link) and the path where the file really is goes into your message, so the agent opens it
   with `read_path`.
-- The mode note at the start ("Auto mode is on.") is a small chip in the conversation: hover it to read what the
-  mode allows, click it to open **Details**.
+- The mode note ("Auto mode is on.") is a small chip under the orb on every new conversation: hover it to read what
+  the mode allows, click it to open **Details**. It goes once you write.
 - It opens with `agentx` typed letter by letter and a blinking lime cursor, then the question and the
   **orb**: a sphere of lime dots that shows what agentx is doing ("Starting..." shows until agentx is ready).
 - **Once you write, the orb moves to the top**, large, with a small pill under it naming what it shows now and for
@@ -899,7 +899,8 @@ on the left and in `/resume`; until then, and for older conversations, the first
   while a step runs, folds into a still cube while it waits for your answer (the pill says "Waiting for your
   answer") and rests in a slow turn with a soft glow when the turn ends ("Done" and how long it took),
   then reads "Ready"; it stays at the top for the rest of the conversation. The line above the message box keeps
-  only "Esc to stop" while the orb is up. Grab the large orb with the mouse to spin it; let go and it
+  only "Esc to stop" while the orb is up. Esc stops agentx from anywhere in the window, the message box included (what you
+  typed stays); the pill reads "Stopping…" until the turn ends. Grab the large orb with the mouse to spin it; let go and it
   keeps the flick's momentum, then turns slowly the way you threw it.
 - Light or dark follows your system, and changes when the system does.
 

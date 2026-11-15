@@ -22,7 +22,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   only, with a yellow dot on its button, instead of a notice in the conversation. A new conversation no longer
   repeats the model, its maker and the mode under the question (the message box already shows the model and the
   mode), which leaves room for a larger orb. Once you write, the agentx header box (version, model, folder) and the mode
-  chip are gone, and the line over the message box no longer repeats what the orb's pill says.
+  chip are gone, and the line over the message box no longer repeats what the orb's pill says. A new conversation
+  shows the mode chip again.
+
+### Fixed
+
+- **Esc stops agentx in the app window while you type.** "Esc to stop" did nothing while the cursor was in the
+  message box; now it stops the turn from there too (what you typed stays), and the orb's pill reads "Stopping…"
+  until the turn ends. A stop during the pause before a model request is sent again (a rate limit asks for seconds)
+  now lands at once, instead of after the pause.
 
 ## [3.8.1] - 2026-11-13
 

@@ -227,6 +227,7 @@
       grow(); setComposer(); input.focus();
     });
     column.append(w);
+    if (modeNote && !column.querySelector(":scope > .notice-chip-row")) column.append(modeChip());   // a new conversation
     mountOrbs(w, orbState, {interactive: true});   // once on the page, so it reads the theme's lime
     syncView();
   }
@@ -424,28 +425,34 @@
     }
     if (ev.level === "callout") {
       modeNote = {title: flush(ev.text), body: flush(ev.hint)};
-      const row = el("div", "notice-chip-row");
-      const chip = el("button", "notice-chip", `<span class="chip-dot" aria-hidden="true"></span>${esc(modeNote.title)}` +
-        `<span class="chip-pop" role="tooltip">${esc(modeNote.body)}<em>Click for details</em></span>`);
-      chip.type = "button";
-      const place = () => {                          // the card opens above the chip when there is no room below
-        const pop = chip.querySelector(".chip-pop");
-        chip.classList.toggle("up", chip.getBoundingClientRect().bottom + (pop.offsetHeight || 96) + 16 > log.getBoundingClientRect().bottom);
-      };
-      chip.addEventListener("mouseenter", place);
-      chip.addEventListener("focus", place);
-      chip.addEventListener("click", () => {
-        setDetails(true);
-        setTimeout(() => { const s = $("detailsBody").querySelector(".d-mode"); if (s) s.scrollIntoView({block: "nearest"}); }, 120);
-      });
-      row.append(chip);
-      column.append(row);
+      for (const old of column.querySelectorAll(":scope > .notice-chip-row")) old.remove();   // the latest mode only
+      column.append(modeChip());
       if (detailsOpen) loadDetails();
       return;
     }
     const n = el("div", `notice ${ev.level || "info"}`);
     n.innerHTML = `<span>${esc(flush(ev.text))}${ev.hint ? ` <span class="hint">${esc(flush(ev.hint))}</span>` : ""}</span>`;
     column.append(n);
+  }
+  // the mode note as a small chip: hover to read it, click to open Details at the mode; a new conversation shows it
+  // again, and it goes once you write
+  function modeChip() {
+    const row = el("div", "notice-chip-row");
+    const chip = el("button", "notice-chip", `<span class="chip-dot" aria-hidden="true"></span>${esc(modeNote.title)}` +
+      `<span class="chip-pop" role="tooltip">${esc(modeNote.body)}<em>Click for details</em></span>`);
+    chip.type = "button";
+    const place = () => {                          // the card opens above the chip when there is no room below
+      const pop = chip.querySelector(".chip-pop");
+      chip.classList.toggle("up", chip.getBoundingClientRect().bottom + (pop.offsetHeight || 96) + 16 > log.getBoundingClientRect().bottom);
+    };
+    chip.addEventListener("mouseenter", place);
+    chip.addEventListener("focus", place);
+    chip.addEventListener("click", () => {
+      setDetails(true);
+      setTimeout(() => { const s = $("detailsBody").querySelector(".d-mode"); if (s) s.scrollIntoView({block: "nearest"}); }, 120);
+    });
+    row.append(chip);
+    return row;
   }
   function addEcho(ev) {
     lastPrint = null; turn = null;
@@ -636,7 +643,12 @@
   }
   // the stage: once you have written, the orb large at the top, with a small note under it naming what the orb
   // shows now: thinking, the step it runs, waiting for you, done (while it glows), then ready; it stays after a turn
-  let doneTook = "";
+  let doneTook = "", stoppingAt = 0;               // stoppingAt: Esc (or Stop) was pressed and the turn has not ended yet
+  const busyNow = () => !!(status.working || liveCard() || sentAt);
+  function stopNow() {
+    if (status.working && !liveCard()) { stoppingAt = Date.now(); drawStage(); }
+    post("/api/stop");
+  }
   function drawStage() {
     const stage = $("stage"), state = orbState();
     const on = !column.querySelector(".welcome") && (state !== "idle" || !!column.querySelector(":scope > .user"));
@@ -651,7 +663,9 @@
     }
     stage.dataset.state = state;
     if (!on) return;
-    $("stageLabel").textContent = state === "stuck" ? "Waiting for your answer" : state === "success" ? "Done"
+    if (stoppingAt && (!status.working || Date.now() - stoppingAt > 30000)) stoppingAt = 0;
+    $("stageLabel").textContent = stoppingAt && state !== "stuck" ? "Stopping…"
+      : state === "stuck" ? "Waiting for your answer" : state === "success" ? "Done"
       : state === "idle" ? "Ready" : status.working ? friendlyLabel(status.label) + "…" : "Starting…";
     $("stageTime").textContent = state === "success" ? doneTook : startedAt ? [shortTime(Date.now() / 1000 - startedAt),
       status.working && status.tokens ? `${shortTokens(status.tokens)} tokens` : ""].filter(Boolean).join(" · ") : "";
@@ -734,7 +748,7 @@
   }
   function grow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, window.innerHeight * 0.4) + "px"; }
   async function submit() {
-    if ($("sendBtn").classList.contains("stopping")) { post("/api/stop"); return; }
+    if ($("sendBtn").classList.contains("stopping")) { stopNow(); return; }
     const text = input.value.replace(/\s+$/, "");
     if (!text.trim()) return;
     input.value = ""; grow(); hidePalette();
@@ -745,6 +759,8 @@
   input.addEventListener("input", () => { grow(); updatePalette(); setComposer(); });
   input.addEventListener("keydown", (e) => {
     if (!palette.hidden && ["ArrowDown", "ArrowUp", "Tab", "Escape"].includes(e.key)) { paletteKey(e); return; }
+    // Esc stops agentx from the message box too (what you typed stays)
+    if (e.key === "Escape" && !e.isComposing && busyNow()) { e.preventDefault(); stopNow(); return; }
     if (!palette.hidden && e.key === "Enter" && !e.shiftKey && paletteItems.length) { e.preventDefault(); choosePalette(); return; }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (input.value.trim()) submit(); }
   });
@@ -801,7 +817,7 @@
   // keys for the open card: 1, 2, 3 when you are not typing; Esc stops
   document.addEventListener("keydown", (e) => {
     const typing = /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement?.tagName || "");
-    if (e.key === "Escape" && !typing && (liveCard() || status.working)) { post("/api/stop"); return; }
+    if (e.key === "Escape" && !typing && busyNow()) { stopNow(); return; }
     if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
     const card = liveCard();
     if (card && card.keyHandler && /^[1-9]$/.test(e.key)) { e.preventDefault(); card.keyHandler(e.key); }

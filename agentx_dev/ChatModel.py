@@ -1515,7 +1515,13 @@ class BaseChatModel(ABC):
                             hook(attempt + 1, e, delay)
                         except Exception:            # showing a retry must never change it
                             pass
-                    time.sleep(delay)
+                    # in short naps: a stop (Esc in the app window) is raised in this thread and lands only
+                    # between Python instructions, so one long sleep would hold it for the whole pause
+                    left = delay
+                    while left > 0:
+                        nap = min(left, 0.1)
+                        time.sleep(nap)
+                        left -= nap
         raise last_exc
 
 
