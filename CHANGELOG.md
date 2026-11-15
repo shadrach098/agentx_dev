@@ -28,15 +28,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Changed
 
-- **The agentx orb.** A sphere of lime dots now shows what agentx is doing, in the app window and in the terminal.
+- **The agentx orb.** A sphere of lime dots now shows what agentx is doing in the app window (the terminal keeps
+  its spinner).
   While it thinks, its surface bubbles, dots pushing out and settling back; while a step runs, rings of dots light
   up and turn on their own axes in opposite directions; when a turn finishes it rests in a slow turn with a soft
   glow ("Done" shows for a moment); while it waits for your answer it folds into a cube that turns slowly and breathes, a band of light
   sweeping down it. In the window, a new
   conversation shows it large under "What should we work on?"; once you write it moves to the top, large, with a
   small pill under it naming what it shows (Thinking, the step it runs, Waiting for your answer, Done and how long
-  it took, then Ready), and stays there for the rest of the conversation. In the terminal it is a small braille orb beside the spinner's words, and an approval's box
-  carries the cube (⬢). The large orb can be grabbed with the mouse and spun; let go and it keeps the flick's
+  it took, then Ready), and stays there for the rest of the conversation. The large orb can be grabbed with the mouse and spun; let go and it keeps the flick's
   momentum, then settles into its slow turn in the direction you threw it.
 - **A tidier conversation in the app window.** The mode note ("Auto mode is on.") is now a small chip: hover it
   to read what the mode allows, click it to open Details. MCP servers that need signing in are listed in Details

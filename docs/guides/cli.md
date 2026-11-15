@@ -1027,7 +1027,7 @@ the status line stay at the bottom, while only the conversation between them scr
 
 ## Keys
 
-While `agentx` waits for you the prompt is coloured and the cursor blinks; while it is working, a spinner with the seconds elapsed shows instead: a small orb of braille dots that bubbles while it thinks and turns two rings while a step runs (a terminal that cannot show braille gets a plain spinner). An approval's box carries a lime ⬢, the orb's waiting cube (see the checklist below). A still cursor with no spinner means the terminal is the problem, not the program.
+While `agentx` waits for you the prompt is coloured and the cursor blinks; while it is working, a spinner with the seconds elapsed shows instead (see the checklist below). A still cursor with no spinner means the terminal is the problem, not the program.
 
 | Key | Does |
 |---|---|
