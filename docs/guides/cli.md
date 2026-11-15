@@ -71,7 +71,7 @@ Then the start screen, and the input line:
   commands ask first`, `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on`), how to change it, the model and
   the folder's name. Shift+Tab updates it.
 
-Keys are read from the environment only. With no `--model`, the first key found decides: `ANTHROPIC_API_KEY` (Claude), then `OPENAI_API_KEY` (GPT), each with its class's own default model. A name that starts with `claude` builds `Claude` (a version written with a dot, `claude-opus-5.5`, is read as the API's `claude-opus-5-5`); one that starts with `gpt`, or with `o` and a digit (`o3`), builds `GPT`. With no key, `agentx` prints a short message naming the two variables and exits with code 1.
+Keys are read from the environment, or from the keys saved in the app window's **Settings > API keys** (kept encrypted by your system's credential store; a saved key wins). With no `--model`, the first key found decides: `ANTHROPIC_API_KEY` (Claude), then `OPENAI_API_KEY` (GPT), each with its class's own default model. A name that starts with `claude` builds `Claude` (a version written with a dot, `claude-opus-5.5`, is read as the API's `claude-opus-5-5`); one that starts with `gpt`, or with `o` and a digit (`o3`), builds `GPT`. With no key, `agentx` prints a short message naming the two variables and exits with code 1.
 
 ### Flags
 
@@ -855,6 +855,13 @@ on the left and in `/resume`; until then, and for older conversations, the first
   or Auto, as in the file. Project allow rules you turned down at start stay off for the session after you save, and
   so do rules something else added to the project file since the start; rules you type in the **This folder** tab
   take effect at once.
+- **Settings > API keys** sets your keys for Claude (`ANTHROPIC_API_KEY`) and GPT (`OPENAI_API_KEY`): paste a key and
+  press **Save** (or Enter), **Replace** it later, or **Remove** it. The key is kept encrypted by your system's
+  credential store (Windows Credential Manager, the macOS Keychain or the Secret Service on Linux), never in a
+  file, and the page only ever shows its last four characters (`Saved in agentx · ends in WXYZ`). A saved key wins
+  over the environment variable, also at the next start; agentx switches to it at your next message, keeping the
+  conversation. Removing it goes back to the environment variable, if one is set. Keys can be changed from a
+  phone or tablet opened with remote control too.
 - **The conversation**: once you write, the mode chip goes (Details keeps the mode) and the orb takes the top.
   Then your messages on the right, the agent's steps as short rows (**Read**, **Edit**, **Run**
   and the file or command; look-around steps fold into one **Explored** row you can open), its notes, and the

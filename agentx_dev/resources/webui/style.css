@@ -576,3 +576,13 @@ svg { width: 16px; height: 16px; flex: none; }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* API keys in Settings: one row per provider; only the last four characters are ever shown */
+.s-key { display: grid; gap: 8px; padding: 14px 0; border-top: 1px solid var(--line); }
+.s-key-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.s-key-state { font-size: 12.5px; color: var(--faint); }
+.s-key-state.on { color: var(--muted); }
+.s-key-state.on::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 6px var(--brand-glow); vertical-align: 1px; }
+.s-key-row { display: flex; gap: 8px; align-items: center; }
+.s-key-row input { flex: 1; min-width: 0; font-family: var(--mono); font-size: 13.5px; background: var(--bg); border: 1px solid var(--line-strong); border-radius: 10px; padding: 7px 11px; outline: none; color: var(--text); }
+.s-key-row input:focus { border-color: var(--muted); }

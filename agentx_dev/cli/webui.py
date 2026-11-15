@@ -1130,6 +1130,31 @@ class WebFront:
 
     # -- the Settings panel ------------------------------------------------------------------------------------
 
+    def keys_view(self) -> Dict[str, Any]:
+        """The API keys part of Settings: per provider whether a key is set, where from, and its last four
+        characters. A key itself never goes to the page."""
+        from agentx_dev.cli import keystore
+        app = self.app
+        rows = app.key_status() if app is not None and hasattr(app, "key_status") else []
+        return {"keys": rows, "store": keystore.available()}
+
+    def change_key(self, provider: str, key: Any) -> Dict[str, Any]:
+        """Save (``key``) or remove (None) the key for ``provider``. It is kept encrypted by the system's credential
+        store and used from the next message. The reply never holds the key."""
+        from agentx_dev.cli import keystore
+        app = self.app
+        if app is None or not hasattr(app, "change_key"):
+            return {"ok": False, "message": "agentx is still starting."}
+        if key is not None and not isinstance(key, str):
+            return {"ok": False, "message": "Paste a key first."}
+        try:
+            message = app.change_key(provider, key)
+        except keystore.KeyStoreError as e:
+            return {"ok": False, "message": _text(e, 300)}
+        except Exception as e:
+            return {"ok": False, "message": f"The key could not be changed ({type(e).__name__})."}
+        return {"ok": True, "message": _text(message, 300), **self.keys_view()}
+
     def settings_view(self) -> Dict[str, Any]:
         from agentx_dev.cli.settings import is_project_folder, load_settings, project_settings_path, user_settings_path
 
@@ -1966,6 +1991,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(front.details())
         if url.path == "/api/settings":
             return self._json(front.settings_view())
+        if url.path == "/api/keys":
+            return self._json(front.keys_view())
         if url.path == "/api/files":
             return self._json(front.find_files((query.get("q") or [""])[0]))
         return self._json({"error": "not found"}, 404)
@@ -2019,6 +2046,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(front.open_folder(str(data.get("path", ""))))
         if url.path == "/api/mcp-signin":
             return self._json(front.finish_signin(str(data.get("url", ""))))
+        if url.path == "/api/keys":
+            return self._json(front.change_key(str(data.get("provider", "")),
+                                               None if data.get("remove") else data.get("key")))
         return self._json({"error": "not found"}, 404)
 
     def _events(self, after: int, front: Optional[WebFront] = None, device: str = "") -> None:

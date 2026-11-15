@@ -6,6 +6,14 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+### Added
+
+- **API keys in the app window.** Settings has an **API keys** tab: paste your Claude or OpenAI key to save it,
+  replace it later, or remove it. Keys are kept encrypted by your system's credential store (Windows Credential
+  Manager, the macOS Keychain, the Secret Service on Linux), never in a file, and the page shows only their last
+  four characters. A saved key wins over the environment variable; agentx switches to it at your next message and
+  keeps the conversation. `keyring` is now installed with agentx.
+
 ### Changed
 
 - **The agentx orb.** A sphere of lime dots now shows what agentx is doing, in the app window and in the terminal.

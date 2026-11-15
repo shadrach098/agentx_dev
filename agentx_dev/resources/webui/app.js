@@ -1044,6 +1044,7 @@
   let settingsData = null, scope = "user";
   async function openSettings() {
     try { settingsData = await get("/api/settings"); } catch (_) { return; }
+    keysData = null;
     $("settingsWrap").hidden = false;
     $("settingsMsg").textContent = "";
     $("scopeFolder").disabled = !settingsData.canFolder;
@@ -1052,8 +1053,10 @@
   }
   function closeSettings() { $("settingsWrap").hidden = true; $("settingsBtn").focus(); }
   function drawSettings() {
-    const file = settingsData[scope], v = file.values || {}, eff = settingsData.effective;
     document.querySelectorAll(".scope [data-scope]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.scope === scope)));
+    $("settingsSave").hidden = scope === "keys";
+    if (scope === "keys") return drawKeys();
+    const file = settingsData[scope], v = file.values || {}, eff = settingsData.effective;
     const folderModes = scope === "folder";
     const lines = (list) => esc((list || []).join("\n"));
     $("settingsForm").innerHTML = `
@@ -1085,6 +1088,47 @@
       ${settingsData.problems.length ? `<div class="s-problems"><b>Problems in the settings files</b>${settingsData.problems.map((p) => `<p>${esc(p)}</p>`).join("")}</div>` : ""}
       <p class="s-hint">Rules and limits take effect at once. The model and mode are used from the next start.</p>`;
   }
+  // API keys: kept encrypted by the system's credential store; the page only ever sees the last four characters
+  let keysData = null;
+  async function drawKeys() {
+    if (!keysData) { $("settingsForm").innerHTML = '<p class="s-hint">Loading…</p>'; try { keysData = await get("/api/keys"); } catch (_) { return; } }
+    if (scope !== "keys") return;
+    const where = {saved: "Saved in agentx", environment: "From your environment"};
+    $("settingsForm").innerHTML = `
+      <p class="s-file">Your keys for the models. They are kept encrypted by your system's credential store
+        (Windows Credential Manager), never in a file, and only the last four characters are shown here.
+        A key saved here wins over the environment variable, and agentx uses it from your next message.</p>
+      ${keysData.store ? "" : `<p class="s-err">Saving keys needs the keyring package: <code>pip install keyring</code></p>`}
+      ${keysData.keys.map((k) => `<div class="s-key" data-provider="${esc(k.provider)}">
+        <div class="s-key-head"><span class="s-label">${esc(k.label)}</span>
+          <span class="s-key-state ${k.set ? "on" : ""}">${k.set ? `${where[k.source] || "Set"}${k.tail ? ` · ends in <code>${esc(k.tail)}</code>` : ""}` : "Not set"}</span></div>
+        <div class="s-key-row">
+          <input type="password" name="key-${esc(k.provider)}" placeholder="${k.set ? "Paste a new key to replace it" : "Paste your key"}" autocomplete="off" spellcheck="false" aria-label="${esc(k.label)} API key">
+          <button type="button" class="btn primary small" data-key-save="${esc(k.provider)}">${k.source === "saved" ? "Replace" : "Save"}</button>
+          ${k.source === "saved" ? `<button type="button" class="btn small" data-key-remove="${esc(k.provider)}">Remove</button>` : ""}
+        </div>
+        <span class="s-hint">${esc(k.variable)}${k.shadows ? " is also set in your environment; the saved key wins." : ""}</span>
+      </div>`).join("")}`;
+  }
+  async function changeKey(provider, remove) {
+    const field = $("settingsForm").querySelector(`input[name="key-${provider}"]`);
+    const key = remove ? null : (field ? field.value : "");
+    if (!remove && !String(key || "").trim()) { $("settingsMsg").textContent = "Paste a key first."; $("settingsMsg").className = "sheet-msg bad"; return; }
+    const res = await post("/api/keys", remove ? {provider, remove: true} : {provider, key});
+    if (field) field.value = "";                   // the key leaves the page as soon as it is sent
+    $("settingsMsg").textContent = res.message || (res.ok ? "Saved" : "Not saved");
+    $("settingsMsg").className = `sheet-msg ${res.ok ? "ok" : "bad"}`;
+    if (res.ok && res.keys) { keysData = {keys: res.keys, store: res.store}; drawKeys(); }
+  }
+  $("settingsForm").addEventListener("click", (e) => {
+    const save = e.target.closest("[data-key-save]"), drop = e.target.closest("[data-key-remove]");
+    if (save) changeKey(save.dataset.keySave, false);
+    else if (drop) changeKey(drop.dataset.keyRemove, true);
+  });
+  $("settingsForm").addEventListener("keydown", (e) => {
+    const field = e.target.closest && e.target.closest('input[name^="key-"]');
+    if (field && e.key === "Enter") { e.preventDefault(); changeKey(field.name.slice(4), false); }
+  });
   async function saveSettings() {
     const f = new FormData($("settingsForm"));
     const split = (s) => String(s || "").split("\n").map((x) => x.trim()).filter(Boolean);
@@ -1101,7 +1145,7 @@
   $("settingsClose").addEventListener("click", closeSettings);
   $("settingsCancel").addEventListener("click", closeSettings);
   $("settingsSave").addEventListener("click", saveSettings);
-  $("settingsForm").addEventListener("submit", (e) => { e.preventDefault(); saveSettings(); });
+  $("settingsForm").addEventListener("submit", (e) => { e.preventDefault(); if (scope !== "keys") saveSettings(); });
   $("settingsWrap").addEventListener("mousedown", (e) => { if (e.target === $("settingsWrap")) closeSettings(); });
   $("settingsWrap").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeSettings(); } });
   document.querySelector(".scope").addEventListener("click", (e) => {

@@ -41,6 +41,7 @@ from agentx_dev.cli.team_record import TeamRecord
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker, status_line
+from agentx_dev.cli.app_keys import KeyCommands
 from agentx_dev.cli.app_mcp import McpCommands
 from agentx_dev.cli.app_models import ModelCommands
 from agentx_dev.cli.app_usage import UsageCommands
@@ -248,7 +249,7 @@ def _version() -> str:
         return "unknown"
 
 
-class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceCommands, LiveVoice):
+class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceCommands, LiveVoice, KeyCommands):
     """One interactive session. All terminal I/O comes in through ``console``, ``read_line`` (the chat prompt)
     and ``read_short`` (approvals and choices), so it runs the same in tests.
 
@@ -299,6 +300,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         self._user_env_reader: Callable[[], Mapping[str, str]] = windows_user_env     # for /mcp reload
         # Keys saved in Windows after this terminal opened; only read when the variables came from this process.
         self._saved_key_reader: Callable[[], Mapping[str, str]] = saved_keys if env is None else (lambda: {})
+        # Keys saved from the app window (encrypted by the system); only in a real run, never in a test's env.
+        from agentx_dev.cli import keystore as _keystore
+        self._key_store = _keystore if env is None else None
         self.progress.board = self._board
         self._team_running: List[str] = []   # the helpers whose steps are running (several when they only read)
         self._team_rows: Dict[int, Any] = {}  # slot -> StepStatus of each running step, drawn above the spinner
@@ -578,6 +582,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
     def start(self, resume: Optional[str] = None) -> int:
         """Build the model and the session, then run the chat loop. Returns the exit code."""
         self._show_startup_warnings()
+        self.load_stored_keys()                       # keys saved from the window win
         self.pick_up_saved_keys()
         try:
             self.model = self.model_factory(self.requested_model, self.env)
@@ -902,6 +907,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             line = str(line).strip()
             if not line:
                 continue
+            self.apply_key_changes()                   # a key saved in the window since the last message
             try:
                 if run_command(self, line):
                     continue          # a command, or an unknown one: never a message for the model

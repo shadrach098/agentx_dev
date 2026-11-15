@@ -24,6 +24,7 @@ dependencies = [
     "PyYAML>=5.3.1",       # AgentType prompt templates (>=5.3.1 for CVE fixes)
     "rich>=10.0",          # console output in the Agents module
     "prompt_toolkit>=3.0",   # the agentx command's input line
+    "keyring>=24",         # API keys saved from the app window, encrypted by the system's credential store
 ]
 
 [project.optional-dependencies]
