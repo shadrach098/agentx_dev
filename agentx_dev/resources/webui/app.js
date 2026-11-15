@@ -438,7 +438,7 @@
     if (ev.level === "callout") {
       modeNote = {title: flush(ev.text), body: flush(ev.hint)};
       for (const old of column.querySelectorAll(":scope > .notice-chip-row")) old.remove();   // the latest mode only
-      column.append(modeChip());
+      if (!column.querySelector(":scope > .user")) column.append(modeChip());   // a conversation you wrote in: Details keeps it
       if (detailsOpen) loadDetails();
       return;
     }
@@ -987,6 +987,7 @@
     $("detailsScrim").hidden = !open;
     document.querySelector(".app").classList.toggle("with-details", open);
     $("detailsBtn").setAttribute("aria-expanded", String(open));
+    placeDetails();
     try { localStorage.setItem("agentx-details", open ? "open" : "closed"); } catch (_) { /* no storage */ }
     if (open) loadDetails();
   }
@@ -994,6 +995,22 @@
   $("detailsClose").addEventListener("click", () => setDetails(false));
   // below a wide window the panel lies over the chat: tapping beside it, or Escape, closes it
   const detailsOver = () => matchMedia("(max-width: 1199px)").matches;
+  // With a side open, a Details panel that lies over the chat lies over this side only, at its right edge (the side
+  // beside has its own Details); as a column it sits between this side and the line (see .app.split in the CSS).
+  function placeDetails() {
+    const panel = $("details"), scrim = $("detailsScrim");
+    const split = document.querySelector(".app").classList.contains("split") && !matchMedia("(max-width: 860px)").matches;
+    if (split && detailsOpen && detailsOver()) {
+      const main = document.querySelector(".main").getBoundingClientRect();
+      const fromRight = Math.max(0, window.innerWidth - main.right);
+      panel.style.right = `${fromRight}px`;
+      panel.style.width = `${Math.min(360, main.width)}px`;
+      scrim.style.right = `${fromRight}px`;
+    } else {
+      panel.style.right = panel.style.width = scrim.style.right = "";
+    }
+  }
+  window.addEventListener("resize", placeDetails);
   $("detailsScrim").addEventListener("click", () => setDetails(false));
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && detailsOpen && detailsOver() && $("settingsWrap").hidden) setDetails(false);
@@ -1360,7 +1377,9 @@
     $("besideWaitText").textContent = what.folder ? "Starting agentx in that folder…" : "Opening the conversation…";
     $("besideWait").hidden = false;
     $("beside").hidden = false;
+    $("splitHandle").hidden = false;
     document.querySelector(".app").classList.add("split");
+    applySplit();
     if (!besideOrb && window.AgentxOrb) { $("besideOrb").dataset.on = "1"; besideOrb = window.AgentxOrb.create($("besideOrb"), () => "thinking"); }
     const res = await post("/api/pane", what.folder ? {folder: what.folder} : {session: what.session}).catch(() => ({}));
     beside.busy = false;
@@ -1383,12 +1402,62 @@
     frame.src = "about:blank";                       // its window is gone: that agentx saves and quits
     frame.hidden = true;
     $("beside").hidden = true;
+    $("splitHandle").hidden = true;
     document.querySelector(".app").classList.remove("split");
+    placeDetails();
     beside.session = "";
     drawSessions();
     input.focus();
   }
   $("besideClose").addEventListener("click", closeBeside);
+  // the line between the two sides: drag it (or use the arrow keys) to give either side more room; double-click
+  // for half and half. The left side's share is remembered. Each side keeps at least MIN_SIDE pixels.
+  const MIN_SIDE = 320;
+  let leftShare = 0.5;
+  try { const kept = Number(localStorage.getItem("agentx-split")); if (kept > 0.1 && kept < 0.9) leftShare = kept; } catch (_) { /* no storage */ }
+  function applySplit() {
+    const app = document.querySelector(".app");
+    app.style.setProperty("--split-left", `${leftShare.toFixed(4)}fr`);
+    app.style.setProperty("--split-right", `${(1 - leftShare).toFixed(4)}fr`);
+    $("splitHandle").setAttribute("aria-valuenow", String(Math.round(leftShare * 100)));
+    placeDetails();
+  }
+  function setShare(share, keep) {
+    const main = document.querySelector(".main").getBoundingClientRect(), side = $("beside").getBoundingClientRect();
+    const room = main.width + side.width;
+    const low = room > 2 * MIN_SIDE ? MIN_SIDE / room : 0.5;
+    leftShare = Math.min(1 - low, Math.max(low, share));
+    applySplit();
+    if (keep) { try { localStorage.setItem("agentx-split", String(leftShare)); } catch (_) { /* no storage */ } }
+  }
+  $("splitHandle").addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const handle = $("splitHandle"), app = document.querySelector(".app");
+    handle.setPointerCapture(e.pointerId);
+    app.classList.add("resizing");                 // the side's frame must not take the pointer while dragging
+    const move = (ev) => {
+      const left = document.querySelector(".main").getBoundingClientRect().left;
+      const right = $("beside").getBoundingClientRect().right;
+      const details = detailsOpen && !detailsOver() ? $("details").getBoundingClientRect().width : 0;
+      const room = right - left - details - handle.getBoundingClientRect().width;
+      if (room > 0) setShare((ev.clientX - left) / room, false);
+    };
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+      app.classList.remove("resizing");
+      setShare(leftShare, true);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  });
+  $("splitHandle").addEventListener("dblclick", () => setShare(0.5, true));
+  $("splitHandle").addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); setShare(leftShare + (e.key === "ArrowLeft" ? -0.05 : 0.05), true); }
+    else if (e.key === "Home" || e.key === "End") { e.preventDefault(); setShare(e.key === "Home" ? 0 : 1, true); }
+  });
   // dragging a conversation from Recent: a drop target over the chat (the side's frame would swallow the drop)
   let dragging = "";
   $("sessions").addEventListener("dragstart", (e) => {

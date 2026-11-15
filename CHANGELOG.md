@@ -13,7 +13,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   folder menu's **Open a folder beside…** opens a new conversation in another project there. Each side is an
   agentx of its own, with its own history, settings, approvals, orb and memory, so both can work at once; they use
   the same API keys. Closing a side (its ✕) saves its conversation and ends its agentx. On a phone-sized window the
-  side covers the chat until you close it.
+  side covers the chat until you close it. Drag the line between the sides to give either one more room (double-click it
+  for half and half; the split is remembered). Each side's **Details** belongs to that side: the left one opens
+  beside the left conversation, not past the other side.
 
 - **API keys in the app window.** Settings has an **API keys** tab: paste your Claude or OpenAI key to save it,
   replace it later, or remove it. Keys are kept encrypted by your system's credential store (Windows Credential

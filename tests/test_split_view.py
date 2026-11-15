@@ -122,3 +122,18 @@ def test_the_window_has_the_split_view():
     assert 'draggable="${!s.current && !EMBED}"' in script and "data-beside=" in script
     assert "Open a folder beside…" in script and "const EMBED" in script
     assert ".app.split {" in css and "html.embedded .side" in css
+
+
+def test_the_sides_can_be_resized_and_details_belongs_to_its_side():
+    """The line between the sides is dragged (or moved with the arrow keys) to give either side more room, and the
+    share is remembered; the left side's Details opens beside the left side (or over it), never past the other."""
+    from agentx_dev.cli.webui import RESOURCES
+    html = (RESOURCES / "index.html").read_text(encoding="utf-8")
+    script = (RESOURCES / "app.js").read_text(encoding="utf-8")
+    css = (RESOURCES / "style.css").read_text(encoding="utf-8")
+    assert 'id="splitHandle" role="separator"' in html
+    assert "function setShare" in script and 'localStorage.setItem("agentx-split"' in script
+    assert '$("splitHandle").addEventListener("dblclick"' in script and "MIN_SIDE = 320" in script
+    assert "var(--split-left, 1fr)" in css and ".app.resizing iframe { pointer-events: none; }" in css
+    assert ".app.split.with-details > .details { grid-column: 3;" in css and ".app.split > * { grid-row: 1; }" in css
+    assert "function placeDetails" in script and "panel.style.right" in script

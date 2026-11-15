@@ -607,18 +607,38 @@ svg { width: 16px; height: 16px; flex: none; }
 .beside-body { position: relative; flex: 1; min-height: 0; }
 .beside-body iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); }
 .beside-wait { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; color: var(--muted); font-size: 13.5px; }
-.app.split { grid-template-columns: 260px minmax(0, 1fr) minmax(0, 1fr); }
-.app.split.side-hidden { grid-template-columns: 0 minmax(0, 1fr) minmax(0, 1fr); }
+/* The split view's columns: the sidebar, this side, (its Details), the line, the side beside. Each side's share
+   comes from the line (--split-left / --split-right, set as it is dragged). */
+@media (min-width: 861px) {
+  .app.split > * { grid-row: 1; }                 /* one row: Details placed before the line stays beside this side */
+  .app.split > .side { grid-column: 1; }
+  .app.split > .main { grid-column: 2; }
+  .app.split > .split-handle { grid-column: 3; }
+  .app.split > .beside { grid-column: 4; }
+  .app.split { grid-template-columns: 260px minmax(0, var(--split-left, 1fr)) 7px minmax(0, var(--split-right, 1fr)); }
+  .app.split.side-hidden { grid-template-columns: 0 minmax(0, var(--split-left, 1fr)) 7px minmax(0, var(--split-right, 1fr)); }
+}
 @media (min-width: 1200px) {
-  .app.split.with-details { grid-template-columns: 260px minmax(0, 1fr) minmax(0, 1fr) 320px; }
-  .app.split.side-hidden.with-details { grid-template-columns: 0 minmax(0, 1fr) minmax(0, 1fr) 320px; }
+  .app.split.with-details > .details { grid-column: 3; border-right: 1px solid var(--line); }
+  .app.split.with-details > .split-handle { grid-column: 4; }
+  .app.split.with-details > .beside { grid-column: 5; }
+  .app.split.with-details { grid-template-columns: 260px minmax(0, var(--split-left, 1fr)) 320px 7px minmax(0, var(--split-right, 1fr)); }
+  .app.split.side-hidden.with-details { grid-template-columns: 0 minmax(0, var(--split-left, 1fr)) 320px 7px minmax(0, var(--split-right, 1fr)); }
 }
 @media (min-width: 861px) and (max-width: 1199px) {
-  .app.split, .app.split.with-details { grid-template-columns: 260px minmax(0, 1fr) minmax(0, 1fr); }
-  .app.split.side-hidden, .app.split.side-hidden.with-details { grid-template-columns: 0 minmax(0, 1fr) minmax(0, 1fr); }
+  .app.split.with-details { grid-template-columns: 260px minmax(0, var(--split-left, 1fr)) 7px minmax(0, var(--split-right, 1fr)); }
+  .app.split.side-hidden.with-details { grid-template-columns: 0 minmax(0, var(--split-left, 1fr)) 7px minmax(0, var(--split-right, 1fr)); }
 }
+/* the line between the sides: a thin rule that turns lime under the pointer or while dragged */
+.split-handle { position: relative; cursor: col-resize; background: var(--bg); touch-action: none; outline: none; }
+.split-handle::before { content: ""; position: absolute; inset: 0 3px; background: var(--line); transition: background 0.12s, inset 0.12s; }
+.split-handle:hover::before, .split-handle:focus-visible::before, .app.resizing .split-handle::before { inset: 0 2px; background: var(--brand); box-shadow: 0 0 8px var(--brand-glow); }
+.app.resizing, .app.resizing * { cursor: col-resize !important; user-select: none; }
+.app.resizing iframe { pointer-events: none; }
+.app.split .beside { border-left: 0; }
 @media (max-width: 860px) {
   .beside { position: fixed; inset: 0; z-index: 9; border-left: 0; }
+  .split-handle { display: none; }
 }
 /* dragging a conversation from Recent: the chat (and the side) becomes one drop target */
 .drop-beside { position: fixed; inset: 0 0 0 260px; z-index: 15; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, var(--bg) 55%, transparent); }

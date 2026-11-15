@@ -863,7 +863,11 @@ on the left and in `/resume`; until then, and for older conversations, the first
   first time, that folder asks whether you trust it). Each side runs an agentx of its own, with its own history,
   settings, approvals, mode, MCP servers and memory, so you can type in one while the other works; both use the same
   API keys and both spend tokens. Its ✕ closes a side: its conversation is saved and its agentx ends a few seconds
-  later. Two sides in the same folder can edit the same files, so give them different parts of the work.
+  later. Two sides in the same folder can edit the same files, so give them different parts of the work. Drag
+  the line between the sides to make either one wider (each keeps at least 320 pixels; with the line focused, the
+  arrow keys move it; a double-click puts it back in the middle); the window remembers it. Each side has its own
+  **Details**: the left side's opens next to the left conversation (or over it, on a smaller window), the right
+  side's inside the right side.
 - **Settings > API keys** sets your keys for Claude (`ANTHROPIC_API_KEY`) and GPT (`OPENAI_API_KEY`): paste a key and
   press **Save** (or Enter), **Replace** it later, or **Remove** it. The key is kept encrypted by your system's
   credential store (Windows Credential Manager, the macOS Keychain or the Secret Service on Linux), never in a
