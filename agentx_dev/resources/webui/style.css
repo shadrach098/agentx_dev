@@ -135,9 +135,9 @@ svg { width: 16px; height: 16px; flex: none; }
 /* The opening, as on the docs site: the mark rises with a soft glow, the name types itself letter by letter, and a
    lime cursor keeps blinking after it. While agentx starts it reads "Starting" with dots lighting up in turn; the
    welcome then grows out of it (the mark and the name stay put, the question and the buttons fade in). */
-.welcome { padding: 15vh 0 24px; text-align: center; }
+.welcome { padding: 11vh 0 24px; text-align: center; }
 .hero-mark { display: inline-block; color: var(--brand); margin-bottom: 14px; animation: fade-up 500ms var(--ease-out) 60ms both; }
-.hero-orb { display: flex; justify-content: center; margin: 46px 0 52px; }   /* room for the orb's glow */
+.hero-orb { display: flex; justify-content: center; margin: 40px 0 48px; }   /* room for the orb's glow */
 .welcome.splash .hero-orb { margin-top: 56px; }
 .hero-mark .mark { width: 40px; height: 40px; display: block; filter: drop-shadow(0 0 12px var(--brand-glow)); }
 .hero-name { font-family: var(--mono); font-size: 34px; font-weight: 500; line-height: 1; letter-spacing: -0.03em; margin: 0 0 22px; }
@@ -154,7 +154,6 @@ svg { width: 16px; height: 16px; flex: none; }
 @keyframes cursor-blink { to { visibility: hidden; } }
 @keyframes dot-blink { 0%, 80%, 100% { opacity: 0.15; } 40% { opacity: 1; } }
 .welcome h1 { font-family: var(--display); font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 8px; text-wrap: balance; }
-.welcome .meta { color: var(--muted); margin: 0 0 28px; font-size: 14px; }
 .starters { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 0 auto 28px; max-width: 620px; }
 .starter { border: 1px solid var(--line-strong); background: none; border-radius: 999px; padding: 7px 14px; font-size: 13.5px; color: var(--muted); transition: background 0.12s, color 0.12s, border-color 0.12s; }
 .starter:hover { background: var(--hover); color: var(--text); }
@@ -264,10 +263,11 @@ svg { width: 16px; height: 16px; flex: none; }
 .notice-chip { position: relative; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 999px; padding: 5px 12px 5px 10px; font: inherit; font-size: 13px; cursor: pointer; transition: border-color 0.12s, background 0.12s; }
 .notice-chip:hover, .notice-chip:focus-visible { border-color: var(--line-strong); background: var(--raised); }
 .chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 8px var(--brand-glow); flex: none; }
-.chip-pop { position: absolute; left: 0; top: calc(100% + 8px); z-index: 6; width: min(420px, 78vw); padding: 10px 12px; text-align: left; white-space: normal; line-height: 1.5; color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); opacity: 0; visibility: hidden; transform: translateY(-4px); transition: opacity 0.15s, transform 0.15s var(--ease-out), visibility 0.15s; pointer-events: none; }
-.notice-chip:hover .chip-pop, .notice-chip:focus-visible .chip-pop { opacity: 1; visibility: visible; transform: none; }
-.notice-chip.up .chip-pop { top: auto; bottom: calc(100% + 8px); transform: translateY(4px); }
-.notice-chip.up:hover .chip-pop, .notice-chip.up:focus-visible .chip-pop { transform: none; }
+.chip-pop { position: absolute; left: 0; top: calc(100% + 8px); z-index: 6; width: min(420px, 78vw); padding: 10px 12px; text-align: left; white-space: normal; line-height: 1.5; color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); display: none; pointer-events: none; }
+/* shown only while hovered: a hidden card would still stretch the conversation's scroll area */
+.notice-chip:hover .chip-pop, .notice-chip:focus-visible .chip-pop { display: block; animation: chip-pop-in 150ms var(--ease-out) both; }
+.notice-chip.up .chip-pop { top: auto; bottom: calc(100% + 8px); }
+@keyframes chip-pop-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .chip-pop em { display: block; margin-top: 6px; font-style: normal; font-size: 12px; color: var(--faint); }
 .d-mode-title { margin: 0 0 4px; color: var(--text); font-weight: 600; }
 /* a dot on Details while an MCP server needs signing in */
@@ -448,6 +448,11 @@ svg { width: 16px; height: 16px; flex: none; }
 .main.empty .dock::before { display: none; }
 .main.empty .welcome { padding: 0 0 6px; }
 .main.empty .log .column { padding-bottom: 18px; }
+@media (max-height: 860px) {                    /* a short window: the greeting, the orb and the box still fit */
+  .main.empty .dock { padding-bottom: 4vh; }
+  .hero-orb { margin: 24px 0 30px; }
+  .hero-name { margin-bottom: 16px; }
+}
 
 /* the sidebar, folded away */
 .side-close { margin-left: auto; }

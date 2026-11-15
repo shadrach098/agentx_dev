@@ -193,9 +193,9 @@
   const HERO = () => '<div class="hero-name" aria-label="agentx">' +
     "agentx".split("").map((c, n) => `<span class="glyph" aria-hidden="true" style="animation-delay:${200 + n * 45}ms">${c}</span>`).join("") +
     '<span class="hero-cursor" aria-hidden="true">|</span></div>';
-  // the orb on the opening, large, under the question and the model line
+  // the orb on the opening, large, under the question (the model and the mode are already on the box below)
   const HERO_ORB = (delay) => `<div class="hero-orb hero-in" style="animation-delay:${delay}ms">` +
-    '<canvas class="orb" data-size="128" aria-hidden="true"></canvas></div>';
+    `<canvas class="orb" data-size="${window.innerHeight < 860 ? 150 : 184}" aria-hidden="true"></canvas></div>`;
   function showStarting() {                    // before agentx has said hello: the opening and "Starting..."
     if (column.children.length) return;
     const s = el("section", "welcome splash");
@@ -216,8 +216,7 @@
     const where = folderName || welcome.folder || "";
     const late = heroShown ? 0 : 520;            // after the name has typed itself, the first time
     w.innerHTML = `${HERO()}<h1 class="hero-in" style="animation-delay:${late}ms">What should we work on${where ? ` in ${esc(where)}` : ""}?</h1>
-      <p class="meta hero-in" style="animation-delay:${late + 80}ms">${esc(welcome.model || "")}</p>
-      ${HERO_ORB(heroShown && !late ? 0 : late + 120)}
+      ${HERO_ORB(heroShown && !late ? 0 : late + 100)}
       <div class="starters hero-in" style="animation-delay:${late + 160}ms">${STARTERS.map(([label], n) => `<button type="button" class="starter" data-starter="${n}">${label}</button>`).join("")}</div>
       ${tips || news ? `<details class="hero-in" style="animation-delay:${late + 240}ms"><summary>Tips and what's new</summary>${tips ? `<ul>${tips}</ul>` : ""}` +
         `${news ? `<h2>What's new</h2><ul>${news}</ul>` : ""}</details>` : ""}`;
@@ -430,7 +429,7 @@
       chip.type = "button";
       const place = () => {                          // the card opens above the chip when there is no room below
         const pop = chip.querySelector(".chip-pop");
-        chip.classList.toggle("up", chip.getBoundingClientRect().bottom + pop.offsetHeight + 16 > log.getBoundingClientRect().bottom);
+        chip.classList.toggle("up", chip.getBoundingClientRect().bottom + (pop.offsetHeight || 96) + 16 > log.getBoundingClientRect().bottom);
       };
       chip.addEventListener("mouseenter", place);
       chip.addEventListener("focus", place);

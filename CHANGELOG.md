@@ -19,7 +19,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   momentum, then settles into its slow turn in the direction you threw it.
 - **A tidier conversation in the app window.** The mode note ("Auto mode is on.") is now a small chip: hover it
   to read what the mode allows, click it to open Details. MCP servers that need signing in are listed in Details
-  only, with a yellow dot on its button, instead of a notice in the conversation.
+  only, with a yellow dot on its button, instead of a notice in the conversation. A new conversation no longer
+  repeats the model, its maker and the mode under the question (the message box already shows the model and the
+  mode), which leaves room for a larger orb.
 
 ## [3.8.1] - 2026-11-13
 
