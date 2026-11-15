@@ -1656,8 +1656,14 @@ def _run_ui(args: argparse.Namespace) -> int:
     """``agentx --ui``: the same app, drawn in a browser window (see ``webui``)."""
     from agentx_dev.cli.webui import WebFront
     home = Path.home()
-    front = WebFront(cwd=Path.cwd().resolve(), home=home, port=max(0, int(args.port or 0)), open_it=not args.no_open,
-                     remote=bool(getattr(args, "remote", False)))
+    handoff = os.environ.pop("AGENTX_PANE_HANDOFF", "")      # started as a side of another window (split view)
+    front = WebFront(cwd=Path.cwd().resolve(), home=home, port=max(0, int(args.port or 0)),
+                     open_it=bool(handoff) or not args.no_open, remote=bool(getattr(args, "remote", False)))
+    if handoff:
+        from agentx_dev.cli.webui import pane_handoff_opener
+        front.opener = pane_handoff_opener(handoff)
+        import time as _time
+        front.pane_started = _time.monotonic()
     front.make_device_app = lambda room: device_app(front.app, room)   # each other device: its own conversation
     holder: List[Any] = []
     return front.run(lambda: _run(args, home, front.console, front.read, front.read_short, front.select, holder,

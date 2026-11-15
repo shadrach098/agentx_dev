@@ -317,6 +317,39 @@ OPEN_FOLDER_START = (SAFE_START + "sys.argv = ['agentx', '--ui']\n"
                      "raise SystemExit(main(['--ui']))\n")
 
 
+# A conversation beside this one (the split window): agentx --ui in a folder, started like OPEN_FOLDER_START, its
+# window drawn inside this one. It opens no window of its own: it writes its one-time link to the file named by
+# AGENTX_PANE_HANDOFF (a private folder this agentx made), and quits once that side of the window is closed.
+PANE_START = (SAFE_START + "args = ['--ui'] + sys.argv[3:]\n"
+              "sys.argv = ['agentx'] + args\n"
+              "from agentx_dev.cli import main\n"
+              "raise SystemExit(main(args))\n")
+PANE_WAIT_SEC = 30.0                 # how long a side may take to start before the window gives up on it
+PANE_ORPHAN_SEC = 90.0               # a side whose window never connects quits after this
+_SESSION_ID = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
+_PANE_LINK = re.compile(r"^http://127\.0\.0\.1:\d+/\?c=[\w-]+$")
+
+
+def pane_command(folder: Path, resume: str = "") -> "tuple[List[str], str]":
+    """``(command, cwd)`` for a conversation beside this one: ``agentx --ui [--resume ID]`` in ``folder``."""
+    command, start_in = open_folder_command(folder, PANE_START)
+    return command + (["--resume", resume] if resume else []), start_in
+
+
+def pane_handoff_opener(path: str) -> Callable[[str], str]:
+    """The opener of an agentx started as a side of another window: its one-time link goes to ``path`` (read once
+    by the window that started it, then deleted), not to a browser."""
+    def write(url: str) -> str:
+        target = Path(path)
+        temp = target.with_name(target.name + ".tmp")
+        fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(url)
+        os.replace(temp, target)
+        return "pane"
+    return write
+
+
 def _agentx_root() -> str:
     """The folder that holds the agentx_dev package this agentx runs from."""
     return str(Path(__file__).resolve().parent.parent.parent)
@@ -728,6 +761,8 @@ class WebFront:
         self.joined: set = set()                             # devices that opened the main conversation instead
         self.main_owner: Optional[str] = None
         self.first_device_owns_main = True                   # --ui: the first device to connect has the main one
+        self._panes: List[Any] = []                          # conversations started beside this one (processes)
+        self.pane_started: Optional[float] = None            # on a side of another window: when it started
         self.make_device_app: Optional[Callable[["WebFront"], Any]] = None
         self.last_session: Dict[str, str] = {}               # a room closed when unused reopens its conversation
         self.ended = False
@@ -1363,6 +1398,94 @@ class WebFront:
         return {"ok": True, "message": f"Opening agentx in {folder}. It asks whether you trust the folder the first time.",
                 "folder": str(folder)}
 
+    def open_pane(self, session: Any = "", raw_folder: Any = "") -> Dict[str, Any]:
+        """A conversation beside this one (the split window): ``session`` (an id from Recent) in this folder, or a
+        new conversation in ``raw_folder``. It runs as an agentx of its own (own history, settings, approvals),
+        started like "Open another folder"; the reply carries its one-time link for the window to show it in."""
+        session = str(session or "").strip()
+        if session and not _SESSION_ID.match(session):
+            return {"ok": False, "message": "That is not a conversation of this folder."}
+        folder = self.cwd
+        text = str(raw_folder or "").strip().strip('"')
+        if text:
+            folder = Path(text).expanduser()
+            if not folder.is_absolute():
+                folder = self.cwd / folder
+        try:
+            folder = folder.resolve()
+        except OSError:
+            return {"ok": False, "message": f"{text} could not be read."}
+        if not folder.is_dir():
+            return {"ok": False, "message": f"{folder} is not a folder."}
+        title = ""
+        if session:
+            current = getattr(getattr(self.app, "session", None), "session_id", None)
+            if current and str(current) == session and folder == self.cwd.resolve():
+                return {"ok": False, "message": "That conversation is already open here."}
+            try:
+                from agentx_dev.cli.sessions import list_sessions
+                found = [info for info in list_sessions(self.home, folder) if info.session_id == session]
+            except Exception:
+                found = []
+            if not found:
+                return {"ok": False, "message": "That conversation was not found."}
+            title = _text(found[0].title, 200)
+        url, why = self._start_pane(folder, session)
+        if not url:
+            return {"ok": False, "message": "agentx could not be started beside this conversation"
+                                            + (f": {why}" if why else ".")}
+        return {"ok": True, "url": url, "title": title or "New conversation", "folder": str(folder),
+                "folderName": folder.name or str(folder), "session": session}
+
+    def _start_pane(self, folder: Path, session: str) -> "tuple[str, str]":
+        """Start the side's agentx and wait for its one-time link: ``(link, "")`` or ``("", why it failed)``."""
+        import tempfile
+        private = Path(tempfile.mkdtemp(prefix="agentx-pane-"))
+        handoff = private / "link"
+        command, start_in = pane_command(folder, session)
+        env = dict(os.environ, AGENTX_PANE_HANDOFF=str(handoff))
+        extra: Dict[str, Any] = ({"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt"
+                                 else {"start_new_session": True})
+        try:
+            with open(private / "start.log", "w", encoding="utf-8") as log:
+                process = subprocess.Popen(command, cwd=start_in, env=env, stdin=subprocess.DEVNULL,
+                                           stdout=subprocess.DEVNULL, stderr=log, **extra)
+        except OSError as error:
+            return "", f"{error}"
+        deadline = time.monotonic() + PANE_WAIT_SEC
+        url = ""
+        while time.monotonic() < deadline:
+            try:
+                url = handoff.read_text(encoding="utf-8").strip() if handoff.is_file() else ""
+            except OSError:
+                url = ""
+            if url or process.poll() is not None:
+                break
+            time.sleep(0.15)
+        why = ""
+        if not _PANE_LINK.match(url):
+            url = ""
+            try:
+                lines = (private / "start.log").read_text(encoding="utf-8", errors="replace").strip().splitlines()
+                why = _text(lines[-1], 300) if lines else ""
+            except OSError:
+                why = ""
+            if process.poll() is None:
+                process.terminate()
+        for leftover in list(private.glob("*")):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
+        try:
+            private.rmdir()
+        except OSError:
+            pass
+        if url:
+            with self._lock:
+                self._panes = [p for p in self._panes if p.poll() is None] + [process]
+        return url, why
+
     def history(self, upto: Optional[int] = None) -> List[Dict[str, Any]]:
         """The current conversation as items for the window; ``upto``: only its first messages (those it had when
         it was opened: what came later reaches the window as events)."""
@@ -1900,6 +2023,8 @@ class WebFront:
         if not self.open_it:
             return False
         with self._lock:
+            if self.pane_started is not None and not self._had_window:     # a side whose window never came
+                return time.monotonic() - self.pane_started >= PANE_ORPHAN_SEC
             return (self._had_window and self._windows == 0 and self._alone_since is not None
                     and time.monotonic() - self._alone_since >= CLOSE_GRACE_SEC)
 
@@ -2046,7 +2171,8 @@ class _Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self._json({"error": "missing"}, 404)
             extra = {"Content-Security-Policy": "default-src 'self'; img-src 'self' data: blob:; "
-                                                "style-src 'self' 'unsafe-inline'; connect-src 'self'"} \
+                                                "style-src 'self' 'unsafe-inline'; connect-src 'self'; "
+                                                "frame-src http://127.0.0.1:*"} \
                 if name == "index.html" else None
             return self._send(200, body, content_type, extra)
         if not self._token_ok(query):
@@ -2125,6 +2251,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(front.open_folder(str(data.get("path", ""))))
         if url.path == "/api/mcp-signin":
             return self._json(front.finish_signin(str(data.get("url", ""))))
+        if url.path == "/api/pane":
+            return self._json(front.open_pane(data.get("session", ""), data.get("folder", "")))
         if url.path == "/api/keys":
             return self._json(front.change_key(str(data.get("provider", "")),
                                                None if data.get("remove") else data.get("key")))

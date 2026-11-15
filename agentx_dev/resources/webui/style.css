@@ -597,3 +597,44 @@ svg { width: 16px; height: 16px; flex: none; }
 .card.signin.local .signin-wait { color: var(--faint); font-size: 12.5px; }
 .card.signin.local.done { opacity: 0.6; }
 .card.signin.local.done .signin-actions { display: none; }
+
+/* The split view: a conversation beside this one, run by an agentx of its own and drawn in a frame. Two halves on
+   a wide window; on a phone-sized one the side covers the chat (its close button comes back). */
+.beside { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line); background: var(--bg); }
+.beside-head { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--line); }
+.beside-title { min-width: 0; flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; color: var(--text); }
+.beside-folder { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; color: var(--faint); }
+.beside-body { position: relative; flex: 1; min-height: 0; }
+.beside-body iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); }
+.beside-wait { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; color: var(--muted); font-size: 13.5px; }
+.app.split { grid-template-columns: 260px minmax(0, 1fr) minmax(0, 1fr); }
+.app.split.side-hidden { grid-template-columns: 0 minmax(0, 1fr) minmax(0, 1fr); }
+@media (min-width: 1200px) {
+  .app.split.with-details { grid-template-columns: 260px minmax(0, 1fr) minmax(0, 1fr) 320px; }
+  .app.split.side-hidden.with-details { grid-template-columns: 0 minmax(0, 1fr) minmax(0, 1fr) 320px; }
+}
+@media (min-width: 861px) and (max-width: 1199px) {
+  .app.split, .app.split.with-details { grid-template-columns: 260px minmax(0, 1fr) minmax(0, 1fr); }
+  .app.split.side-hidden, .app.split.side-hidden.with-details { grid-template-columns: 0 minmax(0, 1fr) minmax(0, 1fr); }
+}
+@media (max-width: 860px) {
+  .beside { position: fixed; inset: 0; z-index: 9; border-left: 0; }
+}
+/* dragging a conversation from Recent: the chat (and the side) becomes one drop target */
+.drop-beside { position: fixed; inset: 0 0 0 260px; z-index: 15; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, var(--bg) 55%, transparent); }
+.app.side-hidden .drop-beside { left: 0; }
+.drop-beside-box { width: min(520px, 100%); padding: 28px 24px; border: 2px dashed var(--line-strong); border-radius: 16px; text-align: center; color: var(--muted); font-size: 14px; background: var(--surface); transition: border-color 0.12s, color 0.12s; }
+.drop-beside.over .drop-beside-box { border-color: var(--brand); color: var(--text); }
+/* Recent: a row's "open beside" button shows on hover; the conversation open beside is marked */
+.session-row { position: relative; }
+.session-row .session { padding-right: 34px; }
+.session-row .session[draggable="true"] { cursor: grab; }
+.session-beside { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--faint); opacity: 0; transition: opacity 0.12s, background 0.12s, color 0.12s; }
+.session-beside svg { width: 15px; height: 15px; }
+.session-row:hover .session-beside, .session-beside:focus-visible { opacity: 1; }
+.session-beside:hover { background: var(--hover); color: var(--text); }
+.session-row.beside-open .session { box-shadow: inset 2px 0 0 var(--brand); color: var(--text); }
+@media (hover: none) { .session-beside { opacity: 1; } }
+/* a side of another window: no sidebar of its own (the window's sidebar is beside it) */
+html.embedded .side, html.embedded .side-toggle, html.embedded .side-close { display: none !important; }
+html.embedded .app, html.embedded .app.side-hidden, html.embedded .app.with-details { grid-template-columns: minmax(0, 1fr); }

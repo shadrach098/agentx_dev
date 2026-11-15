@@ -14,13 +14,16 @@
     return m ? decodeURIComponent(m[1]) : /^[\w-]{16,}$/.test(s) ? s : "";
   };
   let token = keyFrom(location.search) || keyFrom(location.hash);
+  // drawn as a side of another agentx window (the split view): no sidebar of its own
+  const EMBED = /[?#&]embed=1(?:&|$)/.test(location.search + location.hash);
+  if (EMBED) document.documentElement.classList.add("embedded");
   // The window agentx opens has a one-time code instead (?c=...): another account on the computer could read the
   // key from the browser's command line. The page trades the code for the key once (claimLaunch, below).
   const launchCode = token ? "" : ((location.search.match(/[?&]c=([\w-]+)/) || [])[1] || "");
   try { token = token || (launchCode ? "" : sessionStorage.getItem("agentx-token")) || ""; } catch (_) { /* no storage */ }
   function keepKey() {
     try { sessionStorage.setItem("agentx-token", token); } catch (_) { /* no storage */ }
-    if (token) history.replaceState(null, "", `/#t=${encodeURIComponent(token)}`);
+    if (token) history.replaceState(null, "", `/#t=${encodeURIComponent(token)}${EMBED ? "&embed=1" : ""}`);
   }
   keepKey();
 
@@ -1245,9 +1248,11 @@
   }));
   $("folder").addEventListener("click", () => openMenu($("folder"), [
     {value: "open", label: "Open another folder…", hint: "agentx in another project, in a new window"},
+    ...(EMBED ? [] : [{value: "beside", label: "Open a folder beside…", hint: "Another project on the right half of this window"}]),
     {value: "copy", label: "Copy this folder's path", hint: $("folder").title},
   ], async (it) => {
     if (it.value === "open") openAnotherFolder();
+    else if (it.value === "beside") openFolderBeside();
     else { try { await navigator.clipboard.writeText($("folder").title); } catch (_) { /* no clipboard */ } }
   }));
   // the sidebar: slides over on a narrow window, folds away on a wide one (remembered)
@@ -1302,8 +1307,12 @@
           `<span class="live-dot${live.working ? " working" : ""}" aria-hidden="true"></span>Live on ${esc(live.where || "the computer")}</span>` +
           `<span class="session-sub">${esc(live.title || "The conversation running there")} · open to share it</span></button>`
         : "";
-    const rows = sessionList.map((s) => `<button type="button" class="session" data-id="${esc(s.id)}" aria-current="${s.current}" ` +
-      `title="${esc(String(s.updated).replace("T", " ").slice(0, 16))}"><span class="session-title">${esc(s.title)}</span></button>`).join("");
+    const rows = sessionList.map((s) => `<div class="session-row${beside.session === s.id ? " beside-open" : ""}">` +
+      `<button type="button" class="session" data-id="${esc(s.id)}" aria-current="${s.current}" draggable="${!s.current && !EMBED}" ` +
+      `title="${esc(String(s.updated).replace("T", " ").slice(0, 16))}${s.current || EMBED ? "" : " · drag onto the chat to open it beside"}"><span class="session-title">${esc(s.title)}</span></button>` +
+      (s.current || EMBED ? "" : `<button type="button" class="session-beside" data-beside="${esc(s.id)}" title="Open beside this conversation" aria-label="Open ${esc(s.title)} beside this conversation">` +
+        `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 3v10" stroke="currentColor" stroke-width="1.3"/></svg></button>`) +
+      `</div>`).join("");
     nav.innerHTML = top + (rows || '<div class="sessions-empty">Conversations in this folder show up here.</div>');
     const current = sessionList.find((s) => s.current);
     if (live.joined) { $("topTitle").textContent = `Shared · ${current ? current.title : "live conversation"}`; $("topTitle").dataset.fixed = "1"; }
@@ -1323,13 +1332,89 @@
   $("sessions").addEventListener("click", (e) => {
     const l = e.target.closest("[data-live]");
     if (l) { joinLive(l.dataset.live === "join"); return; }
+    const side = e.target.closest("[data-beside]");
+    if (side) { openBeside({session: side.dataset.beside}); $("side").classList.remove("open"); return; }
     const b = e.target.closest("[data-id]");
+    if (b && beside.session === b.dataset.id) { $("besideFrame").focus(); return; }   // it is open beside: go there
     if (b && b.getAttribute("aria-current") !== "true") {
       if (live.joined) joinLive(false, `resume:${b.dataset.id}`);
       else post("/api/send", {text: `/resume ${b.dataset.id}`});
     }
     $("side").classList.remove("open");
   });
+
+  // -- the split view: another conversation beside this one, run by an agentx of its own -------------------------
+  // Drag a conversation from Recent onto the chat (or use its button), or open another folder beside. Each side
+  // has its own history, settings, approvals and orb; closing a side ends its agentx (its conversation is saved).
+  const beside = {session: "", busy: false};
+  let besideOrb = null;
+  async function openBeside(what) {
+    if (EMBED || beside.busy) return;
+    beside.busy = true;
+    const frame = $("besideFrame");
+    frame.hidden = true;
+    frame.src = "about:blank";                       // a side already open here: its agentx quits by itself
+    beside.session = "";
+    $("besideTitle").textContent = what.title || "Opening…";
+    $("besideFolder").textContent = "";
+    $("besideWaitText").textContent = what.folder ? "Starting agentx in that folder…" : "Opening the conversation…";
+    $("besideWait").hidden = false;
+    $("beside").hidden = false;
+    document.querySelector(".app").classList.add("split");
+    if (!besideOrb && window.AgentxOrb) { $("besideOrb").dataset.on = "1"; besideOrb = window.AgentxOrb.create($("besideOrb"), () => "thinking"); }
+    const res = await post("/api/pane", what.folder ? {folder: what.folder} : {session: what.session}).catch(() => ({}));
+    beside.busy = false;
+    if (!res.ok || !res.url) {
+      closeBeside();
+      addNotice({level: "error", text: res.message || "That conversation could not be opened beside this one."});
+      return;
+    }
+    beside.session = res.session || "";
+    $("besideTitle").textContent = res.title || "Conversation";
+    $("besideFolder").textContent = res.folderName || "";
+    $("besideFolder").title = res.folder || "";
+    frame.src = `${res.url}&embed=1`;
+    frame.onload = () => { $("besideWait").hidden = true; frame.hidden = false; };
+    drawSessions();
+  }
+  function closeBeside() {
+    const frame = $("besideFrame");
+    frame.onload = null;
+    frame.src = "about:blank";                       // its window is gone: that agentx saves and quits
+    frame.hidden = true;
+    $("beside").hidden = true;
+    document.querySelector(".app").classList.remove("split");
+    beside.session = "";
+    drawSessions();
+    input.focus();
+  }
+  $("besideClose").addEventListener("click", closeBeside);
+  // dragging a conversation from Recent: a drop target over the chat (the side's frame would swallow the drop)
+  let dragging = "";
+  $("sessions").addEventListener("dragstart", (e) => {
+    const b = e.target.closest("[data-id]");
+    if (!b || EMBED || b.getAttribute("draggable") !== "true") { e.preventDefault(); return; }
+    dragging = b.dataset.id;
+    e.dataTransfer.effectAllowed = "copy";
+    e.dataTransfer.setData("text/plain", b.textContent.trim());
+    requestAnimationFrame(() => { $("dropBeside").hidden = false; });
+  });
+  $("sessions").addEventListener("dragend", () => { dragging = ""; $("dropBeside").hidden = true; $("dropBeside").classList.remove("over"); });
+  $("dropBeside").addEventListener("dragover", (e) => { if (dragging) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; $("dropBeside").classList.add("over"); } });
+  $("dropBeside").addEventListener("dragleave", () => $("dropBeside").classList.remove("over"));
+  $("dropBeside").addEventListener("drop", (e) => {
+    e.preventDefault();
+    const id = dragging;
+    dragging = "";
+    $("dropBeside").hidden = true; $("dropBeside").classList.remove("over");
+    const row = sessionList.find((x) => x.id === id);
+    if (id) openBeside({session: id, title: row ? row.title : ""});
+  });
+  async function openFolderBeside() {
+    const path = await askText({title: "Open a folder beside this conversation", text: "agentx starts there, on the right half of this window; this conversation stays on the left.",
+                                placeholder: "for example C:\\Users\\you\\projects\\shop", ok: "Open beside"});
+    if (path) openBeside({folder: path, title: "New conversation"});
+  }
 
   // -- events -----------------------------------------------------------------------------------------------------
   let loading = 0, queue = [], skipUpTo = 0;
@@ -1491,7 +1576,7 @@
     const data = res ? await res.json().catch(() => ({})) : {};
     if (data.token) { token = data.token; keepKey(); return; }
     launchProblem = data.error || "unknown";
-    history.replaceState(null, "", location.pathname);   // the code is used up either way
+    history.replaceState(null, "", location.pathname + (EMBED ? "#embed=1" : ""));   // the code is used up either way
   }
 
   async function connect() {

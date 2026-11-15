@@ -649,7 +649,8 @@ def test_the_key_stays_in_the_address_for_open_in_safari():
     with none, or one from an earlier start, the box says so and takes the printed link pasted in."""
     from agentx_dev.cli.webui import RESOURCES
     script = (RESOURCES / "app.js").read_text(encoding="utf-8")
-    assert 'history.replaceState(null, "", `/#t=${encodeURIComponent(token)}`)' in script
+    # (a side of the split view keeps its "embed" mark next to the key)
+    assert 'history.replaceState(null, "", `/#t=${encodeURIComponent(token)}${EMBED ? "&embed=1" : ""}`)' in script
     assert 'history.replaceState(null, "", "/")' not in script
     assert "keyFrom(location.hash)" in script
     assert "This page has no key" in script and "This link is from an earlier start" in script

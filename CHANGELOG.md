@@ -8,6 +8,13 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **Two conversations side by side in the app window.** Drag a conversation from **Recent** onto the chat (or use
+  the button that shows on the row) and it opens on the right half of the window, beside the one you are in; the
+  folder menu's **Open a folder beside…** opens a new conversation in another project there. Each side is an
+  agentx of its own, with its own history, settings, approvals, orb and memory, so both can work at once; they use
+  the same API keys. Closing a side (its ✕) saves its conversation and ends its agentx. On a phone-sized window the
+  side covers the chat until you close it.
+
 - **API keys in the app window.** Settings has an **API keys** tab: paste your Claude or OpenAI key to save it,
   replace it later, or remove it. Keys are kept encrypted by your system's credential store (Windows Credential
   Manager, the macOS Keychain, the Secret Service on Linux), never in a file, and the page shows only their last

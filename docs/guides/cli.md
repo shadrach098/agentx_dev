@@ -857,6 +857,13 @@ on the left and in `/resume`; until then, and for older conversations, the first
   or Auto, as in the file. Project allow rules you turned down at start stay off for the session after you save, and
   so do rules something else added to the project file since the start; rules you type in the **This folder** tab
   take effect at once.
+- **Two conversations side by side.** Drag a conversation from **Recent** onto the chat, or press the split button
+  that shows when you point at its row: it opens on the right half of the window and the one you are in stays on the
+  left. The folder menu's **Open a folder beside…** opens a new conversation in another project there instead (the
+  first time, that folder asks whether you trust it). Each side runs an agentx of its own, with its own history,
+  settings, approvals, mode, MCP servers and memory, so you can type in one while the other works; both use the same
+  API keys and both spend tokens. Its ✕ closes a side: its conversation is saved and its agentx ends a few seconds
+  later. Two sides in the same folder can edit the same files, so give them different parts of the work.
 - **Settings > API keys** sets your keys for Claude (`ANTHROPIC_API_KEY`) and GPT (`OPENAI_API_KEY`): paste a key and
   press **Save** (or Enter), **Replace** it later, or **Remove** it. The key is kept encrypted by your system's
   credential store (Windows Credential Manager, the macOS Keychain or the Secret Service on Linux), never in a
