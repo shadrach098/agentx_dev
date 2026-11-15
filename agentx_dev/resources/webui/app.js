@@ -238,7 +238,7 @@
     const u = el("div", command ? "user command" : "user");
     u.textContent = text;
     // once you write, the orb takes the top: the mode note goes (Details keeps it)
-    if (!command) for (const chip of column.querySelectorAll(":scope > .notice-chip-row")) chip.remove();
+    for (const chip of column.querySelectorAll(":scope > .notice-chip-row")) chip.remove();
     column.append(u);
     if (!command && !$("topTitle").dataset.fixed) $("topTitle").textContent = text.split("\n")[0].slice(0, 90) || "Conversation";
   }
@@ -639,7 +639,7 @@
   let doneTook = "";
   function drawStage() {
     const stage = $("stage"), state = orbState();
-    const on = !column.querySelector(".welcome") && (state !== "idle" || !!column.querySelector(":scope > .user:not(.command)"));
+    const on = !column.querySelector(".welcome") && (state !== "idle" || !!column.querySelector(":scope > .user"));
     if (on !== stage.classList.contains("on")) {
       const stick = nearBottom();                 // the conversation keeps its end in view as the stage opens or folds
       stage.classList.toggle("on", on);
