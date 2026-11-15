@@ -137,3 +137,8 @@ def test_the_sides_can_be_resized_and_details_belongs_to_its_side():
     assert "var(--split-left, 1fr)" in css and ".app.resizing iframe { pointer-events: none; }" in css
     assert ".app.split.with-details > .details { grid-column: 3;" in css and ".app.split > * { grid-row: 1; }" in css
     assert "function placeDetails" in script and "panel.style.right" in script
+    # a second drag starts where the line is (its Details column and where it was taken are allowed for)
+    assert "(ev.clientX - grab - left - details) / room" in script
+    # a side's own Details is a column like the left one, not a tinted overlay, unless the side is narrow
+    assert 'matchMedia(EMBED ? "(max-width: 639px)" : "(max-width: 1199px)")' in script
+    assert "html.embedded .details { position: static;" in css and "html.embedded .details-scrim { display: none" in css

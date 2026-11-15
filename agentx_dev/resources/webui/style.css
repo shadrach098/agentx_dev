@@ -658,3 +658,11 @@ svg { width: 16px; height: 16px; flex: none; }
 /* a side of another window: no sidebar of its own (the window's sidebar is beside it) */
 html.embedded .side, html.embedded .side-toggle, html.embedded .side-close { display: none !important; }
 html.embedded .app, html.embedded .app.side-hidden, html.embedded .app.with-details { grid-template-columns: minmax(0, 1fr); }
+
+/* a side of the split view: its Details is a column beside its conversation, as on the left, not a tinted overlay
+   (only a side narrower than 640 pixels lays it over the chat) */
+@media (min-width: 640px) {
+  html.embedded .app.with-details, html.embedded .app.side-hidden.with-details { grid-template-columns: minmax(0, 1fr) min(320px, 45%); }
+  html.embedded .details { position: static; inset: auto; width: auto; z-index: auto; box-shadow: none; }
+  html.embedded .details-scrim { display: none !important; }
+}

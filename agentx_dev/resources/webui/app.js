@@ -994,7 +994,8 @@
   $("detailsBtn").addEventListener("click", () => setDetails(!detailsOpen));
   $("detailsClose").addEventListener("click", () => setDetails(false));
   // below a wide window the panel lies over the chat: tapping beside it, or Escape, closes it
-  const detailsOver = () => matchMedia("(max-width: 1199px)").matches;
+  // a side of the split view is narrower than a window: its Details is a column there too, unless it is narrow
+  const detailsOver = () => matchMedia(EMBED ? "(max-width: 639px)" : "(max-width: 1199px)").matches;
   // With a side open, a Details panel that lies over the chat lies over this side only, at its right edge (the side
   // beside has its own Details); as a column it sits between this side and the line (see .app.split in the CSS).
   function placeDetails() {
@@ -1435,12 +1436,14 @@
     const handle = $("splitHandle"), app = document.querySelector(".app");
     handle.setPointerCapture(e.pointerId);
     app.classList.add("resizing");                 // the side's frame must not take the pointer while dragging
+    const grab = e.clientX - handle.getBoundingClientRect().left;   // where on the line it was taken: it stays there
     const move = (ev) => {
       const left = document.querySelector(".main").getBoundingClientRect().left;
       const right = $("beside").getBoundingClientRect().right;
+      // this side's Details, as a column, sits between this side and the line: it is not part of either share
       const details = detailsOpen && !detailsOver() ? $("details").getBoundingClientRect().width : 0;
       const room = right - left - details - handle.getBoundingClientRect().width;
-      if (room > 0) setShare((ev.clientX - left) / room, false);
+      if (room > 0) setShare((ev.clientX - grab - left - details) / room, false);
     };
     const up = () => {
       handle.removeEventListener("pointermove", move);
