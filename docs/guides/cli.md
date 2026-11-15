@@ -905,7 +905,7 @@ on the left and in `/resume`; until then, and for older conversations, the first
 - **Once you write, the orb moves to the top**, large, with a small pill under it naming what it shows now and for
   how long.
   It bubbles while agentx thinks (dots push out and settle back), lights rings of dots that turn on their own axes
-  while a step runs, folds into a still cube while it waits for your answer (the pill says "Waiting for your
+  while a step runs, folds into a cube that turns slowly and breathes, a band of light sweeping down it, while it waits for your answer (the pill says "Waiting for your
   answer") and rests in a slow turn with a soft glow when the turn ends ("Done" and how long it took),
   then reads "Ready"; it stays at the top for the rest of the conversation. The line above the message box keeps
   only "Esc to stop" while the orb is up. Esc stops agentx from anywhere in the window, the message box included (what you
@@ -1014,7 +1014,7 @@ the status line stay at the bottom, while only the conversation between them scr
 
 ## Keys
 
-While `agentx` waits for you the prompt is coloured and the cursor blinks; while it is working, a spinner with the seconds elapsed shows instead: a small orb of braille dots that bubbles while it thinks and turns two rings while a step runs (a terminal that cannot show braille gets a plain spinner). An approval's box carries a lime ⬢, the orb's still cube (see the checklist below). A still cursor with no spinner means the terminal is the problem, not the program.
+While `agentx` waits for you the prompt is coloured and the cursor blinks; while it is working, a spinner with the seconds elapsed shows instead: a small orb of braille dots that bubbles while it thinks and turns two rings while a step runs (a terminal that cannot show braille gets a plain spinner). An approval's box carries a lime ⬢, the orb's waiting cube (see the checklist below). A still cursor with no spinner means the terminal is the problem, not the program.
 
 | Key | Does |
 |---|---|

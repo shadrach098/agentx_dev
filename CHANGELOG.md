@@ -19,7 +19,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **The agentx orb.** A sphere of lime dots now shows what agentx is doing, in the app window and in the terminal.
   While it thinks, its surface bubbles, dots pushing out and settling back; while a step runs, rings of dots light
   up and turn on their own axes in opposite directions; when a turn finishes it rests in a slow turn with a soft
-  glow ("Done" shows for a moment); while it waits for your answer it folds into a still cube. In the window, a new
+  glow ("Done" shows for a moment); while it waits for your answer it folds into a cube that turns slowly and breathes, a band of light
+  sweeping down it. In the window, a new
   conversation shows it large under "What should we work on?"; once you write it moves to the top, large, with a
   small pill under it naming what it shows (Thinking, the step it runs, Waiting for your answer, Done and how long
   it took, then Ready), and stays there for the rest of the conversation. In the terminal it is a small braille orb beside the spinner's words, and an approval's box

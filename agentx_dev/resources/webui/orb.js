@@ -3,7 +3,8 @@
 //   working   a few rings of dots lift out and turn on their own axes, in opposite directions, like a mechanism
 //   success   it settles into a slow turn with a warm glow (a turn just finished)
 //   idle      the same slow turn, glow dimmed
-//   stuck     the dots fold into a cube and hold still: agentx is waiting for you
+//   stuck     the dots fold into a cube that turns slowly and breathes, a band of light sweeping down it and its
+//             edges lit: agentx is waiting for you
 // Drawn on a <canvas> with plain 2D maths (no library), one shared animation loop for every orb on the page.
 // A large orb can be grabbed with the mouse (or a finger) and spun; let go and it keeps the flick's momentum,
 // then settles into its slow turn in the direction it was thrown.
@@ -52,6 +53,8 @@
       for (const q of grid) { const v = near(d, q); if (v > score) { score = v; best = q; } }
       [d.cx, d.cy, d.cz] = best.p;
     }
+    // a dot on two faces at once sits on an edge of the cube: drawn brighter, so the shape stays crisp as it turns
+    for (const d of dots) d.edge = [d.cx, d.cy, d.cz].filter((v) => Math.abs(v) > size * 0.98).length >= 2;
   }
 
   // the rings that turn while it works: each on its own axis, alternating direction
@@ -126,7 +129,6 @@
     handle.title = "Drag to spin";
     let lastX = 0, lastY = 0, lastT = 0;
     handle.addEventListener("pointerdown", (e) => {
-      if (orb.cube > 0.5) return;                             // the cube holds still: it waits for you
       orb.held = true; lastX = e.clientX; lastY = e.clientY; lastT = performance.now();
       orb.vel = 0; orb.tiltVel = 0;
       handle.setPointerCapture(e.pointerId);
@@ -172,11 +174,11 @@
     orb.cube = ease(orb.cube, state === "stuck" ? 1 : 0, fade, state === "stuck" ? 6 : 4);
     orb.glow = ease(orb.glow, state === "success" ? 1 : state === "stuck" ? 0.7 : state === "idle" ? 0.35 : 0.55, fade, 2.5);
     orb.t += dt;
-    const turning = state === "working" ? 0.55 : state === "thinking" ? 0.32 : 0.16;   // radians a second
+    const turning = state === "working" ? 0.55 : state === "thinking" ? 0.32 : state === "stuck" ? 0.38 : 0.16;   // radians a second
     if (!orb.held) {
       // a flick's momentum fades into the steady turn, in the direction it was thrown; the tilt drifts back
       orb.vel = ease(orb.vel, turning * orb.dir, dt, 1.4);
-      orb.spin += dt * orb.vel * (1 - orb.cube);
+      orb.spin += dt * orb.vel;
       orb.tiltVel = ease(orb.tiltVel, 0, dt, 2.2);
       orb.tilt = Math.max(-1.3, Math.min(1.3, orb.tilt + dt * orb.tiltVel));
       orb.tilt = ease(orb.tilt, REST_TILT, dt, 0.5);
@@ -186,19 +188,24 @@
     const W = canvas.width, H = canvas.height, cx = W / 2, cy = H / 2, R = (size / 2) * dpr * 0.92;
     ctx.clearRect(0, 0, W, H);
     const [r, g, b] = orb.color;
+    // waiting: the cube breathes (and its glow with it), and a band of light sweeps down it now and then
+    const breath = 0.5 - 0.5 * Math.cos(orb.t * TAU / 3.2);                   // 0..1, a breath every 3.2 s
+    const sweep = ((orb.t % 2.6) / 2.6) * 2.9 - 1.45;                          // the band's height, top to bottom
+    const glow = orb.glow * (1 + 0.35 * breath * orb.cube);
     // the glow behind the orb
     const halo = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R + pad * dpr);
-    halo.addColorStop(0, `rgba(${r},${g},${b},${0.2 * orb.glow})`);
-    halo.addColorStop(0.55, `rgba(${r},${g},${b},${0.08 * orb.glow})`);
+    halo.addColorStop(0, `rgba(${r},${g},${b},${0.2 * glow})`);
+    halo.addColorStop(0.55, `rgba(${r},${g},${b},${0.08 * glow})`);
     halo.addColorStop(1, `rgba(${r},${g},${b},0)`);
     ctx.fillStyle = halo;
     ctx.fillRect(0, 0, W, H);
 
     const tilt = orb.tilt;
-    const cubeX = Math.atan(1 / Math.SQRT2), cubeY = Math.PI / 4;   // a cube seen corner-on
+    const cubeX = 0.52, cubeY = Math.PI / 4;                 // seen from a little above, a corner towards you
+    const swell = 1 + 0.045 * breath;
     const out = [];
     for (const d of orb.dots) {
-      let x = d.sx, y = d.sy, z = d.sz, lift = 0, lit = 0;
+      let x = d.sx, y = d.sy, z = d.sz, lift = 0, lit = 0, hush = 0;
       const ring = orb.ringOf.get(d.ring);
       if (ring && orb.work > 0.001) {                         // this ring turns on its own axis
         const [rx, ry, rz] = rotateAxis(x, y, z, ring.axis, orb.ringAngle * ring.speed);
@@ -211,21 +218,24 @@
       }
       [x, y, z] = rotY(x * (1 + lift), y * (1 + lift), z * (1 + lift), orb.spin);
       [x, y, z] = rotX(x, y, z, tilt);
-      if (orb.cube > 0.001) {                                 // fold into the cube
-        let [qx, qy, qz] = rotY(d.cx, d.cy, d.cz, cubeY);
-        [qx, qy, qz] = rotX(qx, qy, qz, cubeX);
+      if (orb.cube > 0.001) {                                 // fold into the cube, which turns as it waits
+        let [qx, qy, qz] = rotY(d.cx * swell, d.cy * swell, d.cz * swell, cubeY + orb.spin);
+        [qx, qy, qz] = rotX(qx, qy, qz, cubeX + (tilt - REST_TILT) * 0.6);
         const c = orb.cube;
         x += (qx - x) * c; y += (qy - y) * c; z += (qz - z) * c;
+        const band = Math.exp(-((y - sweep) ** 2) / 0.03);    // the light passing down it
+        lit = Math.max(lit * (1 - c), (band * 1.25 + (d.edge ? 0.4 : 0)) * c);
+        hush = 0.4 * c * (1 - band) * (d.edge ? 0.25 : 1);    // the faces step back, so the light and edges show
       }
       // while it works, the dots that are not in a turning ring step back
-      const dim = ring ? 1 : 1 - 0.55 * orb.work * (1 - orb.cube);
+      const dim = (ring ? 1 : 1 - 0.55 * orb.work * (1 - orb.cube)) * (1 - hush);
       out.push([x, y, z, lit, dim]);
     }
     out.sort((a, c) => a[2] - c[2]);                          // far dots first
     const base = Math.max(0.55, size / 64) * dpr;
     for (const [x, y, z, lit, dim] of out) {
       const near = (z + 1) / 2;                               // 0 at the back, 1 at the front
-      const persp = 1 + (3.2 / (3.2 - z) - 1) * (1 - 0.9 * orb.cube);   // the cube is drawn nearly flat: a clean hexagon
+      const persp = 1 + (3.2 / (3.2 - z) - 1) * (1 - 0.35 * orb.cube);   // the cube keeps a little depth as it turns
       const px = cx + x * R * persp, py = cy - y * R * persp;
       const alpha = Math.min(1, (0.12 + 0.88 * near * near) * dim + lit * 0.3);
       const rad = base * (0.55 + 0.75 * near) * (1 + lit * 0.45);
