@@ -48,6 +48,17 @@
         </button>
       </header>
 
+      <!-- the stage: while agentx works, the orb large at the top, with what it is doing under it -->
+      <div class="stage" id="stage" aria-hidden="true">
+        <div class="stage-inner">
+          <canvas class="orb" id="stageOrb" data-size="96" aria-hidden="true"></canvas>
+          <div class="stage-card" role="status">
+            <div class="stage-head"><span class="stage-label" id="stageLabel"></span><span class="stage-time" id="stageTime"></span></div>
+            <div class="stage-bar"><i></i></div>
+          </div>
+        </div>
+      </div>
+
       <section class="log" id="log" aria-live="polite">
         <div class="column" id="column"></div>
       </section>

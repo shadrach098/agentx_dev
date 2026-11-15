@@ -101,6 +101,27 @@ svg { width: 16px; height: 16px; flex: none; }
 .top-title { flex: 1; min-width: 0; font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .log { flex: 1; overflow-y: auto; min-height: 0; }
+/* the stage: the orb large at the top while agentx works, a card under it with what it does; it folds away after */
+.stage { flex: none; display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 460ms var(--ease-out), opacity 320ms var(--ease-out); }
+.stage.on { grid-template-rows: 1fr; opacity: 1; }
+.stage-inner { min-height: 0; overflow: hidden; display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 0 24px; }
+.stage.on .stage-inner { padding: 58px 24px 18px; }
+.stage-inner { transition: padding 460ms var(--ease-out); }
+.stage-card { width: min(440px, 100%); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+.stage-head { display: flex; align-items: baseline; gap: 12px; padding: 11px 14px 10px; font-size: 13.5px; }
+.stage-label { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.stage-time { color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stage-bar { height: 2px; background: var(--line); overflow: hidden; }
+.stage-bar i { display: block; height: 100%; width: 32%; background: var(--brand); box-shadow: 0 0 8px var(--brand-glow); animation: stage-run 1.5s var(--ease-out) infinite; }
+.stage[data-state="thinking"] .stage-bar i { animation-duration: 2.4s; opacity: 0.6; }
+.stage[data-state="stuck"] .stage-bar i { animation: none; width: 100%; opacity: 0.3; }
+.stage[data-state="success"] .stage-bar i { animation: none; width: 100%; transition: width 300ms var(--ease-out); }
+.stage[data-state="stuck"] .stage-label { color: var(--warn); }
+@keyframes stage-run { from { transform: translateX(-100%); } to { transform: translateX(320%); } }
+.stage.on ~ .log .thinking-now { display: none; }     /* the stage says it: no second "Thinking..." line */
+.main.empty .stage { display: none; }
+@media (max-height: 620px) { .stage.on .stage-inner { padding: 44px 24px 12px; gap: 14px; } }
+@media (prefers-reduced-motion: reduce) { .stage, .stage-inner { transition: none; } .stage-bar i { animation: none; width: 100%; opacity: 0.5; } }
 .column { width: 100%; max-width: 768px; margin: 0 auto; padding: 0 24px; }
 .log .column { padding-top: 8px; padding-bottom: 32px; display: flex; flex-direction: column; }
 
@@ -116,6 +137,8 @@ svg { width: 16px; height: 16px; flex: none; }
    welcome then grows out of it (the mark and the name stay put, the question and the buttons fade in). */
 .welcome { padding: 15vh 0 24px; text-align: center; }
 .hero-mark { display: inline-block; color: var(--brand); margin-bottom: 14px; animation: fade-up 500ms var(--ease-out) 60ms both; }
+.hero-orb { display: flex; justify-content: center; margin: 46px 0 52px; }   /* room for the orb's glow */
+.welcome.splash .hero-orb { margin-top: 56px; }
 .hero-mark .mark { width: 40px; height: 40px; display: block; filter: drop-shadow(0 0 12px var(--brand-glow)); }
 .hero-name { font-family: var(--mono); font-size: 34px; font-weight: 500; line-height: 1; letter-spacing: -0.03em; margin: 0 0 22px; }
 .hero-name .glyph { display: inline-block; animation: glyph-in 450ms var(--ease-out) both; }

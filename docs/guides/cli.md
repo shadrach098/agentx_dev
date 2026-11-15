@@ -888,8 +888,13 @@ on the left and in `/resume`; until then, and for older conversations, the first
   GIF, WebP, up to 10 MB) is saved in `.agentx/uploads/` (or in `~/.agentx/uploads/` when the project's `.agentx` or
   `uploads` folder is a link) and the path where the file really is goes into your message, so the agent opens it
   with `read_path`.
-- It opens as the docs site does: the mark, `agentx` typed letter by letter and a blinking lime cursor, with
-  "Starting..." until agentx is ready; while it works, that cursor blinks beside what it is doing.
+- It opens with `agentx` typed letter by letter and a blinking lime cursor, then the question, the model and the
+  **orb**: a sphere of lime dots that shows what agentx is doing ("Starting..." shows until agentx is ready).
+- **While it works, the orb moves to the top**, large, with a card under it saying what it is doing and for how long.
+  It bubbles while agentx thinks (dots push out and settle back), lights rings of dots that turn on their own axes
+  while a step runs, folds into a still cube while it waits for your answer (the card says "Waiting for your
+  answer") and rests in a slow turn with a soft glow when the turn ends ("Done"), before folding away. A small orb
+  beside the line above the message box does the same.
 - Light or dark follows your system, and changes when the system does.
 
 **Safety.** The window talks to agentx over `http://127.0.0.1` only, never the network. Each start makes a new random
@@ -993,7 +998,7 @@ the status line stay at the bottom, while only the conversation between them scr
 
 ## Keys
 
-While `agentx` waits for you the prompt is coloured and the cursor blinks; while it is working, a spinner with the seconds elapsed shows instead (see the checklist below). A still cursor with no spinner means the terminal is the problem, not the program.
+While `agentx` waits for you the prompt is coloured and the cursor blinks; while it is working, a spinner with the seconds elapsed shows instead: a small orb of braille dots that bubbles while it thinks and turns two rings while a step runs (a terminal that cannot show braille gets a plain spinner). An approval's box carries a lime ⬢, the orb's still cube (see the checklist below). A still cursor with no spinner means the terminal is the problem, not the program.
 
 | Key | Does |
 |---|---|

@@ -190,15 +190,17 @@
   let folderName = "";
   // The opening (as on the docs site): the mark, then "agentx" typed letter by letter, then a blinking cursor.
   let heroShown = false;                       // it plays once per page; later welcomes show it still
-  const HERO = () => '<div class="hero-mark"><canvas class="orb" data-size="64" aria-hidden="true"></canvas></div>' +
-    '<div class="hero-name" aria-label="agentx">' +
+  const HERO = () => '<div class="hero-name" aria-label="agentx">' +
     "agentx".split("").map((c, n) => `<span class="glyph" aria-hidden="true" style="animation-delay:${200 + n * 45}ms">${c}</span>`).join("") +
     '<span class="hero-cursor" aria-hidden="true">|</span></div>';
+  // the orb on the opening, large, under the question and the model line
+  const HERO_ORB = (delay) => `<div class="hero-orb hero-in" style="animation-delay:${delay}ms">` +
+    '<canvas class="orb" data-size="128" aria-hidden="true"></canvas></div>';
   function showStarting() {                    // before agentx has said hello: the opening and "Starting..."
     if (column.children.length) return;
     const s = el("section", "welcome splash");
     s.innerHTML = HERO() + '<p class="starting hero-in" style="animation-delay:600ms" role="status">Starting' +
-      '<span class="tick">.</span><span class="tick">.</span><span class="tick">.</span></p>';
+      '<span class="tick">.</span><span class="tick">.</span><span class="tick">.</span></p>' + HERO_ORB(700);
     heroShown = true;
     column.append(s);
     mountOrbs(s, () => "thinking");
@@ -215,6 +217,7 @@
     const late = heroShown ? 0 : 520;            // after the name has typed itself, the first time
     w.innerHTML = `${HERO()}<h1 class="hero-in" style="animation-delay:${late}ms">What should we work on${where ? ` in ${esc(where)}` : ""}?</h1>
       <p class="meta hero-in" style="animation-delay:${late + 80}ms">${esc(welcome.model || "")}</p>
+      ${HERO_ORB(heroShown && !late ? 0 : late + 120)}
       <div class="starters hero-in" style="animation-delay:${late + 160}ms">${STARTERS.map(([label], n) => `<button type="button" class="starter" data-starter="${n}">${label}</button>`).join("")}</div>
       ${tips || news ? `<details class="hero-in" style="animation-delay:${late + 240}ms"><summary>Tips and what's new</summary>${tips ? `<ul>${tips}</ul>` : ""}` +
         `${news ? `<h2>What's new</h2><ul>${news}</ul>` : ""}</details>` : ""}`;
@@ -367,6 +370,7 @@
   }
   // a live "Thinking…" line while the model works and no step is running yet
   function updateLive() {
+    if (window.AgentxOrb && $("stage")) drawStage();
     let live = column.querySelector(".thinking-now");
     const show = !!status.working && !pending.length && !liveCard() && !column.querySelector(".welcome");
     if (!show) { if (live) live.remove(); return; }
@@ -599,7 +603,7 @@
   // -- the status, team and waiting messages under the conversation -----------------------------------------------
   let status = {}, startedAt = 0, sentAt = 0;   // sentAt: a message went off and agentx has not picked it up yet
   let doneAt = 0;                                // a turn just finished: the orb rests with a glow for a moment
-  const DONE_MS = 2600;
+  const DONE_MS = 3500;
   // what the orb shows: stuck on a question or approval, working on a step, thinking, done, or resting
   function orbState() {
     if (liveCard()) return "stuck";
@@ -614,6 +618,26 @@
       window.AgentxOrb.create(canvas, stateOf);
     }
   }
+  // the stage: the orb large at the top while agentx works (and for a moment after, glowing), with what it does
+  let doneTook = "";
+  function drawStage() {
+    const stage = $("stage"), state = orbState();
+    const on = state !== "idle" && !column.querySelector(".welcome");
+    if (on !== stage.classList.contains("on")) {
+      const stick = nearBottom();                 // the conversation keeps its end in view as the stage opens or folds
+      stage.classList.toggle("on", on);
+      stage.setAttribute("aria-hidden", on ? "false" : "true");
+      if (stick) { const until = performance.now() + 520; const hold = () => { log.scrollTop = log.scrollHeight; if (performance.now() < until) requestAnimationFrame(hold); }; requestAnimationFrame(hold); }
+    }
+    if (state === "stuck" && stage.dataset.state !== "stuck") {   // what it waits for stays in view as the stage opens
+      setTimeout(() => { const card = liveCard(); if (card) card.scrollIntoView({block: "nearest", behavior: "smooth"}); }, 480);
+    }
+    stage.dataset.state = state;
+    if (!on) return;
+    $("stageLabel").textContent = state === "stuck" ? "Waiting for your answer" : state === "success" ? "Done"
+      : status.working ? friendlyLabel(status.label) + "…" : "Starting…";
+    $("stageTime").textContent = state === "success" ? doneTook : startedAt ? shortTime(Date.now() / 1000 - startedAt) : "";
+  }
   function drawStatus() {
     const open = liveCard();
     const starting = sentAt && !status.working && !open && !ready && Date.now() - sentAt < 60000;
@@ -621,13 +645,18 @@
     const done = !status.working && !open && !starting && doneAt && Date.now() - doneAt < DONE_MS;
     $("status").hidden = !status.working && !open && !starting && !done;
     $("status").classList.toggle("done", !!done);
-    $("statusLabel").textContent = status.working ? friendlyLabel(status.label) + "…"
-      : open ? "Waiting for your answer" : starting ? "Starting…" : done ? "Done" : "";
+    $("statusLabel").textContent = open ? "Waiting for your answer" : status.working ? friendlyLabel(status.label) + "…"
+      : starting ? "Starting…" : done ? "Done" : "";
+    drawStage();
     $("composer").classList.toggle("busy", !!(status.working || starting));
     tickTime();
   }
   function onStatus(ev) {
-    if (status.working && !ev.working) { doneAt = Date.now(); setTimeout(drawStatus, DONE_MS + 50); }
+    if (status.working && !ev.working) {
+      doneAt = Date.now();
+      doneTook = startedAt ? shortTime(Date.now() / 1000 - startedAt) : "";
+      setTimeout(drawStatus, DONE_MS + 50);
+    }
     else if (ev.working) doneAt = 0;
     status = ev;
     if (ev.working) sentAt = 0;
@@ -665,6 +694,7 @@
     if (startedAt) parts.push(shortTime(Date.now() / 1000 - startedAt));
     if (status.working && status.tokens) parts.push(`${shortTokens(status.tokens)} tokens`);
     $("statusTime").textContent = parts.join(" · ");
+    drawStage();
   }
   setInterval(tickTime, 1000);
   $("waiting").addEventListener("click", (e) => {
@@ -1404,6 +1434,7 @@
 
   showStarting();                          // the opening, until agentx says hello
   mountOrbs($("status"), orbState);         // the orb next to the status line
+  mountOrbs($("stage"), orbState);          // and large on the stage while agentx works
   setComposer();
   input.focus();
   claimLaunch().then(() => { loadState(); loadSessions(); connect(); });
