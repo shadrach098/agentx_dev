@@ -590,3 +590,10 @@ svg { width: 16px; height: 16px; flex: none; }
 /* Details > Team work: a saved job's title above its steps */
 .d-job { margin: 10px 0 4px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 .d-job:first-child { margin-top: 0; }
+
+/* an MCP sign-in on this computer: a small card with the link, not the whole address */
+.card.signin.local .signin-note { margin: 4px 0 10px; color: var(--muted); font-size: 13.5px; }
+.card.signin.local .signin-actions { display: flex; align-items: center; gap: 12px; }
+.card.signin.local .signin-wait { color: var(--faint); font-size: 12.5px; }
+.card.signin.local.done { opacity: 0.6; }
+.card.signin.local.done .signin-actions { display: none; }

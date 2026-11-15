@@ -719,3 +719,16 @@ def test_a_saved_step_wrapped_in_the_response_format_reads_as_its_tool(tmp_path)
     assert items[3]["name"] == "run_shell" and not items[3]["failed"]
     assert items[4] == {"type": "final", "text": "Deployed."}
     assert "React" not in repr(items)
+
+
+def test_an_mcp_sign_in_shows_as_a_card_and_the_orb_waits_for_you():
+    """``/mcp login`` prints the sign-in sentence and the address (as one notice or two); the window shows a card
+    with a link instead of the whole address, and the orb folds into its cube with "Waiting for you to sign in to
+    <server>" until agentx asks for the next message. The sentence must stay as the window expects it."""
+    from agentx_dev.cli.webui import RESOURCES
+    script = (RESOURCES / "app.js").read_text(encoding="utf-8")
+    mcp = (RESOURCES.parent.parent / "cli" / "mcp.py").read_text(encoding="utf-8")
+    assert r'show(f"Sign in to {config.name} in your browser. If it did not open, go to:\n{url}")' in mcp
+    assert r"in your browser\. If it did not open, go to:" in script and "function localSigninCard" in script
+    assert "if (liveCard() || signingIn) return \"stuck\";" in script
+    assert "Waiting for you to sign in to ${signingIn}" in script and "endSignin();" in script

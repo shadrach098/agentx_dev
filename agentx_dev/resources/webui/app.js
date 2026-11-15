@@ -423,6 +423,15 @@
       if (detailsOpen) loadDetails();
       return;
     }
+    // "Sign in to X in your browser. If it did not open, go to:" and the address, in one notice or as two
+    const said = flush(ev.text);
+    const signin = said.match(/^Sign in to (.+?) in your browser\. If it did not open, go to:\s*(https?:\/\/\S+)?\s*$/s);
+    if (signin) {
+      if (signin[2]) localSigninCard(signin[1], signin[2]); else { signinFor = signin[1]; signingIn = signin[1]; drawStage(); }
+      return;
+    }
+    if (signinFor && /^https?:\/\/\S+$/.test(said)) { const who = signinFor; signinFor = ""; localSigninCard(who, said); return; }
+    signinFor = "";
     if (ev.level === "callout") {
       modeNote = {title: flush(ev.text), body: flush(ev.hint)};
       for (const old of column.querySelectorAll(":scope > .notice-chip-row")) old.remove();   // the latest mode only
@@ -558,6 +567,7 @@
   function signinCard(ev) {
     if (!/^https?:\/\//i.test(ev.url || "")) return;
     lastPrint = null; turn = null;
+    signingIn = ev.server || "the MCP server"; drawStage();
     const who = ev.server ? esc(ev.server) : "the MCP server";
     const card = el("section", "card signin");
     card.innerHTML = `<div class="card-head"><div class="card-tool">Sign in</div><div class="card-title">Sign in to ${who}</div></div>
@@ -584,6 +594,28 @@
     column.append(card);
   }
 
+  // an MCP sign-in on this computer: the browser opened (or did not); the orb waits for you until agentx is back
+  let signingIn = "", signinFor = "";             // signinFor: the sentence came, its address is the next notice
+  function localSigninCard(server, url) {
+    lastPrint = null; turn = null;
+    signingIn = server || "the MCP server";
+    const card = el("section", "card signin local");
+    card.innerHTML = `<div class="card-head"><div class="card-tool">Sign in</div><div class="card-title">Sign in to ${esc(signingIn)}</div></div>
+      <p class="signin-note">Your browser should have opened the sign-in page. Finish there and agentx carries on by itself.</p>
+      <div class="signin-actions"><a class="btn primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open the sign-in page</a>
+        <span class="signin-wait">Esc cancels</span></div>`;
+    column.append(card);
+    drawStage();
+  }
+  function endSignin() {
+    if (!signingIn) return;
+    signingIn = "";
+    for (const card of column.querySelectorAll(".card.signin.local:not(.done)")) {
+      card.classList.add("done");
+      const wait = card.querySelector(".signin-wait"); if (wait) wait.remove();
+    }
+    drawStage();
+  }
   let ready = null;          // the app's open "message" request: your next message answers it
   // typing: in a text field (the message box, a card's answer box, a dialog), or a message is in the box
   const typingNow = () => /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement?.tagName || "") || !!input.value.trim();
@@ -591,6 +623,7 @@
     if (ready === ev.id || cards.has(ev.id)) return;          // already shown (a reload plays it twice)
     if (ev.kind === "message") {
       ready = ev.id;
+      endSignin();                                             // a sign-in ended (done, failed or cancelled)
       if (ev.default) { input.value = (input.value ? input.value + " " : "") + ev.default; grow(); }
       drawStatus();                                            // agentx is back for the next message
       setComposer();
@@ -629,7 +662,7 @@
   const DONE_MS = 6000;
   // what the orb shows: stuck on a question or approval, working on a step, thinking, done, or resting
   function orbState() {
-    if (liveCard()) return "stuck";
+    if (liveCard() || signingIn) return "stuck";
     if (status.working) return pending.length || !/^thinking/i.test(String(status.label || "")) ? "working" : "thinking";
     if (sentAt) return "thinking";
     return doneAt && Date.now() - doneAt < DONE_MS ? "success" : "idle";
@@ -644,7 +677,7 @@
   // the stage: once you have written, the orb large at the top, with a small note under it naming what the orb
   // shows now: thinking, the step it runs, waiting for you, done (while it glows), then ready; it stays after a turn
   let doneTook = "", stoppingAt = 0;               // stoppingAt: Esc (or Stop) was pressed and the turn has not ended yet
-  const busyNow = () => !!(status.working || liveCard() || sentAt);
+  const busyNow = () => !!(status.working || liveCard() || sentAt || signingIn);
   function stopNow() {
     if (status.working && !liveCard()) { stoppingAt = Date.now(); drawStage(); }
     post("/api/stop");
@@ -665,7 +698,8 @@
     if (!on) return;
     if (stoppingAt && (!status.working || Date.now() - stoppingAt > 30000)) stoppingAt = 0;
     $("stageLabel").textContent = stoppingAt && state !== "stuck" ? "Stopping…"
-      : state === "stuck" ? "Waiting for your answer" : state === "success" ? "Done"
+      : state === "stuck" ? (signingIn && !liveCard() ? `Waiting for you to sign in to ${signingIn}` : "Waiting for your answer")
+      : state === "success" ? "Done"
       : state === "idle" ? "Ready" : status.working ? friendlyLabel(status.label) + "…" : "Starting…";
     $("stageTime").textContent = state === "success" ? doneTook : startedAt ? [shortTime(Date.now() / 1000 - startedAt),
       status.working && status.tokens ? `${shortTokens(status.tokens)} tokens` : ""].filter(Boolean).join(" · ") : "";
@@ -1342,7 +1376,7 @@
   // A conversation opened (start, /resume, /clear): its earlier messages come from /api/history; what happens in it
   // from now on comes as events. The first one keeps what is already shown (startup notices) below its history.
   let knownConversation = null;
-  function resetView() { column.innerHTML = ""; cards.clear(); turn = null; group = null; pending = []; lastPrint = null; ready = null; doneAt = 0; doneTook = ""; }
+  function resetView() { column.innerHTML = ""; cards.clear(); turn = null; group = null; pending = []; lastPrint = null; ready = null; doneAt = 0; doneTook = ""; signingIn = ""; }
   async function switchConversation(ev) {
     const mine = ++loading;
     let data = null;

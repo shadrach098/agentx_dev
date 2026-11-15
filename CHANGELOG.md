@@ -42,6 +42,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   turn, so an old one showed zeros or too little; it now adds up (tokens from the cache too). And Details lists the
   team jobs a conversation ran before: each job now names its conversation in `job.md`, and an older one is matched
   by its task (or, when the history has been summarised since, by when it ran).
+- **An MCP sign-in in the app window.** `/mcp login` showed the whole sign-in address as text while the orb said
+  "Ready". It is now a small card with an **Open the sign-in page** button, and the orb folds into its cube with
+  "Waiting for you to sign in to <server>" until the sign-in ends (Esc cancels it).
 - **A wider conversation in the app window.** The conversation and the message box use up to 1000 pixels instead
   of 768, so a wide window has less empty space on each side.
 - **Esc stops agentx in the app window while you type.** "Esc to stop" did nothing while the cursor was in the
