@@ -411,24 +411,40 @@
     turn = null;
     column.append(lastPrint);
   }
+  // The conversation keeps room for the work: the mode note ("Auto mode is on.") is a small chip whose full text
+  // shows on hover and in Details, and MCP servers that need signing in are listed in Details (a dot on its button).
+  let modeNote = null;
   function addNotice(ev) {
     lastPrint = null; turn = null;
-    const n = el("div", `notice ${ev.level || "info"}`);
     const flush = (s) => String(s || "").replace(/^[ \t]+/gm, "").trim();      // the terminal's indent is not needed here
-    if (ev.level === "callout") n.innerHTML = `<b>${esc(flush(ev.text))}</b>${esc(flush(ev.hint))}`;
-    else n.innerHTML = `<span>${esc(flush(ev.text))}${ev.hint ? ` <span class="hint">${esc(flush(ev.hint))}</span>` : ""}</span>`;
-    // "2 MCP servers need sign-in: flightclaw, supabase": a button for each, named
-    const signin = String(ev.text || "").match(/MCP servers? needs? sign-in:\s*([\w, -]+)/i);
-    if (signin) {
-      const row = el("span", "notice-actions");
-      signin[1].split(",").map((s) => s.trim()).filter((s) => /^[\w-]{1,40}$/.test(s)).forEach((name) => {
-        const b = el("button", "btn small", `Sign in to ${esc(name)}`);
-        b.type = "button";
-        b.addEventListener("click", () => post("/api/send", {text: `/mcp login ${name}`}));
-        row.append(b);
-      });
-      n.firstElementChild.append(row);
+    if (/MCP servers? needs? sign-in:/i.test(String(ev.text || ""))) {
+      $("detailsBtn").classList.add("attention");
+      if (detailsOpen) loadDetails();
+      return;
     }
+    if (ev.level === "callout") {
+      modeNote = {title: flush(ev.text), body: flush(ev.hint)};
+      const row = el("div", "notice-chip-row");
+      const chip = el("button", "notice-chip", `<span class="chip-dot" aria-hidden="true"></span>${esc(modeNote.title)}` +
+        `<span class="chip-pop" role="tooltip">${esc(modeNote.body)}<em>Click for details</em></span>`);
+      chip.type = "button";
+      const place = () => {                          // the card opens above the chip when there is no room below
+        const pop = chip.querySelector(".chip-pop");
+        chip.classList.toggle("up", chip.getBoundingClientRect().bottom + pop.offsetHeight + 16 > log.getBoundingClientRect().bottom);
+      };
+      chip.addEventListener("mouseenter", place);
+      chip.addEventListener("focus", place);
+      chip.addEventListener("click", () => {
+        setDetails(true);
+        setTimeout(() => { const s = $("detailsBody").querySelector(".d-mode"); if (s) s.scrollIntoView({block: "nearest"}); }, 120);
+      });
+      row.append(chip);
+      column.append(row);
+      if (detailsOpen) loadDetails();
+      return;
+    }
+    const n = el("div", `notice ${ev.level || "info"}`);
+    n.innerHTML = `<span>${esc(flush(ev.text))}${ev.hint ? ` <span class="hint">${esc(flush(ev.hint))}</span>` : ""}</span>`;
     column.append(n);
   }
   function addEcho(ev) {
@@ -938,9 +954,15 @@
     const pct = ctx ? Math.min(100, Math.round(ctx.chars * 100 / Math.max(1, ctx.limit))) : 0;
     $("ctxRing").style.setProperty("--p", pct);
     $("ctxRing").classList.toggle("high", pct >= 80);
-    $("detailsBtn").title = ctx ? `Context ${pct}% full` : "Details";
+    const needSignin = (d.mcp || []).filter((m) => m.state === "signin").map((m) => m.name);
+    $("detailsBtn").classList.toggle("attention", needSignin.length > 0);
+    $("detailsBtn").title = needSignin.length ? `${needSignin.join(", ")}: sign-in needed (MCP)` : ctx ? `Context ${pct}% full` : "Details";
     if (!detailsOpen) return;
     const out = [];
+    if (modeNote) {
+      out.push(`<section class="d-sec d-mode"><h3>Mode</h3><p class="d-mode-title">${esc(modeNote.title)}</p>` +
+        `<p class="d-note">${esc(modeNote.body)}</p></section>`);
+    }
     if (ctx) {
       out.push(section("Context", `<div class="meter"><span style="width:${pct}%"></span></div>
         <p class="d-note">${pct}% full · ${num(ctx.messages)} messages. At 100%, older parts are summarised so the

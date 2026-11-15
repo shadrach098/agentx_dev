@@ -844,7 +844,8 @@ on the left and in `/resume`; until then, and for older conversations, the first
   being summarised, the tokens used this session, the last team job (each helper, what it is doing, and every file
   and command it touched), your MCP servers by name with their state and their own **Sign in**, **Reconnect**,
   **Tools** and **Sign out** buttons, and the project memory (the `AGENTX.md` files in force, saved notes, team
-  reports). A notice that MCP servers need sign-in has a **Sign in to <name>** button for each. On a wide window it
+  reports), and the mode in force with what it allows. MCP servers that need signing in are listed here only (not in
+  the conversation): a yellow dot on **Details** says so, and each has its **Sign in** button. On a wide window it
   is a column on the right; on an iPad, a phone or a half-screen window it slides over the chat, and tapping beside
   it (or Esc) closes it. Long server names and addresses wrap, so it never scrolls sideways.
 - **Settings** edits the settings files, for **All folders** (`~/.agentx/settings.json`) or **This folder**
@@ -888,6 +889,8 @@ on the left and in `/resume`; until then, and for older conversations, the first
   GIF, WebP, up to 10 MB) is saved in `.agentx/uploads/` (or in `~/.agentx/uploads/` when the project's `.agentx` or
   `uploads` folder is a link) and the path where the file really is goes into your message, so the agent opens it
   with `read_path`.
+- The mode note at the start ("Auto mode is on.") is a small chip in the conversation: hover it to read what the
+  mode allows, click it to open **Details**.
 - It opens with `agentx` typed letter by letter and a blinking lime cursor, then the question, the model and the
   **orb**: a sphere of lime dots that shows what agentx is doing ("Starting..." shows until agentx is ready).
 - **While it works, the orb moves to the top**, large, with a card under it saying what it is doing and for how long.

@@ -86,7 +86,7 @@ svg { width: 16px; height: 16px; flex: none; }
 .row-chev { width: 11px; height: 11px; color: var(--faint); }
 
 /* the top bar's Details button, with a ring for how full the context is */
-.top-btn { display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; color: var(--muted); border-radius: 8px; padding: 5px 10px; font-size: 13px; transition: background 0.12s, color 0.12s; }
+.top-btn { position: relative; display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; color: var(--muted); border-radius: 8px; padding: 5px 10px; font-size: 13px; transition: background 0.12s, color 0.12s; }
 .top-btn:hover, .top-btn[aria-expanded="true"] { background: var(--hover); color: var(--text); }
 .ctx-ring { --p: 0; width: 14px; height: 14px; border-radius: 50%; background: conic-gradient(var(--muted) calc(var(--p) * 1%), var(--line-strong) 0); -webkit-mask: radial-gradient(circle, transparent 4px, #000 4.5px); mask: radial-gradient(circle, transparent 4px, #000 4.5px); }
 .ctx-ring.high { background: conic-gradient(var(--warn) calc(var(--p) * 1%), var(--line-strong) 0); }
@@ -259,6 +259,19 @@ svg { width: 16px; height: 16px; flex: none; }
 .notice.warning { color: var(--warn); }
 .notice.warning::before { background: var(--warn); }
 .notice .hint { color: var(--faint); }
+/* the mode note: a small chip; its full text on hover and in Details */
+.notice-chip-row { margin: 8px 0; }
+.notice-chip { position: relative; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 999px; padding: 5px 12px 5px 10px; font: inherit; font-size: 13px; cursor: pointer; transition: border-color 0.12s, background 0.12s; }
+.notice-chip:hover, .notice-chip:focus-visible { border-color: var(--line-strong); background: var(--raised); }
+.chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 8px var(--brand-glow); flex: none; }
+.chip-pop { position: absolute; left: 0; top: calc(100% + 8px); z-index: 6; width: min(420px, 78vw); padding: 10px 12px; text-align: left; white-space: normal; line-height: 1.5; color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); opacity: 0; visibility: hidden; transform: translateY(-4px); transition: opacity 0.15s, transform 0.15s var(--ease-out), visibility 0.15s; pointer-events: none; }
+.notice-chip:hover .chip-pop, .notice-chip:focus-visible .chip-pop { opacity: 1; visibility: visible; transform: none; }
+.notice-chip.up .chip-pop { top: auto; bottom: calc(100% + 8px); transform: translateY(4px); }
+.notice-chip.up:hover .chip-pop, .notice-chip.up:focus-visible .chip-pop { transform: none; }
+.chip-pop em { display: block; margin-top: 6px; font-style: normal; font-size: 12px; color: var(--faint); }
+.d-mode-title { margin: 0 0 4px; color: var(--text); font-weight: 600; }
+/* a dot on Details while an MCP server needs signing in */
+#detailsBtn.attention::after { content: ""; position: absolute; top: 4px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 2px var(--bg); }
 .notice.callout { display: block; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; }
 .notice.callout::before { display: none; }
 .notice.callout b { display: block; font-weight: 600; margin-bottom: 2px; }

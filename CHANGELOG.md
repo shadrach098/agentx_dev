@@ -17,6 +17,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   the message box). In the terminal it is a small braille orb beside the spinner's words, and an approval's box
   carries the cube (⬢). The large orb can be grabbed with the mouse and spun; let go and it keeps the flick's
   momentum, then settles into its slow turn in the direction you threw it.
+- **A tidier conversation in the app window.** The mode note ("Auto mode is on.") is now a small chip: hover it
+  to read what the mode allows, click it to open Details. MCP servers that need signing in are listed in Details
+  only, with a yellow dot on its button, instead of a notice in the conversation.
 
 ## [3.8.1] - 2026-11-13
 
