@@ -6,6 +6,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-11-16
+
 ### Added
 
 - **Two conversations side by side in the app window.** Drag a conversation from **Recent** onto the chat (or use

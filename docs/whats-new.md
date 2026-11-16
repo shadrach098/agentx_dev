@@ -3,6 +3,29 @@
 The newest release first. For what to change when you upgrade, see [Upgrading](guides/upgrading.md); every
 change in detail is in the [changelog](https://github.com/shadrach098/agentx_dev/blob/main/CHANGELOG.md).
 
+## 3.9 — the orb and two conversations at once
+
+The `agentx` app window, reworked around what agentx is doing:
+
+- **The orb.** A sphere of lime dots in the brand's lime. It sits large under "What should we work on?", then
+  moves to the top once you write, with a small note under it naming what it shows: Thinking (its surface
+  bubbles), the step it runs (rings of dots turn on their own axes), Waiting for your answer (it folds into a cube
+  that turns and breathes, a band of light sweeping down it), Done and how long it took, then Ready. Grab it with
+  the mouse to spin it. The terminal keeps its spinner.
+- **Two conversations side by side.** Drag a conversation from **Recent** onto the chat, or use **Open a folder
+  beside…** in the folder menu: it opens on the right half, run by an agentx of its own, with its own history,
+  settings, approvals and **Details**. Drag the line between the sides to resize them, and Details' edge to resize
+  it.
+- **API keys in Settings.** Paste your Claude or OpenAI key in **Settings > API keys**. It is kept encrypted by the
+  system's credential store (Windows Credential Manager, the macOS Keychain, the Secret Service on Linux), never
+  in a file, and only its last four characters are shown. A saved key wins over the environment variable.
+- **A tidier conversation.** The model and mode are no longer repeated under the question; the mode note is a small
+  chip (hover to read it, click for Details); MCP sign-ins are listed in Details only; an MCP sign-in shows as a
+  card with a button; the conversation is wider.
+- **A conversation opened again shows what it did.** Its steps read as the tools they ran, Details counts its
+  tokens across every start, and it lists the team jobs the conversation ran.
+- **Esc stops agentx from the message box** too, and a stop during a retry pause lands at once.
+
 ## 3.8.1 — a security release
 
 A review of the `agentx` app closed gaps where a cloned project, a web page or keys typed at the wrong moment could

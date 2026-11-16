@@ -36,6 +36,14 @@ Every code block below is something you can paste and run.
 
 ---
 
+## What's new in 3.9 — the orb and two conversations at once
+
+The `agentx` app window has an **orb**: a sphere of lime dots that shows what agentx is doing. It bubbles while it
+thinks, turns rings of dots while a step runs, and folds into a turning cube while it waits for you. Drag a
+conversation from **Recent** onto the chat to run **two conversations side by side**, each with its own history
+and approvals. **Settings > API keys** keeps your Claude and OpenAI keys encrypted by the system. See
+[What's new](docs/whats-new.md) and [Upgrading](docs/guides/upgrading.md).
+
 ## What's new in 3.8.1 — a security release
 
 3.8.1 closes gaps in the `agentx` app where a cloned project, a web page or keys typed at the wrong moment could get

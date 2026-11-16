@@ -13,6 +13,21 @@ module stays imported until you do, which shows up as errors like
 
 ---
 
+## Upgrading to 3.9.0
+
+**New features in the `agentx` app; no change to the Python API.** What you may notice:
+
+- **A new dependency:** `keyring` is now installed with agentx (it keeps the keys saved in **Settings > API keys**
+  encrypted by your system). `pip install -U agentx-dev` brings it.
+- **API keys:** a key saved in **Settings > API keys** wins over `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, also at
+  the next start. Remove it there to go back to the variable.
+- **Saved conversations:** a conversation's token total now adds up across every start (it was replaced by the last
+  start's count each turn); a total already saved stays as it was, and grows from here. Team jobs now name their
+  conversation in `.agentx/team/<job>/job.md` (`Conversation: <id>`).
+- **The app window:** the orb replaces the old spinner there; the header box with the version and model is gone once
+  you write (the message box shows the model and mode). Nothing to change.
+- **The terminal** is unchanged.
+
 ## Upgrading to 3.8.1
 
 **A security release for the `agentx` app; no change to the Python API.** What you may notice:
