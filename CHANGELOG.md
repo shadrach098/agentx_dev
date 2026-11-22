@@ -6,6 +6,11 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+### Fixed
+
+- Refreshing the app window restores the conversation opened beside it, reconnecting to the same running
+  agentx and replaying its messages instead of losing the side. Closing the side still closes it intentionally.
+
 ## [3.9.0] - 2026-11-16
 
 ### Added
