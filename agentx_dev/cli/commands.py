@@ -86,13 +86,16 @@ def _model(ctx: Any, arg: str) -> None:
         if folder:
             ctx.error("Usage: /model <name> --folder")
             return
-        ctx.notice(f"Model: {shown(ctx.model_label)}. Switch for this session with /model <name>, for example "
-                   f"/model claude-opus-5-5 or /model gpt-6.1-sol.{default_hint}")
+        local = [model for model in getattr(ctx, "local_models", None) or [] if model != ctx.model_label]
+        others = (" Other models: " + shown(", ".join(f"{model} (local)" for model in local), 600) + "."
+                  if local else "")
+        ctx.notice(f"Model: {shown(ctx.model_label)}.{others} Switch for this session with /model <name>, for "
+                   f"example /model claude-opus-5-5 or /model gpt-6.1-sol.{default_hint}")
         return
     try:
         ctx.switch_model(name)
     except ModelError as e:
-        ctx.error(shown(e))
+        ctx.error(shown(e, 600))                 # a local model's failed check says why, and may add a hint
         return
     if folder:
         ctx.notice(f"Model: {shown(ctx.model_label)}")

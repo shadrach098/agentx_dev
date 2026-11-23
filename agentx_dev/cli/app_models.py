@@ -7,9 +7,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence, Tuple
 
-from agentx_dev.cli.models import (SUGGESTED_MODELS, ModelError, describe_prompt, is_auto_note, key_variable,
-                                   other_provider, parse_descriptions, parse_team_models, provider_for,
-                                   team_models_line, usable_team_models)
+from agentx_dev.LocalModel import _DEFAULT_WINDOW, Local
+from agentx_dev.cli.models import (LOCAL_TYPO_HINT, SUGGESTED_MODELS, ModelError, describe_prompt, is_auto_note,
+                                   key_variable, model_label, other_provider, parse_descriptions, parse_team_models,
+                                   provider_for, team_models_line, usable_team_models)
 from agentx_dev.cli.settings import (project_settings_path, user_settings_path, write_project_mode,
                                      write_project_model,
                                      write_project_team_models, write_user_model)
@@ -36,15 +37,58 @@ class ModelCommands:
                     "/team-models clear turns that off for this session.")
 
     def switch_model(self, name: str) -> None:
-        """Switch the model, keeping the conversation. A model that cannot be built raises (``ModelError``)
-        before anything changes, so the old model stays."""
+        """Switch the model, keeping the conversation. A model that cannot be built, or a local one that fails its
+        check, raises (``ModelError``) before anything changes, so the old model stays."""
         self.pick_up_saved_keys()
-        model = self.model_factory(name, self.env)
+        model = self._built_model(name)
         self.model = model
         self._track_usage_model(self.model_label, model, "chat")
         self.requested_model = name
         assert self.session is not None
         self.session.attach(self._make_runner(model))
+
+    def _built_model(self, name: Optional[str]) -> Any:
+        """The model for ``name`` from the factory. A local one is checked first (the first time, the server loads
+        the model, which can take a couple of minutes) and gets 8,192 tokens when its server does not say its window.
+        Raises ``ModelError`` when the model cannot be built or fails the check; Ctrl+C stops the check."""
+        model = self.model_factory(name, self.env)
+        if not getattr(model, "is_local", False):
+            return model
+        shown = self._safe(str(name or "").strip() or model_label(model), 80)
+        self.progress.start(f"Loading {shown} on the local server")
+        try:
+            result = model.check()
+        except Exception as e:
+            raise ModelError(f"Could not use {shown}: the check failed ({type(e).__name__})") from None
+        finally:
+            self.progress.stop()
+        if not result.ok:
+            hint = f". {LOCAL_TYPO_HINT}" if shown.lower().startswith(("cl", "gp")) else ""
+            raise ModelError(f"Could not use {shown}: {self._safe(result.reason, 400)}{hint}")
+        model.context_window = self._window_of(model)      # the runner keeps each request inside it
+        return model
+
+    @staticmethod
+    def _window_of(model: Any) -> Optional[int]:
+        """``model``'s window in tokens when it is a local model (8,192 when it does not say); None otherwise."""
+        if not getattr(model, "is_local", False):
+            return None
+        window = getattr(model, "context_window", None)
+        return window if isinstance(window, int) and not isinstance(window, bool) and window > 0 else _DEFAULT_WINDOW
+
+    def _local_window(self) -> Optional[int]:
+        """The chat model's window in tokens when it is a local model; None for a hosted one."""
+        return self._window_of(self.model)
+
+    def _discover_local_models(self, server: str) -> None:
+        """In the background at startup: the models the local server lists, for ``/model`` and the model menu. A
+        refused connection answers at once and a slow server gets half a second; no answer leaves the list empty
+        and says nothing (typing a local name still runs the check)."""
+        try:
+            names = Local.models(server, timeout=0.5)
+        except Exception:
+            return
+        self.local_models[:] = [str(name) for name in names if str(name).strip()]
 
     def save_folder_model(self, name: str) -> None:
         """``/model <name> --folder``: keep the model for this folder in its settings file."""
@@ -226,7 +270,7 @@ class ModelCommands:
         """At start, the saved model could not be built (``error``). When its provider has no key but the other
         provider's key is set (you moved from GPT to Claude, say), offer that provider's models, use the one
         picked, and offer to save it where the old name came from. None: nothing was picked (the error stays)."""
-        self.error(self._safe(error) + self._model_source_note())
+        self.error(self._safe(error, 600) + self._model_source_note())     # a failed check's reason, in full
         other = other_provider(self.requested_model, self.env)
         if other is None:
             return None

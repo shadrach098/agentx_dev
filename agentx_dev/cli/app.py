@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import logging
 import logging.handlers
 import os
@@ -18,11 +19,11 @@ from rich.text import Text
 
 from agentx_dev import AgentRunner, AgentType, Session
 from agentx_dev.cli.approval import MODES, Gate
-from agentx_dev.Runner.Fallback import NO_CREDIT_WORDS
+from agentx_dev.Runner.Fallback import NO_CREDIT_WORDS, ContextWindowTooSmall
 from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
                                      runs_while_working,
                                      shown)
-from agentx_dev.cli.context import build_addendum
+from agentx_dev.cli.context import MAX_CONTEXT_CHARS, MAX_LOG_CHARS, build_addendum
 from agentx_dev.cli.mcp import (MCPManager, windows_system_env, windows_user_env)
 from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events
 from agentx_dev.cli.recall import ProjectMemory, auto_block, choose_embeddings, make_recall_tool, worth_a_note
@@ -269,7 +270,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                  team_models_source: Optional[Path] = None,
                  team_model_uses: Optional[Mapping[str, str]] = None,
                  token_limit: int = DEFAULT_TOKEN_LIMIT, max_steps: int = DEFAULT_MAX_STEPS,
-                 auto_team: Optional[bool] = None) -> None:
+                 auto_team: Optional[bool] = None, local_server: Optional[str] = None) -> None:
         self.cwd = Path(cwd).resolve()
         self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
@@ -366,6 +367,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         self._log_warned = False
         self._compact_wait = 0             # no summarising until the history has this many messages
         self.addendum = build_addendum(self.cwd, self.home)
+        self._addendum_log = ""                # the work-log text in the addendum (a fresh conversation's)
+        self._addendum_for: Optional[Tuple[str, int]] = None   # (local model, window) it was fitted to; None: none
+        self._trimmed_told = False             # this conversation was told its local model sees less of it
         self.model: Any = None
         self._usage_models: List[Tuple[str, str, Any]] = []     # (label, "chat" or "helper", model) used this session
         # (requests, input, output, cached input) of the last turn
@@ -398,6 +402,14 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             self.progress.waiting = self._waiting_shown
         except Exception:
             pass
+        # The models the local server lists (``local_server``: a real run's settings), asked in the background:
+        # starting up never waits for the answer, and /model and the model menu show it once it is here.
+        self.local_models: List[str] = []
+        self._local_discovery: Optional[threading.Thread] = None
+        if local_server is not None:
+            self._local_discovery = threading.Thread(target=self._discover_local_models, args=(local_server,),
+                                                     name="agentx-local-models", daemon=True)
+            self._local_discovery.start()
 
     def _remembering(self, ask: Callable[..., Any]) -> Callable[..., Any]:
         """``ask`` that notes when the user answers "a" at an edit prompt: the gate then switches itself to
@@ -545,6 +557,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         # effects. No timeout is set anywhere: an approval prompt waits for the user as long as it takes.
         # One tool call at a time: one approval prompt open, on the main thread, and edits made in order.
         # The main agent's tools only (a team's helpers use the plain ones): checked against this message's route.
+        # A local model's window (``model.context_window``, from its check) keeps each request inside it.
+        if self._fitted_for(model) != self._addendum_for:
+            self._build_instructions(model)
         runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=[self._route_guarded(t) for t in self.tools],
                              system_addendum=self.addendum,
                              max_iterations=self.max_steps, auto_cache=False, verbose=False, parallel_tool_workers=1,
@@ -561,6 +576,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         web grant are emptied, and accept-edits that came from answering "a" at an edit prompt goes back to the
         mode that was in force when the user answered. A mode the user chose since (``/mode``, Shift+Tab) is kept."""
         self._compact_wait = 0
+        self._trimmed_told = False
         if hasattr(self, "_team_panel"):
             from agentx_dev.cli.team_panel import TeamPanel
             self._team_panel = TeamPanel()
@@ -597,7 +613,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         self.load_stored_keys()                       # keys saved from the window win
         self.pick_up_saved_keys()
         try:
-            self.model = self.model_factory(self.requested_model, self.env)
+            self.model = self._built_model(self.requested_model)       # a local model is checked first
         except ModelError as e:
             # no key for the saved model: when the other provider's key is set, offer its models instead
             self.model = self.model_from_the_other_key(e)
@@ -945,8 +961,31 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             self.notice("To pick up this conversation later: agentx --continue (add --model <name> to switch model).")
         return self._exit_code
 
+    def _no_credit(self, error: BaseException) -> bool:
+        """The provider refused for want of credit. Never for a local model: a local server has no credit."""
+        return _out_of_credit(error) and not getattr(self.model, "is_local", False)
+
+    def _tell_trimmed(self, event: Dict[str, Any]) -> None:
+        """The first ``context_trimmed`` event of a conversation: one notice that the local model works with less
+        than the whole conversation."""
+        if self._trimmed_told:
+            return
+        self._trimmed_told = True
+        window = event.get("window")
+        window = window if isinstance(window, int) and not isinstance(window, bool) else self._local_window()
+        what = ("the earlier conversation was summarised" if event.get("how") == "summary"
+                else "older tool results were shortened")
+        self.notice(f"{self._safe(self.model_label, 80)} is working with less than the whole conversation: {what} "
+                    f"to fit its {window or 0:,}-token window.")
+
+    def _too_small(self, error: ContextWindowTooSmall) -> str:
+        name = self._safe(self.model_label, 80)
+        return (f"{name}'s {error.window:,}-token window is too small for this conversation. A variant with a larger "
+                f"window fixes it: a Modelfile with FROM {name} and PARAMETER num_ctx 16384, then ollama create "
+                f"{name}-16k -f Modelfile.")
+
     def _failure(self, error: BaseException) -> str:
-        if _out_of_credit(error):
+        if self._no_credit(error):
             return (f"Your {provider_name(self.model_label)} account is out of credit: the API refused the request "
                     f"({type(error).__name__}).")
         return f"Something went wrong ({type(error).__name__}): {self._safe(error)}"
@@ -1041,6 +1080,10 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                         self._read_by_agent(str(event.get("content") or ""))
                         self.progress.start("Thinking")
                         continue
+                    if kind == "context_trimmed":              # the local model's window: said once
+                        self._tell_trimmed(event)
+                        self.progress.start("Thinking")
+                        continue
                     if kind == "completion":
                         self._show_unanswered(event.get("completion"), answered)
                     self.screen.show_event(event)
@@ -1065,10 +1108,13 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         except KeyboardInterrupt:
             self.notice(f"Turn interrupted (Ctrl+C). {KEPT_SO_FAR}")
             stopped = "the user pressed Ctrl+C"
+        except ContextWindowTooSmall as e:              # the request was not sent: nothing to try again as it is
+            self.error(self._too_small(e))
+            stopped = "the model's context window is too small for it"
         except Exception as e:
             self.error(self._failure(e))
-            self.notice(KEPT_SO_FAR + " " + (OUT_OF_CREDIT_NEXT if _out_of_credit(e) else ERROR_NEXT))
-            stopped = (f"the {provider_name(self.model_label)} account is out of credit" if _out_of_credit(e)
+            self.notice(KEPT_SO_FAR + " " + (OUT_OF_CREDIT_NEXT if self._no_credit(e) else ERROR_NEXT))
+            stopped = (f"the {provider_name(self.model_label)} account is out of credit" if self._no_credit(e)
                        else f"an error ({type(e).__name__})")
         finally:
             self.progress.stop()
@@ -1340,8 +1386,26 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
     def _refresh_instructions(self, with_log: bool = False) -> None:
         """Read AGENTX.md again (``/init`` or the user may have written or changed it). ``with_log`` adds the
         newest work-log entries: only for a fresh conversation, never for a resumed one."""
-        log_text = read_recent(self.cwd) if (with_log and self._memory_on) else ""
-        self.addendum = build_addendum(self.cwd, self.home, log_text=log_text)
+        self._addendum_log = read_recent(self.cwd) if (with_log and self._memory_on) else ""
+        self._build_instructions(self.model)
+
+    def _fitted_for(self, model: Any) -> Optional[Tuple[str, int]]:
+        window = self._window_of(model)
+        return None if window is None else (str(label_of(model)), window)
+
+    def _build_instructions(self, model: Any) -> None:
+        """``self.addendum`` for ``model``. A local model's instructions (AGENTX.md and the work log) get at most a
+        third of its window, the log a quarter of that, with a line saying when they were shortened."""
+        fitted = self._fitted_for(model)
+        limits: Dict[str, Any] = {}
+        if fitted is not None:
+            name, window = fitted
+            share = window * 4 // 3                      # characters: about 4 a token, a third of the window
+            max_log = min(MAX_LOG_CHARS, share // 4)
+            limits = dict(max_context_chars=min(MAX_CONTEXT_CHARS, share - max_log), max_log_chars=max_log,
+                          shortened_note=f"(shortened to fit {name}'s {window:,}-token window)")
+        self.addendum = build_addendum(self.cwd, self.home, log_text=self._addendum_log, **limits)
+        self._addendum_for = fitted
 
     def _start_fresh(self) -> None:
         """A new conversation (startup without --continue/--resume, or /clear): it starts from the work log."""
@@ -1681,6 +1745,7 @@ def device_app(template: "ChatApp", room: Any) -> "ChatApp":
                   token_limit=settings.token_limit, max_steps=settings.max_steps,
                   model_factory=template.model_factory, env=getattr(template, "_given_env", None))
     app.auto_titles = bool(getattr(template, "auto_titles", False))
+    app.local_models = template.local_models               # one list, filled by the main conversation's search
     return app
 
 
@@ -1729,7 +1794,11 @@ def _run(args: argparse.Namespace, home: Path, console: Console, read: Callable[
                       model_source=None if args.model else settings.model_source,
                       team_models=settings.team_models, team_models_source=settings.team_models_source,
                       team_model_uses=settings.team_model_uses, token_limit=settings.token_limit,
-                      max_steps=min(max(1, args.max_steps), MAX_MAX_STEPS) if args.max_steps else settings.max_steps)
+                      max_steps=min(max(1, args.max_steps), MAX_MAX_STEPS) if args.max_steps else settings.max_steps,
+                      # every model built by name reaches the local server in the user's settings (Ruling A)
+                      model_factory=functools.partial(choose_model, local_server=settings.local_server,
+                                                      local_context=settings.local_context),
+                      local_server=settings.local_server)
         app.auto_titles = True                         # a real run: conversations get a short title from the model
         app.remote_at_start = bool(getattr(args, "remote", False)) and not getattr(args, "ui", False)
         if wire is not None:

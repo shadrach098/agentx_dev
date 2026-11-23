@@ -191,10 +191,12 @@ def transcript(older: List[Message], limit: int = MAX_INPUT_CHARS) -> str:
     return pinned + text
 
 
-def summarise(older: List[Message], call: Callable[[str], str]) -> Optional[str]:
-    """One model call. None when it raises or answers with too little to be a summary."""
+def summarise(older: List[Message], call: Callable[[str], str], *,
+              max_input_chars: int = MAX_INPUT_CHARS) -> Optional[str]:
+    """One model call, its transcript cut to ``max_input_chars``. None when it raises or answers with too little to
+    be a summary."""
     try:
-        reply = call(SUMMARY_PROMPT + transcript(older))
+        reply = call(SUMMARY_PROMPT + transcript(older, max_input_chars))
     except Exception:
         return None
     text = _text(reply).strip()
@@ -212,9 +214,10 @@ def apply_summary(history: List[Message], cut: int, summary: str) -> List[Messag
 
 
 def compact(history: List[Message], call: Callable[[str], str], *, threshold: int = THRESHOLD_CHARS,
-            keep: int = KEEP_USER_MESSAGES) -> Compaction:
-    """Summarise ``history`` when it is over ``threshold`` characters. Never changes the input list: the result
-    holds the new history, or the very same list when nothing was done or the summary failed."""
+            keep: int = KEEP_USER_MESSAGES, max_input_chars: int = MAX_INPUT_CHARS) -> Compaction:
+    """Summarise ``history`` when it is over ``threshold`` characters, the summarising call's own input cut to
+    ``max_input_chars`` (a model with a small window gets less). Never changes the input list: the result holds the
+    new history, or the very same list when nothing was done or the summary failed."""
     if history_size(history) <= threshold:
         return Compaction("none", history)
     cut = split_point(history, keep)
@@ -224,7 +227,7 @@ def compact(history: List[Message], call: Callable[[str], str], *, threshold: in
     older = history[lead:cut]
     if all(_is_summary(m) or _is_summary_ack(m) for m in older):
         return Compaction("none", history)         # only an earlier summary lies before the cut: nothing new to fold in
-    summary = summarise(older, call)
+    summary = summarise(older, call, max_input_chars=max_input_chars)
     if summary is None:
         return Compaction("failed", history)
     return Compaction("done", apply_summary(history, cut, summary), len(older), summary)

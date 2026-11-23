@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 from agentx_dev.ChatModel import _is_timeout
-from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, compact, needs_compaction
+from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, THRESHOLD_CHARS, compact, needs_compaction
 from agentx_dev.Runner.Trim import TrimPolicy, trim_tool_results
 from agentx_dev.cli.memory import summary_entry_text
 from agentx_dev.cli.settings import write_user_token_limit
@@ -145,15 +145,20 @@ class UsageCommands:
     def _maybe_compact(self) -> None:
         """Summarise a very long conversation before the turn. Nothing is removed unless a summary replaces it;
         after a failure it is not tried again until ``RETRY_AFTER_MESSAGES`` more messages have been added.
-        The runner rebuilds its messages from ``session.history`` on every turn, so replacing it is enough."""
+        The runner rebuilds its messages from ``session.history`` on every turn, so replacing it is enough.
+        On a local model "very long" is 60% of its window, and the summarising call's own input half of it."""
         assert self.session is not None
         history = self.session.history
+        window = self._local_window()
+        limits = ({"threshold": int(window * 4 * 0.6), "max_input_chars": int(window * 4 * 0.5)}
+                  if window is not None else {})
         # Measured on what the model is actually sent (old big tool results are stubs), not on the saved history.
-        if len(history) < self._compact_wait or not needs_compaction(trim_tool_results(history, TrimPolicy())):
+        if len(history) < self._compact_wait or not needs_compaction(
+                trim_tool_results(history, TrimPolicy()), limits.get("threshold", THRESHOLD_CHARS)):
             return
         self.progress.start("Summarising the conversation")
         try:
-            result = compact(history, self._summary_call)
+            result = compact(history, self._summary_call, **limits)
         finally:
             self.progress.stop()
         if result.status == "done":

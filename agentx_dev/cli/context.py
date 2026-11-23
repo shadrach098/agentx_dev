@@ -158,14 +158,14 @@ PROJECT_PREAMBLE = (
 )
 
 
-def _log_block(log_text: str) -> str:
-    """The marked block for the work log, or "" when there is no text. Longer text keeps its newest end, starting
-    on an entry heading; the closing marker is always added."""
+def _log_block(log_text: str, limit: int = MAX_LOG_CHARS) -> str:
+    """The marked block for the work log, or "" when there is no text. Text longer than ``limit`` keeps its newest
+    end, starting on an entry heading; the closing marker is always added."""
     text = _defuse(str(log_text or "")).strip()
     if not text:
         return ""
-    if len(text) > MAX_LOG_CHARS:
-        text = text[-MAX_LOG_CHARS:]
+    if len(text) > limit:
+        text = text[-limit:]
         boundary = text.find("\n## ")
         if boundary != -1:
             text = text[boundary + 1:]
@@ -173,11 +173,14 @@ def _log_block(log_text: str) -> str:
     return "Recent work in this folder (.agentx/log.md):\n\n" + LOG_PREAMBLE + "\n\n" + LOG_OPEN + "\n" + text + "\n" + LOG_CLOSE
 
 
-def build_addendum(cwd: Path, home: Path, *, system: Optional[str] = None, log_text: str = "") -> str:
+def build_addendum(cwd: Path, home: Path, *, system: Optional[str] = None, log_text: str = "",
+                   max_context_chars: int = MAX_CONTEXT_CHARS, max_log_chars: int = MAX_LOG_CHARS,
+                   shortened_note: str = "") -> str:
     """The base prompt, the user's own instructions, then the project instructions inside explicit markers. Cut at
-    ``MAX_CONTEXT_CHARS`` in total: the user's own file gets room first (a cloned repository's file must not push it
+    ``max_context_chars`` in total: the user's own file gets room first (a cloned repository's file must not push it
     out), then the nearest project files. ``log_text`` (the newest entries of the folder's work log, if any) follows
-    in its own marked block."""
+    in its own marked block, cut to its newest ``max_log_chars``. A model with a small window gets smaller limits
+    and a ``shortened_note``, added as the last line when either part was cut. The base prompt is never cut."""
     where = _defuse(_clean(cwd))
     if len(where) > MAX_PATH_CHARS:
         where = "..." + where[-MAX_PATH_CHARS:]
@@ -186,6 +189,7 @@ def build_addendum(cwd: Path, home: Path, *, system: Optional[str] = None, log_t
     user_section: Optional[str] = None
     project: List[str] = []                                      # nearest first while collecting
     used = 0
+    cut = False                                                  # some of the instructions were left out
     files = find_context_files(cwd, home)
     # Reserve room for the user's own file before budgeting nearest-first project files.
     for path in sorted(reversed(files), key=lambda path: _resolve(path) != user_key):
@@ -193,10 +197,12 @@ def build_addendum(cwd: Path, home: Path, *, system: Optional[str] = None, log_t
         if not text:
             continue
         text = _defuse(text)
-        room = MAX_CONTEXT_CHARS - used
+        room = max_context_chars - used
         if room <= 0:
+            cut = True
             break
         if len(text) > room:
+            cut = True
             if project or (user_section is not None and room <= len("(truncated)") + 1):
                 # Drop farther files and project fragments too small to be useful.
                 break
@@ -215,7 +221,10 @@ def build_addendum(cwd: Path, home: Path, *, system: Optional[str] = None, log_t
     if project:
         parts.append("Project instructions (AGENTX.md files, the nearest last):\n\n" + PROJECT_PREAMBLE + "\n\n"
                      + OPEN_MARK + "\n" + "\n\n".join(reversed(project)) + "\n" + CLOSE_MARK)
-    log_block = _log_block(log_text)
+    log_block = _log_block(log_text, max_log_chars)
     if log_block:
         parts.append(log_block)
+        cut = cut or len(_defuse(str(log_text or "")).strip()) > max_log_chars
+    if cut and shortened_note:
+        parts.append(_defuse(_clean(shortened_note)))
     return "\n\n".join(parts)
