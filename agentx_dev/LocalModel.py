@@ -30,6 +30,8 @@ class LocalCheck:
 
 def normalise_base_url(url: str) -> str:
     url = (url or DEFAULT_LOCAL_URL).strip().rstrip("/")
+    if "://" not in url:
+        url = "http://" + url            # "localhost:1234" is an address, not a scheme
     if urlparse(url).path in ("", "/"):
         url += "/v1"
     return url

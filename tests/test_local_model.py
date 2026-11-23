@@ -174,3 +174,8 @@ def test_check_server_down():
     url, hostport = _closed_url()
     r = Local("m", base_url=url).check(timeout=2)
     assert not r.ok and "is not answering" in r.reason and hostport in r.reason
+
+
+def test_a_scheme_less_address_gets_http():
+    assert normalise_base_url("localhost:1234") == "http://localhost:1234/v1"
+    assert normalise_base_url("gpu-box.lan") == "http://gpu-box.lan/v1"

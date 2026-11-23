@@ -168,12 +168,12 @@ def _write_key(folder: Path, key: str, value: Any, what: str) -> Tuple[Optional[
         return None, f"Could not write {path}."
 
 
-def write_user_setting(home: Path, key: str, value: Any) -> None:
+def write_user_setting(home: Path, key: str, value: Any) -> Tuple[Optional[Path], str]:
     """Set one key in ``~/.agentx/settings.json`` (``localServer``, ``fallbackModel``, ``localContext``), keeping
     the file's other keys. Same safety as ``_write_key``: no link followed, nothing outside the folder, no rewrite
-    of a file that is not a JSON object, a temporary file and mode 0o600. Never raises; a file left unchanged is
-    simply left unchanged."""
-    _write_key(Path(home), key, value, f"{key} {value!r}")
+    of a file that is not a JSON object, a temporary file and mode 0o600. Returns ``(path, message)``: the path
+    and what was saved, or None and the reason nothing was written. Never raises."""
+    return _write_key(Path(home), key, value, f"{key} {value!r}")
 
 
 def write_settings(folder: Path, changes: Mapping[str, Any]) -> Tuple[Optional[Path], str]:
@@ -358,9 +358,17 @@ def _read_local_settings(data: dict, path: Path, is_project: bool, settings: Set
         if not isinstance(value, str) or not value.strip():
             settings.problems.append(f"settings file {path}: 'localServer' must be a web address; ignored")
         else:
-            settings.local_server = normalise_base_url(value)
-            host = urlparse(settings.local_server).hostname or settings.local_server
-            if host not in _LOOPBACK_HOSTS:
+            try:
+                url = normalise_base_url(value)
+                parsed = urlparse(url)
+                host = parsed.hostname if parsed.scheme in ("http", "https") else None
+            except ValueError:
+                host = None
+            if not host:
+                settings.problems.append(f"localServer in {path} is ignored: it is not a web address.")
+            else:
+                settings.local_server = url
+            if host and host not in _LOOPBACK_HOSTS:
                 settings.problems.append(f"Conversations on local models go to {_clean(host, 100)}.")
     if "fallbackModel" in data:
         value = data["fallbackModel"]

@@ -678,3 +678,30 @@ def test_user_writer_refuses_symlink(tmp_path):
         pytest.skip("file symlinks cannot be created here")
     write_user_setting(home, "localServer", "http://localhost:1/v1")
     assert outside.read_text(encoding="utf-8") == "{}"
+
+
+@pytest.mark.parametrize("value", ["http://[::1", "http://[", "file:///etc", "ftp://host/x"])
+def test_a_malformed_local_server_is_ignored_with_a_warning(tmp_path, value):
+    s = _load_user(tmp_path, {"localServer": value})
+    assert s.local_server == "http://localhost:11434/v1"
+    assert f"localServer in {user_settings_path(tmp_path / 'home')} is ignored: it is not a web address." in s.problems
+
+
+def test_a_scheme_less_loopback_local_server_is_accepted(tmp_path):
+    s = _load_user(tmp_path, {"localServer": "localhost:1234"})
+    assert s.local_server == "http://localhost:1234/v1" and s.problems == []
+
+
+def test_write_user_setting_returns_the_path_and_message(tmp_path):
+    from agentx_dev.cli.settings import write_user_setting
+    path, message = write_user_setting(tmp_path / "home", "localContext", 4096)
+    assert path == user_settings_path(tmp_path / "home") and "localContext" in message
+
+
+def test_write_user_setting_reports_a_file_that_is_not_an_object(tmp_path):
+    from agentx_dev.cli.settings import write_user_setting
+    home = tmp_path / "home"
+    put(user_settings_path(home), "[1, 2]")
+    path, message = write_user_setting(home, "localContext", 4096)
+    assert path is None and message
+    assert user_settings_path(home).read_text(encoding="utf-8") == "[1, 2]"
