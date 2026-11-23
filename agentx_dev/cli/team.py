@@ -139,7 +139,7 @@ def _each_provider_note(names: Sequence[str]) -> str:
         groups.setdefault(provider_for(name) or "other", []).append(name)
     if len(groups) < 2:
         return ""
-    shown = {"claude": "Claude", "gpt": "GPT", "other": "other"}
+    shown = {"claude": "Claude", "gpt": "GPT", "local": "local", "other": "other"}
     return EACH_PROVIDER_NOTE.format(groups="; ".join(
         f"{shown.get(provider, provider)} ({', '.join(models)})" for provider, models in groups.items()))
 

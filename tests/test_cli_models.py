@@ -24,7 +24,7 @@ OAI = {"OPENAI_API_KEY": "ok"}
 
 @pytest.mark.parametrize("name,provider", [
     ("claude-sonnet-5-5", "claude"), ("Claude-opus", "claude"), ("gpt-4o", "gpt"), ("GPT-6-sol", "gpt"),
-    ("o3", "gpt"), ("o4-mini", "gpt"), ("gemini-2", None), ("ollama", None), ("o", None),
+    ("o3", "gpt"), ("o4-mini", "gpt"), ("gemini-2", "local"), ("ollama", "local"), ("o", "local"),
 ])
 def test_provider_for(name, provider):
     assert provider_for(name) == provider
@@ -56,9 +56,9 @@ def test_a_name_whose_provider_has_no_key():
         choose_model("claude-x", OAI)
 
 
-def test_an_unknown_provider_name():
-    with pytest.raises(ModelError, match="start the name with 'claude' or 'gpt'"):
-        choose_model("llama3", {**ANT, **OAI})
+def test_a_name_with_a_space_is_not_a_model_name():
+    with pytest.raises(ModelError, match="not a model name"):
+        choose_model("llama 3", {**ANT, **OAI})
 
 
 def test_no_name_prefers_anthropic_then_openai_and_uses_the_class_default():
@@ -146,3 +146,41 @@ def test_a_blank_key_for_a_named_model_is_missing():
         choose_model("claude-x", {"ANTHROPIC_API_KEY": "   "})
     with pytest.raises(ModelError):
         choose_model(None, {"ANTHROPIC_API_KEY": " ", "OPENAI_API_KEY": ""})
+
+
+# -- local models -------------------------------------------------------------------------------------------
+
+LOCAL_NAMES = ["tinyllama", "qwen3:8b", "llama3.1:8b-instruct-q4_K_M", "ollama"]
+
+
+@pytest.mark.parametrize("name", LOCAL_NAMES)
+def test_other_names_are_local(name):
+    from agentx_dev.cli.models import is_local_name
+    assert provider_for(name) == "local" and is_local_name(name)
+
+
+def test_claude_gpt_unchanged():
+    from agentx_dev.cli.models import is_local_name
+    for name in ("claude-sonnet-5-5", "gpt-4o", "o3"):
+        assert not is_local_name(name)
+    assert provider_for("") is None and provider_for("   ") is None
+
+
+def test_choose_model_local_needs_no_key():
+    from agentx_dev.LocalModel import Local
+    m = choose_model("qwen3:8b", {}, local_server="http://localhost:9999", local_context=8192)
+    assert isinstance(m, Local) and m.base_url == "http://localhost:9999/v1" and m.context_window == 8192
+    assert model_label(m) == "qwen3:8b"
+    assert choose_model("tinyllama", {}).base_url == "http://localhost:11434/v1"
+
+
+def test_a_local_name_never_asks_for_a_key():
+    from agentx_dev.cli.models import other_provider
+    assert other_provider("qwen3:8b", {"OPENAI_API_KEY": "k"}) is None
+    assert other_provider("qwen3:8b", {}) is None
+
+
+def test_provider_name_of_a_local_model():
+    from agentx_dev.cli.app import provider_name
+    assert provider_name("tinyllama") == "the local server"
+    assert provider_name("gpt-4o") == "OpenAI"

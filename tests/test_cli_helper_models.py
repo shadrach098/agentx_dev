@@ -13,8 +13,8 @@ def test_a_clean_list_keeps_order_and_drops_repeats_silently():
 
 def test_unknown_providers_and_non_text_entries_are_skipped_with_a_problem():
     names, problems = clean_team_models(["mistral-large", 7, "", None, "o4-mini"])
-    assert names == ["o4-mini"]
-    assert len(problems) == 4 and any("mistral-large" in p for p in problems)
+    assert names == ["mistral-large", "o4-mini"]       # mistral-large is a local name now
+    assert len(problems) == 3
 
 
 def test_the_list_may_hold_one_more_name_than_the_extra_model_cap():
@@ -203,7 +203,7 @@ def test_a_long_note_is_kept_up_to_the_limit_and_shortened_past_it():
 
 def test_an_object_without_a_usable_model_is_skipped():
     from agentx_dev.cli.models import parse_team_models
-    names, uses, problems = parse_team_models([{"use": "coding"}, {"model": 5}, {"model": "mistral-x"}])
+    names, uses, problems = parse_team_models([{"use": "coding"}, {"model": 5}, {"model": "bad name"}])
     assert names == [] and uses == {} and len(problems) == 3
 
 
@@ -268,3 +268,36 @@ def test_a_prefix_is_not_doubled_and_unknown_variants_give_no_note():
     from agentx_dev.cli.models import parse_descriptions
     reply = '{"gpt-5.5": "auto: fast", "gpt-6": "Unknown - newer than my training"}'
     assert parse_descriptions(reply, ["gpt-5.5", "gpt-6"]) == {"gpt-5.5": "auto: fast"}
+
+
+def test_team_models_accept_local_names():
+    from agentx_dev.cli.models import parse_team_models
+    names, uses, problems = parse_team_models(["qwen3:8b=small edits", "llama3.1:8b-instruct-q4_K_M"])
+    assert names == ["qwen3:8b", "llama3.1:8b-instruct-q4_K_M"] and uses == {"qwen3:8b": "small edits"}
+    assert problems == []
+
+
+def test_colon_names_acceptable():
+    from agentx_dev.cli.models import _acceptable_name
+    assert _acceptable_name("qwen3:8b") and _acceptable_name("llama3.1:8b-instruct-q4_K_M")
+
+
+def test_usable_local_without_key():
+    usable, notes = usable_team_models("claude-sonnet-5-5", ["qwen3:8b", "gpt-4o"], {})
+    assert usable == ["qwen3:8b"] and notes == ["Not used: gpt-4o (no OPENAI_API_KEY)"]
+
+
+def test_a_local_helper_is_built_without_a_key():
+    from agentx_dev.LocalModel import Local
+    built, notes = build_team_models(["qwen3:8b"], {}, chat_label="claude-sonnet-5-5")
+    assert notes == [] and isinstance(built[0].model, Local) and built[0].name == "qwen3:8b"
+
+
+def test_a_local_helper_gets_a_blind_id_and_its_name_is_stripped_from_notes():
+    from agentx_dev.LocalModel import Local
+    from agentx_dev.cli.blind_models import BlindModelRoster
+    from tests.conftest import MockModel
+    helper = HelperModel("qwen3:8b", Local("qwen3:8b"), "qwen3:8b for small edits")
+    roster = BlindModelRoster(MockModel(script=[]), [helper])
+    assert len(roster.choices) == 2 and all(i.startswith("model_") for i, _ in roster.choices)
+    assert "qwen3" not in repr(roster.choices) and "small edits" in roster.choices[1][1]

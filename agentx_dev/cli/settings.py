@@ -52,7 +52,7 @@ def _real_model(model: Any) -> Optional[str]:
     if not isinstance(model, str) or not model.strip():
         return None
     name = model.strip()
-    return name if provider_for(name) is not None else None
+    return name if provider_for(name) in ("claude", "gpt") else None
 
 
 def ensure_user_settings(home: Path, model: Optional[str] = None) -> Optional[Path]:

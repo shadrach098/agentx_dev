@@ -125,7 +125,8 @@ def _out_of_credit(error: BaseException) -> bool:
 
 
 def provider_name(model: Any) -> str:
-    return {"claude": "Anthropic", "gpt": "OpenAI"}.get(provider_for(str(model or "")) or "", "model provider's")
+    return {"claude": "Anthropic", "gpt": "OpenAI", "local": "the local server"}.get(
+        provider_for(str(model or "")) or "", "model provider's")
 
 
 def _is_carry_on(text: str) -> bool:

@@ -9,12 +9,15 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from agentx_dev.ChatModel import GPT, Claude
+from agentx_dev.LocalModel import DEFAULT_LOCAL_URL, Local
 
 ANTHROPIC_KEY = "ANTHROPIC_API_KEY"
 OPENAI_KEY = "OPENAI_API_KEY"
 MAX_TEAM_MODELS = 4                  # extra models a team job may use, the chat's own not counted
 MAX_LISTED_MODELS = MAX_TEAM_MODELS + 1   # a list may also name the chat's own model (to give it a note)
 MAX_ERROR_NOTE_CHARS = 160            # a ModelError's message, as shown in a "Not used" line
+LOCAL = "local"                      # the provider of every name that is not Claude or GPT
+LOCAL_TYPO_HINT = "Claude names start with claude, GPT names with gpt."
 MAX_USE_CHARS = 200                  # a note on what a helper model is for (a longer one is shortened)
 
 
@@ -35,20 +38,25 @@ class ModelError(Exception):
 
 
 def provider_for(name: str) -> Optional[str]:
-    """``"claude"`` for names starting with claude, ``"gpt"`` for gpt-* and o<digit>* names, else None."""
+    """``"claude"`` for names starting with claude, ``"gpt"`` for gpt-* and o<digit>* names, ``"local"`` for any
+    other name (a model on the local server), None for an empty one."""
     lowered = name.strip().lower()
     if lowered.startswith("claude"):
         return "claude"
     if lowered.startswith("gpt") or re.match(r"o\d", lowered):
         return "gpt"
-    return None
+    return LOCAL if lowered else None
+
+
+def is_local_name(name: str) -> bool:
+    return provider_for(name) == LOCAL
 
 
 def other_provider(name: Optional[str], env: Mapping[str, str]) -> Optional[str]:
     """When ``name``'s provider has no key but the other provider's key is set: that other provider (``"claude"``
     or ``"gpt"``). Otherwise None, and the missing key is simply an error."""
     provider = provider_for(name or "")
-    if provider is None or _key(env, key_variable(provider)):
+    if provider in (None, LOCAL) or _key(env, key_variable(provider)):
         return None
     other = "gpt" if provider == "claude" else "claude"
     return other if _key(env, key_variable(other)) else None
@@ -87,16 +95,20 @@ def _claude(name: Optional[str], key: str) -> Any:
                   show_reasoning=True, **kwargs)     # its reasoning, readable (same cost), shown as Thinking
 
 
-def choose_model(name: Optional[str], env: Mapping[str, str]) -> Any:
-    """Build the chat model. With ``name`` the provider follows the name; without it the first key found
-    (Anthropic, then OpenAI) decides and the class's own default model is used."""
+def choose_model(name: Optional[str], env: Mapping[str, str], *, local_server: str = DEFAULT_LOCAL_URL,
+                 local_context: Optional[int] = None) -> Any:
+    """Build the chat model. With ``name`` the provider follows the name (a name that is not Claude or GPT is a
+    local model on ``local_server``, no key needed); without it the first key found (Anthropic, then OpenAI)
+    decides and the class's own default model is used."""
     try:
         if name:
             provider = provider_for(name)
-            if provider is None:
-                shown = repr(name if len(name) <= 60 else name[:60] + "...")      # repr escapes control characters
-                raise ModelError(
-                    f"Cannot tell which provider runs {shown}: start the name with 'claude' or 'gpt'.")
+            if provider == LOCAL:
+                if not _acceptable_name(name.strip()):
+                    raise ModelError(f"{_shown_name(name.strip())} is not a model name "
+                                     "(too long, spaces or control characters).")
+                return Local(name.strip(), base_url=local_server, context_window=local_context,
+                             timeout=MODEL_TIMEOUT_SEC)
             key = _key(env, ANTHROPIC_KEY if provider == "claude" else OPENAI_KEY)
             if not key:
                 raise _no_key(provider)
@@ -122,6 +134,8 @@ def choose_model(name: Optional[str], env: Mapping[str, str]) -> Any:
 
 def model_label(model: Any) -> str:
     """The model's name for the status bar."""
+    if getattr(model, "is_local", False) and isinstance(getattr(model, "model", None), str) and model.model:
+        return model.model
     for attribute in ("model_name", "model"):
         value = getattr(model, attribute, None)
         if isinstance(value, str) and value:
@@ -214,10 +228,6 @@ def parse_team_models(values: Sequence[Any]) -> Tuple[List[str], Dict[str, str],
             problems.append(f"'teamModels': {_shown_name(name)} is not a model name "
                             "(too long, spaces or control characters); skipped")
             continue
-        if provider_for(name) is None:
-            problems.append(f"'teamModels': cannot tell which provider runs {_shown_name(name)} "
-                            "(start the name with 'claude' or 'gpt'); skipped")
-            continue
         if name.lower() in seen:
             continue
         seen.add(name.lower())
@@ -257,10 +267,11 @@ def usable_team_models(chat_label: str, names: Sequence[str],
         if provider is None:
             notes.append(f"Not used: {_shown_name(name)} (cannot tell which provider runs it)")
             continue
-        variable = key_variable(provider)
-        if not _key(env, variable):
-            notes.append(f"Not used: {name} (no {variable})")
-            continue
+        if provider != LOCAL:
+            variable = key_variable(provider)
+            if not _key(env, variable):
+                notes.append(f"Not used: {name} (no {variable})")
+                continue
         if len(usable) == MAX_TEAM_MODELS:
             notes.append(f"Not used: {name} (only {MAX_TEAM_MODELS} extra models)")
             continue

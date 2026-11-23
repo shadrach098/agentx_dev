@@ -474,11 +474,11 @@ def test_a_failed_replace_leaves_no_temporary_file_behind(tmp_path, monkeypatch)
 def test_team_models_are_read_and_cleaned(tmp_path):
     home, folder = tmp_path / "home", tmp_path / "proj"
     folder.mkdir()
-    put(user_settings_path(home), {"teamModels": ["claude-opus-5-5", "mistral-x", "gpt-5.5", "claude-opus-5-5"]})
+    put(user_settings_path(home), {"teamModels": ["claude-opus-5-5", "bad name", "gpt-5.5", "claude-opus-5-5"]})
     settings = load_settings(folder, home)
     assert settings.team_models == ["claude-opus-5-5", "gpt-5.5"]
     assert settings.team_models_source == user_settings_path(home)
-    assert any("mistral-x" in p for p in settings.problems)
+    assert any("bad name" in p for p in settings.problems)
 
 
 def test_no_team_models_key_means_none(tmp_path):

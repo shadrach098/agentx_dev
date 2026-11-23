@@ -103,7 +103,7 @@ class KeyCommands:
                 if fallback:
                     self.env[variable] = fallback
         provider = provider_for(str(getattr(self, "requested_model", "") or getattr(self, "model_label", "") or ""))
-        if not provider or key_variable(provider) not in changes or not str(self.env.get(key_variable(provider)) or ""):
+        if provider not in ("claude", "gpt") or key_variable(provider) not in changes or not str(self.env.get(key_variable(provider)) or ""):
             return
         if getattr(self, "session", None) is None or getattr(self, "model", None) is None:
             return
