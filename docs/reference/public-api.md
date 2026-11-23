@@ -38,7 +38,7 @@ ChainOfThought CircuitBreaker CircuitBreakerConfig Claude CompileResult Compiled
 ConversationMemory CostBudgetExceeded DEFAULT_PERMISSIONS_PATH DefaultTools Document Embeddings
 EvalCase EvalReport EvalResult EvalRunner Event EventType FewShot FileCache FileHook GPT
 HandoffCoordinator HandoffRequest HandoffResult HashEmbeddings ImportanceBasedMemory InMemoryCache
-Instruction_Tuned_ LRUCache MCPClient Media MetricsHook ModelDeclined OTelHook ObservabilityManager
+Instruction_Tuned_ LRUCache Local LocalCheck LocalModelError MCPClient Media MetricsHook ModelDeclined OTelHook ObservabilityManager
 OpenAIEmbeddings OpenAIStreamAdapter Permissions Persistence React_ RetryBudgetExceeded RunLog
 SemanticMemory Session SlidingWindowMemory SpawnConfig SpawnRequest Specialist StandardParser
 StandardTool StreamBuffer StreamChunk StreamProcessor StructuredOutputRunnable StructuredTool
@@ -54,6 +54,8 @@ output_field set_config set_global_cache simple_stream subtasks_ok to_anthropic_
 to_tool_spec tool_count track_async_tool_call track_tool_call used_agent used_skill
 vector_search_tool web_fetch_tool web_search_tool
 ```
+
+`Local` is a chat model for a server on your machine (Ollama, LM Studio, llama.cpp); `LocalCheck` is what `Local.check()` returns and `LocalModelError` is raised when the server cannot be used.
 
 `MCPClient`, `json_schema_to_pydantic` and `mcp_tool_to_async_structured_tool` are exported only when the `mcp`
 package is installed (`pip install "agentx-dev[mcp]"`).
