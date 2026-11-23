@@ -86,6 +86,17 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   starts in that message; after a plain no, or a failed job, the agent asks you before working alone. A slow or unreadable answer leaves the message
   direct and says so. `/team auto off` turns it off (saved as `"autoTeam": false`).
 
+- **Skills are inspected before they are installed, and only approved files are used.** `/skills install` downloads
+  into a private temporary folder, scans every skill for risky text (ignoring the rules, hiding things from you,
+  getting around approvals, touching agentx's settings, reading out keys, piping downloads into a shell, invisible
+  characters, hidden comments) and has your chat model review it with no tools; you see both and decide, and a
+  serious finding or a missing review also needs `install` typed. Exactly the inspected bytes are written, into this
+  project's `.agentx/skills`, or with `--global` into `~/.agentx/skills` for every folder. agentx keeps the digest of
+  each skill's files and offers only skills that still match: one copied in by hand, changed, made by a shell
+  command or shipped in a cloned repository is held back until `/skills trust <name>` inspects and approves it.
+  Shell and Python commands that name a skills folder are refused. The skills you already have are recorded as they
+  are the first time.
+
 ### Changed
 
 - **An empty final answer is not `done`.** A run that called no tool and ended with no text now has the outcome
@@ -98,10 +109,19 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   native-binding runner's response-format calls, or after a switch to the fallback) is turned into plain text first,
   in every mode. It was sent as it was, which Anthropic rejected for a runner with no bound tools.
 - `docs/concepts/models.md`: the hand-written `Ollama(BaseChatModel)` example is replaced by `Local`.
+- `/skills remove` also removes a project's skill (this project's copy first; `--global` for the one in
+  `~/.agentx/skills`), and forgets its record. A skill copied into a skills folder by hand no longer arrives with
+  `/skills reload`: approve it with `/skills trust <name>`.
 - Declining a team job now holds for the rest of that message: the agent is told not to start another and to ask
   you instead. Before, it could ask again straight away.
 
 ### Fixed
+
+- A question or an approval that waits for you in the app window is readable at once. The large orb stayed at the
+  top and the Team panel grew above the message box, so the conversation (and the question in it) was left a strip
+  a few lines high that only scrolled with the pointer inside it. Now the orb folds to a small one beside its note
+  while a card waits, the Team panel takes at most a third of the window and scrolls on its own, a new card is
+  shown from its top, and the mouse wheel scrolls the conversation wherever the pointer is.
 
 - A long team job is no longer declined unseen in the app window. Its task (up to 12,000 characters) was also sent
   as the card's heading, which may hold only 2,000, so a detailed hand-off came back "too long to show in the window

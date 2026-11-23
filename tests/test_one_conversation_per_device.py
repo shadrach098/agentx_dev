@@ -225,6 +225,9 @@ class TestEachDeviceHasItsOwnConversation:
         phone._alone_since = time.monotonic() - 1
         h.front._sweep_rooms()
         until(lambda: phone.ended)
+        # Back to a real idle time: at 0 the status timer's own sweep closed the reopened room (no window is
+        # connected in this test) before it asked for a message, about one run in five.
+        monkeypatch.setattr(webui, "ROOM_IDLE_SEC", 3600)
         again = h.front_of(PHONE)
         ready(again)
         assert again.app.session_path == saved                      # the same conversation, opened again

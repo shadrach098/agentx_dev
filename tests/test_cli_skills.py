@@ -6,7 +6,10 @@ from contextlib import contextmanager
 import pytest
 
 from agentx_dev.cli import app as app_module
+from agentx_dev.cli import app_skills
 from agentx_dev.cli.commands import run_command
+from agentx_dev.cli.skill_review import Review
+from agentx_dev.Skills.Inspect import snapshot
 from agentx_dev.Skills.Install import Fetched
 from tests.conftest import MockModel, make_final
 from tests.test_cli_app import Lines, make_app
@@ -29,6 +32,21 @@ def runner_of(app):
 
 def skills_dir(home):
     return home / ".agentx" / "skills"
+
+
+def project_skills(cwd):
+    return cwd / ".agentx" / "skills"
+
+
+def approve(app, folder):
+    """What /skills trust does after a yes: the folder's files, as they are now, are the approved ones."""
+    app.skill_trust.record(folder, snapshot(folder), scope="global", how="approved in a test")
+
+
+@pytest.fixture(autouse=True)
+def quiet_review(monkeypatch):
+    """The model's review of a skill is a stand-in here (it has its own tests): it finds nothing."""
+    monkeypatch.setattr(app_skills, "review", lambda snap, call: Review(verdict="looks safe", summary="fine"))
 
 
 class TestWhatTheAgentIsGiven:
@@ -99,18 +117,21 @@ class TestSkillsCommand:
         @contextmanager
         def fake_open(link):
             yield Fetched(repo, "https://github.com/o/r", "b" * 40)
-        monkeypatch.setattr(app_module, "open_source", fake_open)
+        monkeypatch.setattr(app_skills, "open_source", fake_open)
 
     def test_install_shows_what_it_found_and_saves_only_after_yes(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path / "repo")
         self.patch_source(monkeypatch, repo)
         lines = Lines("y")
         app, out, cwd, home = make_app(tmp_path, lines, MockModel())
+        app.model = MockModel()                       # a model to review with (no model: it counts as unreviewed)
         run_command(app, "/skills install https://github.com/o/r")
         text = out.getvalue()
         assert "Found 2 skills" in text and "pdf-notes" in text and "commit bbbbbbbbbb" in text
-        assert "Install 2 skills into" in lines.prompts[-1]
-        assert (skills_dir(home) / "pdf-notes" / "SKILL.md").is_file() and "Installed: pdf-notes, tidy-code" in text
+        assert "Install 2 skills into" in lines.prompts[-1] and "(this project)" in lines.prompts[-1]
+        assert "Inspection of pdf-notes" in text and "Model review" in text
+        assert (project_skills(cwd) / "pdf-notes" / "SKILL.md").is_file() and "Installed: pdf-notes, tidy-code" in text
+        assert not (skills_dir(home) / "pdf-notes").exists()                 # not for every folder
         assert "pdf-notes" in runner_of(app).system_addendum        # a new conversation picks them up
 
     @pytest.mark.parametrize("answer", ["n", "", "maybe"])
@@ -118,7 +139,7 @@ class TestSkillsCommand:
         self.patch_source(monkeypatch, make_repo(tmp_path / "repo"))
         app, out, cwd, home = make_app(tmp_path, Lines(answer, answer), MockModel())
         run_command(app, "/skills install https://github.com/o/r")
-        assert not (skills_dir(home) / "pdf-notes").exists() and "Nothing was installed" in out.getvalue()
+        assert not (project_skills(cwd) / "pdf-notes").exists() and "Nothing was installed" in out.getvalue()
 
     def test_names_before_the_link_pick_those_skills_only(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path / "repo")
@@ -128,12 +149,13 @@ class TestSkillsCommand:
         def fake_open(link):
             links.append(link)
             yield Fetched(repo, "https://github.com/o/r", "b" * 40)
-        monkeypatch.setattr(app_module, "open_source", fake_open)
+        monkeypatch.setattr(app_skills, "open_source", fake_open)
         lines = Lines("y")
         app, out, cwd, home = make_app(tmp_path, lines, MockModel())
+        app.model = MockModel()
         run_command(app, "/skills install pdf-notes https://github.com/o/r.git")
         assert links == ["https://github.com/o/r.git"] and "Install 1 skill into" in lines.prompts[-1]
-        assert (skills_dir(home) / "pdf-notes").is_dir() and not (skills_dir(home) / "tidy-code").exists()
+        assert (project_skills(cwd) / "pdf-notes").is_dir() and not (project_skills(cwd) / "tidy-code").exists()
         run_command(app, "/skills install nope https://github.com/o/r")
         assert "No skill named nope there. It has: pdf-notes, tidy-code." in out.getvalue()
 
@@ -173,16 +195,16 @@ class TestSkillsCommand:
         runner_of(app)                                         # a deleted built-in skill stays deleted
         assert not (skills_dir(home) / "running-code").exists()
 
-    def test_remove_refuses_a_project_skill_and_an_unknown_name(self, tmp_path):
-        app, out, cwd, home = make_app(tmp_path, Lines(), MockModel())
+    def test_remove_takes_this_projects_copy_after_a_yes_and_refuses_an_unknown_name(self, tmp_path):
+        app, out, cwd, home = make_app(tmp_path, Lines("n", "y"), MockModel())
         (cwd / ".agentx" / "skills" / "house").mkdir(parents=True)
         (cwd / ".agentx" / "skills" / "house" / "SKILL.md").write_text(skill_text("house"), encoding="utf-8")
-        app.skills = type(app.skills)(skills_dir(home), project_dirs=[cwd / ".agentx" / "skills"])
+        run_command(app, "/skills remove house")
+        assert (cwd / ".agentx" / "skills" / "house" / "SKILL.md").exists()      # no
         run_command(app, "/skills remove house")
         run_command(app, "/skills remove nothing-here")
-        text = out.getvalue()
-        assert "belongs to this project" in text and "No skill named 'nothing-here'" in text
-        assert (cwd / ".agentx" / "skills" / "house" / "SKILL.md").exists()
+        assert not (cwd / ".agentx" / "skills" / "house").exists()
+        assert "No skill named 'nothing-here'" in out.getvalue()
 
 
 class TestSkillsAsCommands:
@@ -195,6 +217,7 @@ class TestSkillsAsCommands:
         (skills_dir(home) / "gui-testing" / "SKILL.md").write_text(
             "---\nname: gui-testing\ndescription: Click through an app\ntools: [click_button]\n---\nBody\n",
             encoding="utf-8")
+        approve(app, skills_dir(home) / "gui-testing")
         sent = []
         app.send = lambda text, log_title=None: sent.append((text, log_title))
         runner_of(app)                                  # the conversation's runner: this decides which skills apply
@@ -230,6 +253,7 @@ class TestSkillsAsCommands:
         (skills_dir(home) / "model").mkdir(parents=True)
         (skills_dir(home) / "model" / "SKILL.md").write_text(skill_text("model", "A skill named like a command"),
                                                               encoding="utf-8")
+        approve(app, skills_dir(home) / "model")
         sent = []
         app.send = lambda text, log_title=None: sent.append((text, log_title))
         runner_of(app)
@@ -237,14 +261,15 @@ class TestSkillsAsCommands:
         run_command(app, "/skills use model tidy up")
         assert '"model"' in sent[0][0] and sent[0][0].endswith("tidy up")
 
-    def test_a_skill_copied_in_by_hand_waits_for_skills_reload(self, tmp_path):
+    def test_a_skill_copied_in_by_hand_is_held_back_until_approved(self, tmp_path):
         app, out, cwd, home, sent = self.app_with_sends(tmp_path)
         (skills_dir(home) / "late-one").mkdir(parents=True)
         (skills_dir(home) / "late-one" / "SKILL.md").write_text(skill_text("late-one"), encoding="utf-8")
         run_command(app, "/late-one")
         assert sent == [] and "late-one" not in app.skill_entries()
         run_command(app, "/skills")
-        assert "late-one" in out.getvalue() and "/skills reload" in out.getvalue()    # reload: see the class below
+        line = out.getvalue().split("late-one (own)")[1].split("\n")[0]
+        assert "held back" in line and "/skills trust late-one" in line
 
     def test_the_list_shows_how_to_use_each_skill(self, tmp_path):
         app, out, cwd, home, sent = self.app_with_sends(tmp_path)
@@ -431,7 +456,7 @@ class TestSkillsAreLiveWithoutARestart:
         @contextmanager
         def fake_open(link):
             yield Fetched(repo, "https://github.com/o/r", "b" * 40)
-        monkeypatch.setattr(app_module, "open_source", fake_open)
+        monkeypatch.setattr(app_skills, "open_source", fake_open)
 
     def test_an_installed_skill_is_ready_in_the_same_conversation(self, tmp_path, monkeypatch):
         self.patch_source(monkeypatch, make_repo(tmp_path / "repo"))
@@ -440,20 +465,22 @@ class TestSkillsAreLiveWithoutARestart:
         app.start()                                  # one turn, then the commands are run by hand
         app.read_short = Lines("y")
         run_command(app, "/skills install https://github.com/o/r")
-        assert "ready in this conversation: /pdf-notes, /tidy-code" in out.getvalue()
+        assert "ready in this conversation: /pdf-notes, /tidy-code" in " ".join(out.getvalue().split())
         assert "pdf-notes" in runner_of(app).system_addendum and "pdf-notes" in app._runner_skills
         assert any(m.get("content") == "hello" for m in app.session.history)          # the conversation is kept
 
-    def test_skills_reload_picks_up_a_folder_copied_by_hand(self, tmp_path):
+    def test_a_folder_copied_by_hand_joins_only_after_skills_trust(self, tmp_path):
         app, out, cwd, home = make_app(tmp_path, Lines(), MockModel(script=[]))
         app.start()
         folder = skills_dir(home) / "hand-made"
         folder.mkdir(parents=True)
         (folder / "SKILL.md").write_text("---\nname: hand-made\ndescription: Copied in by hand\n---\nBody\n",
                                          encoding="utf-8")
-        assert "hand-made" not in app._runner_skills
         run_command(app, "/skills reload")
-        assert "hand-made" in app._runner_skills and "Skills reloaded: added hand-made." in out.getvalue()
+        assert "hand-made" not in app._runner_skills                    # a shell command could have put it there
+        app.read_short = Lines("y")
+        run_command(app, "/skills trust hand-made")
+        assert "hand-made" in app._runner_skills and "Approved hand-made" in out.getvalue()
 
     def test_a_removed_skill_leaves_the_conversation_too(self, tmp_path, monkeypatch):
         self.patch_source(monkeypatch, make_repo(tmp_path / "repo"))

@@ -11,7 +11,6 @@ from agentx_dev.cli.commands import command_names, skill_request
 from agentx_dev.cli.routing import NUDGE, TEAM_DECLINED, Route, assess, by_rule
 from agentx_dev.cli.settings import write_user_auto_team
 from agentx_dev.cli.team import MAX_TEAM_JOBS_PER_MESSAGE, current_status, team_request
-from agentx_dev.Skills import SkillInstallError, remove_skill
 
 
 TEAM_LIMIT_REACHED = (f"Refused: {MAX_TEAM_JOBS_PER_MESSAGE} team jobs already ran for this message. Report to the "
@@ -235,28 +234,6 @@ class TeamCommands:
             return TEAM_STALLED
         return ""
 
-    def show_skills(self) -> None:
-        """``/skills``: every skill found on disk (the ones this conversation's agent has first-class, shown as the
-        ``/name`` that runs them), and how to use, add or remove one."""
-        store = self.skills.store()
-        taken = set(command_names())
-
-        def label(skill: Any) -> str:
-            if skill.name not in self._runner_skills:
-                return skill.name
-            return f"/{skill.name}" if f"/{skill.name}" not in taken else f"/skills use {skill.name}"
-
-        lines = [f"  {label(s)} ({s.source}) - {self._safe(s.description, 100)}"
-                 + ("" if s.name in self._runner_skills else "  [not in this conversation yet: /skills reload]")
-                 for s in store.all()]
-        lines += [f"  Skipped: {self._safe(problem, 160)}" for problem in store.problems[:5]]
-        shown = "\n".join(lines) if lines else "  none yet; the built-in ones are created when a conversation starts"
-        self.notice(f"Skills (the agent reads one when its work matches):\n{shown}\n"
-                    "Use one with /<skill> [what you want] (type / to pick from the list). "
-                    f"They live in {self._safe(self.skills.dir, 300)}. /skills install <github link or folder> adds "
-                    "more and /skills remove <name> deletes one, both at once in this conversation; /skills reload "
-                    "picks up a folder copied in by hand. Skills for tools this agent does not have stay inactive.")
-
     def skill_entries(self) -> Dict[str, str]:
         """``{"/name": "(skill) description"}`` for the `/` pop-up: the skills this conversation's agent has, except
         ones named like a built-in command (those are reached with ``/skills use <name>``)."""
@@ -271,24 +248,3 @@ class TeamCommands:
             return False
         self.send(skill_request(name, text), log_title=f"/{name} {text}".strip())
         return True
-
-    def remove_skill(self, name: str) -> None:
-        """``/skills remove <name>``: deletes a skill folder from the user's skills folder after a yes."""
-        skill = self.skills.store().skills.get(name.strip())
-        if skill is None or skill.folder is None:
-            self.error(f"No skill named {self._safe(name, 60)!r}. /skills lists them.")
-            return
-        if skill.source == "project":
-            self.error("That skill belongs to this project's folder. Delete .agentx/skills/<name> yourself if you "
-                       "want it gone.")
-            return
-        if not self._yes(f"Remove the skill {skill.name} from {self._safe(self.skills.dir, 200)}? [y/N] "):
-            self.notice("Nothing was removed.")
-            return
-        try:
-            remove_skill(skill.folder.name, self.skills.dir)
-        except SkillInstallError as e:
-            self.error(self._safe(e, 400))
-            return
-        self.reload_skills()
-        self.notice(f"Removed {skill.name}.")

@@ -16,19 +16,35 @@ explicit cache, OpenAI's automatic prefix cache) reuse it.
 | `/skills` | List the skills found, each with the `/name` that runs it, where it came from (`bundled`, `own`, `installed`, `project`), and the folder they live in. A skill this conversation's agent does not have is marked `[not active in this conversation]`. |
 | `/<skill> [what you want]` | Use a skill now. Typing `/` shows the commands and then the skills in the pop-up; pick one, add your request, send. The agent reads the skill with `use_skill` and then does the task. |
 | `/skills use <name> [what you want]` | The same, for a skill whose name is also a command (`/model`, `/help`, ...). |
-| `/skills install [name ...] <link>` | Install skills from `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>`) or from a folder on your computer; names before a GitHub link pick those skills only. You are shown what was found and asked before anything is saved. |
-| `/skills remove <name>` | Delete a skill from `~/.agentx/skills/` after a yes. |
-| `/skills reload` | Give this conversation the skills on disk now, for a skill folder you copied in by hand. |
+| `/skills install [--global] [name ...] <link>` | Install skills from `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>`) or from a folder on your computer, into this project's `.agentx/skills` (`--global`: `~/.agentx/skills`, for every folder); names before a GitHub link pick those skills only. The download is inspected in a temporary folder (a pattern scan and a review by your chat model) and you are asked before anything is saved. |
+| `/skills trust <name>` | Inspect a held-back skill (copied in by hand, changed, or part of a cloned project) and approve it after a yes. |
+| `/skills remove [--global] <name>` | Delete a skill and its record after a yes. |
+| `/skills reload` | Give this conversation the approved skills on disk now. |
 
 An installed or removed skill takes effect in the conversation you are in: no restart, no `/clear`. The conversation
 is kept; the skill list is part of the system prompt, so the next request starts the prompt cache again once. A
-skill folder you copy into `~/.agentx/skills/` yourself arrives with `/skills reload`. The `/` pop-up and `/<skill>`
+skill folder you copy into `~/.agentx/skills/` yourself is held back until `/skills trust <name>`. The `/` pop-up and `/<skill>`
 offer the skills the conversation's agent has; one for tools it does not have is not offered.
 
-Only you can install a skill: the agent has no tool for it, and it cannot write to `~/.agentx` or to a project's
-`.agentx` (those are always refused). A skill is instructions the agent will follow, so install only skills you
-trust. Installing downloads the exact commit the link points to and records it; nothing updates by itself.
-To update a skill, remove it and install it again.
+Only you can install a skill: the agent has no tool for it, its file tools cannot write to `~/.agentx` or to a
+project's `.agentx`, and its shell and Python commands may not name a skills folder (those are always refused). A
+skill is instructions the agent will follow, so install only skills you trust. Installing downloads the exact commit
+the link points to and records it; nothing updates by itself. To update a skill, remove it and install it again.
+
+### Inspected before it is installed, approved file by file
+
+An install never goes straight into a skills folder. The download is unpacked in a private temporary folder, and each
+skill there is inspected twice before you are asked: `Skills.Inspect.scan` (patterns: instructions to ignore the
+rules or hide things from you, getting around approvals, touching agentx's settings, reading out keys, piping a
+download into a shell, compiled programs, invisible characters, hidden comments) and one review by your chat model with
+no tools, which sees the files as data and says `looks safe`, `caution` or `dangerous`. A `danger` finding, a
+`dangerous` verdict or a missing review means you must type `install` as well as answer yes. Exactly the inspected
+bytes are written. Both checks advise; they can be fooled, which is why you decide.
+
+agentx then keeps the digest of the skill's files in `~/.agentx/skills-trust.json` and offers the agent only skills
+that still match it (its own built-in skills are recognised by their text). Anything else on disk is held back until
+`/skills trust <name>`. The first time this record is kept, the skills already in `~/.agentx/skills` are recorded as
+they are.
 
 ## In your own code
 
@@ -59,7 +75,13 @@ app treats a project's `.agentx/skills`. `Skills(folder, observer=fn)` calls `fn
 each time the model opens a skill, so you can log or show it (the terminal app uses this for team helpers); an
 observer that raises is ignored. `Skills(folder, guard=fn)` asks `fn()` before each read: a text it returns is the
 tool's answer instead, and nothing is read or shown (the terminal app refuses skill reads this way once you have said to
-wrap up); a guard that raises is ignored. `Skills(folder, remember_reads=True)` answers a second read of the same skill with a
+wrap up); a guard that raises is ignored. `Skills(folder, check=fn)` asks `fn(skill)` about every skill on disk before it is offered: a text it returns holds the
+skill back (it is not listed and `use_skill` cannot open it) and is reported in the load problems; a check that
+raises holds the skill back too (the terminal app holds back skills whose files are not the approved ones).
+`Skills.Inspect` has the pieces: `snapshot(folder)` reads a skill folder once (bounded, no links) and its `.digest`
+names those exact bytes; `scan(snapshot)` returns the pattern findings. `install(found, target, fetched,
+contents={name: snapshot})` writes exactly the inspected bytes instead of reading the download again.
+`Skills(folder, remember_reads=True)` answers a second read of the same skill with a
 one-line pointer back to it (its text is still in the conversation); leave it off for a runner you reuse for unrelated
 conversations, and call `tool.forget_reads()` on the `use_skill` tool after you summarise a conversation.
 

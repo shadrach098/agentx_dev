@@ -202,8 +202,8 @@ def _team_models(ctx: Any, arg: str) -> None:
     ctx.set_team_models(names, folder=folder)
 
 
-SKILLS_USAGE = ("Usage: /skills | /skills install [name ...] <github link or folder> | /skills remove <name> | /skills reload | "
-                "/skills use <name> [what you want]")
+SKILLS_USAGE = ("Usage: /skills | /skills install [--global] [name ...] <github link or folder> | /skills trust <name> "
+                "| /skills remove [--global] <name> | /skills reload | /skills use <name> [what you want]")
 
 
 def skill_request(name: str, text: str = "") -> str:
@@ -224,6 +224,8 @@ def _skills(ctx: Any, arg: str) -> None:
         ctx.install_skills(rest)
     elif word.lower() == "remove" and rest:
         ctx.remove_skill(rest)
+    elif word.lower() == "trust" and rest:
+        ctx.trust_skill(rest)
     elif word.lower() == "reload" and not rest:
         ctx.reload_skills(say=True)
     elif word.lower() == "use" and rest:
@@ -233,8 +235,9 @@ def _skills(ctx: Any, arg: str) -> None:
                       "/skills reload picks up ones copied into the skills folder by hand.")
     else:
         import difflib
-        close = difflib.get_close_matches(word.lower(), ["install", "remove", "use", "reload"], n=1, cutoff=0.6)
-        if close and word.lower() not in ("install", "remove", "use", "reload"):
+        close = difflib.get_close_matches(word.lower(), ["install", "remove", "use", "reload", "trust"], n=1,
+                                          cutoff=0.6)
+        if close and word.lower() not in ("install", "remove", "use", "reload", "trust"):
             ctx.error(f"Unknown /skills command {shown(word, 30)!r}. Did you mean /skills {close[0]}?\n{SKILLS_USAGE}")
         else:
             ctx.error(SKILLS_USAGE)
@@ -385,7 +388,8 @@ COMMANDS = (
     Command("team", "Hand a big job to a team of helpers: /team <task>, /team log, or /team auto [on|off]", _team),
     Command("team-models", "Models team helpers may also use: /team-models [name[=use] ...|clear] [--folder]",
             _team_models),
-    Command("skills", "List the skills, or add one: /skills [install <link>|remove <name>]", _skills),
+    Command("skills", "List the skills, or add one: /skills [install [--global] <link>|trust <name>|remove <name>]",
+            _skills),
     Command("memory", "Show the project notes kept for later, or search them: /memory [words]", _memory),
     Command("usage", "Show the tokens used this session, per model, and by the last turn", _usage),
     Command("mcp", "MCP servers: list, or /mcp add <name> <url>, remove, login, logout <name>, reload", _mcp),
