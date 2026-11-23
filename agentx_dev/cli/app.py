@@ -18,6 +18,7 @@ from rich.text import Text
 
 from agentx_dev import AgentRunner, AgentType, Session
 from agentx_dev.cli.approval import MODES, Gate
+from agentx_dev.Runner.Fallback import NO_CREDIT_WORDS
 from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
                                      runs_while_working,
                                      shown)
@@ -112,8 +113,6 @@ KEPT_SO_FAR = "What it did so far is kept in the conversation, and changes alrea
 ERROR_NEXT = "Say continue to try again, or switch model with /model <name> and say continue."
 OUT_OF_CREDIT_NEXT = ("Add credit in the provider's console (Anthropic: Plans & Billing; OpenAI: Billing), or switch "
                       "model with /model <name> and say continue.")
-# The words providers use when an account has no credit left (Anthropic, then OpenAI's two forms).
-_NO_CREDIT = ("credit balance is too low", "insufficient_quota", "exceeded your current quota")
 
 
 def _out_of_credit(error: BaseException) -> bool:
@@ -121,7 +120,7 @@ def _out_of_credit(error: BaseException) -> bool:
         text = str(error).lower()
     except Exception:
         return False
-    return any(words in text for words in _NO_CREDIT)
+    return any(words in text for words in NO_CREDIT_WORDS)
 
 
 def provider_name(model: Any) -> str:
