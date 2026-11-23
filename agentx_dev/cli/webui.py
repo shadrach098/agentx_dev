@@ -67,6 +67,7 @@ RECORDING_MARK = "Recording"        # the prompt /voice shows while it records (
 MODEL_SUGGESTIONS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "gpt-6.1-sol",
                      "gpt-6-luna", "gpt-5.5")
 MODES_SHOWN = ("default", "accept-edits", "plan", "auto")
+MAX_LOCAL_CONTEXT = 10_000_000      # tokens the Settings panel accepts as "localContext": more than any local window
 KEEP_ALIVE_SEC = 4.0                # a closed window is noticed when this write fails
 CLOSE_GRACE_SEC = 8.0               # how long the window may be gone (a reload) before agentx quits
 SHARE_CHECK_SEC = 30.0              # remote use: how often agentx checks Tailscale still shares it (after a sleep)
@@ -266,6 +267,65 @@ def _step_fallback(fallback: Any) -> Optional[Dict[str, str]]:
     if not isinstance(fallback, dict) or not fallback.get("to"):
         return None
     return {key: _text(fallback.get(key) or "", 120) for key in ("to", "from", "reason")}
+
+
+def _local_models(app: Any) -> List[str]:
+    """The models the local server lists (``app.local_models``, filled in the background, so read each time the
+    window asks), as the model menu and the Settings suggestions offer them: plain names that agentx runs locally
+    (a ``gpt*`` name a server lists still means OpenAI), each once; the chat model too when it is a local one the
+    list lacks (the server did not answer at start)."""
+    from agentx_dev.cli.models import _acceptable_name, is_local_name
+    names = [str(name) for name in list(getattr(app, "local_models", None) or [])]
+    if getattr(getattr(app, "model", None), "is_local", False):
+        try:
+            names.append(str(app.model_label))
+        except Exception:
+            pass
+    return list(dict.fromkeys(name for name in names if _acceptable_name(name) and is_local_name(name)))
+
+
+def _fallback_from(app: Any) -> Optional[Dict[str, str]]:
+    """``{"model", "reason"}`` while the conversation runs on the fallback (``app.fallback_from``), else None."""
+    came = getattr(app, "fallback_from", None)
+    if not isinstance(came, dict):
+        return None
+    return {"model": _text(came.get("model") or "", 120), "reason": _text(came.get("reason") or "", 200)}
+
+
+def _local_changes(scope: str, values: Mapping[str, Any]) -> "tuple[Dict[str, Any], str]":
+    """The Settings panel's local model keys as changes for the user's file, or the reason they are refused (a
+    folder's file may not set them; a Claude or GPT name is not a fallback). A blank address or window removes the
+    key (the default applies); a blank fallback is ``""``, which turns it off and stops the offer."""
+    from agentx_dev.cli.models import is_local_name
+    from agentx_dev.cli.settings import LOCAL_SETTING_KEYS, local_server_address
+
+    given = [key for key in LOCAL_SETTING_KEYS if key in values]
+    if given and scope != "user":
+        return {}, f"{given[0]} is kept in your own settings only: save it under All folders."
+    changes: Dict[str, Any] = {}
+    if "localServer" in values:
+        address = str(values.get("localServer") or "").strip()
+        if address and (len(address) > 300 or local_server_address(address) is None):
+            return {}, "localServer must be a web address, for example http://localhost:11434/v1."
+        changes["localServer"] = address or None
+    if "fallbackModel" in values:
+        name = str(values.get("fallbackModel") or "").strip()[:200]
+        if name and not is_local_name(name):
+            return {}, f"fallbackModel must be a local model; {_text(name, 80)} is not."
+        changes["fallbackModel"] = name
+    if "localContext" in values:
+        raw = values.get("localContext")
+        if raw in (None, ""):
+            changes["localContext"] = None
+        else:
+            try:
+                number = int(raw)
+            except (TypeError, ValueError):
+                return {}, "localContext must be a whole number of tokens."
+            if not 1 <= number <= MAX_LOCAL_CONTEXT:
+                return {}, f"localContext must be between 1 and {MAX_LOCAL_CONTEXT:,}."
+            changes["localContext"] = number
+    return changes, ""
 
 
 def _team_tasks(history: List[Any]) -> List[str]:
@@ -1064,7 +1124,7 @@ class WebFront:
         app = self.app
         out: Dict[str, Any] = {"folder": str(self.cwd), "folderName": self.cwd.name or str(self.cwd),
                                "ready": app is not None, "modes": ["default", "accept-edits", "plan", "auto"],
-                               "models": list(MODEL_SUGGESTIONS)}
+                               "models": list(MODEL_SUGGESTIONS), "local_models": [], "fallback_from": None}
         try:
             from agentx_dev.cli.commands import command_descriptions
             out["commands"] = command_descriptions()
@@ -1076,13 +1136,16 @@ class WebFront:
             out["skills"] = dict(app.skill_entries())
         except Exception:
             out["skills"] = {}
+        local = _local_models(app)
+        out["local_models"] = local
+        out["fallback_from"] = _fallback_from(app)
         try:
             model = str(app.model_label)
             out["model"] = model
-            models = [model, *[str(m) for m in getattr(app, "team_models", []) or []], *MODEL_SUGGESTIONS]
+            models = [model, *[str(m) for m in getattr(app, "team_models", []) or []], *local, *MODEL_SUGGESTIONS]
             out["models"] = list(dict.fromkeys(m for m in models if m))
         except Exception:
-            pass
+            out["models"] = list(dict.fromkeys([*local, *MODEL_SUGGESTIONS]))
         out["mode"] = getattr(app.gate, "mode", "default")
         try:
             from agentx_dev.cli.app import _version
@@ -1268,9 +1331,10 @@ class WebFront:
         return {"ok": True, "message": _text(message, 300), **self.keys_view()}
 
     def settings_view(self) -> Dict[str, Any]:
-        from agentx_dev.cli.settings import is_project_folder, load_settings, project_settings_path, user_settings_path
+        from agentx_dev.cli.settings import (LOCAL_SETTING_KEYS, is_project_folder, load_settings,
+                                             project_settings_path, user_settings_path)
 
-        def read(path: Path) -> Dict[str, Any]:
+        def read(path: Path, own: bool = False) -> Dict[str, Any]:
             entry: Dict[str, Any] = {"path": str(path), "exists": path.is_file(), "values": {}, "error": ""}
             if not entry["exists"]:
                 return entry
@@ -1287,20 +1351,25 @@ class WebFront:
                                "allow": [str(r) for r in permissions.get("allow") or [] if isinstance(r, str)],
                                "deny": [str(r) for r in permissions.get("deny") or [] if isinstance(r, str)],
                                "maxSteps": data.get("maxSteps"), "tokenLimit": data.get("tokenLimit")}
+            if own:                                  # the local model keys: only the user's own file sets them
+                entry["values"].update({key: data.get(key) for key in LOCAL_SETTING_KEYS})
             return entry
 
         effective = load_settings(self.cwd, self.home)
-        return {"user": read(user_settings_path(self.home)), "folder": read(project_settings_path(self.cwd)),
+        return {"user": read(user_settings_path(self.home), own=True), "folder": read(project_settings_path(self.cwd)),
                 "canFolder": is_project_folder(self.cwd, self.home),
                 "effective": {"model": effective.model, "mode": effective.mode, "allow": effective.allow,
                               "deny": effective.deny, "maxSteps": effective.max_steps,
-                              "tokenLimit": effective.token_limit},
+                              "tokenLimit": effective.token_limit, "localServer": effective.local_server,
+                              "fallbackModel": effective.fallback_model, "localContext": effective.local_context},
+                "localModels": _local_models(self.app),
                 "problems": [_text(p, 300) for p in effective.problems], "modes": list(MODES_SHOWN)}
 
     def save_settings(self, scope: str, values: Any) -> Dict[str, Any]:
         """Save the Settings panel for ``scope`` ("user": every folder, "folder": this one). The permission rules,
         step limit and token limit take effect at once; the model and mode are defaults for the next start (the
-        menus under the message box change the current conversation)."""
+        menus under the message box change the current conversation), and so are the local model keys, which only
+        the user's file may hold (``/fallback`` changes the fallback at once)."""
         from agentx_dev.cli.app import default_deny
         from agentx_dev.cli.settings import MAX_MAX_STEPS, is_project_folder, load_settings, write_settings
 
@@ -1308,7 +1377,10 @@ class WebFront:
             return {"ok": False, "message": "Nothing to save."}
         if scope == "folder" and not is_project_folder(self.cwd, self.home):
             return {"ok": False, "message": "This folder cannot have its own settings (it is your home folder or a drive root)."}
-        changes: Dict[str, Any] = {}
+        local, refused = _local_changes(scope, values)
+        if refused:
+            return {"ok": False, "message": refused}
+        changes: Dict[str, Any] = dict(local)
         if "model" in values:
             model = str(values.get("model") or "").strip()
             changes["model"] = model[:200] or None
@@ -1674,6 +1746,7 @@ class WebFront:
             status["model"] = str(app.model_label)
         except Exception:
             pass
+        status["fallback_from"] = _fallback_from(app)          # the model chip says when the fallback carries on
         return status
 
     def _tick(self) -> None:

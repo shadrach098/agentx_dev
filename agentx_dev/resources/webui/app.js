@@ -444,6 +444,22 @@
     }
     const n = el("div", `notice ${ev.level || "info"}`);
     n.innerHTML = `<span>${esc(flush(ev.text))}${ev.hint ? ` <span class="hint">${esc(flush(ev.hint))}</span>` : ""}</span>`;
+    const actions = (Array.isArray(ev.actions) ? ev.actions : []).filter((a) => a && a.label && a.send);
+    if (actions.length) {                 // a question with its answers (the fallback offer): each sends its text
+      const row = el("span", "notice-actions");
+      for (const a of actions) {
+        const b = el("button", "btn small");
+        b.type = "button";
+        b.textContent = a.label;
+        b.addEventListener("click", () => {
+          row.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+          b.classList.add("chosen");
+          post("/api/send", {text: a.send});
+        });
+        row.append(b);
+      }
+      n.firstElementChild.append(row);
+    }
     column.append(n);
   }
   // the mode note as a small chip: hover to read it, click to open Details at the mode; a new conversation shows it
@@ -763,7 +779,8 @@
     $("micBtn").classList.toggle("recording", !!ev.recording);
     $("micBtn").setAttribute("aria-label", ev.recording ? "Stop recording" : "Speak instead of typing");
     if (ev.mode) setMode(ev.mode);
-    if (ev.model) setModel(ev.model);
+    if ("fallback_from" in ev) fallbackFrom = ev.fallback_from || null;
+    if (ev.model) setModel(ev.model); else setModel(currentModel);
     setComposer();
     const stick = nearBottom();
     updateLive();
@@ -917,13 +934,23 @@
   ];
   const CHECK = '<svg class="menu-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   let models = [], currentModel = "", currentMode = "default", menuFor = null, menuPick = null;
+  // the models the local server lists (marked "· local" in the menu), and while the conversation runs on the
+  // fallback model, the one that failed and why ({model, reason}; the chip says "· fallback")
+  let localModels = [], fallbackFrom = null;
   function setMode(mode) {
     currentMode = mode;
     const m = MODES.find((x) => x[0] === mode);
     $("modeLabel").textContent = m ? m[1] : mode;
   }
-  function setModel(model) { currentModel = model || ""; $("modelLabel").textContent = currentModel || "Model"; }
-
+  function setModel(model) {
+    currentModel = model || "";
+    const onFallback = !!(fallbackFrom && currentModel);
+    $("modelLabel").textContent = currentModel ? `${currentModel}${onFallback ? " · fallback" : ""}` : "Model";
+    $("modelBtn").classList.toggle("on-fallback", onFallback);
+    $("modelBtn").title = onFallback
+      ? `${fallbackFrom.model || "The chosen model"} failed${fallbackFrom.reason ? ` (${fallbackFrom.reason})` : ""}, so this conversation runs on ${currentModel}. Choose a model to try it again.`
+      : "";
+  }
   const menu = $("menu");
   function closeMenu(refocus) {
     if (!menuFor) return;
@@ -937,7 +964,7 @@
     closeMenu(); hidePalette();
     menuFor = button; menuPick = pick;
     menu.innerHTML = items.map((it, n) => `<div class="menu-item" role="option" tabindex="-1" data-n="${n}" aria-selected="${!!it.current}">` +
-      `<span class="menu-text"><span class="menu-label">${esc(it.label)}</span>${it.hint ? `<span class="menu-hint">${esc(it.hint)}</span>` : ""}</span>` +
+      `<span class="menu-text"><span class="menu-label">${esc(it.label)}${it.tag ? `<span class="menu-tag"> · ${esc(it.tag)}</span>` : ""}</span>${it.hint ?`<span class="menu-hint">${esc(it.hint)}</span>` : ""}</span>` +
       `${it.current ? CHECK : ""}</div>`).join("");
     menu.items = items;
     menu.hidden = false;
@@ -975,9 +1002,12 @@
   $("modeBtn").addEventListener("click", () => openMenu($("modeBtn"),
     MODES.map(([value, label, hint]) => ({value, label, hint, current: value === currentMode})),
     (it) => { if (it.value !== currentMode) { setMode(it.value); post("/api/send", {text: `/mode ${it.value}`}); } }));
-  $("modelBtn").addEventListener("click", () => {
+  $("modelBtn").addEventListener("click", async () => {
+    if (menuFor === $("modelBtn")) { closeMenu(true); return; }
+    await loadState();                             // the local server's models may have come in since
     const names = models.includes(currentModel) || !currentModel ? models : [currentModel, ...models];
-    openMenu($("modelBtn"), [...names.map((m) => ({value: m, label: m, current: m === currentModel})),
+    openMenu($("modelBtn"), [...names.map((m) => ({value: m, label: m, tag: localModels.includes(m) ? "local" : "",
+                                                   current: m === currentModel})),
                              {value: "", label: "Other model…", hint: "Type any model name"}],
       async (it) => {
         let name = it.value;
@@ -1105,7 +1135,8 @@
     const t = d.team;
     out.push(section("Team work", t && t.steps.length ? t.steps.map((s, n) => `${s.job && (n === 0 || t.steps[n - 1].job !== s.job) ? `<p class="d-job">${esc(s.job)}</p>` : ""}<details class="d-step"${s.done ? "" : " open"}>
         <summary><span class="dot ${s.state === "failed" ? "failed" : s.done ? "ok" : "run"}"></span><span class="d-who">${esc(s.helper)}${s.label && s.label !== s.helper ? ` · ${esc(s.label)}` : ""}</span>
-        <span class="d-num">${s.seconds ? `${s.seconds}s · ` : ""}${s.toolUses && !s.seconds ? `${num(s.toolUses)} steps · ` : ""}${num(s.tokens)} tok</span></summary>
+        <span class="d-num">${s.seconds ? `${s.seconds}s · ` : ""}${s.toolUses && !s.seconds ? `${num(s.toolUses)} steps · ` : ""}${num(s.tokens)} tok</span>
+        ${s.fallback ? `<span class="d-fallback">↺ on ${esc(s.fallback.to)} (fallback${s.fallback.from || s.fallback.reason ? `: ${esc([s.fallback.from, s.fallback.reason].filter(Boolean).join(" "))}` : ""})</span>` : ""}</summary>
         <p class="d-note">${esc(s.query)}</p>
         ${s.actions.length ? `<ul class="d-acts">${s.actions.map((a) => `<li class="${a.failed ? "failed" : ""}">${esc(toolLook(a.name)[0])} <code>${esc(a.subject)}</code></li>`).join("")}</ul>` : ""}
       </details>`).join("") : `<p class="d-empty">No team job in this conversation yet. Ask for a big job and agentx can split it across helpers.</p>`,
@@ -1191,8 +1222,30 @@
           <input type="number" name="tokenLimit" min="0" value="${esc(v.tokenLimit ?? "")}" placeholder="${esc(eff.tokenLimit || 0)}">
           <span class="s-hint">0 means no limit${folderModes ? "; a folder can only lower it" : ""}.</span></label>
       </div>
+      ${scope === "user" ? localFields(v, eff) : ""}
       ${settingsData.problems.length ? `<div class="s-problems"><b>Problems in the settings files</b>${settingsData.problems.map((p) => `<p>${esc(p)}</p>`).join("")}</div>` : ""}
-      <p class="s-hint">Rules and limits take effect at once. The model and mode are used from the next start.</p>`;
+      <p class="s-hint">Rules and limits take effect at once. The model and mode${scope === "user" ? " and the local model settings" : ""} are used from the next start.</p>`;
+  }
+  // Local models (Ollama, LM Studio): only your own settings file may say where they run, so a project you cloned
+  // cannot send the conversation elsewhere. The fallback is the local model a conversation continues on when Claude
+  // or GPT fails for good.
+  function localFields(v, eff) {
+    const off = v.fallbackModel === "";
+    return `<fieldset class="s-field s-local"><legend class="s-label">Local models</legend>
+      <span class="s-hint">Models on this computer, through Ollama or LM Studio. Only these all-folders settings can set them.</span>
+      <label class="s-field"><span class="s-sub">Local server</span>
+        <input type="text" name="localServer" value="${esc(typeof v.localServer === "string" ? v.localServer : "")}" placeholder="${esc(eff.localServer || "http://localhost:11434/v1")}" spellcheck="false">
+        <span class="s-hint">Where Ollama or LM Studio is running. agentx uses a server that is already running; it never starts one.</span></label>
+      <div class="s-two">
+        <label class="s-field"><span class="s-sub">Fallback model</span>
+          <input type="text" name="fallbackModel" value="${esc(typeof v.fallbackModel === "string" ? v.fallbackModel : "")}" placeholder="${off ? "off" : "none"}" list="localModelList" spellcheck="false">
+          <span class="s-hint">When Claude or GPT fails for good, the conversation continues on it, marked. Empty is off; <code>/fallback</code> changes it now.</span></label>
+        <label class="s-field"><span class="s-sub">Context window</span>
+          <input type="number" name="localContext" min="1" value="${esc(v.localContext ?? "")}" placeholder="what the server says">
+          <span class="s-hint">Tokens. Set it when the server does not say, or loads models with a larger window.</span></label>
+      </div>
+      <datalist id="localModelList">${(settingsData.localModels || []).map((m) => `<option value="${esc(m)}">`).join("")}</datalist>
+    </fieldset>`;
   }
   // API keys: kept encrypted by the system's credential store; the page only ever sees the last four characters
   let keysData = null;
@@ -1240,6 +1293,13 @@
     const split = (s) => String(s || "").split("\n").map((x) => x.trim()).filter(Boolean);
     const values = {model: f.get("model") || "", mode: f.get("mode") || "", allow: split(f.get("allow")), deny: split(f.get("deny")),
                     maxSteps: f.get("maxSteps") || "", tokenLimit: f.get("tokenLimit") || ""};
+    if (scope === "user") {                        // your own file only (see localFields)
+      values.localServer = String(f.get("localServer") || "").trim();
+      values.localContext = f.get("localContext") || "";
+      // an empty field turns the fallback off, which also ends the offer: sent only when it was changed
+      const before = settingsData.user.values.fallbackModel, now = String(f.get("fallbackModel") || "").trim();
+      if (now !== (typeof before === "string" ? before : "")) values.fallbackModel = now;
+    }
     $("settingsSave").disabled = true;
     const res = await post("/api/settings", {scope, values});
     $("settingsSave").disabled = false;
@@ -1353,7 +1413,9 @@
       commands = s.commands || {};
       skills = s.skills || {};
       models = (s.models || []).map(String);
-      if (s.model) setModel(s.model);
+      localModels = (s.local_models || []).map(String);
+      fallbackFrom = s.fallback_from || null;
+      if (s.model) setModel(s.model); else setModel(currentModel);
       if (s.mode) setMode(s.mode);
       live = s.live || {};
       drawSessions();

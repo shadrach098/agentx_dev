@@ -253,6 +253,10 @@ svg { width: 16px; height: 16px; flex: none; }
 .notice.warning { color: var(--warn); }
 .notice.warning::before { background: var(--warn); }
 .notice .hint { color: var(--faint); }
+.notice-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; white-space: normal; }
+.notice-actions .btn { color: var(--text); }
+.notice-actions .btn:disabled { opacity: 0.45; cursor: default; }
+.notice-actions .btn.chosen:disabled { opacity: 1; border-color: var(--text); background: var(--hover); }
 /* the mode note: a small chip; its full text on hover and in Details */
 .notice-chip-row { margin: 8px 0; }
 .notice-chip { position: relative; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 999px; padding: 5px 12px 5px 10px; font: inherit; font-size: 13px; cursor: pointer; transition: border-color 0.12s, background 0.12s; }
@@ -406,6 +410,10 @@ svg { width: 16px; height: 16px; flex: none; }
 .menu-text { flex: 1; min-width: 0; }
 .menu-label { display: block; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .menu-hint { display: block; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+.menu-tag { color: var(--faint); font-size: 12.5px; }
+/* the conversation runs on the fallback model: the chip says so, in the warning colour (its title says why) */
+#modelBtn.on-fallback { color: var(--warn); }
+#modelBtn.on-fallback:hover, #modelBtn.on-fallback[aria-expanded="true"] { color: var(--warn); }
 .menu-check { width: 15px; height: 15px; color: var(--text); }
 @keyframes pop { from { opacity: 0; transform: translateY(4px) scale(0.98); } }
 
@@ -517,7 +525,8 @@ svg { width: 16px; height: 16px; flex: none; }
 .d-grid dt { color: var(--muted); }
 .d-grid dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
 .d-step { min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; background: var(--bg); }
-.d-step summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; font-size: 13px; }
+.d-step summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; cursor: pointer; list-style: none; font-size: 13px; }
+.d-fallback { flex-basis: 100%; margin: -4px 0 0 16px; color: var(--warn); font-size: 12px; overflow-wrap: anywhere; }   /* under the name */
 .d-step summary::-webkit-details-marker { display: none; }
 .d-who { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .d-num { color: var(--faint); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -569,6 +578,10 @@ svg { width: 16px; height: 16px; flex: none; }
 .s-mode b { display: block; font-size: 13.5px; font-weight: 600; }
 .s-mode small { display: block; font-size: 12px; color: var(--muted); line-height: 1.4; }
 .s-two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.s-local { gap: 10px; border-top: 1px solid var(--line); padding-top: 16px; }
+.s-local legend { float: left; width: 100%; margin-bottom: 2px; }    /* inside the line, not on it */
+.s-local .s-field { margin-bottom: 4px; }
+.s-sub { font-size: 13px; font-weight: 500; }
 .s-problems { border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; color: var(--warn); margin-bottom: 14px; }
 .s-problems p { margin: 4px 0 0; color: var(--muted); }
 

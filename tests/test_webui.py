@@ -757,3 +757,115 @@ def test_an_mcp_sign_in_shows_as_a_card_and_the_orb_waits_for_you():
     assert r"in your browser\. If it did not open, go to:" in script and "function localSigninCard" in script
     assert "if (liveCard() || signingIn) return \"stuck\";" in script
     assert "Waiting for you to sign in to ${signingIn}" in script and "endSignin();" in script
+
+
+class TestLocalModelsAndTheFallback:
+    """Local models in the model menu and the Settings form, and the fallback shown in the window."""
+
+    def test_state_lists_local_models(self, window):
+        w = window(MockModel())
+        w.ready()
+        state = w.request("GET", "/api/state")[1]
+        assert state["local_models"] == []
+        # the list the local server gave, filled later by the discovery thread: read when the window asks
+        w.app.local_models[:] = ["qwen3:8b", "llama3.1:8b", "gpt-oss:20b", "qwen3:8b", "bad name"]
+        state = w.request("GET", "/api/state")[1]
+        assert state["local_models"] == ["qwen3:8b", "llama3.1:8b"]      # a gpt* name is never local
+        assert state["models"].count("qwen3:8b") == 1 and "llama3.1:8b" in state["models"]
+        assert state["models"][0] == state["model"] and "claude-opus-5-5" in state["models"]
+        # a local chat model the server did not list (it did not answer at start) is still marked local
+        from types import SimpleNamespace
+        chat = w.app.model
+        w.app.model = SimpleNamespace(is_local=True, model="mistral-nemo")
+        try:
+            state = w.request("GET", "/api/state")[1]
+        finally:
+            w.app.model = chat
+        assert state["model"] == "mistral-nemo" and state["local_models"][-1] == "mistral-nemo"
+        assert state["models"].count("mistral-nemo") == 1
+
+    def test_state_fallback_from(self, window):
+        w = window(MockModel())
+        w.ready()
+        assert w.request("GET", "/api/state")[1]["fallback_from"] is None
+        assert w.front._status()["fallback_from"] is None
+        w.app.fallback_from = {"model": "claude-opus-5-5", "reason": "out of credit"}
+        state = w.request("GET", "/api/state")[1]
+        assert state["fallback_from"] == {"model": "claude-opus-5-5", "reason": "out of credit"}
+        assert w.front._status()["fallback_from"] == state["fallback_from"]      # the chip follows it live
+
+    def test_settings_view_has_local_keys(self, window):
+        w = window(MockModel())
+        (w.home / ".agentx").mkdir(exist_ok=True)
+        (w.home / ".agentx" / "settings.json").write_text(json.dumps(
+            {"localServer": "http://localhost:1234/v1", "fallbackModel": "qwen3:8b", "localContext": 16384}),
+            encoding="utf-8")
+        w.ready()
+        w.app.local_models[:] = ["qwen3:8b", "llama3.1:8b"]
+        view = w.request("GET", "/api/settings")[1]
+        values = view["user"]["values"]
+        assert values["localServer"] == "http://localhost:1234/v1" and values["fallbackModel"] == "qwen3:8b"
+        assert values["localContext"] == 16384
+        assert view["effective"]["localServer"] == "http://localhost:1234/v1"
+        assert view["effective"]["fallbackModel"] == "qwen3:8b" and view["effective"]["localContext"] == 16384
+        assert view["localModels"] == ["qwen3:8b", "llama3.1:8b"]
+        assert "localServer" not in view["folder"]["values"]
+
+    def test_save_settings_writes_user_file_only(self, window):
+        w = window(MockModel())
+        w.ready()
+        values = {"localServer": " localhost:1234 ", "fallbackModel": "qwen3:8b", "localContext": "16384"}
+        saved = w.request("POST", "/api/settings", {"scope": "user", "values": values})[1]
+        assert saved["ok"] is True, saved
+        user_file = w.home / ".agentx" / "settings.json"
+
+        def local():                                       # the start writes the file too: only these keys
+            return {k: v for k, v in json.loads(user_file.read_text(encoding="utf-8")).items() if k in values}
+        assert local() == {"localServer": "localhost:1234", "fallbackModel": "qwen3:8b", "localContext": 16384}
+        assert saved["view"]["effective"]["localServer"] == "http://localhost:1234/v1"
+        # "" turns the fallback off (and stops the offer); a blank address or window goes back to the default
+        saved = w.request("POST", "/api/settings", {"scope": "user", "values": {
+            "localServer": "", "fallbackModel": "", "localContext": ""}})[1]
+        assert saved["ok"] is True, saved
+        assert local() == {"fallbackModel": ""}
+        for key, value in (("localServer", "ftp://example.com"), ("localContext", "0"), ("localContext", "many")):
+            refused = w.request("POST", "/api/settings", {"scope": "user", "values": {key: value}})[1]
+            assert refused["ok"] is False and key in refused["message"], (key, refused)
+        # a folder's file may not set them: a cloned project could send the conversation elsewhere
+        for key, value in values.items():
+            refused = w.request("POST", "/api/settings", {"scope": "folder", "values": {key: value}})[1]
+            assert refused["ok"] is False and key in refused["message"], (key, refused)
+        assert not (w.cwd / ".agentx" / "settings.json").exists()
+
+    def test_save_settings_refuses_paid_fallback(self, window):
+        w = window(MockModel())
+        w.ready()
+        user_file = w.home / ".agentx" / "settings.json"
+        before = user_file.read_text(encoding="utf-8") if user_file.exists() else None
+        refused = w.request("POST", "/api/settings", {"scope": "user", "values": {
+            "fallbackModel": "claude-opus-5-5", "model": "claude-sonnet-5-5"}})[1]
+        assert refused == {"ok": False, "message": "fallbackModel must be a local model; claude-opus-5-5 is not."}
+        assert (user_file.read_text(encoding="utf-8") if user_file.exists() else None) == before   # nothing saved
+
+    def test_notice_event_carries_actions(self, window):
+        w = window(MockModel())
+        w.ready()
+        actions = [{"label": "Use qwen3:8b", "send": "/fallback qwen3:8b"}, {"label": "No", "send": "/fallback off"}]
+        w.app.screen.notice("Ollama is running with qwen3:8b.", actions=actions)
+        event = wait_for(w.front, lambda e: e["type"] == "notice" and e.get("actions"))
+        assert event["actions"] == actions and event["text"] == "Ollama is running with qwen3:8b."
+        w.app.screen.notice("A plain notice.")
+        plain = wait_for(w.front, lambda e: e["type"] == "notice" and e["text"] == "A plain notice.")
+        assert "actions" not in plain
+
+    def test_the_window_draws_the_local_and_fallback_marks(self):
+        """The menu marks local names, the chip says when the fallback is on, a notice's actions are buttons that
+        send their text, and the Details team steps say which ran on the fallback and why."""
+        from agentx_dev.cli.webui import RESOURCES
+        script = (RESOURCES / "app.js").read_text(encoding="utf-8")
+        assert 'localModels.includes(m) ? "local"' in script and " · ${esc(it.tag)}" in script   # qwen3:8b · local
+        assert '" · fallback"' in script and '"fallback_from" in ev' in script
+        assert "ev.actions" in script and 'post("/api/send", {text: a.send})' in script
+        assert "↺ on ${esc(s.fallback.to)} (fallback" in script
+        for name in ("localServer", "fallbackModel", "localContext"):
+            assert f'name="{name}"' in script

@@ -345,6 +345,18 @@ LOCAL_SETTING_KEYS = ("localServer", "fallbackModel", "localContext")
 _LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
+def local_server_address(value: str) -> Optional[str]:
+    """``value`` as a local server's address (``normalise_base_url``: ``localhost:1234`` becomes
+    ``http://localhost:1234/v1``), or None when it is not an http(s) web address."""
+    try:
+        url = normalise_base_url(value)
+        parsed = urlparse(url)
+        host = parsed.hostname if parsed.scheme in ("http", "https") else None
+    except ValueError:
+        host = None
+    return url if host else None
+
+
 def _read_local_settings(data: dict, path: Path, is_project: bool, settings: Settings) -> None:
     """``localServer``, ``fallbackModel`` and ``localContext``: read from the user's own file only, so a cloned
     project cannot send the conversation to another server."""
@@ -358,13 +370,9 @@ def _read_local_settings(data: dict, path: Path, is_project: bool, settings: Set
         if not isinstance(value, str) or not value.strip():
             settings.problems.append(f"settings file {path}: 'localServer' must be a web address; ignored")
         else:
-            try:
-                url = normalise_base_url(value)
-                parsed = urlparse(url)
-                host = parsed.hostname if parsed.scheme in ("http", "https") else None
-            except ValueError:
-                host = None
-            if not host:
+            url = local_server_address(value)
+            host = urlparse(url).hostname if url else None
+            if not url:
                 settings.problems.append(f"localServer in {path} is ignored: it is not a web address.")
             else:
                 settings.local_server = url
