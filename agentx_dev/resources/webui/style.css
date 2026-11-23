@@ -334,6 +334,7 @@ svg { width: 16px; height: 16px; flex: none; }
 .team-state { color: var(--team-color); font-size: 10px; text-transform: capitalize; }
 .team-meta { grid-column: 2; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 .team-row .stats { grid-column: 3; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.team-fallback { grid-column: 2; color: var(--warn); font-size: 10px; overflow-wrap: anywhere; }
 .team-row.is-running { --team-color: #5bbdaa; }
 .team-row.is-done { --team-color: #72a6dd; }
 .team-row.is-failed { --team-color: #e17f81; }

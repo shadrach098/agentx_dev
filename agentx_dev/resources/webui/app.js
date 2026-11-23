@@ -744,7 +744,9 @@
           const detail = r.action ? `<span class="tool-action">${esc(doing)}</span>${r.path ? ` <span class="tool-path">${esc(r.path)}</span>` : ""}${r.summary ? `<span class="tool-summary">${esc(r.summary)}</span>` : ""}` : "";
           return `<div class="team-row is-${state}" data-deployment="${esc(r.id || "")}">` +
             `<div class="team-identity"><span class="team-marker" aria-hidden="true"></span><strong class="who">${esc(r.label || r.helper)}</strong><span class="team-state">${state}</span>` +
-            `<span class="team-meta">${esc(r.helper)}${r.model ? ` · ${esc(r.model)}` : ""}</span><span class="stats">${esc(r.stats || "")}</span></div>` +
+            `<span class="team-meta">${esc(r.helper)}${r.model ? ` · ${esc(r.model)}` : ""}</span><span class="stats">${esc(r.stats || "")}</span>` +
+            // work the fallback model finished is always marked
+            `${r.fallback ? `<span class="team-fallback">↺ on ${esc(r.fallback)} (fallback)</span>` : ""}</div>` +
             `${detail || r.activity ? `<div class="act${r.actionFailed ? " tool-failed" : ""}">${detail}${r.activity ? `<span class="activity-counts">${esc(r.activity)}</span>` : ""}</div>` : ""}</div>`;
         }).join("");
     } else { team.hidden = true; team.innerHTML = ""; }

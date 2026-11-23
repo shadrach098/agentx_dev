@@ -27,7 +27,7 @@ class TeamPanel:
                                       "helper": str(step.get("agent") or ""),
                                       "label": str(step.get("label") or step.get("agent") or ""),
                                       "query": str(step.get("query") or ""),
-                                      "state": "waiting", "status": None,
+                                      "state": "waiting", "status": None, "fallback": "",
                                       "termination": "", "inferred": False})
             return
         if kind not in ("dispatch", "result"):
@@ -46,6 +46,7 @@ class TeamPanel:
             row["status"] = status
         row["state"] = ("running" if kind == "dispatch" else "skipped" if data.get("skipped")
                         else "done" if data.get("ok") else "failed")
+        row["fallback"] = str(data.get("fallback") or "") if row["state"] == "done" else ""   # finished on it
         row["termination"], row["inferred"] = "", False
 
     def finish(self, reason: str = "unknown") -> None:
@@ -68,6 +69,7 @@ class TeamPanel:
                 summary, failed = "", False
             rows.append({"id": row["id"], "helper": row["helper"], "label": row["label"],
                          "state": row["state"], "model": str(snap.get("model") or ""),
+                         "fallback": row["fallback"],
                          "termination": row["termination"], "inferred": row["inferred"],
                          "activity": helper_activity(step_counts(snap)) if snap else "",
                          "stats": step_stats(snap) if snap else "",

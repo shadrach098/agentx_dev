@@ -367,10 +367,18 @@ class ModelCommands:
         (self.notice if path is not None else self.error)(self._safe(message, 600))
 
     def helper_models_line(self) -> str:
-        """The approval panel's ``Helper models:`` line; "" when no extra models are set or there is no model."""
+        """The approval panel's ``Helper models:`` line; "" when no extra models are set or there is no model. On a
+        local chat model, a second line names the Claude and GPT helpers the job would use: the project's files go
+        to them (the user listed them, so they are allowed, but the approval says so)."""
         if not self.team_models or self.model is None:
             return ""
-        return team_models_line(self.model_label, self.team_models, self.env)
+        line = team_models_line(self.model_label, self.team_models, self.env)
+        if getattr(self.model, "is_local", False):
+            usable, _ = usable_team_models(self.model_label, self.team_models, self.env)
+            cloud = [name for name in usable if not is_local_name(name)]
+            if cloud:
+                line += f"\nHelpers on {', '.join(cloud)} will see this project's files."
+        return line
 
     def show_team_models(self) -> None:
         """``/team-models``: the list, where it came from, and which entries a job would use now."""

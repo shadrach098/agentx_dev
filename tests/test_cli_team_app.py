@@ -876,3 +876,181 @@ def test_each_result_says_which_job_of_the_message_it_was(tmp_path):
     assert app.start() == 0
     assert "team job 1 of 5 for this message" in history_text(app)
     assert "team job 2 of 5 for this message" in history_text(app)
+
+
+# -- local helpers and the fallback ----------------------------------------------------------------------------
+
+import io
+
+from rich.console import Console
+
+from agentx_dev.LocalModel import LocalCheck
+from tests.conftest import _MockToolCallingModel
+
+
+class KeyRejected(Exception):
+    status_code = 401
+
+    def __init__(self):
+        super().__init__("Error code: 401 - invalid x-api-key")
+
+
+class LocalStandIn(_MockToolCallingModel):
+    """A local model stand-in: bound natively, its check passes; each call takes the next scripted reply."""
+
+    is_local = True
+    prefers_native_tools = True
+
+    def __init__(self, name, *replies):
+        super().__init__(tool_script=list(replies))
+        self.model = name
+        self.base_url = "http://localhost:11434/v1"
+        self.context_window = 32768
+
+    def check(self, timeout=120.0):
+        return LocalCheck(True, "", self.context_window)
+
+
+def respond(answer, call_id="r1"):
+    return {"type": "tool_use", "name": "respond", "input": {"answer": answer}, "id": call_id}
+
+
+def failing_helper(messages, n):
+    raise KeyRejected()
+
+
+def test_a_step_on_the_fallback_is_marked_on_the_screen_in_the_panel_and_for_the_agent(tmp_path):
+    chat = team_model([step("s1", "explorer", "look around")], helper=failing_helper)
+    chat.model_name = "claude-sonnet-5-5"
+    fallback = LocalStandIn("qwen3:8b", respond("found it on the fallback"))
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"), env=KEYS,
+                              model_factory=factory_for(chat, **{"qwen3:8b": fallback}), fallback_model="qwen3:8b",
+                              local_context=32768)
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "↺ explorer · look around  Done on qwen3:8b (fallback) (" in text and "found it on the fallback" in text
+    history = history_text(app)
+    assert "1 step ran on the fallback model; check their work" in history
+    assert "1. explorer - done on qwen3:8b (fallback: model_" in history and " key rejected): look around" in history
+    rows = app._team_panel.snapshot()                              # what the window's Team panel draws
+    assert rows[0]["state"] == "done" and rows[0]["fallback"] == "qwen3:8b"
+    saved = [path.read_text(encoding="utf-8") for path in (app.cwd / ".agentx" / "team").rglob("*.md")]
+    assert any("Status: **done on qwen3:8b (fallback)**" in text for text in saved)    # the step's saved record
+    assert all("claude-sonnet-5-5" not in text for text in saved)  # the agent reads it later: no configured model
+
+
+def started_for_a_job(tmp_path, chat, models, monkeypatch, **kw):
+    """An app started on ``chat``, and what ``run_team_job`` is given when a job starts (the job itself not run)."""
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), chat, env=KEYS, model_factory=factory_for(chat, **models),
+                            local_context=32768, **kw)
+    assert app.start() == 0
+    given = {}
+    monkeypatch.setattr(app_module, "run_team_job",
+                        lambda task, **job: given.update(job) or "Team job finished (outcome: done).")
+    app._describe_models = lambda *args, **kwargs: None
+    app._start_team_job("Survey the project", "it is big")
+    return given
+
+
+def test_a_local_chat_gives_its_cloud_helpers_the_fallback(tmp_path, monkeypatch):
+    chat, fallback = LocalStandIn("qwen3:8b"), LocalStandIn("llama3.1:8b")
+    opus = extra("claude-opus-5-5")
+    given = started_for_a_job(tmp_path, chat, {"claude-opus-5-5": opus, "llama3.1:8b": fallback}, monkeypatch,
+                              model_name="qwen3:8b", team_models=["claude-opus-5-5"], fallback_model="llama3.1:8b")
+    assert given["fallback_model"] is fallback
+    assert [helper.model for helper in given["extra_models"]] == [opus]
+    built = build_helpers(chat, [], "", extra_models=given["extra_models"], fallback_model=fallback)
+    assert built["coder@qwen3:8b"][1].fallback_model is None and built["coder@claude-opus-5-5"][1].fallback_model is fallback
+
+
+def test_no_fallback_for_helpers_when_none_is_set(tmp_path, monkeypatch):
+    chat = team_model([])
+    chat.model_name = "claude-sonnet-5-5"
+    assert started_for_a_job(tmp_path, chat, {}, monkeypatch)["fallback_model"] is None
+
+
+def test_a_local_helper_without_a_window_gets_one(tmp_path, monkeypatch):
+    from agentx_dev.LocalModel import DEFAULT_WINDOW
+    chat = team_model([])
+    chat.model_name = "claude-sonnet-5-5"
+    small = LocalStandIn("llama3.1:8b")
+    small.context_window = None                   # the settings set no localContext and it was never checked
+    started_for_a_job(tmp_path, chat, {"llama3.1:8b": small}, monkeypatch, team_models=["llama3.1:8b"])
+    assert small.context_window == 32768          # the user's localContext
+    (tmp_path / "b").mkdir()
+    small.context_window = None
+    app, _, _, _ = make_app(tmp_path / "b", Lines("/exit"), chat, env=KEYS,
+                            model_factory=factory_for(chat, **{"llama3.1:8b": small}), team_models=["llama3.1:8b"])
+    assert app.start() == 0
+    monkeypatch.setattr(app_module, "run_team_job", lambda task, **job: "Team job finished (outcome: done).")
+    app._describe_models = lambda *args, **kwargs: None
+    app._start_team_job("Survey the project", "it is big")
+    assert small.context_window == DEFAULT_WINDOW  # no localContext: the default until the server says more
+
+
+def test_team_done_fallback_mark():
+    from agentx_dev.cli.ui import Screen
+    out = io.StringIO()
+    screen = Screen(Console(file=out, width=200, force_terminal=False, color_system=None))
+    screen.team_done("coder@claude-opus-5-5", "make the change", True, "changed it", fallback="qwen3:8b")
+    screen.team_done("runner@gpt-5.5", "run the tests", True, "ran some", partial=True, fallback="qwen3:8b")
+    screen.team_done("coder@gpt-5.5", "fix it", True, "fixed it")
+    lines = out.getvalue().splitlines()
+    assert lines[0] == "↺ coder@claude-opus-5-5 · make the change  Done on qwen3:8b (fallback)"
+    assert lines[2] == "↺ runner@gpt-5.5 · run the tests  Partial (ran out of steps) on qwen3:8b (fallback)"
+    assert lines[4] == "✓ coder@gpt-5.5 · fix it  Done"
+
+
+def test_the_window_panel_row_carries_the_fallback():
+    from agentx_dev.cli.team_panel import TeamPanel
+    panel = TeamPanel()
+    panel.notify("plan", {"steps": [{"agent": "coder@claude-opus-5-5", "label": "fix", "query": "fix it"},
+                                    {"agent": "runner@gpt-5.5", "label": "run", "query": "run it"}], "round": 1})
+    panel.notify("result", {"round": 1, "step": 0, "ok": True, "fallback": "qwen3:8b"})
+    panel.notify("result", {"round": 1, "step": 1, "ok": True})
+    rows = panel.snapshot()
+    assert [row["fallback"] for row in rows] == ["qwen3:8b", ""]
+
+
+def local_chat_app(tmp_path, team_models, env=KEYS):
+    chat = LocalStandIn("qwen3:8b")
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), chat, env=env, model_name="qwen3:8b",
+                              team_models=team_models)
+    assert app.start() == 0
+    return app
+
+
+def test_cloud_helpers_warned_on_local_chat(tmp_path):
+    app = local_chat_app(tmp_path, ["claude-opus-5-5", "gpt-5.5", "llama3.1:8b"])
+    line = app.helper_models_line()
+    assert line.splitlines() == ["Helper models: qwen3:8b (chat), claude-opus-5-5, gpt-5.5, llama3.1:8b",
+                                 "Helpers on claude-opus-5-5, gpt-5.5 will see this project's files."]
+    from agentx_dev.cli.preview import preview_for
+    body = preview_for("start_team_job", CALL, app.cwd, helper_models=line).body
+    assert "Helpers on claude-opus-5-5, gpt-5.5 will see this project's files." in body.splitlines()
+
+
+def test_no_cloud_warning_without_cloud_helpers_or_on_a_cloud_chat(tmp_path):
+    (tmp_path / "a").mkdir()
+    assert "will see" not in local_chat_app(tmp_path / "a", ["llama3.1:8b"]).helper_models_line()
+    (tmp_path / "b").mkdir()                           # a Claude name without its key is not used: nothing to warn
+    assert "will see" not in local_chat_app(tmp_path / "b", ["claude-opus-5-5"], env={}).helper_models_line()
+    chat = team_model([])
+    chat.model_name = "claude-sonnet-5-5"
+    (tmp_path / "c").mkdir()
+    app, _, _, _ = make_app(tmp_path / "c", Lines("/exit"), chat, env=KEYS, team_models=["gpt-5.5"])
+    assert app.start() == 0
+    assert "will see" not in app.helper_models_line()
+
+
+def test_the_terminal_approval_shows_the_warning_on_its_own_line(tmp_path):
+    from agentx_dev.cli.approval import Request
+    from agentx_dev.cli.ui import make_asker
+    out = io.StringIO()
+    console = Console(file=out, width=200, force_terminal=False, color_system=None)
+    line = ("Helper models: qwen3:8b (chat), claude-opus-5-5\n"
+            "Helpers on claude-opus-5-5 will see this project's files.")
+    ask = make_asker(console, Lines("n", ""), tmp_path, helper_models=lambda: line)
+    ask(Request(tool="start_team_job", kind="team", subject="Survey", args=CALL, remember=False, grant=""))
+    shown = out.getvalue()
+    assert "Helpers on claude-opus-5-5 will see this project's files." in shown and "\\n" not in shown

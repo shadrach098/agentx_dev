@@ -474,3 +474,131 @@ class TestAFailureSaysWhatToDoNext:
         for secret in ("gpt-secret-9", "claude-secret-1", "model-x", "RateLimitError", "429"):
             assert secret not in result
         assert any(kind == "error" for kind, _ in seen)
+
+
+# -- local helpers and the fallback ----------------------------------------------------------------------------
+
+from tests.conftest import _MockToolCallingModel
+
+
+class KeyRejected(Exception):
+    status_code = 401
+
+    def __init__(self):
+        super().__init__("Error code: 401 - invalid x-api-key")
+
+
+class LocalStandIn(_MockToolCallingModel):
+    """A local model stand-in: bound natively; each call takes the next scripted reply."""
+
+    is_local = True
+    prefers_native_tools = True
+
+    def __init__(self, name, *replies):
+        super().__init__(tool_script=list(replies))
+        self.model = name
+
+
+def respond(answer, call_id="r1"):
+    return {"type": "tool_use", "name": "respond", "input": {"answer": answer}, "id": call_id}
+
+
+def fixed_ids(monkeypatch):
+    tokens = iter(["1" * 24, "2" * 24, "3" * 24])
+    monkeypatch.setattr("agentx_dev.cli.blind_models.secrets.token_hex", lambda n: next(tokens))
+
+
+def test_local_helper_names_keep_colons(tmp_path, tools, monkeypatch):
+    fixed_ids(monkeypatch)
+    chat = router(plans=[plan_json(step("s1", "coder@model_222222222222222222222222", "make the change"))],
+                  synth="All done.")
+    chat.model_name = "claude-sonnet-5-5"
+    local = LocalStandIn("qwen3:8b", respond("local report"))
+    result, seen = run(tmp_path, tools, chat, extra_models=[HelperModel("qwen3:8b", local)])
+    plan = next(data for kind, data in seen if kind == "plan")
+    assert plan["steps"][0]["agent"] == "coder@qwen3:8b"                     # the plan on the screen
+    assert any(kind == "dispatch" and data["agent"] == "coder@qwen3:8b" for kind, data in seen)
+    assert any(kind == "result" and data["agent"] == "coder@qwen3:8b" and data["ok"] for kind, data in seen)
+    assert local.tool_calls_made                                             # the step ran on the local model
+    assert "1. coder@model_222222222222222222222222 - done" in result and "qwen3" not in result
+    helpers = build_helpers(chat, tools, "", extra_models=[HelperModel("qwen3:8b", local)])
+    assert "coder@qwen3:8b" in helpers and "explorer@qwen3:8b" in helpers   # without blind IDs too
+
+
+def test_helper_gets_fallback_unless_local(tools):
+    chat = labelled("claude-sonnet-5-5")
+    local = LocalStandIn("qwen3:8b")
+    fallback = LocalStandIn("llama3.1:8b")
+    helpers = build_helpers(chat, tools, "", extra_models=[HelperModel("qwen3:8b", local)],
+                            fallback_model=fallback)
+    for name, (_, runner) in helpers.items():
+        if name.endswith("@qwen3:8b"):
+            assert runner.fallback_model is None                    # a local model never falls back
+            assert runner.bind_tools_natively                       # chosen for the model, not forced off
+        else:
+            assert runner.fallback_model is fallback
+            assert not runner.bind_tools_natively
+    assert all(runner.fallback_model is None for _, runner in build_helpers(chat, tools, "").values())
+
+
+def test_a_helper_that_fails_for_good_finishes_on_the_fallback(tmp_path, tools, monkeypatch):
+    fixed_ids(monkeypatch)
+    chat = router(plans=[plan_json(step("s1", "explorer", "look around"))], synth="All done.",
+                  agent=lambda messages: (_ for _ in ()).throw(KeyRejected()))
+    chat.model_name = "claude-sonnet-5-5"
+    fallback = LocalStandIn("qwen3:8b", respond("found it on the fallback"))
+    result, seen = run(tmp_path, tools, chat, fallback_model=fallback)
+    ended = next(data for kind, data in seen if kind == "result")
+    assert ended["ok"] and ended["fallback"] == "qwen3:8b" and "found it on the fallback" in ended["text"]
+    assert ended["status"].fallback == {"from": "claude-sonnet-5-5", "to": "qwen3:8b", "reason": "key rejected"}
+    assert result.startswith("Team job finished (outcome: done; 1 step ran on the fallback model; check their "
+                             "work).")
+    assert ("1. explorer - done on qwen3:8b (fallback: model_111111111111111111111111 key rejected): look around"
+            in result)
+    assert "claude-sonnet-5-5" not in result                     # the agent sees the job's ID, not the model
+
+
+def test_a_step_on_its_own_model_has_no_fallback_mark(tmp_path, tools):
+    model = router(plans=[plan_json(step("s1", "explorer", "look around"))], synth="All done.",
+                   agent=lambda messages: make_final("found things"))
+    result, seen = run(tmp_path, tools, model, fallback_model=LocalStandIn("qwen3:8b"))
+    assert next(data for kind, data in seen if kind == "result")["fallback"] == ""
+    assert "fallback" not in result
+
+
+def fallback_sub(content="report", **kw):
+    from types import SimpleNamespace
+    return SimpleNamespace(**{"agent": "coder@model_x", "query": "make the change", "content": content,
+                              "error": None, "skipped": False, "outcome": "done", "superseded": False, **kw})
+
+
+USED = {"from": "model_x", "to": "qwen3:8b", "reason": "key rejected"}
+
+
+def test_step_on_fallback_line_and_header():
+    from types import SimpleNamespace
+    on_fallback, own = fallback_sub(), fallback_sub(agent="runner@model_y", query="run the tests")
+    result = SimpleNamespace(outcome="done", subtasks=[on_fallback, own], content="All done.")
+    text = format_result(result, fallback_of=lambda sub: USED if sub is on_fallback else None)
+    lines = text.splitlines()
+    assert lines[0] == "Team job finished (outcome: done; 1 step ran on the fallback model; check their work)."
+    assert lines[2] == "1. coder@model_x - done on qwen3:8b (fallback: model_x key rejected): make the change"
+    assert lines[3] == "2. runner@model_y - done: run the tests"
+    both = format_result(result, fallback_of=lambda sub: USED)
+    assert both.splitlines()[0] == ("Team job finished (outcome: done; 2 steps ran on the fallback model; check "
+                                    "their work).")
+    assert format_result(result).splitlines()[0] == "Team job finished (outcome: done)."
+
+
+def test_partial_on_fallback():
+    from types import SimpleNamespace
+    sub = fallback_sub(content=team_module.OUT_OF_STEPS_NOTE + "It changed no files.\nhalf of it")
+    failed = fallback_sub(agent="runner@model_y", error="boom", outcome="stuck")
+    text = format_result(SimpleNamespace(outcome="done", subtasks=[sub, failed], content="ok"),
+                         fallback_of=lambda s: USED)
+    lines = text.splitlines()
+    assert lines[0] == ("Team job finished (outcome: partial - 1 step ran out of steps; the task may be unfinished; "
+                        "1 step ran on the fallback model; check their work).")
+    assert lines[2] == ("1. coder@model_x - partial on qwen3:8b (fallback: model_x key rejected; ran out of steps): "
+                        "make the change")
+    assert lines[3].startswith("2. runner@model_y - failed")         # a failed step is not counted as fallback work

@@ -387,9 +387,10 @@ class Screen:
         return Group(*lines)
 
     def team_done(self, agent: Any, label: Any, ok: bool, text: Any, *, partial: bool = False,
-                  skipped: bool = False, status: Any = None) -> None:
+                  skipped: bool = False, status: Any = None, fallback: Any = "") -> None:
         """A step's permanent line when it ends: ``✓ explorer · security audit  Done (20 tool uses · 41k tokens ·
-        1m 30s)``, then the start of its report (or why it failed) under it."""
+        1m 30s)``, then the start of its report (or why it failed) under it. A step that finished on the fallback
+        model (``fallback``, its name) is marked ``↺`` and says ``on <fallback> (fallback)``."""
         self.flush_helper(agent)
         utf = self._utf()
         if skipped:
@@ -400,6 +401,9 @@ class Screen:
             mark, word, style = ("◐" if utf else "~"), "Partial (ran out of steps)", "yellow"
         else:
             mark, word, style = ("✓" if utf else "+"), "Done", "green"
+        if fallback and ok and not skipped:           # work done by the fallback is always marked
+            mark, style = ("↺" if utf else "*"), "yellow"
+            word += f" on {_short(fallback, 60)} (fallback)"
         line = Text(f"{mark} ", style=f"bold {style}")
         line.append(f"{_short(agent, MAX_HELPER_CHARS)} · {_short(label or agent, 40)}", style="bold")
         stats = ""
@@ -923,7 +927,7 @@ def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
         if helper_models is not None and request.tool == "start_team_job":
             try:
                 value = helper_models()
-                line = plain(value) if isinstance(value, str) else ""
+                line = plain(value, keep_newlines=True) if isinstance(value, str) else ""   # a warning line may follow
             except Exception:                         # a broken source must never stop the question
                 line = ""
         preview = preview_for(request.tool, request.args, cwd, helper_models=line)

@@ -1637,6 +1637,13 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                                           uses={name: self._use_of(name) for name in self.team_models})
         for extra in extras:
             self._track_usage_model(extra.name, extra.model, "helper")
+            window = getattr(extra.model, "context_window", None)
+            if getattr(extra.model, "is_local", False) and not (isinstance(window, int) and window > 0):
+                self._fit_fallback_window(extra.model)     # unchecked, as the fallback: its requests stay inside it
+        # Every helper not on a local model falls back to the user's local fallback (the same object as the chat's),
+        # also when the chat model itself is local and so has none of its own.
+        fallback = next((self._fallback_for(candidate) for candidate in [self.model, *(e.model for e in extras)]
+                         if not getattr(candidate, "is_local", False)), None)
         self.progress.stop()                      # the notices below must not be drawn over the spinner
         for note in notes:
             self.notice(self._safe(note, 300))
@@ -1651,7 +1658,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                                 describe_error=self._safe, extra_models=extras,
                                 chat_use=self._use_of(self.model_label), skills=self.skills,
                                 step_tokens=step_token_share(self.token_limit), closed=lambda: self.gate.closed,
-                                record=self._team_record(task), lane=self.team_lane)
+                                record=self._team_record(task), lane=self.team_lane, fallback_model=fallback)
         except KeyboardInterrupt:                    # Ctrl+C or Esc: the steps still open were stopped
             self._team_panel.finish("interrupted")
             raise

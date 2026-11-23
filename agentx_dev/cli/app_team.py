@@ -203,7 +203,7 @@ class TeamCommands:
             shown = getattr(status, "helper", "") or agent        # a new helper with its model: name@model
             self.screen.team_done(shown, data.get("label") or agent, bool(data.get("ok")), data.get("text"),
                                   partial=bool(data.get("partial")), skipped=bool(data.get("skipped")),
-                                  status=status)
+                                  status=status, fallback=str(data.get("fallback") or ""))
             self.progress.start("Team is working")
         elif kind == "error":
             # why the whole job failed, for the person: the agent is told only the kind of failure (the provider's

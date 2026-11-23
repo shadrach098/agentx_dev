@@ -255,6 +255,9 @@ class StepStatus:
         self.query = query
         self.model = ""                             # resolved identity, for human-facing status only
         self.diagnostic = ""                        # human-only error detail, not a recorded result
+        # {"from", "to", "reason"} when the step finished on the fallback model (its own failed for good); "from"
+        # is the configured model, so it is for the screen only
+        self.fallback: Optional[Dict[str, str]] = None
         self.started = time.monotonic()
         self.ended: Optional[float] = None
         self.tokens = 0                              # input and output its model replies reported
@@ -690,27 +693,35 @@ class _HelperRunner(AgentRunner):
             _local.step = previous
         if str(getattr(completion, "content", "") or "").startswith(NO_ANSWER_START):
             raise RuntimeError(NO_REPORT)
+        used = getattr(completion, "fallback", None)     # the step's model failed for good; the fallback finished it
+        if isinstance(used, dict) and used.get("to") and status is not None:
+            with status._lock:
+                status.fallback = {key: str(used.get(key) or "") for key in ("from", "to", "reason")}
         return _partial_if_out_of_steps(completion)
 
 
 def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
             describe_error: Callable[[BaseException], str], skills: Any = None,
-            name: str = "", every_mcp_tool: bool = True) -> AgentRunner:
+            name: str = "", every_mcp_tool: bool = True, fallback_model: Any = None) -> AgentRunner:
     chosen = [by_name[tool] for tool in role.tools if tool in by_name]
     if every_mcp_tool:
         # The user's MCP tools go to every built-in helper: what they do is up to the server, and each asks first.
         chosen += [tool for tool in by_name.values() if getattr(tool, "mcp_server", None) and tool not in chosen]
+    # The binding mode is left to the runner (no bind_tools_natively / use_function_calling), so a helper on a local
+    # model, or one that moved to the fallback, binds its tools the way that model needs.
     return _HelperRunner(model=model, agent=AgentType.ReAct, tools=chosen,
                          system_addendum=(addendum or "") + role_prompt(role),
                          max_iterations=HELPER_STEPS, auto_cache=False, verbose=False,
                          parallel_tool_workers=1, describe_error=describe_error, skills=skills,
-                         trim_results=HELPER_TRIM, helper_name=name or role.name, strict_tool_dispatch=True)
+                         trim_results=HELPER_TRIM, helper_name=name or role.name, strict_tool_dispatch=True,
+                         fallback_model=None if getattr(model, "is_local", False) else fallback_model)
 
 
 def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
                   describe_error: Callable[[BaseException], str] = str,
                   extra_models: Sequence[HelperModel] = (), chat_use: str = "",
-                  skills: Any = None, roster: Optional[BlindModelRoster] = None) -> Dict[str, Tuple[str, AgentRunner]]:
+                  skills: Any = None, roster: Optional[BlindModelRoster] = None,
+                  fallback_model: Any = None) -> Dict[str, Tuple[str, AgentRunner]]:
     """One ``AgentRunner`` per role. Without ``extra_models`` they run on ``model`` and are named ``explorer``,
     ``coder``, ``runner`` with the roles' own descriptions. With extra models every copy names its model, the
     chat's own included (``coder@<model>``), and every description says the same thing apart from the model and
@@ -719,7 +730,9 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
     tools, picked by name), so every call goes through the same gate as the main chat. ``addendum`` is the chat's
     own system addendum; the role text follows it. ``skills`` (a ``Skills``) gives every helper ``use_skill`` and the
     list of the skills that fit its role's tools, so a step that says "use the X skill" can be done. An error a
-    helper's run raises reaches the Supervisor as ``describe_error(error)`` only."""
+    helper's run raises reaches the Supervisor as ``describe_error(error)`` only. Every helper whose model is not
+    local falls back to ``fallback_model`` (a local model, or None) when its model fails for good: the step carries
+    on there, and its ``StepStatus.fallback`` says so."""
     by_name = {tool.name: tool for tool in tools}
     extras = list(extra_models)
     helpers: Dict[str, Tuple[str, AgentRunner]] = {}
@@ -729,14 +742,15 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
             for role in ROLES:
                 name = f"{role.name}@{model_id}" if extras else role.name
                 runner = _helper(role, roster.resolve(model_id), by_name, addendum,
-                                 describe_error, skills, name)
+                                 describe_error, skills, name, fallback_model=fallback_model)
                 runner._blind_errors = True
                 helpers[name] = (role.description + note, runner)
         return helpers
     if not extras:
         for role in ROLES:
             helpers[role.name] = (role.description,
-                                  _helper(role, model, by_name, addendum, describe_error, skills, role.name))
+                                  _helper(role, model, by_name, addendum, describe_error, skills, role.name,
+                                          fallback_model=fallback_model))
         return helpers
     for helper_model in [HelperModel(model_label(model), model, chat_use), *extras]:
         note = MODEL_NOTE.format(model=helper_model.name,
@@ -745,7 +759,8 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
         for role in ROLES:
             name = f"{role.name}@{helper_model.name}"
             helpers[name] = (role.description + note,
-                             _helper(role, helper_model.model, by_name, addendum, describe_error, skills, name))
+                             _helper(role, helper_model.model, by_name, addendum, describe_error, skills, name,
+                                     fallback_model=fallback_model))
     return helpers
 
 
@@ -758,14 +773,34 @@ def _ran_out_of_steps(sub: Any) -> bool:
     return str(getattr(sub, "content", "") or "").startswith(OUT_OF_STEPS_NOTE)
 
 
-def format_result(result: Any) -> str:
-    """The one string the main agent gets back: the outcome, each step's fate, and the final answer."""
+def _steps(count: int) -> str:
+    return f"{count} step{'s' if count != 1 else ''}"
+
+
+def format_result(result: Any,
+                  fallback_of: Optional[Callable[[Any], Optional[Dict[str, str]]]] = None) -> str:
+    """The one string the main agent gets back: the outcome, each step's fate, and the final answer.
+    ``fallback_of(step)`` is ``{"from", "to", "reason"}`` for a step that finished on the fallback model (None
+    otherwise); such a step reads ``done on <to> (fallback: <from> <reason>)`` and the first line counts them, so
+    the agent knows which work to check. ``from`` is whatever the agent may be told (the job's model ID)."""
     subtasks = list(getattr(result, "subtasks", None) or [])
+
+    def used(sub: Any) -> Optional[Dict[str, str]]:
+        if fallback_of is None or getattr(sub, "skipped", False) or _result_failed(sub):
+            return None
+        try:
+            found = fallback_of(sub)
+        except Exception:                           # a broken lookup must not lose the result
+            return None
+        return found if isinstance(found, dict) and found.get("to") else None
+
     outcome = str(getattr(result, "outcome", "done"))
     partial = sum(1 for sub in subtasks if _ran_out_of_steps(sub) and not _result_failed(sub))
     if partial and outcome == "done":          # the steps "finished", but one of them did not get to the end
-        outcome = (f"partial - {partial} step{'s' if partial != 1 else ''} ran out of steps; the task may be "
-                   "unfinished")
+        outcome = f"partial - {_steps(partial)} ran out of steps; the task may be unfinished"
+    on_fallback = sum(1 for sub in subtasks if used(sub) is not None)
+    if on_fallback:
+        outcome += f"; {_steps(on_fallback)} ran on the fallback model; check their work"
     head = f"Team job finished (outcome: {outcome})"
     content = str(getattr(result, "content", ""))
     if not subtasks:                           # nothing ran (no valid plan, say): the reason belongs on line one
@@ -773,12 +808,18 @@ def format_result(result: Any) -> str:
     else:
         lines = [head + ".", "Steps:"]
         for number, sub in enumerate(subtasks, 1):
+            fallback = used(sub)
             if getattr(sub, "skipped", False):
                 state = "skipped"
             elif _result_failed(sub):
                 state = ("failed: unknown model ID" if getattr(sub, "error", "") in (
                     "unknown model ID", "spawn refused: unknown model ID",
                 ) else "failed: Helper execution failed.")
+            elif fallback is not None:
+                to = _first_line(fallback["to"], 80)
+                why = f"fallback: {_first_line(fallback.get('from'), 80)} {_first_line(fallback.get('reason'), 80)}"
+                state = (f"partial on {to} ({why}; ran out of steps)" if _ran_out_of_steps(sub)
+                         else f"done on {to} ({why})")
             elif _ran_out_of_steps(sub):
                 state = "partial (ran out of steps)"
             else:
@@ -1026,6 +1067,22 @@ class TeamSupervisor(AsyncSupervisor):
 
     def status_of(self, result: Any) -> Optional[StepStatus]:
         return self._statuses.get(id(result))
+
+    def job_model_id(self, agent: Any) -> str:
+        """The job's ID for the model a step's helper runs on, which the main agent may be told ("" without IDs)."""
+        if self._roster is None:
+            return ""
+        name = str(agent or "")
+        try:
+            if name in self._new_helpers:
+                return self._allowed_model(self._asked_models.get(name, ""))
+            _, at, chosen = name.rpartition("@")
+            if at:
+                self._roster.resolve(chosen)
+                return chosen
+        except ValueError:
+            return ""
+        return self._roster.choices[0][0]           # a built-in helper named without an ID runs on the chat's model
 
     # -- the public extension points ---------------------------------------------------------------------------
 
@@ -1338,12 +1395,14 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                  describe_error: Callable[[BaseException], str] = str,
                  extra_models: Sequence[HelperModel] = (), chat_use: str = "", skills: Any = None,
                  step_tokens: int = 0, closed: Optional[Callable[[], Any]] = None, record: Any = None,
-                 lane: Optional[TeamLane] = None) -> str:
+                 lane: Optional[TeamLane] = None, fallback_model: Any = None) -> str:
     """Plan ``task``, run the helpers (read-only steps side by side, any other step alone) and return the result
     text. Progress goes to ``notify`` and questions to ``ask_user``, both on the calling thread. ``extra_models``
     adds the roles on other models (see ``build_helpers``); the planner stays on ``model``. ``step_tokens`` is each
     step's token share (see ``step_token_share``; 0 is none). Once ``closed()`` is true no further step starts.
     ``record`` (a ``TeamRecord``) writes the plan and each helper's whole report to disk as they happen.
+    ``fallback_model`` (a local model, or None) takes over a step whose helper's model (not a local one) fails for
+    good; the step's ``result`` event carries ``"fallback": <its name>`` and the result text marks the step.
 
     Ctrl+C (``KeyboardInterrupt``) and ``SystemExit`` propagate, with the Supervisor's stream closed; any other
     error becomes a short failure result for the main agent to read."""
@@ -1351,6 +1410,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
     job = _Job(step_tokens)
     pump = _Pump()
     step_ids = _StepIds()
+    fallbacks: Dict[int, Dict[str, str]] = {}      # id(SubtaskResult) -> its fallback, as the main agent is told
 
     def tell(kind: str, data: Dict[str, Any]) -> None:
         on_main(notify, kind, data, wait=False, lane=lane)   # an error in it is dropped: a display error never aborts
@@ -1373,12 +1433,14 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
         saved.helper = supervisor.recorded_name(helper, supervisor._roles.get((helper, status.query), ""))
         saved.model = ""
         saved.diagnostic = ""
+        if status.fallback:                       # the configured model it moved from is not saved
+            saved.fallback = {"to": status.fallback.get("to", "")}
         return saved
 
     async def consume() -> Any:
         roster = BlindModelRoster(model, extra_models, chat_use=chat_use)
         helpers = build_helpers(model, tools, addendum, describe_error, extra_models=extra_models,
-                                chat_use=chat_use, skills=skills, roster=roster)
+                                chat_use=chat_use, skills=skills, roster=roster, fallback_model=fallback_model)
         for _, runner in helpers.values():
             runner.job = job
         by_name = {tool.name: tool for tool in tools}
@@ -1390,7 +1452,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             chosen = roster.resolve(model_name)
             shown = f"{name}@{model_label(chosen)}" if extra_models and model_name else name
             runner = _helper(role, chosen, by_name, addendum, describe_error, skills, shown,
-                             every_mcp_tool=False)
+                             every_mcp_tool=False, fallback_model=fallback_model)
             runner._blind_errors = True
             runner.job = job
             return runner
@@ -1430,8 +1492,12 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                         status = supervisor.status_of(sub)
                         text = (getattr(status, "diagnostic", "") or getattr(sub, "error", "") or
                                 getattr(sub, "content", ""))
+                        used = getattr(status, "fallback", None) if not failed else None
+                        if used:                  # the agent is told the job's ID, never the configured model
+                            fallbacks[id(sub)] = {**used, "from": supervisor.job_model_id(sub.agent) or "its model"}
                         tell("result", {"agent": supervisor.shown_name(sub.agent), "ok": not failed, "text": _first_line(text),
                                         "partial": not failed and _ran_out_of_steps(sub),
+                                        "fallback": used["to"] if used else "",
                                         "skipped": bool(getattr(sub, "skipped", False)),
                                         "label": supervisor.label_of(sub.agent, sub.query),
                                         "status": status, **step_ids.ended(sub.agent, sub.query, status)})
@@ -1461,7 +1527,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                     _active_job = None
     if result is None:
         return _recorded(record, _with_notes(f"Team job ended without a result. {MAY_HAVE_CHANGED}", job))
-    return _recorded(record, _with_notes(format_result(result), job))
+    return _recorded(record, _with_notes(format_result(result, fallback_of=lambda sub: fallbacks.get(id(sub))), job))
 
 
 def _with_notes(text: str, job: _Job) -> str:

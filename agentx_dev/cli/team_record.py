@@ -139,6 +139,9 @@ class TeamRecord:
         report = str(getattr(result, "content", "") or "").strip()
         error = str(getattr(result, "error", "") or "").strip()
         state = "done" if ok else ("skipped" if getattr(result, "skipped", False) else "failed")
+        fallback = getattr(status, "fallback", None)
+        if ok and isinstance(fallback, dict) and fallback.get("to"):
+            state += f" on {_first_line(fallback['to'], 80)} (fallback)"
         files = list(getattr(status, "files", {}) or {})
         calls = getattr(status, "calls", {}) or {}
         lines = [f"# {getattr(status, 'helper', '')} · {getattr(status, 'label', '')}",
