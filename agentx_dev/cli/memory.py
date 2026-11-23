@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List
 
+from agentx_dev.Runner.Changes import CHANGING_TOOLS, REFUSAL_STARTS
 from agentx_dev.cli.safepaths import FOLDER, replace_file, safe_location
 
 LOG_DIR = FOLDER
@@ -30,8 +31,6 @@ MAX_SUMMARY_ENTRY_CHARS = 1500
 READ_BYTES = 24 * 1024                # how much of the end of the log is looked at
 MAX_LOADED_CHARS = 6000               # how much of it goes into the prompt
 
-CHANGING_TOOLS = ("write_file", "edit_file", "delete_path")
-REFUSAL_STARTS = ("Refused", "The user declined", "ERROR", "Error")
 
 Redact = Callable[[str], str]
 

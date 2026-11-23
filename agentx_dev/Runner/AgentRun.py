@@ -5,10 +5,11 @@ from agentx_dev.Runner.Persistence import (
     run_persistent, unrecognized_action_headline,
 )
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
+from agentx_dev.Runner.Changes import changed_paths
 from agentx_dev.Runner.Trim import coerce_trim_policy as _coerce_trim_policy, trim_tool_results
 from agentx_dev.Pictures import ToolContent, content_text, has_pictures, picture_parts, stub_old_pictures
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
-from typing import Dict, Callable, List, Type, Optional, Any, Sequence
+from typing import Dict, Callable, List, Type, Optional, Any, Sequence, Tuple
 from pydantic import BaseModel, Field
 
 import asyncio
@@ -584,6 +585,27 @@ def _find_project_guide(
 # these where a tool name belongs; the unknown-tool message says so.
 _FORMAT_NAMES = frozenset({"React_", "StandardParser", "ChainOfThought", "ZeroShot",
                            "FewShot", "Instruction_Tuned_"})
+
+
+NO_ANSWER_TEXT = "The model gave no answer."
+NO_ANSWER_OUTCOME = "no_answer"
+
+
+def _settle_empty_final(final_answer: Any, output: Any, tool_calls: List[ToolCall]) -> Tuple[Any, Optional[str]]:
+    """What an empty final answer becomes: ``(content, outcome override)``.
+
+    A model that ends with nothing (whitespace only) after no tool calls gave no answer: the run ends
+    ``"no_answer"``. After tool calls the work was done, so the outcome stays and the content says what was
+    called (and which files were written). An answer that is there, or a structured ``output`` to fill, is left alone."""
+    blank = final_answer is None or (not final_answer.strip() if isinstance(final_answer, str) else not final_answer)
+    if output is not None or not blank:
+        return final_answer, None
+    if not tool_calls:
+        return NO_ANSWER_TEXT, NO_ANSWER_OUTCOME
+    names = list(dict.fromkeys(call.name for call in tool_calls))
+    note = "The model gave no final answer. It called: " + ", ".join(names)
+    paths = changed_paths(tool_calls, ("write_file", "edit_file"))
+    return (note + f" (files changed: {', '.join(paths)})" if paths else note), None
 
 
 def _close_open_tool_calls(history: List[Dict[str, Any]]) -> None:
@@ -2306,7 +2328,8 @@ class AgentRunner(PersistenceMixin):
                         nudge_budget -= 1
                         count += 1
                         continue
-                    final_answer = text
+                    final_answer, override = _settle_empty_final(text, self.output_schema, tool_calls)
+                    outcome = override or outcome
                     yield {"type": "final", "content": final_answer}
                     break
 
@@ -2336,7 +2359,9 @@ class AgentRunner(PersistenceMixin):
                     respond_call = None
                     turn_calls = [c for c in turn_calls if c["name"] != "respond"]
                 if respond_call is not None:
-                    final_answer = str(respond_call["input"].get("answer", ""))
+                    final_answer, override = _settle_empty_final(
+                        str(respond_call["input"].get("answer", "")), self.output_schema, tool_calls)
+                    outcome = override or outcome
                     working_history.append({
                         "role": "assistant",
                         "content": "",
@@ -2543,7 +2568,8 @@ class AgentRunner(PersistenceMixin):
                         nudge_budget -= 1
                         count += 1
                         continue
-                    final_answer = text
+                    final_answer, override = _settle_empty_final(text, self.output_schema, tool_calls)
+                    outcome = override or outcome
                     yield {"type": "final", "content": final_answer}
                     break
 
@@ -2643,7 +2669,8 @@ class AgentRunner(PersistenceMixin):
                         nudge_budget -= 1
                         count += 1
                         continue
-                    final_answer = response
+                    final_answer, override = _settle_empty_final(response, self.output_schema, tool_calls)
+                    outcome = override or outcome
                     yield {"type": "final", "content": final_answer}
                     break
 
@@ -2669,7 +2696,8 @@ class AgentRunner(PersistenceMixin):
             # Under use_function_calling=True the schema doesn't
             # constrain `action` to any spelling, so we accept them all.
             if _is_terminal_action(action):
-                final_answer = action_input
+                final_answer, override = _settle_empty_final(action_input, self.output_schema, tool_calls)
+                outcome = override or outcome
                 yield {"type": "final", "content": final_answer}
                 break
 

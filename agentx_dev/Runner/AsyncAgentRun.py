@@ -35,6 +35,7 @@ from agentx_dev.Runner.AgentRun import (
     _ACT_DONT_ANNOUNCE,
     _ParserRecoverableError,
     _salvage_react_json,
+    _settle_empty_final,
 )
 from typing import Dict, Callable, List, Type, Optional, Any, AsyncIterator, Sequence
 from pydantic import BaseModel, Field
@@ -738,7 +739,8 @@ class AsyncAgentRunner(PersistenceMixin):
                         nudge_budget -= 1
                         count += 1
                         continue
-                    final_answer = text
+                    final_answer, override = _settle_empty_final(text, _schema, tool_calls)
+                    forced_outcome = override or forced_outcome
                     break
 
                 turn_calls = call_result.get("tool_calls") or [{
@@ -750,7 +752,9 @@ class AsyncAgentRunner(PersistenceMixin):
                 # Did the LLM call "respond"? That's the loop terminator.
                 respond_call = next((c for c in turn_calls if c["name"] == "respond"), None)
                 if respond_call is not None:
-                    final_answer = str(respond_call["input"].get("answer", ""))
+                    final_answer, override = _settle_empty_final(
+                        str(respond_call["input"].get("answer", "")), _schema, tool_calls)
+                    forced_outcome = override or forced_outcome
                     # Still record the assistant turn so history reflects what happened.
                     working_history.append({
                         "role": "assistant",
@@ -892,7 +896,8 @@ class AsyncAgentRunner(PersistenceMixin):
                         nudge_budget -= 1
                         count += 1
                         continue
-                    final_answer = text
+                    final_answer, override = _settle_empty_final(text, _schema, tool_calls)
+                    forced_outcome = override or forced_outcome
                     break
 
                 # Record the assistant turn as a real function call, not
@@ -973,7 +978,8 @@ class AsyncAgentRunner(PersistenceMixin):
                         nudge_budget -= 1
                         count += 1
                         continue
-                    final_answer = response
+                    final_answer, override = _settle_empty_final(response, _schema, tool_calls)
+                    forced_outcome = override or forced_outcome
                     break
 
             action = _read_action(parser_instance)
@@ -986,7 +992,8 @@ class AsyncAgentRunner(PersistenceMixin):
             # LLMs emit under use_function_calling=True where the schema
             # doesn't constrain `action` to a specific spelling.
             if _is_terminal_action(action):
-                final_answer = action_input
+                final_answer, override = _settle_empty_final(action_input, _schema, tool_calls)
+                forced_outcome = override or forced_outcome
                 break
 
             thought = getattr(parser_instance, "Thought", None)

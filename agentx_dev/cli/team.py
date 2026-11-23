@@ -26,7 +26,7 @@ from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Sequence,
 from pydantic import BaseModel, Field
 
 from agentx_dev import AgentRunner, AgentType, AsyncSupervisor, SpawnConfig
-from agentx_dev.cli.memory import CHANGING_TOOLS, REFUSAL_STARTS
+from agentx_dev.Runner.Changes import CHANGING_TOOLS, REFUSAL_STARTS, changed_paths
 from agentx_dev.cli.models import HelperModel, model_label, provider_for, without_auto_prefix
 from agentx_dev.cli.ui import summarize_result
 from agentx_dev.Runner.Trim import TrimPolicy
@@ -598,21 +598,10 @@ def _partial_if_out_of_steps(completion: Any) -> Any:
 def _changed_files(completion: Any) -> str:
     """Every file the helper wrote or edited (refused and failed calls left out), so the next step and the next
     batch know what is already done: the runner's own recap shows only its last few steps."""
-    paths: Dict[str, None] = {}
-    for call in getattr(completion, "tool_calls", None) or []:
-        if getattr(call, "name", "") not in CHANGING_TOOLS:
-            continue
-        result = str(getattr(call, "result", "") or "").lstrip()
-        if result.startswith(REFUSAL_STARTS):
-            continue
-        args = getattr(call, "args", None)
-        args = args.get("Input", args) if isinstance(args, dict) else {}
-        path = args.get("path") if isinstance(args, dict) else None
-        if path:
-            paths.setdefault(str(path), None)
+    paths = changed_paths(getattr(completion, "tool_calls", None))
     if not paths:
         return "It changed no files."
-    shown = list(paths)[:MAX_LISTED_FILES]
+    shown = paths[:MAX_LISTED_FILES]
     more = f" and {len(paths) - len(shown)} more" if len(paths) > len(shown) else ""
     return f"Files it changed ({len(paths)}): " + ", ".join(shown) + more + "."
 
