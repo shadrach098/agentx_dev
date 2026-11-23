@@ -512,6 +512,9 @@ class AgentCompletion(BaseModel):
     # Persistent runs attach the progress ledger as a plain dict
     # (goal / done / failed / next). None for ordinary runs.
     progress: Optional[Dict[str, Any]] = None
+    # Set when the run was done on the runner's fallback model: {"from", "to", "reason"} (the model that
+    # failed for good, the one that took over, and why). None when the run used the model it was given.
+    fallback: Optional[Dict[str, str]] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

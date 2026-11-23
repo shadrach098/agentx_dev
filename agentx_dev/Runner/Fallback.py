@@ -9,7 +9,7 @@ stops are not in that group; they are retried or reported as they are today.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Dict, Optional
 
 # The words providers use when an account has no credit left (Anthropic, then OpenAI's two forms).
 NO_CREDIT_WORDS = ("credit balance is too low", "insufficient_quota", "exceeded your current quota")
@@ -54,3 +54,15 @@ def fails_for_good(error: BaseException) -> Optional[str]:
     if any(_UNREACHABLE_NAMES.search(cls.__name__) for cls in type(error).__mro__ if cls is not object):
         return UNREACHABLE
     return None
+
+
+class FallbackFailed(RuntimeError):
+    """The fallback model failed too, after it took over from a model that failed for good.
+
+    ``fallback`` is the switch (``{"from", "to", "reason"}``); the fallback's own error is the ``__cause__``.
+    """
+
+    def __init__(self, fallback: Dict[str, str], error: BaseException):
+        super().__init__(f"{fallback['from']} failed ({fallback['reason']}); "
+                         f"the fallback {fallback['to']} failed too: {error}")
+        self.fallback = dict(fallback)

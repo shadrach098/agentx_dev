@@ -1,7 +1,8 @@
 from agentx_dev.Agents import AgentFormattor, AgentCompletion, AgentPrompt
-from agentx_dev.ChatModel import BaseChatModel
+from agentx_dev.ChatModel import BaseChatModel, CostBudgetExceeded
+from agentx_dev.Runner.Fallback import FallbackFailed, fails_for_good
 from agentx_dev.Runner.Persistence import (
-    OUTCOME_ITERATION_LIMIT, OUTCOME_STUCK, Persistence, PersistenceMixin, RunBudget,
+    OUTCOME_ITERATION_LIMIT, OUTCOME_STUCK, BudgetExpired, Persistence, PersistenceMixin, RunBudget, RunStuck,
     run_persistent, unrecognized_action_headline,
 )
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
@@ -638,6 +639,99 @@ def _close_open_tool_calls(history: List[Dict[str, Any]]) -> None:
                 "tool_call_id": call_id,
                 "content": "(final answer delivered)",
             })
+
+
+def _resolve_binding(
+    model: Any, use_function_calling: Optional[bool], bind_tools_natively: Optional[bool],
+) -> Tuple[bool, bool]:
+    """``(use_function_calling, bind_tools_natively)`` for ``model``, from what the caller passed (None: choose).
+
+    Historical default was text mode, but text-mode ReAct is fragile: an ``action_input`` holding a long string
+    with unescaped newlines, quotes or code fences breaks ``json.loads`` on the envelope and the loop dies.
+    Native function calling lets the SDK handle escaping. So (3.1.7+) None prefers function calling when the
+    model actually implements ``call_with_tools``, and text mode otherwise.
+    ``bind_tools_natively=None`` asks the model: one that sets ``prefers_native_tools`` (a small local model,
+    which fails the ReAct format) is bound natively. An explicit ``use_function_calling=True`` beats that
+    preference; an explicit True/False is kept as given. Native binding forces function calling off (they are
+    mutually exclusive by design); asking for both raises ``ValueError``."""
+    if bind_tools_natively is None:
+        bind_tools_natively = (
+            bool(getattr(model, "prefers_native_tools", False))
+            and use_function_calling is not True
+        )
+    if use_function_calling is None:
+        if bind_tools_natively:
+            use_function_calling = False
+        else:
+            base_cwt = getattr(BaseChatModel, "call_with_tools", None)
+            model_cwt = getattr(type(model), "call_with_tools", None)
+            use_function_calling = model_cwt is not None and model_cwt is not base_cwt
+    if bind_tools_natively and use_function_calling:
+        raise ValueError(
+            "AgentRunner: use_function_calling and bind_tools_natively "
+            "are mutually exclusive. Function-calling routes through the "
+            "AgentType parser; native binding skips it. Pick one."
+        )
+    return use_function_calling, bind_tools_natively
+
+
+# Failures that end a run by the framework's own rules (time, cost, stuck): never a reason to switch models,
+# and never reported as the fallback failing.
+_FRAMEWORK_STOPS = (BudgetExpired, CostBudgetExceeded, RunStuck)
+
+
+class _SwitchedToFallback(Exception):
+    """Raised by a model call that failed for good after the runner moved to its fallback model. The loop
+    yields ``event`` and runs the same step again, in the fallback's mode."""
+
+    def __init__(self, event: Dict[str, str]):
+        super().__init__(event.get("reason", ""))
+        self.event = event
+
+
+def _carry_over_history(history: List[Dict[str, Any]], bound: set) -> None:
+    """Make ``history`` valid for a mode that binds only the functions named in ``bound`` (in place).
+
+    An assistant tool call to any other function becomes the text ``[earlier step] called <name> with <args>``
+    and its result the user message ``[earlier result] <text>``, so nothing in the history refers to a tool the
+    model cannot see. Valid calls and their results are kept as they are. One message in, one message out, so
+    indexes into the history (the task message's) stay right; a result of a call turned to text waits until the
+    tool messages answering the calls that were kept have been placed."""
+    out: List[Dict[str, Any]] = []
+    kept_ids: set = set()
+    waiting: List[Dict[str, Any]] = []
+    for message in history:
+        role = message.get("role")
+        if role == "tool":
+            if message.get("tool_call_id") in kept_ids:
+                out.append(message)
+            else:
+                waiting.append({"role": "user",
+                                "content": f"[earlier result] {content_text(message.get('content'))}"})
+            continue
+        out.extend(waiting)
+        waiting = []
+        calls = message.get("tool_calls") if role == "assistant" else None
+        if not calls:
+            out.append(message)
+            continue
+        kept = [c for c in calls if (c.get("function") or {}).get("name") in bound]
+        steps = [
+            f"[earlier step] called {(c.get('function') or {}).get('name', '?')} "
+            f"with {(c.get('function') or {}).get('arguments', '')}"
+            for c in calls if (c.get("function") or {}).get("name") not in bound
+        ]
+        kept_ids.update(c.get("id") for c in kept)
+        if not steps:
+            out.append(message)
+            continue
+        text = "\n".join([content_text(message.get("content"))] + steps).strip()
+        carried = {"role": "assistant", "content": text}
+        if kept:
+            carried["tool_calls"] = kept
+        out.append(carried)
+    out.extend(waiting)
+    history[:] = out
 
 
 class ToolRegistry:
@@ -1435,7 +1529,7 @@ class ToolRegistry:
 from agentx_dev.AutoSetup import get_auto_setup, ensure_initialized
 from agentx_dev.Config import config
 from agentx_dev.Observability import observability, EventType
-from agentx_dev.RunLog import RunLog
+from agentx_dev.RunLog import RunLog, _model_name
 
 _auto_setup = None  # populated lazily by _ensure_auto_setup()
 
@@ -1537,6 +1631,7 @@ class AgentRunner(PersistenceMixin):
         skills: Optional[Any] = None,
         trim_results: Optional[Any] = None,
         log: Any = None,
+        fallback_model: Optional[BaseChatModel] = None,
     ):
         """Construct an ``AgentRunner``.
 
@@ -1721,6 +1816,20 @@ class AgentRunner(PersistenceMixin):
                 result (ok or error), and the end (outcome, totals).
                 Secrets are redacted and long text is cut. See
                 ``agentx_dev.RunLog``. Default ``None``: nothing.
+            fallback_model: A model (typically ``Local(...)``) that
+                takes over when ``model`` fails for good: no credit, a
+                rejected key, an unknown model, or no route to the
+                provider after the usual retries. The run carries on
+                from where it stopped (tool calls already made are not
+                made again), in the binding mode the fallback needs;
+                ``stream`` yields ``{"type": "fallback", "from", "to",
+                "reason"}`` and a warning is logged. The switch lasts
+                for the rest of the runner's life (``fallback_used``
+                says so, and every completion carries it as
+                ``completion.fallback``) until ``reset_fallback()``.
+                A local ``model`` never falls back. If the fallback
+                fails too, the run raises ``FallbackFailed``.
+                Default ``None``: errors propagate as they are.
 
         Raises:
             TypeError: If both ``Agent`` and ``agent`` are passed, if
@@ -1787,38 +1896,15 @@ class AgentRunner(PersistenceMixin):
         self.tools = tools
         self.max_iterations = max_iterations if max_iterations else 4
         self.model = model
-        # Resolve use_function_calling. Historical default was False, but
-        # text-mode ReAct is fragile: any tool call whose action_input
-        # includes a long string with unescaped newlines / quotes / code
-        # fences (a 1200-word markdown draft, for example) breaks
-        # json.loads on the response envelope and the loop dies. Native
-        # function-calling lets the SDK handle escaping and eliminates
-        # that class of failure.
-        #
-        # New default (3.1.7+): None -> auto-detect. Prefer FC when the
-        # model actually implements call_with_tools; fall back to text
-        # mode otherwise. Callers who explicitly pass True/False keep
-        # that value. bind_tools_natively forces FC off (they're
-        # mutually exclusive by design).
-        # bind_tools_natively=None means "ask the model": a model that sets
-        # prefers_native_tools (a small local model, which fails the ReAct
-        # format) is bound natively. An explicit use_function_calling=True
-        # beats that preference; an explicit True/False is kept as given.
-        if bind_tools_natively is None:
-            bind_tools_natively = (
-                bool(getattr(model, "prefers_native_tools", False))
-                and use_function_calling is not True
-            )
-        if use_function_calling is None:
-            if bind_tools_natively:
-                use_function_calling = False
-            else:
-                base_cwt = getattr(BaseChatModel, "call_with_tools", None)
-                model_cwt = getattr(type(model), "call_with_tools", None)
-                use_function_calling = (
-                    model_cwt is not None and model_cwt is not base_cwt
-                )
+        # What the caller asked for (None: choose), kept so the mode can be chosen again for the fallback model
+        # and for the primary after reset_fallback().
+        self._binding_asked = (use_function_calling, bind_tools_natively)
+        use_function_calling, bind_tools_natively = _resolve_binding(model, *self._binding_asked)
         self.use_function_calling = use_function_calling
+        # The model that takes over when `model` fails for good, and the switch once it happened (sticky).
+        self.fallback_model = fallback_model
+        self.fallback_used: Optional[Dict[str, str]] = None
+        self._primary_model: Optional[BaseChatModel] = None
         self.verbose = verbose
         # Native-binding mode: expose the user's tools directly as
         # native function-calling tools to the LLM (skipping the
@@ -1829,12 +1915,6 @@ class AgentRunner(PersistenceMixin):
         # ~max(latency) instead of sum(latency).
         self.bind_tools_natively = bind_tools_natively
         self.parallel_tool_workers = max(1, int(parallel_tool_workers))
-        if bind_tools_natively and use_function_calling:
-            raise ValueError(
-                "AgentRunner: use_function_calling and bind_tools_natively "
-                "are mutually exclusive. Function-calling routes through the "
-                "AgentType parser; native binding skips it. Pick one."
-            )
         # Role-specific instructions appended to the system prompt at
         # run time. Use to make a specialist's contract explicit (e.g.
         # "you MUST call write_file, never just describe the content").
@@ -2078,6 +2158,81 @@ class AgentRunner(PersistenceMixin):
         call = _CALL_SCHEMA.get()
         return call if call is not None else self.output_schema
 
+    def _system_prompt(self, user_input: str) -> str:
+        """The system prompt for the current binding mode."""
+        if self.bind_tools_natively:
+            # In native binding mode, the LLM sees the user's tools as
+            # real function-calling tools -- the AgentType template's
+            # "emit action/action_input JSON" scaffolding would fight the
+            # native tool interface, and models often produce a garbled
+            # mix of both. Use a minimal system prompt instead: brief
+            # role, tool list for context, and the caller's addendum.
+            system_prompt = (
+                "You are an autonomous assistant. You have the following "
+                "tools available (called via the platform's native tool "
+                "interface -- do NOT emit JSON with 'action' / "
+                "'action_input' fields; the tools are already bound):\n"
+                f"{self._tool_prompt_block}\n\n"
+                "Call the 'respond' tool with your final answer when you "
+                "have enough information."
+            )
+        else:
+            system_prompt = self.Agent.prompt.format_map({
+                'tools': self._tool_prompt_block,
+                'tool_names': self._tool_names_block,
+                'user_input': user_input,
+            })
+        # Proactively discourage narrate-instead-of-act, but only for
+        # agents that actually have tools. Placed before system_addendum
+        # so a caller's role instructions still get the final word.
+        if self.registry.names:
+            system_prompt = system_prompt + "\n\n" + _ACT_DONT_ANNOUNCE
+        if self.system_addendum:
+            # Append after the template's own instructions so the
+            # role-specific rules read as an override / final word.
+            system_prompt = system_prompt + "\n\n" + self.system_addendum
+        return system_prompt
+
+    def _bound_function_names(self) -> set:
+        """The functions the current mode binds: the user's tools and ``respond`` natively, the parser's
+        response-format function with function calling, none in text mode."""
+        if self.bind_tools_natively:
+            return set(self.registry.names) | {"respond"}
+        if self.use_function_calling:
+            return {self.parser.__name__}
+        return set()
+
+    def _switch_to_fallback(self, reason: str, history: List[Dict[str, Any]], user_input: str) -> Dict[str, str]:
+        """Move the run to ``fallback_model``: its binding mode, the system prompt for that mode, and a history
+        valid for it (in place). Returns the ``fallback`` event."""
+        used = {"from": _model_name(self.model), "to": _model_name(self.fallback_model), "reason": reason}
+        logger.warning("%s failed (%s); the run continues on the fallback %s", used["from"], reason, used["to"])
+        self._primary_model = self.model
+        self.model = self.fallback_model
+        self.use_function_calling, self.bind_tools_natively = _resolve_binding(self.model, *self._binding_asked)
+        self.fallback_used = used
+        history[0] = {"role": "system", "content": self._system_prompt(user_input)}
+        _carry_over_history(history, self._bound_function_names())
+        return {"type": "fallback", **used}
+
+    def reset_fallback(self) -> None:
+        """Go back to the model the runner was built with (and its binding mode) after a fallback took over."""
+        if self._primary_model is not None:
+            self.model = self._primary_model
+            self.use_function_calling, self.bind_tools_natively = _resolve_binding(self.model, *self._binding_asked)
+            self._primary_model = None
+        self.fallback_used = None
+
+    def _mark_fallback(self, events):
+        """Pass ``events`` on, recording the switch on the completion of a run done on the fallback."""
+        try:
+            for event in events:
+                if event.get("type") == "completion" and self.fallback_used is not None:
+                    event["completion"].fallback = dict(self.fallback_used)
+                yield event
+        finally:
+            events.close()
+
     def _iter_run(
         self,
         user_input: str,
@@ -2096,6 +2251,7 @@ class AgentRunner(PersistenceMixin):
             events = self._iter_run_core(user_input, chat_history, stream_tokens, media, None)
         else:
             events = run_persistent(self, user_input, chat_history, stream_tokens, media, _budget)
+        events = self._mark_fallback(events)
         log = self.log
         if log is None:
             yield from events
@@ -2153,40 +2309,7 @@ class AgentRunner(PersistenceMixin):
 
         self.Query = user_input
 
-        tool_info = {
-            'tools': self._tool_prompt_block,
-            'tool_names': self._tool_names_block,
-            'user_input': user_input,
-        }
-        if self.bind_tools_natively:
-            # In native binding mode, the LLM sees the user's tools as
-            # real function-calling tools -- the AgentType template's
-            # "emit action/action_input JSON" scaffolding would fight the
-            # native tool interface, and models often produce a garbled
-            # mix of both. Use a minimal system prompt instead: brief
-            # role, tool list for context, and the caller's addendum.
-            system_prompt = (
-                "You are an autonomous assistant. You have the following "
-                "tools available (called via the platform's native tool "
-                "interface -- do NOT emit JSON with 'action' / "
-                "'action_input' fields; the tools are already bound):\n"
-                f"{self._tool_prompt_block}\n\n"
-                "Call the 'respond' tool with your final answer when you "
-                "have enough information."
-            )
-        else:
-            system_prompt = self.Agent.prompt.format_map(tool_info)
-        # Proactively discourage narrate-instead-of-act, but only for
-        # agents that actually have tools. Placed before system_addendum
-        # so a caller's role instructions still get the final word.
-        if self.registry.names:
-            system_prompt = system_prompt + "\n\n" + _ACT_DONT_ANNOUNCE
-        if self.system_addendum:
-            # Append after the template's own instructions so the
-            # role-specific rules read as an override / final word.
-            system_prompt = system_prompt + "\n\n" + self.system_addendum
-
-        working_history: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        working_history: List[Dict[str, str]] = [{"role": "system", "content": self._system_prompt(user_input)}]
 
         effective_history = chat_history
         if self.auto_memory and self._memory and effective_history is None:
@@ -2239,28 +2362,31 @@ class AgentRunner(PersistenceMixin):
                 f"but got type {type(self.model).__name__}."
             )
 
-        parser_tool_spec = self.Agent.to_tool_spec() if self.use_function_calling else None
-        parser_tool_name = self.parser.__name__ if self.use_function_calling else None
-
-        # Native binding mode: pre-build per-user-tool specs once + a
-        # synthetic "respond" tool the LLM calls to signal completion.
-        native_tool_specs = None
-        if self.bind_tools_natively:
-            native_tool_specs = list(self.registry.to_tool_specs())
-            native_tool_specs.append({
-                "name": "respond",
-                "description": (
-                    "Return the final answer to the user. Call this when you "
-                    "have all the information you need."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "answer": {"type": "string", "description": "The final answer."},
+        def _bound_specs():
+            """The function specs the current mode sends: the parser's (function calling), or the user's tools
+            plus a synthetic "respond" tool the LLM calls to signal completion (native binding)."""
+            parser_spec = self.Agent.to_tool_spec() if self.use_function_calling else None
+            parser_name = self.parser.__name__ if self.use_function_calling else None
+            native_specs = None
+            if self.bind_tools_natively:
+                native_specs = list(self.registry.to_tool_specs())
+                native_specs.append({
+                    "name": "respond",
+                    "description": (
+                        "Return the final answer to the user. Call this when you "
+                        "have all the information you need."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "answer": {"type": "string", "description": "The final answer."},
+                        },
+                        "required": ["answer"],
                     },
-                    "required": ["answer"],
-                },
-            })
+                })
+            return parser_spec, parser_name, native_specs
+
+        parser_tool_spec, parser_tool_name, native_tool_specs = _bound_specs()
 
         count = 1
         tool_calls: List[ToolCall] = []
@@ -2270,11 +2396,31 @@ class AgentRunner(PersistenceMixin):
         if state is not None:
             state.bind(working_history, tool_calls, steps, task_index)
 
+        def _take_over(error: Exception) -> Dict[str, str]:
+            """Handle a model call that raised ``error`` (after the model's own retries): move the run to the
+            fallback model and return the ``fallback`` event, or raise."""
+            nonlocal parser_tool_spec, parser_tool_name, native_tool_specs
+            if isinstance(error, _FRAMEWORK_STOPS):
+                raise error
+            if self.fallback_used is not None and self.model is self.fallback_model:
+                raise FallbackFailed(self.fallback_used, error) from error
+            reason = fails_for_good(error)
+            if (reason is None or self.fallback_model is None or self.fallback_used is not None
+                    or getattr(self.model, "is_local", False)):
+                raise error
+            event = self._switch_to_fallback(reason, working_history, user_input)
+            parser_tool_spec, parser_tool_name, native_tool_specs = _bound_specs()
+            return event
+
         def _model_call(fn):
             # Persistent runs wait out transient provider errors (429/5xx/timeouts).
             call = (lambda: state.patient(fn)) if state is not None else fn
             record = self._log_run
-            return record.model_call(call) if record is not None else call()
+            try:
+                return record.model_call(call) if record is not None else call()
+            except Exception as error:
+                # The loop catches this, yields the event and runs the step again on the fallback.
+                raise _SwitchedToFallback(_take_over(error)) from error
 
         # Loop-level circuit breaker. The tool-layer dup-guard refuses
         # on the 5th identical call, but a stubborn model (gpt-4o-mini
@@ -2305,11 +2451,15 @@ class AgentRunner(PersistenceMixin):
                 # Native mode: LLM picks from the user's tools directly.
                 # Multiple tool_use blocks in one turn → concurrent dispatch
                 # via ThreadPoolExecutor. Synthetic "respond" tool ends the loop.
-                call_result = _model_call(lambda: self.model.call_with_tools(
-                    messages=self._model_view(working_history),
-                    tools=native_tool_specs,
-                    force_tool=None,
-                ))
+                try:
+                    call_result = _model_call(lambda: self.model.call_with_tools(
+                        messages=self._model_view(working_history),
+                        tools=native_tool_specs,
+                        force_tool=None,
+                    ))
+                except _SwitchedToFallback as switched:
+                    yield switched.event
+                    continue                              # the same step, in the fallback's mode
                 if call_result.get("reasoning"):          # the model's readable reasoning, for whoever shows it
                     yield {"type": "reasoning", "content": str(call_result["reasoning"])}
 
@@ -2543,11 +2693,15 @@ class AgentRunner(PersistenceMixin):
                 continue
 
             if self.use_function_calling:
-                call_result = _model_call(lambda: self.model.call_with_tools(
-                    messages=self._model_view(working_history),
-                    tools=[parser_tool_spec],
-                    force_tool=parser_tool_name,
-                ))
+                try:
+                    call_result = _model_call(lambda: self.model.call_with_tools(
+                        messages=self._model_view(working_history),
+                        tools=[parser_tool_spec],
+                        force_tool=parser_tool_name,
+                    ))
+                except _SwitchedToFallback as switched:
+                    yield switched.event
+                    continue                              # the same step, in the fallback's mode
                 if call_result.get("reasoning"):          # the model's readable reasoning, for whoever shows it
                     yield {"type": "reasoning", "content": str(call_result["reasoning"])}
 
@@ -2610,12 +2764,21 @@ class AgentRunner(PersistenceMixin):
                     # the default stream_text fallback. Streamed responses are
                     # not retried (a response cannot be replayed half-way).
                     parts: List[str] = []
-                    for chunk in self.model.stream_text(self._model_view(working_history)):
-                        parts.append(chunk)
-                        yield {"type": "text_delta", "content": chunk}
+                    try:
+                        for chunk in self.model.stream_text(self._model_view(working_history)):
+                            parts.append(chunk)
+                            yield {"type": "text_delta", "content": chunk}
+                    except Exception as error:
+                        yield _take_over(error)
+                        continue                          # the same step, in the fallback's mode
                     response = "".join(parts)
                 else:
-                    response = _model_call(lambda: self.model.Initialize(messages=self._model_view(working_history)))
+                    try:
+                        response = _model_call(
+                            lambda: self.model.Initialize(messages=self._model_view(working_history)))
+                    except _SwitchedToFallback as switched:
+                        yield switched.event
+                        continue                          # the same step, in the fallback's mode
                 working_history.append({"role": "assistant", "content": response})
                 try:
                     parser_instance = self._resolve_parser_step(response)
