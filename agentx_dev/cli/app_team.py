@@ -81,6 +81,11 @@ class TeamCommands:
         return f"Running {len(running)} helpers"
 
     def _team_notify(self, kind: str, data: dict) -> None:
+        from agentx_dev.cli.team_panel import TeamPanel
+
+        if getattr(self, "_team_panel", None) is None:
+            self._team_panel = TeamPanel()
+        self._team_panel.notify(kind, data)
         self.progress.stop()
         if kind == "plan":
             steps = data.get("steps") or []

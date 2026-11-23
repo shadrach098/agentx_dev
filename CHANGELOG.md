@@ -18,6 +18,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **Notes you type while a team works go to its supervisor**, not into whichever helper happens to be running. Once
   that helper's step ends, the supervisor reads the note and adds steps for it, or leaves it for the main agent,
   which gets every note the team did not act on with the team's result.
+- **A Team panel in the app window.** One row for every step of the job, which keeps its place from waiting to
+  running to done, failed or skipped, with the helper, its model, what it has done and its tool (`Now · Editing
+  app.js` while it runs, `Last · Read app.js` after). Steps that run in parallel, the same helper twice and a
+  supervisor's new plan each get rows of their own; a step the new plan replaced shows skipped. Esc or Ctrl+C
+  marks open steps interrupted, and a step the job ended without reporting shows unknown, never a made-up failure.
+  It stays after the job and clears when you start or open another conversation.
 
 ### Fixed
 

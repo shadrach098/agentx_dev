@@ -552,6 +552,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         web grant are emptied, and accept-edits that came from answering "a" at an edit prompt goes back to the
         mode that was in force when the user answered. A mode the user chose since (``/mode``, Shift+Tab) is kept."""
         self._compact_wait = 0
+        if hasattr(self, "_team_panel"):
+            from agentx_dev.cli.team_panel import TeamPanel
+            self._team_panel = TeamPanel()
         self.gate.grants.clear()
         self.gate.web_allowed = False
         if self._mode_before_grant is not None and self.gate.mode == "accept-edits":
@@ -1465,6 +1468,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         for note in notes:
             self.notice(self._safe(note, 300))
         self._team_rows, self._team_log, self._team_steps = {}, [], (0, 0)
+        from agentx_dev.cli.team_panel import TeamPanel
+        self._team_panel = TeamPanel()
         self.progress.start("Planning the team job")
         try:
             text = run_team_job(task, model=self.model, tools=[*self.base_tools, *self._mcp_tools],
@@ -1474,7 +1479,11 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                                 chat_use=self._use_of(self.model_label), skills=self.skills,
                                 step_tokens=step_token_share(self.token_limit), closed=lambda: self.gate.closed,
                                 record=self._team_record(task), lane=self.team_lane)
+        except KeyboardInterrupt:                    # Ctrl+C or Esc: the steps still open were stopped
+            self._team_panel.finish("interrupted")
+            raise
         finally:
+            self._team_panel.finish()                # any step still open: how it ended is not known
             self._team_running = []
             self._team_rows = {}
             self.progress.stop()

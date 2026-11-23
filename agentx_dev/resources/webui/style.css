@@ -323,12 +323,38 @@ svg { width: 16px; height: 16px; flex: none; }
 /* ---- the dock: team, waiting messages, status, the message box ---- */
 .dock { flex: none; padding: 0 0 18px; position: relative; }
 .dock::before { content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 28px; background: linear-gradient(to bottom, transparent, var(--bg)); pointer-events: none; }
-.team { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 10px 14px; margin-bottom: 8px; font-size: 13.5px; }
-.team-head { font-weight: 500; margin-bottom: 4px; }
-.team-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 12px; padding: 3px 0; }
-.team-row .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.team-row .stats { color: var(--faint); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.team-row .act { grid-column: 1 / -1; color: var(--muted); font-size: 13px; }
+.team { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 10px 14px; margin-bottom: 8px; font-size: 12px; min-width: 0; }
+.team-head { color: var(--muted); margin-bottom: 5px; font-size: 11px; letter-spacing: .02em; }
+.team-row { --team-color: var(--muted); padding: 7px 0; border-top: 1px solid var(--line); min-width: 0; }
+.team-identity { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 2px 9px; align-items: center; }
+.team-marker { width: 6px; height: 6px; border: 1px solid var(--team-color); border-radius: 50%; background: transparent; }
+.team-row .who { font-weight: 600; overflow-wrap: anywhere; }
+.team-state { color: var(--team-color); font-size: 10px; text-transform: capitalize; }
+.team-meta { grid-column: 2; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.team-row .stats { grid-column: 3; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.team-row.is-running { --team-color: #5bbdaa; }
+.team-row.is-done { --team-color: #72a6dd; }
+.team-row.is-failed { --team-color: #e17f81; }
+.team-row.is-skipped { --team-color: #a092b8; }
+.is-running .team-marker, .is-done .team-marker, .is-failed .team-marker { background: var(--team-color); }
+.team-row.is-interrupted { --team-color: #d6a35c; }
+.is-skipped .team-marker { border-radius: 1px; }
+.is-interrupted .team-marker { border-radius: 1px; background: var(--team-color); }
+.is-unknown .team-marker { border-style: dashed; }
+.is-running .team-marker { animation: team-pulse 2.8s ease-in-out infinite; }
+@keyframes team-pulse { 0%, 100% { opacity: 1; box-shadow: 0 0 0 0 #5bbdaa00; } 50% { opacity: .65; box-shadow: 0 0 0 3px #5bbdaa18; } }
+.team-row .act { position: relative; margin: 4px 0 0 3px; padding-left: 14px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.team-row .act::before { content: ""; position: absolute; top: -3px; left: 0; width: 8px; height: 11px; border-left: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); border-radius: 0 0 0 3px; }
+.team-row .tool-action { color: var(--text); }
+.team-row .tool-path { font-family: var(--mono); font-size: 10px; }
+.team-row .tool-summary, .team-row .activity-counts { display: block; font-size: 10px; }
+.team-row .tool-failed .tool-action { color: #e17f81; }
+@media (max-width: 600px) {
+  .team { padding: 9px 11px; }
+  .team-identity { column-gap: 7px; }
+  .team-row .stats { grid-column: 2 / -1; }
+}
+@media (prefers-reduced-motion: reduce) { .is-running .team-marker { animation: none; } }
 .others { display: flex; align-items: center; gap: 8px; margin: 0 6px 8px; font-size: 12.5px; color: var(--muted); }
 .others::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; animation: breathe 1.4s ease-in-out infinite; }
 .waiting { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 4px; }

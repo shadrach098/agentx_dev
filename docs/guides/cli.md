@@ -202,9 +202,10 @@ You do not have to wait for the agent to finish. While the spinner runs (it says
   the spinner; after Enter it waits there (`◌ also check the footer · waiting for the agent's next step`) until it is
   read, then one line is left in its place: `❯ also check the footer  ✓ read by the agent` (or by the helper that read
   it first, during a team job). A message the agent did not get before it finished becomes your next message.
-- **During a team job** a message goes to the team instead: each running helper reads it at its next step, steps not
-  started yet begin with it, and the main agent reads it in the job's result, so work the team did not do (a step
-  you want added) is done next by the agent or another team job.
+- **During a team job** a message goes to the team's supervisor instead, not into whichever helper happens to be
+  running. Once that helper's step ends, the supervisor reads the note and adds steps for it, or leaves it for the
+  main agent, which gets every note the team did not act on with the job's result, so work the team did not do (a
+  step you want added) is done next by the agent or another team job.
 - **`/skip <step>`** during a team job skips a step that has not started: its number in `Team plan:` (`/skip 3`) or its
   helper's name (`/skip account-ui-builder`). A running step finishes; Ctrl+C stops the whole job.
 - **Commands that only show something run at once**: `/help`, `/usage`, `/settings`, `/sessions`, `/memory`,
@@ -569,7 +570,7 @@ Team plan:
 - It is built the way the three built-in helpers are: the same step room (100 steps), re-read guard, token share, error redaction, trimming and skills, and it appears on the team block under its own name.
 - One whose tools only read, search or fetch (`read_path`, `list_directory`, `find_files`, `grep`, `web_search`, `web_fetch`, `recall`) runs beside other reading steps; one that can edit files or run commands runs alone.
 - At most 6 per job. A later step can use it again by name; a name of a built-in helper is refused.
-- With [helper models](#helper-models) set, the supervisor may put it on any of them (it is told the list, with your notes on what each is for) and its name shows the model: `security-reviewer@gpt-6-luna`. A model that is not on your list is not used; it runs on the chat's model instead. Without helper models it runs on the chat's model.
+- With [helper models](#helper-models) set, the supervisor may put it on any of them. It is told only the job's model IDs with your notes on what each is for, never the names (see [Helper models](#helper-models)); you see the real name: `security-reviewer@gpt-6-luna`. A helper given an ID that is not one of the job's is refused before it runs (`unknown model ID`); one given none runs on the chat's model. Without helper models it runs on the chat's model.
 - **Every step has a role name.** The planner names each step's helper for what it does in this job (`git-checker`, `payments-fixer`, `migration-verifier`), and that name is shown in the plan, the live block, the done lines and `/team log` instead of `runner` or `coder`: `git-checker@claude-sonnet-5-5`. It is only a name: the step still runs on the built-in helper with its rules and tools.
 
 ### Steps side by side
@@ -615,7 +616,8 @@ The helpers work in the background: their individual tool calls are not printed.
 
 - When a step ends, its line is printed for good, with the start of its report (up to 160 characters) under it: `✓ explorer · security audit  Done (20 tool uses · 41k tokens · 1m 30s)`, `◐ ... Partial (ran out of steps)`, `✗ ... Failed` with the error, or `– ... Skipped` (a step whose dependency failed, or one not started because you said to wrap up). An empty report shows `(no report)`.
 - Approvals still appear when a helper needs one, one at a time, with a `Helper:` line naming who asks; the block steps aside for the prompt and comes back after it.
-- You can type while the team works: a note reaches the running helpers at their next step, and `/skip 3` skips step 3 if it has not started (see "Typing while it works").
+- You can type while the team works: a note goes to the team's supervisor, which adds steps for it or leaves it for the main agent, and `/skip 3` skips step 3 if it has not started (see "Typing while it works").
+- In the app window (`agentx --ui`), a Team panel above the message box keeps one row for every step of the job: waiting, running (its dot pulses), done, failed, skipped, interrupted (you pressed Esc or Ctrl+C) or unknown (the job ended without saying how that step ended). Each row shows its helper and model, what it has done, and its tool: `Now · Editing app.js` while a tool runs, `Last · Read app.js` once it has finished. A step the supervisor's new plan replaced shows skipped. The panel stays after the job until you start or open another conversation.
 - **`/team log`** lists every call each step of the last team job made, with a one-line result under each (`read_path  src/app.ts` / `⎿ Read 120 lines`). It covers the last job of this session; it is not saved with the conversation.
 
 The planner or a helper may need a fact only you have. It is asked as `Team question: ...` (a long question is cut at 12 lines and 1,500 characters) with `Answer (Enter to skip):`. Enter, Ctrl+D or Ctrl+C at that question skips it, and the team goes on without the answer; at most 3 questions are asked per job.

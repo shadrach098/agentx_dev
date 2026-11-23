@@ -1305,6 +1305,45 @@ def _run_on_loop(make: Callable[[], Any], job: _Job, pump: _Pump, lane: Optional
     return box.get("value")
 
 
+class _StepIds:
+    """Which planned step a start or a result belongs to, for the team list on the screen: ``round`` (1 for the
+    first plan, +1 for each new plan), ``step`` (its index in that plan) and ``step_id``. The supervisor runs only
+    the steps it planned, so a start is matched, once, to the first not yet matched step of the latest plan with the
+    same helper and query; its result then goes with its status. A step that ends without starting (skipped) is
+    matched the same way. Nothing here is shown to a model."""
+
+    def __init__(self) -> None:
+        self.round = 0
+        self._planned: List[Tuple[str, str, str]] = []
+        self._taken: set = set()
+        self._by_status: Dict[int, Dict[str, Any]] = {}
+
+    def plan(self, steps: Sequence[Any]) -> int:
+        self.round += 1
+        self._planned = [(str(_step_agent_name(step) or ""), str(step.get("query", "")), str(step.get("id") or ""))
+                         for step in steps if isinstance(step, dict)]
+        self._taken = set()
+        return self.round
+
+    def _claim(self, agent: Any, query: Any) -> Dict[str, Any]:
+        for index, (planned_agent, planned_query, step_id) in enumerate(self._planned):
+            if index not in self._taken and planned_agent == str(agent) and planned_query == str(query):
+                self._taken.add(index)
+                return {"round": self.round, "step": index, "step_id": step_id}
+        return {}
+
+    def started(self, agent: Any, query: Any, status: Any) -> Dict[str, Any]:
+        ident = self._claim(agent, query)
+        if ident and status is not None:
+            self._by_status[id(status)] = ident
+        return ident
+
+    def ended(self, agent: Any, query: Any, status: Any) -> Dict[str, Any]:
+        if status is not None and id(status) in self._by_status:
+            return self._by_status.pop(id(status))
+        return self._claim(agent, query)
+
+
 def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, notify: Notify,
                  ask_user: Optional[Callable[[str], Optional[str]]] = None,
                  describe_error: Callable[[BaseException], str] = str,
@@ -1322,6 +1361,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
     global _active_job
     job = _Job(step_tokens)
     pump = _Pump()
+    step_ids = _StepIds()
 
     def tell(kind: str, data: Dict[str, Any]) -> None:
         on_main(notify, kind, data, wait=False, lane=lane)   # an error in it is dropped: a display error never aborts
@@ -1377,7 +1417,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             on_start=lambda agent, query, status: (
                 record.started(recorded_status(status, supervisor)) if record is not None else None,
                 tell("dispatch", {"agent": supervisor.shown_name(agent), "query": str(query), "label": status.label,
-                                  "status": status})))
+                                  "status": status, **step_ids.started(agent, query, status)})))
         supervisor._note_job = job
         result = None
         async with aclosing(supervisor.astream(task)) as events:
@@ -1386,12 +1426,12 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                     continue
                 kind = event.get("type")
                 if kind == "plan":
-                    steps = [_plan_step(step, getattr(supervisor, "shown_step_name", None))
-                             for step in (event.get("plan") or []) if isinstance(step, dict)]
+                    planned = [step for step in (event.get("plan") or []) if isinstance(step, dict)]
+                    steps = [{**_plan_step(step, getattr(supervisor, "shown_step_name", None)),
+                              "step_id": str(step.get("id") or "")} for step in planned]
                     if record is not None:
-                        record.plan([_plan_step(step, supervisor.recorded_step_name) for step in (event.get("plan") or [])
-                                     if isinstance(step, dict)])
-                    tell("plan", {"steps": steps})
+                        record.plan([_plan_step(step, supervisor.recorded_step_name) for step in planned])
+                    tell("plan", {"steps": steps, "round": step_ids.plan(planned)})
                 elif kind == "subtask_result":
                     sub = event.get("result")
                     if sub is not None and getattr(sub, "agent", "") != "__spawn__":
@@ -1405,7 +1445,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                                         "partial": not failed and _ran_out_of_steps(sub),
                                         "skipped": bool(getattr(sub, "skipped", False)),
                                         "label": supervisor.label_of(sub.agent, sub.query),
-                                        "status": supervisor.status_of(sub)})
+                                        "status": status, **step_ids.ended(sub.agent, sub.query, status)})
                 elif kind == "completion":
                     result = event.get("result")
         return result

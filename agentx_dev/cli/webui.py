@@ -1628,7 +1628,16 @@ class WebFront:
                              "model": _text(snapshot.get("model", ""), 120),
                              "activity": _text(helper_activity(step_counts(snapshot)), 300),
                              "stats": _text(step_stats(snapshot), 120)})
-            done, total = app._team_steps
+            panel = getattr(app, "_team_panel", None)
+            if panel is not None:
+                rows = [{key: _text(value, 300) if isinstance(value, str) else value for key, value in row.items()}
+                        for row in panel.snapshot()]
+                done = sum(row["state"] in ("done", "failed", "skipped") for row in rows)
+                total = len(rows)
+            else:
+                done, total = app._team_steps
+                for index, row in enumerate(rows):
+                    row.update(id=f"running-{index}", state="running")
             status["team"] = {"rows": rows, "done": done, "total": total} if rows else None
         except Exception:
             status["team"] = None

@@ -54,7 +54,8 @@ def test_a_job_plans_dispatches_and_returns_the_result(tmp_path, tools):
     assert result.startswith("Team job finished (outcome: done).")
     assert "1. explorer" in result and "All done." in result
     assert [kind for kind, _ in seen] == ["plan", "dispatch", "result"]
-    assert seen[0][1]["steps"] == [{"agent": "explorer", "query": "look around", "label": "look around"}]
+    assert seen[0][1]["steps"] == [{"agent": "explorer", "query": "look around", "label": "look around",
+                                     "step_id": "s1"}]
     assert (seen[1][1]["agent"], seen[1][1]["query"], seen[1][1]["label"]) == ("explorer", "look around", "look around")
     assert seen[1][1]["status"] is seen[2][1]["status"]                  # the step's live status, start to end
     assert seen[2][1]["agent"] == "explorer" and seen[2][1]["ok"] is True and "found things" in seen[2][1]["text"]
