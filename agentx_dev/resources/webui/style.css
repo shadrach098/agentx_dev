@@ -298,7 +298,7 @@ svg { width: 16px; height: 16px; flex: none; }
 .btn.danger:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, transparent); }
 .btn kbd { font-family: var(--mono); font-size: 11px; opacity: 0.5; }
 .card.done { box-shadow: none; background: none; border-color: var(--line); }
-.card.done .card-actions, .card.done .card-body { display: none; }
+.card.done .card-actions, .card.done .card-body, .card.done .options { display: none; }
 .card.done .card-head { padding-bottom: 4px; }
 .card-outcome { padding: 0 16px 10px; font-size: 13px; color: var(--muted); }
 .card-outcome.no { color: var(--danger); }
@@ -309,6 +309,8 @@ svg { width: 16px; height: 16px; flex: none; }
 .approval.done .card-outcome { padding: 0; font-size: 13px; color: var(--faint); }
 .approval.done .card-outcome.no { color: var(--danger); }
 .question .card-title { font-weight: 500; }
+/* an answered pick list folds to the choice made */
+.question.done .card-outcome { padding: 10px 16px; }
 .options { display: grid; gap: 6px; padding: 12px; }
 .options .btn { justify-content: flex-start; text-align: left; white-space: pre-wrap; }
 .options .btn kbd { order: 2; margin-left: auto; }

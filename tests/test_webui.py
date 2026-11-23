@@ -601,6 +601,17 @@ def test_the_details_panel_never_scrolls_sideways():
     assert '$("detailsScrim").addEventListener("click"' in script
 
 
+def test_a_pick_list_folds_away_once_answered():
+    """A list to pick from ("Which conversation?") stayed on screen with every choice after one was picked, until the
+    page was reloaded: a finished card hid its buttons and body, but a pick list's choices sit in their own block. Once
+    answered, only the choice is left, in one quiet line like an answered approval."""
+    from agentx_dev.cli.webui import RESOURCES
+    css = (RESOURCES / "style.css").read_text(encoding="utf-8")
+    hidden = [rule.split("{", 1)[0] for rule in css.split("}") if "display: none" in rule.split("{", 1)[-1]]
+    assert any(".card.done .options" in selectors for selectors in hidden)
+    assert ".question.done .card-outcome" in css
+
+
 class TestSigningInFromAnotherDevice:
     def test_a_remote_window_gets_the_sign_in_page_as_a_card(self, tmp_path):
         front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False, remote=True)
