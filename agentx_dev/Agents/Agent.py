@@ -507,7 +507,9 @@ class AgentCompletion(BaseModel):
     # at invoke time, not silently).
     output: Optional[Any] = None
     # How the run ended: "done" | "stuck" | "out_of_time" | "out_of_budget" |
-    # "iteration_limit". Every run sets this; "done" means a final answer.
+    # "iteration_limit" | "no_answer". Every run sets this; "done" means a
+    # final answer; "no_answer" means the model ended without one and without
+    # calling a tool.
     outcome: str = "done"
     # Persistent runs attach the progress ledger as a plain dict
     # (goal / done / failed / next). None for ordinary runs.

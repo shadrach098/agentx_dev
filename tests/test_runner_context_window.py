@@ -284,3 +284,29 @@ def test_exported():
     assert "ContextWindowTooSmall" in agentx_dev.__all__
     error = ContextWindowTooSmall(window=8192, needed=9000)
     assert (error.window, error.needed) == (8192, 9000)
+
+
+# -- fixed_request_chars: what every request carries before the conversation ---------------------------------------
+
+@pytest.mark.parametrize("native", [True, False])
+def test_fixed_request_chars_is_what_the_first_request_needs_before_the_task(native):
+    model = Scripted([respond()]) if native else Paid([react_call("a", "c1")])
+    runner = make(model, system_addendum="RULES " * 500)
+    fixed = runner.fixed_request_chars()
+    assert fixed > 3000
+    task = "go"
+    tight = math.floor((fixed + len(task)) / 4 / 0.85) - 20          # a window just too small for the prompt and tools
+    model.context_window = tight
+    with pytest.raises(ContextWindowTooSmall):
+        runner.invoke(task)
+    model.context_window = tight + 200
+    model._tool_script[:] = [respond()] if native else [react_call("a", "c1"), {"type": "tool_use", "name": "React_",
+                             "id": "c2", "input": {"Thought": "t", "action": "Final_Answer", "action_input": "ok"}}]
+    runner.invoke(task)
+
+
+def test_fixed_request_chars_for_another_model_uses_its_binding():
+    native = Scripted([respond()])
+    runner = make(Paid([]), system_addendum="RULES")
+    assert runner.fixed_request_chars(native) != runner.fixed_request_chars()
+    assert runner.model is not native and not runner.bind_tools_natively       # nothing about the runner changed

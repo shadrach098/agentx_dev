@@ -37,7 +37,8 @@ class SubtaskResult(BaseModel):
     depends_on: List[str] = Field(default_factory=list)
     skipped: bool = False
     # How the specialist's run ended: "done", "stuck", "iteration_limit",
-    # "out_of_time", "out_of_budget". Anything but "done" is a failed attempt.
+    # "out_of_time", "out_of_budget", "no_answer". Anything but "done" is a
+    # failed attempt.
     outcome: str = "done"
     # Persistent specialists attach their progress ledger (goal/done/failed/next).
     progress: Optional[Dict[str, Any]] = None

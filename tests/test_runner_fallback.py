@@ -337,3 +337,56 @@ def test_streamed_text_call_switches_too():
     assert [e for e in events if e["type"] == "fallback"] == [
         {"type": "fallback", "from": "paid-text", "to": "local-model", "reason": "out of credit"}]
     assert events[-1]["completion"].content == "streamed on the fallback"
+
+
+# -- the fallback's own instructions (fallback_addendum) --------------------------------------------------------
+
+def _system_sent(model, call=0):
+    return str(model.tool_calls_made[call][0]["content"])
+
+
+def test_fallback_addendum_callable_gets_the_fallback_and_replaces_the_instructions():
+    fallback = Local([respond("done")])
+    seen = []
+
+    def for_model(model):
+        seen.append(model)
+        return "SHORT RULES for the small window"
+
+    runner = make(Paid([KeyRejected()]), fallback, system_addendum="LONG RULES " * 50, fallback_addendum=for_model)
+    assert runner.invoke("go").content == "done"
+    assert seen == [fallback]
+    system = _system_sent(fallback)
+    assert "SHORT RULES for the small window" in system and "LONG RULES" not in system
+
+
+def test_fallback_addendum_string_and_the_skill_index_is_kept(tmp_path):
+    from agentx_dev.Skills import Skills
+    folder = tmp_path / "skills" / "tidy"
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text("---\nname: tidy\ndescription: Tidy a folder.\n---\nSteps.\n", encoding="utf-8")
+    fallback = Local([respond("done")])
+    runner = make(Paid([KeyRejected()]), fallback, system_addendum="LONG", fallback_addendum="SHORT",
+                  skills=Skills(tmp_path / "skills"))
+    runner.invoke("go")
+    system = _system_sent(fallback)
+    assert "SHORT" in system and "LONG" not in system and "tidy" in system
+
+
+def test_reset_fallback_puts_the_primary_instructions_back():
+    primary = Paid([KeyRejected(), react_call("Final_Answer", "back", "c9")])
+    runner = make(primary, Local([respond("first")]), system_addendum="PRIMARY", fallback_addendum="FALLBACK")
+    runner.invoke("one")
+    assert "FALLBACK" in runner.system_addendum
+    runner.reset_fallback()
+    assert runner.system_addendum == "PRIMARY"
+
+
+def test_a_failing_fallback_addendum_keeps_the_instructions_it_had():
+    def broken(model):
+        raise RuntimeError("no")
+
+    fallback = Local([respond("done")])
+    runner = make(Paid([KeyRejected()]), fallback, system_addendum="RULES", fallback_addendum=broken)
+    assert runner.invoke("go").content == "done"
+    assert "RULES" in _system_sent(fallback)

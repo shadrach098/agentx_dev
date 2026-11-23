@@ -206,7 +206,7 @@ def llm_judge(
 
 def outcome_is(*outcomes: str) -> AssertionFn:
     """The run ended one of these ways (``"done"``, ``"stuck"``, ``"out_of_time"``, ``"out_of_budget"``,
-    ``"iteration_limit"``; a Supervisor's result also has ``"partial"``). Default: ``"done"``."""
+    ``"iteration_limit"``, ``"no_answer"``; a Supervisor's result also has ``"partial"``). Default: ``"done"``."""
     wanted = tuple(outcomes) or ("done",)
 
     def _check(c: Any) -> Tuple[bool, str]:

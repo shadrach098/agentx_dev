@@ -1701,6 +1701,7 @@ class AgentRunner(PersistenceMixin):
         log: Any = None,
         fallback_model: Optional[BaseChatModel] = None,
         context_window: Optional[int] = None,
+        fallback_addendum: Optional[Any] = None,
     ):
         """Construct an ``AgentRunner``.
 
@@ -1899,6 +1900,12 @@ class AgentRunner(PersistenceMixin):
                 A local ``model`` never falls back. If the fallback
                 fails too, the run raises ``FallbackFailed``.
                 Default ``None``: errors propagate as they are.
+            fallback_addendum: The ``system_addendum`` to use once the
+                run has moved to ``fallback_model`` (a string, or a
+                function that gets the fallback model and returns one,
+                so it can be fitted to the fallback's window). The
+                sandbox hint and the skill index stay. Default ``None``:
+                the same addendum as before the switch.
             context_window: The context window of ``model``, in tokens.
                 Default ``None``: the model's own ``context_window``
                 (a ``Local`` model knows it after ``check()``). After a
@@ -1973,10 +1980,20 @@ class AgentRunner(PersistenceMixin):
             tools = list(default_tools) + list(tools)
             auto_sandbox_hint = _build_sandbox_hint(permissions)
 
+        # The caller's addendum is kept apart from the parts the runner adds (the sandbox hint before it, the skill
+        # index after it), so the fallback's own addendum can take its place at a switch.
+        caller_addendum = system_addendum
+        skill_index: Optional[str] = None
         if skills is not None and skills is not False:
             # Once, here: the tool list and the skill index stay the same for the life of the runner.
             from agentx_dev.Skills import attach_skills
-            tools, system_addendum = attach_skills(skills, tools, system_addendum)
+            tools, skill_index = attach_skills(skills, tools, None)
+            system_addendum = (f"{system_addendum}\n\n{skill_index}" if system_addendum and skill_index
+                               else skill_index or system_addendum)
+        self._sandbox_hint = auto_sandbox_hint
+        self._skill_index = skill_index
+        self.fallback_addendum = fallback_addendum
+        self._primary_addendum: Optional[str] = None
 
         self.Query = ""
         self.Agent = Agent
@@ -2346,9 +2363,44 @@ class AgentRunner(PersistenceMixin):
         call = _CALL_SCHEMA.get()
         return call if call is not None else self.output_schema
 
-    def _system_prompt(self, user_input: str) -> str:
-        """The system prompt for the current binding mode."""
-        if self.bind_tools_natively:
+    def _native_specs(self) -> List[Dict[str, Any]]:
+        """The function specs native binding sends: the user's tools plus a synthetic "respond" tool the LLM calls to
+        signal completion."""
+        specs = list(self.registry.to_tool_specs())
+        specs.append({
+            "name": "respond",
+            "description": (
+                "Return the final answer to the user. Call this when you "
+                "have all the information you need."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "answer": {"type": "string", "description": "The final answer."},
+                },
+                "required": ["answer"],
+            },
+        })
+        return specs
+
+    def fixed_request_chars(self, model: Optional[BaseChatModel] = None) -> int:
+        """The characters every request on ``model`` (default: the runner's own) carries before any conversation:
+        the system prompt for the binding mode that model gets, and the function specs that mode sends. Divided by
+        about 4, it is the part of the model's window the conversation can never use. The runner is not changed."""
+        use_function_calling, native = _resolve_binding(self.model if model is None else model,
+                                                        *self._binding_asked)
+        if native:
+            specs: Optional[List[Any]] = self._native_specs()
+        elif use_function_calling:
+            specs = [self.Agent.to_tool_spec()]
+        else:
+            specs = None
+        system = self._system_prompt("", native=native)
+        return len(system) + (len(json.dumps(specs, default=str)) if specs else 0)
+
+    def _system_prompt(self, user_input: str, native: Optional[bool] = None) -> str:
+        """The system prompt for the current binding mode (``native``: for native binding or not instead)."""
+        if self.bind_tools_natively if native is None else native:
             # In native binding mode, the LLM sees the user's tools as
             # real function-calling tools -- the AgentType template's
             # "emit action/action_input JSON" scaffolding would fight the
@@ -2409,17 +2461,44 @@ class AgentRunner(PersistenceMixin):
         self._primary_model = self.model
         self._use_model(self.fallback_model)
         self.fallback_used = used
+        self._use_fallback_addendum()
         history[0] = {"role": "system", "content": self._system_prompt(user_input)}
         history.append({"role": "user", "content": _FALLBACK_NOTE.format(
             **{**used, "from": self.fallback_note_label or used["from"]})})
         task_index = _carry_over_history(history, self._bound_function_names(), task_index)
         return {"type": "fallback", **used}, task_index
 
+    def _compose_addendum(self, addendum: Optional[str]) -> Optional[str]:
+        """The whole addendum for a caller's ``addendum``: the sandbox hint, it, then the skill index."""
+        parts = [part for part in (self._sandbox_hint, addendum, self._skill_index) if part]
+        return "\n\n".join(parts) if parts else addendum
+
+    def _use_fallback_addendum(self) -> None:
+        """At the switch: ``fallback_addendum`` (fitted to the fallback, when it is a function) replaces the caller's
+        addendum. One that fails leaves the addendum as it was."""
+        wanted = self.fallback_addendum
+        if wanted is None:
+            return
+        try:
+            text = wanted(self.fallback_model) if callable(wanted) else wanted
+        except Exception:
+            logger.warning("the fallback's addendum could not be built; the run keeps its own", exc_info=True)
+            return
+        if text is not None and not isinstance(text, str):
+            logger.warning("the fallback's addendum is not text (%s); the run keeps its own", type(text).__name__)
+            return
+        self._primary_addendum = self.system_addendum
+        self.system_addendum = self._compose_addendum(text)
+
     def reset_fallback(self) -> None:
-        """Go back to the model the runner was built with (and its binding mode) after a fallback took over."""
+        """Go back to the model the runner was built with (and its binding mode, and its addendum) after a fallback
+        took over."""
         if self._primary_model is not None:
             self._use_model(self._primary_model)
             self._primary_model = None
+        if self._primary_addendum is not None:
+            self.system_addendum = self._primary_addendum
+            self._primary_addendum = None
         self.fallback_used = None
 
     def _mark_fallback(self, events):
@@ -2572,23 +2651,7 @@ class AgentRunner(PersistenceMixin):
             plus a synthetic "respond" tool the LLM calls to signal completion (native binding)."""
             parser_spec = self.Agent.to_tool_spec() if self.use_function_calling else None
             parser_name = self.parser.__name__ if self.use_function_calling else None
-            native_specs = None
-            if self.bind_tools_natively:
-                native_specs = list(self.registry.to_tool_specs())
-                native_specs.append({
-                    "name": "respond",
-                    "description": (
-                        "Return the final answer to the user. Call this when you "
-                        "have all the information you need."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "answer": {"type": "string", "description": "The final answer."},
-                        },
-                        "required": ["answer"],
-                    },
-                })
+            native_specs = self._native_specs() if self.bind_tools_natively else None
             return parser_spec, parser_name, native_specs
 
         parser_tool_spec, parser_tool_name, native_tool_specs = _bound_specs()
