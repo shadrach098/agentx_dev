@@ -19,7 +19,9 @@ from rich.text import Text
 
 from agentx_dev import AgentRunner, AgentType, Session
 from agentx_dev.cli.approval import MODES, Gate
-from agentx_dev.Runner.Fallback import NO_CREDIT_WORDS, ContextWindowTooSmall
+from agentx_dev.LocalModel import _not_answering
+from agentx_dev.Runner.Fallback import (NO_CREDIT_WORDS, UNREACHABLE, ContextWindowTooSmall, FallbackFailed,
+                                        fails_for_good)
 from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
                                      runs_while_working,
                                      shown)
@@ -270,7 +272,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                  team_models_source: Optional[Path] = None,
                  team_model_uses: Optional[Mapping[str, str]] = None,
                  token_limit: int = DEFAULT_TOKEN_LIMIT, max_steps: int = DEFAULT_MAX_STEPS,
-                 auto_team: Optional[bool] = None, local_server: Optional[str] = None) -> None:
+                 auto_team: Optional[bool] = None, local_server: Optional[str] = None,
+                 fallback_model: Optional[str] = None) -> None:
         self.cwd = Path(cwd).resolve()
         self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
@@ -405,6 +408,17 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         # The models the local server lists (``local_server``: a real run's settings), asked in the background:
         # starting up never waits for the answer, and /model lists them once it is here.
         self.local_models: List[str] = []
+        # The local model a Claude or GPT chat falls back to (``fallbackModel``): None when never set, "" when off.
+        self.fallback_name: Optional[str] = fallback_model
+        self._fallback_built: Optional[Tuple[str, Any]] = None     # (name, model), built once (``_fallback_for``)
+        # Set while the conversation runs on the fallback: {"model": the one that failed, "reason"}.
+        self.fallback_from: Optional[Dict[str, str]] = None
+        self._rebuild_after_turn = False         # the running turn moved to the fallback: a new runner after it
+        # The one-time offer to use a local model as the fallback, made by the discovery thread.
+        self._offer_lock = threading.Lock()
+        self._offer: Optional[Tuple[str, List[Dict[str, str]]]] = None
+        self._offer_ready = False                # the welcome box is drawn: the offer may be shown at once
+        self._offer_shown = False
         self._local_discovery: Optional[threading.Thread] = None
         if local_server is not None:
             self._local_discovery = threading.Thread(target=self._discover_local_models, args=(local_server,),
@@ -558,12 +572,15 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         # One tool call at a time: one approval prompt open, on the main thread, and edits made in order.
         # The main agent's tools only (a team's helpers use the plain ones): checked against this message's route.
         # A local model's window (``model.context_window``, from its check) keeps each request inside it.
+        # Claude or GPT falls back to the local ``fallbackModel`` when it fails for good; the binding mode is left to
+        # the runner (no use_function_calling / bind_tools_natively), so it is chosen again for the fallback.
         if self._fitted_for(model) != self._addendum_for:
             self._build_instructions(model)
         runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=[self._route_guarded(t) for t in self.tools],
                              system_addendum=self.addendum,
                              max_iterations=self.max_steps, auto_cache=False, verbose=False, parallel_tool_workers=1,
-                             skills=self.skills, trim_results=True, strict_tool_dispatch=True)
+                             skills=self.skills, trim_results=True, strict_tool_dispatch=True,
+                             fallback_model=self._fallback_for(model))
         # The skills THIS conversation's agent can open (what /<skill> and the `/` pop-up offer): taken from the
         # runner itself, so it is exactly what use_skill can read, and it follows /clear, /resume and a new model.
         tool = next((t for t in runner.tools if t.name == "use_skill"), None)
@@ -615,8 +632,11 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         try:
             self.model = self._built_model(self.requested_model)       # a local model is checked first
         except ModelError as e:
-            # no key for the saved model: when the other provider's key is set, offer its models instead
+            # no key for the saved model: when the other provider's key is set, offer its models instead; when that
+            # is not possible or declined, start on the fallback model
             self.model = self.model_from_the_other_key(e)
+            if self.model is None:
+                self.model = self.model_from_the_fallback()
             if self.model is None:
                 self._create_user_settings(None)
                 self._show_settings_created()
@@ -655,6 +675,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                         "/model <name> --folder changes it.")
         if getattr(self, "remote_at_start", False):   # agentx --remote: this terminal, with remote control on
             self.remote_control()
+        self._show_fallback_offer()                   # the local server's models, if found by now (else when found)
         self._start_typeahead()
         try:
             return self.loop()
@@ -984,11 +1005,48 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                 f"window fixes it: a Modelfile with FROM {name} and PARAMETER num_ctx 16384, then ollama create "
                 f"{name}-16k -f Modelfile.")
 
+    @staticmethod
+    def _server_silent(model: Any, error: BaseException) -> str:
+        """"the local server at <host:port> is not answering" when ``model`` is local and ``error`` is no answer at
+        all (a refused connection, a timeout); "" otherwise."""
+        if not getattr(model, "is_local", False) or fails_for_good(error) != UNREACHABLE \
+                or getattr(error, "status_code", None) is not None:
+            return ""
+        base_url = getattr(model, "base_url", None)
+        return _not_answering(base_url) if isinstance(base_url, str) and base_url else "the local server is not answering"
+
     def _failure(self, error: BaseException) -> str:
+        if isinstance(error, FallbackFailed):            # the fallback took over, and failed too: both reasons
+            cause = error.__cause__ if isinstance(error.__cause__, BaseException) else error
+            why = self._server_silent(self.model, cause) or f"{self._safe(cause)} ({type(cause).__name__})"
+            used = error.fallback
+            return (f"{self._safe(used.get('from'), 80)} failed ({self._safe(used.get('reason'), 80)}); the fallback "
+                    f"{self._safe(used.get('to'), 80)} failed too: {why}.")
+        local = self._server_silent(self.model, error)
+        if local:
+            return f"The turn stopped: {local}."
         if self._no_credit(error):
             return (f"Your {provider_name(self.model_label)} account is out of credit: the API refused the request "
                     f"({type(error).__name__}).")
         return f"Something went wrong ({type(error).__name__}): {self._safe(error)}"
+
+    def _mark_completions(self, before: int) -> None:
+        """The saved session says which model a turn on the fallback ran on: ``ran_on`` on its completions."""
+        mark = self._fallback_mark()
+        if mark and self.session is not None:
+            for meta in self.session.completions_meta[before:]:
+                meta["ran_on"] = mark
+
+    def _after_fallback(self) -> None:
+        """After a turn the fallback took over: the runner is built again on it (its window and instructions, no
+        fallback of its own), so the next turns run on it as the chat model."""
+        if not self._rebuild_after_turn or self.session is None:
+            return
+        self._rebuild_after_turn = False
+        try:
+            self.session.attach(self._make_runner(self.model))
+        except Exception:                  # the switched runner still works: it stays on the fallback
+            logging.getLogger(__name__).warning("could not rebuild the runner on the fallback", exc_info=True)
 
     def _keep_stopped_turn(self, title: str, text: str, events: List[dict], reason: str, last_said: str) -> None:
         """A turn that stopped before it finished (an error, Ctrl+C, the token limit): your message and a short
@@ -1004,7 +1062,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                 subject = (args.get("path") or args.get("command") or args.get("task") or "") \
                     if isinstance(args, dict) else ""
                 calls.append(" ".join(f"{event.get('name')} {subject}".split())[:120])
-        lines = [f"[agentx] This turn stopped before it finished: {reason}. What it did before it stopped:"]
+        record.ran_on = self._fallback_mark()
+        ran_on = f" {record.ran_on}" if record.ran_on else ""
+        lines = [f"[agentx] This turn stopped before it finished{ran_on}: {reason}. What it did before it stopped:"]
         if record.changed:
             lines.append("- Files changed: " + ", ".join(record.changed[:20]))
         if record.ran:
@@ -1044,6 +1104,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         stopped = ""                                   # why the turn stopped before it finished, if it did
         last_said = ""
         usage_before = self._usage_totals()
+        completions_before = len(self.session.completions_meta)
         with self._limit_lock:
             self._turn_start = counted_tokens(usage_before[1], usage_before[2], usage_before[3])
             self._turn_start_sent = usage_before[1] + usage_before[2]
@@ -1084,6 +1145,11 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                         self._tell_trimmed(event)
                         self.progress.start("Thinking")
                         continue
+                    if kind == "fallback":                     # the chat model failed for good: the turn goes on
+                        self.screen.flush()
+                        self._took_over(event)
+                        self.progress.start("Thinking")
+                        continue
                     if kind == "completion":
                         self._show_unanswered(event.get("completion"), answered)
                     self.screen.show_event(event)
@@ -1114,8 +1180,14 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         except Exception as e:
             self.error(self._failure(e))
             self.notice(KEPT_SO_FAR + " " + (OUT_OF_CREDIT_NEXT if self._no_credit(e) else ERROR_NEXT))
-            stopped = (f"the {provider_name(self.model_label)} account is out of credit" if self._no_credit(e)
-                       else f"an error ({type(e).__name__})")
+            if isinstance(e, FallbackFailed):
+                stopped = f"the fallback {self._safe(e.fallback.get('to'), 80)} failed too"
+            elif self._server_silent(self.model, e):
+                stopped = self._server_silent(self.model, e)
+            elif self._no_credit(e):
+                stopped = f"the {provider_name(self.model_label)} account is out of credit"
+            else:
+                stopped = f"an error ({type(e).__name__})"
         finally:
             self.progress.stop()
             self.screen.flush()                       # a look-around flow left open by an error or Ctrl+C
@@ -1130,6 +1202,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                                             last_said)
                 except Exception:              # keeping it is a help: a failure here must not end the app
                     logging.getLogger(__name__).warning("could not keep the stopped turn", exc_info=True)
+            self._mark_completions(completions_before)
+            self._after_fallback()
             self.save()
             after = self._usage_totals()
             self._last_turn_usage = tuple(b - a for a, b in zip(usage_before, after))      # type: ignore[assignment]
@@ -1274,6 +1348,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         if not self._memory_on:
             return
         record, now = record_from_events(title, events), datetime.now()
+        record.ran_on = self._fallback_mark()
         self._append_log(entry_text(record, now, self._hide))
         if self.project_memory is not None and worth_a_note(record):
             self.project_memory.write(record, now, self._hide)        # never raises; a failure is logged
@@ -1359,7 +1434,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             return
         self._titled = path
         prompt = TITLE_PROMPT.format(said="\n".join(f"- {s[:400]}" for s in said[:4]), answer=answer.strip()[:600])
-        model_name, env, home, cwd = self.requested_model, dict(self.env), self.home, self.cwd
+        # On the fallback the title comes from it too: the model that failed is not asked.
+        model_name = self.model_label if self.fallback_from else self.requested_model
+        env, home, cwd = dict(self.env), self.home, self.cwd
 
         def work() -> None:
             try:
@@ -1745,7 +1822,8 @@ def device_app(template: "ChatApp", room: Any) -> "ChatApp":
                   newly_trusted=False, model_source=None, team_models=settings.team_models,
                   team_models_source=settings.team_models_source, team_model_uses=settings.team_model_uses,
                   token_limit=settings.token_limit, max_steps=settings.max_steps,
-                  model_factory=template.model_factory, env=getattr(template, "_given_env", None))
+                  model_factory=template.model_factory, env=getattr(template, "_given_env", None),
+                  fallback_model=template.fallback_name)
     app.auto_titles = bool(getattr(template, "auto_titles", False))
     app.local_models = template.local_models               # one list, filled by the main conversation's search
     return app
@@ -1800,7 +1878,7 @@ def _run(args: argparse.Namespace, home: Path, console: Console, read: Callable[
                       # every model built by name reaches the local server in the user's settings (Ruling A)
                       model_factory=functools.partial(choose_model, local_server=settings.local_server,
                                                       local_context=settings.local_context),
-                      local_server=settings.local_server)
+                      local_server=settings.local_server, fallback_model=settings.fallback_model)
         app.auto_titles = True                         # a real run: conversations get a short title from the model
         app.remote_at_start = bool(getattr(args, "remote", False)) and not getattr(args, "ui", False)
         if wire is not None:

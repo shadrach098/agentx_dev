@@ -292,10 +292,23 @@ class Session(BaseModel):
         (Ctrl+C, closing the generator) is not recorded, because the runner reports the whole turn
         only when it completes."""
         runner = self._require_runner()
+        model = getattr(runner, "model", None)
         for event in runner.stream(user_input, chat_history=self.history or None, **kw):
+            if event.get("type") == "fallback":
+                model = self._switched(model, getattr(runner, "model", None))
             if event.get("type") == "completion":
                 self._absorb(event["completion"])
             yield event
+
+    def _switched(self, old: Any, new: Any) -> Any:
+        """The runner moved from ``old`` to ``new`` during the turn (its fallback took over): what ``old`` used so far
+        is counted now (``_absorb`` counts only the model the turn ends on), and ``new`` counts from here."""
+        if old is not None and old is not new:
+            self._count_usage(old)
+            counts = self._counts(new)
+            if counts is not None:
+                self.usage_seen[id(new)] = counts
+        return new
 
     async def ainvoke(self, user_input: str) -> AgentCompletion:
         """Run an async turn and absorb the result into session state."""

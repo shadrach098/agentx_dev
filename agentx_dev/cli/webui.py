@@ -224,8 +224,12 @@ class WebScreen(Screen):
     def flow_block(self) -> None:
         return None
 
-    def notice(self, text: str) -> None:
-        self.bus.emit("notice", level="info", text=_text(text))
+    def notice(self, text: str, actions: Any = None) -> None:
+        extra = {}
+        if isinstance(actions, (list, tuple)) and actions:           # buttons, each sending its text as typed
+            extra["actions"] = [{"label": _text(a.get("label"), 80), "send": _text(a.get("send"), 200)}
+                                for a in actions if isinstance(a, dict)]
+        self.bus.emit("notice", level="info", text=_text(text), **extra)
 
     def error(self, text: str) -> None:
         self.bus.emit("notice", level="error", text=_text(text))

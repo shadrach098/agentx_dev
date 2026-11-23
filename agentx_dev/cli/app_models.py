@@ -4,20 +4,45 @@ A part of ``ChatApp`` (agentx_dev/cli/app.py), which inherits it."""
 
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
 from agentx_dev.LocalModel import DEFAULT_WINDOW, Local
 from agentx_dev.cli.models import (LOCAL_TYPO_HINT, SUGGESTED_MODELS, ModelError, describe_prompt, is_auto_note,
-                                   key_variable, model_label, other_provider, parse_descriptions, parse_team_models,
-                                   provider_for, team_models_line, usable_team_models)
+                                   is_local_name, key_variable, model_label, other_provider, parse_descriptions,
+                                   parse_team_models, provider_for, team_models_line, usable_team_models)
 from agentx_dev.cli.settings import (project_settings_path, user_settings_path, write_project_mode,
                                      write_project_model,
-                                     write_project_team_models, write_user_model)
+                                     write_project_team_models, write_user_model, write_user_setting)
 
 
 CHECK_WAIT_SEC = 150.0      # the check's own calls time out sooner (its model call after 120 s): a last resort
+
+FALLBACK_NOTICE = ("{maker} failed: {reason}. This conversation continues on {to} (local). Choose a model to try "
+                   "{maker} again.")
+NO_KEY_START = "No key for {provider}: starting on {fallback} (local)."
+FALLBACK_OFFER = ("{server} is running with {names}. Use one as the fallback when Claude or GPT fails? /fallback "
+                  "{first} sets it; /fallback off stops this question.")
+NO_KEY = "no key"                     # the reason a conversation started on the fallback
+
+
+def maker_of(name: str) -> str:
+    """``Claude`` or ``GPT`` for a hosted model's name, as the fallback notice says it; any other name as it is."""
+    return {"claude": "Claude", "gpt": "GPT"}.get(provider_for(str(name or "")) or "", str(name or ""))
+
+
+def server_name(url: str) -> str:
+    """What the offer calls the local server: Ollama and LM Studio by their usual ports, else its address."""
+    try:
+        parsed = urlparse(str(url or ""))
+        port = parsed.port
+        where = parsed.netloc or str(url or "")
+    except ValueError:
+        port, where = None, str(url or "")
+    return {11434: "Ollama", 1234: "LM Studio"}.get(port or 0, f"The local server at {where}")
 
 
 class ModelCommands:
@@ -56,6 +81,7 @@ class ModelCommands:
         self.model = model
         self._track_usage_model(self.model_label, model, "chat")
         self.requested_model = name
+        self.fallback_from = None               # a model chosen again is tried afresh
         self.session.attach(runner)
 
     def _built_model(self, name: Optional[str]) -> Any:
@@ -113,12 +139,161 @@ class ModelCommands:
     def _discover_local_models(self, server: str) -> None:
         """In the background at startup: the models the local server lists, for ``/model`` and the model menu. A
         refused connection answers at once and a slow server gets half a second; no answer leaves the list empty
-        and says nothing (typing a local name still runs the check)."""
+        and says nothing (typing a local name still runs the check). Models found with no ``fallbackModel`` ever set
+        bring the one-time offer to use one as the fallback."""
         try:
             names = Local.models(server, timeout=0.5)
         except Exception:
             return
         self.local_models[:] = [str(name) for name in names if str(name).strip()]
+        self._offer_fallback(server)
+
+    # -- the fallback model ----------------------------------------------------------------------------------------
+
+    def _offer_fallback(self, server: str) -> None:
+        """Once per run, when the local server lists models and no fallback was ever set (``/fallback off`` stops it):
+        a notice offering them. It comes from the discovery thread; until the welcome box is drawn it waits for
+        ``start`` to show it (``_show_fallback_offer``)."""
+        if self.fallback_name is not None or not self.local_models:
+            return
+        names = [self._safe(name, 80) for name in self.local_models[:8]]
+        text = FALLBACK_OFFER.format(server=self._safe(server_name(server), 120), names=", ".join(names),
+                                     first=names[0])
+        actions = [{"label": f"Use {names[0]}", "send": f"/fallback {names[0]}"},
+                   {"label": "No", "send": "/fallback off"}]
+        with self._offer_lock:
+            if self._offer is not None:
+                return
+            self._offer = (text, actions)
+            ready = self._offer_ready
+        if ready:
+            self._show_fallback_offer()
+
+    def _show_fallback_offer(self) -> None:
+        """From now on the offer may be shown; show it now if discovery has made it (once; never once a fallback has
+        been set or turned off)."""
+        with self._offer_lock:
+            self._offer_ready = True
+            offer = None if self._offer_shown else self._offer
+            if offer is not None:
+                self._offer_shown = True
+        if offer is None or self.fallback_name is not None:
+            return
+        # Printed as it is, also from the discovery thread (as /voice's lines are): the spinner belongs to the main
+        # thread, and the console prints above it.
+        self.screen.notice(offer[0], actions=offer[1])
+
+    def _fallback_for(self, model: Any) -> Any:
+        """The model a runner on ``model`` falls back to: the ``fallbackModel``, built once and not checked (the
+        runner calls it only when ``model`` fails for good). None when none is set, when ``model`` is local (a local
+        model never falls back) or when it cannot be built."""
+        name = self.fallback_name
+        if not name or model is None or getattr(model, "is_local", False):
+            return None
+        built = self._fallback_built
+        if built is None or built[0] != name:
+            try:
+                fallback = self.model_factory(name, self.env)
+            except Exception:
+                logging.getLogger(__name__).warning("the fallback model %r could not be set up", name, exc_info=True)
+                return None
+            if not getattr(fallback, "is_local", False):        # only ever a local one
+                return None
+            fallback.context_window = self._window_of(fallback)
+            built = self._fallback_built = (name, fallback)
+        self._track_usage_model(model_label(built[1]), built[1], "chat")
+        return built[1]
+
+    def _took_over(self, event: Dict[str, Any]) -> None:
+        """The runner's ``fallback`` event: the chat model failed for good and the fallback carries the turn on. The
+        app moves to it for the rest of the conversation (the runner is rebuilt on it once the turn ends) and says
+        so; choosing a model again clears it."""
+        model = getattr(getattr(self.session, "runner", None), "model", None)
+        if model is None or not getattr(model, "is_local", False):
+            return
+        self.model = model
+        self._track_usage_model(model_label(model), model, "chat")
+        failed, reason = str(event.get("from") or ""), str(event.get("reason") or "")
+        self.fallback_from = {"model": failed, "reason": reason}
+        self._rebuild_after_turn = True
+        maker = self._safe(maker_of(failed), 80)
+        self.notice(FALLBACK_NOTICE.format(maker=maker, reason=self._safe(reason, 80),
+                                           to=self._safe(model_label(model), 80)))
+
+    def _fallback_mark(self) -> str:
+        """``(on <model>, fallback from <model>: <reason>)`` while the conversation runs on the fallback; else ""."""
+        if not self.fallback_from or not getattr(self.model, "is_local", False):
+            return ""
+        return (f"(on {model_label(self.model)}, fallback from {self.fallback_from.get('model', '')}: "
+                f"{self.fallback_from.get('reason', '')})")
+
+    def model_from_the_fallback(self) -> Any:
+        """At start, after today's offer of the other provider's models came to nothing: when the saved model's
+        provider has no key and a fallback is set, start on it (checked, as any local chat model is) and say why.
+        None when that is not the case, or when the fallback fails its check (which is shown)."""
+        name = self.fallback_name
+        requested = str(self.requested_model or "").strip()
+        provider = provider_for(requested) if requested else None
+        if not name or provider == "local":
+            return None
+        wanted = [provider] if provider else ["claude", "gpt"]
+        if any(str(self.env.get(key_variable(p)) or "").strip() for p in wanted):
+            return None                                   # the key is there: the model failed for another reason
+        try:
+            model = self._built_model(name)
+        except ModelError as error:
+            self.error(self._safe(error, 600))
+            return None
+        except Exception as error:
+            self.error(f"Could not use {self._safe(name, 80)} ({type(error).__name__}).")
+            return None
+        who = {"claude": "Anthropic", "gpt": "OpenAI"}.get(provider or "", "Anthropic or OpenAI")
+        self.notice(NO_KEY_START.format(provider=who, fallback=self._safe(model_label(model), 80)))
+        self.fallback_from = {"model": requested or "Claude or GPT", "reason": NO_KEY}
+        return model
+
+    def show_fallback(self) -> None:
+        """``/fallback``: the fallback model, or that there is none."""
+        name = self.fallback_name
+        if name:
+            lines = [f"Fallback: {self._safe(name, 80)} (local). When Claude or GPT fails for good, the conversation "
+                     "continues on it. /fallback <name> changes it; /fallback off turns it off."]
+        else:
+            others = [self._safe(model, 80) for model in self.local_models[:8]]
+            listed = f" The local server lists: {', '.join(others)}." if others else ""
+            state = "The fallback is off" if name == "" else "No fallback is set"
+            lines = [f"{state}: when Claude or GPT fails for good, the turn stops.{listed} /fallback <local name> "
+                     "sets one."]
+        if self.fallback_from:
+            lines.append(f"This conversation runs on {self._safe(self.model_label, 80)} because "
+                         f"{self._safe(self.fallback_from.get('model'), 80)} failed "
+                         f"({self._safe(self.fallback_from.get('reason'), 80)}); choose a model to try it again.")
+        self.notice("\n".join(lines))
+
+    def set_fallback(self, name: str) -> None:
+        """``/fallback <local name>`` (checked first, then saved in ~/.agentx/settings.json) or ``/fallback off``
+        (``name`` ""). It applies to this conversation at once; a save that fails is said, and the setting then lasts
+        for this session only."""
+        model = None
+        if name:
+            if not is_local_name(name):
+                self.error(f"The fallback must be a local model; {self._safe(name, 80)} is not.")
+                return
+            try:
+                model = self._built_model(name)
+            except ModelError as error:
+                self.error(self._safe(error, 600))
+                return
+        path, message = write_user_setting(self.home, "fallbackModel", name)
+        self.fallback_name = name
+        self._fallback_built = (name, model) if model is not None else None
+        if self.session is not None and self.model is not None and not getattr(self.model, "is_local", False):
+            self.session.attach(self._make_runner(self.model))      # this conversation falls back from now on
+        saved = f" {self._safe(message, 400)}" if path is not None else ""
+        self.notice(f"Fallback: {self._safe(model_label(model), 80)} (local).{saved}" if name
+                    else f"The fallback is off.{saved}")
+        if path is None:
+            self.error(self._safe(message, 400) + " It applies to this session only.")
 
     def save_folder_model(self, name: str) -> None:
         """``/model <name> --folder``: keep the model for this folder in its settings file."""

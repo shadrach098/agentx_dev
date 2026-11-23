@@ -602,7 +602,9 @@ class Screen:
         if len(lines) > MAX_RESULT_LINES:
             _print(self.console, Text(f"  ... {len(lines) - MAX_RESULT_LINES} more lines", style=style))
 
-    def notice(self, text: str) -> None:
+    def notice(self, text: str, actions: Any = None) -> None:
+        """A notice. ``actions`` (``[{"label", "send"}]``) are buttons in the app window; the terminal shows the text,
+        which says what to type."""
         _print(self.console, Text(plain(text, keep_newlines=True), style="cyan"))
 
     def callout(self, title: str, body: str = "") -> None:

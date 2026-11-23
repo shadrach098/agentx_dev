@@ -104,6 +104,18 @@ def _model(ctx: Any, arg: str) -> None:
     ctx.notice(f"Model: {shown(ctx.model_label)} (this session only).{default_hint}")
 
 
+def _fallback(ctx: Any, arg: str) -> None:
+    words = arg.split()
+    if not words:
+        ctx.show_fallback()
+    elif len(words) == 1 and words[0].lower() == "off":
+        ctx.set_fallback("")
+    elif len(words) == 1:
+        ctx.set_fallback(words[0])
+    else:
+        ctx.error("Usage: /fallback [name|off]")
+
+
 def _settings(ctx: Any, arg: str) -> None:
     ctx.show_settings()
 
@@ -363,6 +375,7 @@ COMMANDS = (
     Command("help", "List the commands", _help),
     Command("clear", "Start a new conversation.", _clear),
     Command("model", "Show or switch the model: /model [name] [--folder]", _model),
+    Command("fallback", "Show or set the local model used when Claude or GPT fails: /fallback [name|off]", _fallback),
     Command("mode", "Show or set the mode: /mode [default|accept-edits|plan|auto] [--folder]", _mode),
     Command("settings", "Show the model, mode and rules in force, and the files that change them", _settings),
     Command("resume", "Load a saved conversation: /resume [id]", _resume),
@@ -410,7 +423,7 @@ def runs_while_working(line: str) -> bool:
     arg = arg.strip().lower()
     if name in ("help", "usage", "settings", "sessions", "memory", "mode", "remote-control"):
         return True
-    if name in ("model", "team-models", "limit", "fullscreen"):
+    if name in ("model", "team-models", "limit", "fullscreen", "fallback"):
         return not arg                      # showing it; setting it waits
     if name in ("skills", "skill"):
         return not arg

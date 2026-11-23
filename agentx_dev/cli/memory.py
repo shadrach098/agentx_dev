@@ -46,6 +46,7 @@ class TurnRecord:
     changed: List[str] = field(default_factory=list)
     ran: List[str] = field(default_factory=list)
     team: List[str] = field(default_factory=list)
+    ran_on: str = ""          # "(on <model>, fallback from <model>: <reason>)" for a turn on the fallback model
 
 
 def _flat(text: Any, limit: int) -> str:
@@ -115,7 +116,10 @@ def entry_text(record: TurnRecord, when: datetime, redact: Redact = str) -> str:
     def safe(text: Any, limit: int) -> str:
         return _flat(redact(str("" if text is None else text)), limit)
 
-    lines = [f"## {when.strftime('%Y-%m-%d %H:%M')} - {safe(record.request, MAX_TITLE_CHARS) or '(no message)'}"]
+    heading = f"## {when.strftime('%Y-%m-%d %H:%M')} - {safe(record.request, MAX_TITLE_CHARS) or '(no message)'}"
+    if record.ran_on:
+        heading += " " + safe(record.ran_on, 200)
+    lines = [heading]
     if record.changed:
         shown = ", ".join(safe(path, 200) for path in record.changed[:MAX_PATHS])
         more = len(record.changed) - MAX_PATHS
