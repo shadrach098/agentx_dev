@@ -54,6 +54,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- A question or an approval that waits for you in the app window is readable at once. The large orb stayed at the
+  top and the Team panel grew above the message box, so the conversation (and the question in it) was left a strip
+  a few lines high that only scrolled with the pointer inside it. Now the orb folds to a small one beside its note
+  while a card waits, the Team panel takes at most a third of the window and scrolls on its own, a new card is
+  shown from its top, and the mouse wheel scrolls the conversation wherever the pointer is.
+
 - A long team job is no longer declined unseen in the app window. Its task (up to 12,000 characters) was also sent
   as the card's heading, which may hold only 2,000, so a detailed hand-off came back "too long to show in the window
   in full" without a question. The card shows the task whole, once, in its body.

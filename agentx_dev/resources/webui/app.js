@@ -647,12 +647,23 @@
       else if (!typingNow()) (card.querySelector(".btn.primary, input") || card).focus({preventScroll: true});
     });
     setComposer();
+    drawStage();
+    showCard(card);
+  }
+  // A card waiting for you is scrolled into view from its top once the stage has folded to make room, so the
+  // question or the change it asks about is what you see, not only its answer box.
+  function showCard(card) {
+    setTimeout(() => {
+      if (!card.isConnected || card.classList.contains("done")) return;
+      card.scrollIntoView({block: card.offsetHeight > log.clientHeight ? "start" : "nearest", behavior: "smooth"});
+    }, 480);
   }
   function onAnswered(ev) {
     if (ev.id === ready) ready = null;
     const card = cards.get(ev.id);
     if (card && !card.classList.contains("done")) finishCard(card, ev.outcome ? `${ev.outcome} in the terminal` : "");
     setComposer();
+    drawStage();
   }
   function liveCard() {
     for (const card of [...cards.values()].reverse()) if (!card.classList.contains("done")) return card;
@@ -694,8 +705,12 @@
       stage.setAttribute("aria-hidden", on ? "false" : "true");
       if (stick) { const until = performance.now() + 520; const hold = () => { log.scrollTop = log.scrollHeight; if (performance.now() < until) requestAnimationFrame(hold); }; requestAnimationFrame(hold); }
     }
+    // While a card waits for you the stage folds to a small orb beside its note, so the card has the room
+    const waiting = !!liveCard();
+    if (waiting !== stage.classList.contains("compact")) stage.classList.toggle("compact", waiting);
     if (state === "stuck" && stage.dataset.state !== "stuck") {   // what it waits for stays in view as the stage opens
-      setTimeout(() => { const card = liveCard(); if (card) card.scrollIntoView({block: "nearest", behavior: "smooth"}); }, 480);
+      const card = liveCard();
+      if (card) showCard(card);
     }
     stage.dataset.state = state;
     if (!on) return;
@@ -1599,6 +1614,19 @@
   }
   log.addEventListener("scroll", () => { $("jump").hidden = nearBottom(); }, {passive: true});
   $("jump").addEventListener("click", () => { log.scrollTop = log.scrollHeight; $("jump").hidden = true; });
+  // The wheel scrolls the conversation wherever the pointer is: over the orb, the title, or a part of the bottom
+  // that cannot scroll itself (the team panel, a list or the message box scroll first while they can).
+  document.querySelector(".main").addEventListener("wheel", (e) => {
+    if (e.ctrlKey || !e.deltaY || log.contains(e.target)) return;
+    for (let n = e.target; n && n !== e.currentTarget; n = n.parentElement) {
+      if (n.scrollHeight > n.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(n).overflowY)) {
+        const room = e.deltaY > 0 ? n.scrollTop + n.clientHeight < n.scrollHeight - 1 : n.scrollTop > 0;
+        if (room) return;                         // that one still scrolls this way: leave it to it
+      }
+    }
+    log.scrollTop += e.deltaY * (e.deltaMode === 1 ? 32 : e.deltaMode === 2 ? log.clientHeight : 1);
+    e.preventDefault();
+  }, {passive: false});
   function onEvent(ev) { if (loading) queue.push(ev); else handle(ev); }
 
   // A conversation opened (start, /resume, /clear): its earlier messages come from /api/history; what happens in it
