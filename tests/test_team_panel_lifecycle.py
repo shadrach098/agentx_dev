@@ -65,10 +65,18 @@ def test_producer_callbacks_carry_round_and_step_identity(tmp_path):
     plans = [d for k, d in events if k == "plan"]
     assert plans[0]["round"] == 1
     assert [s["step_id"] for s in plans[0]["steps"]] == ["s1", "s2"]
+    # Reading steps run side by side, so they may start and end in either order: each one is named exactly once,
+    # and a result carries the identity its own start had.
+    started = {}
     for kind in ("dispatch", "result"):
         emitted = [d for k, d in events if k == kind]
-        assert [(d["round"], d["step"], d["step_id"]) for d in emitted] == [
-            (1, 0, "s1"), (1, 1, "s2")]
+        assert sorted((d["round"], d["step"], d["step_id"]) for d in emitted) == [(1, 0, "s1"), (1, 1, "s2")]
+        for d in emitted:
+            ident = (d["round"], d["step"], d["step_id"])
+            if kind == "dispatch":
+                started[id(d["status"])] = ident
+            else:
+                assert started[id(d["status"])] == ident
 
 
 def test_last_tool_is_not_in_flight_activity():
