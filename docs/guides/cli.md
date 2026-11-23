@@ -408,6 +408,13 @@ server it says nothing. When the list is in, `/model` shows it (`Other models: q
 window's model menu and the Settings field suggest the names, marked `local`. A model you type that is not listed
 still runs the check.
 
+**A listed name that looks hosted is left out.** A server may list a model whose name starts with `gpt`, `claude` or
+`o` and a digit (Ollama's `gpt-oss:20b`). In `agentx` such a name always means the hosted model, so choosing it would
+send the conversation to OpenAI or Anthropic. It is not offered in `/model`, `/fallback`, the model menu or the
+offer, and you are told once: `Ollama lists gpt-oss:20b, but agentx treats names that start with gpt, claude or o
+and a digit as hosted models, so they can't be used as local models. To use one here, give it a local name: ollama
+cp gpt-oss:20b oss-20b`. After `ollama cp`, `/model oss-20b` uses it locally.
+
 Local models use the same tools, approvals, modes and rules as any other. Their thinking, when the server sends it,
 is shown as Thinking.
 
@@ -465,7 +472,7 @@ remembered and not asked again.
 | Out of credit or quota | Yes (`out of credit`) |
 | The model name is unknown to the provider (404) | Yes (`model not found`) |
 | The provider cannot be reached, or answers 5xx, after the usual retries | Yes (`unreachable`) |
-| Rate limited, overloaded, a timeout a retry fixes | No: retried as before |
+| Rate limited, overloaded, or a timeout that clears within the client's retries | No; once the retries are spent it counts as unreachable |
 | A request the provider refuses, a tool or code error | No: it would fail again |
 
 **Which way.** From Claude or GPT to a local model, only. If the chat model is itself local and fails, nothing else
@@ -507,6 +514,14 @@ a missing one.
   told what the failed attempt already did (its tool calls and the files it changed), and the switch lasts for the
   rest of the job: later steps on that model start on the fallback. If the fallback fails too, the step fails with
   both reasons.
+- **The planner and the summary fall back too.** When the team's own model fails for good while planning or
+  writing the summary (or a step already found it gone), that call is made on the fallback, its prompt fitted to the
+  fallback's window, and the screen says once `claude-opus-5-5 failed (out of credit): the team's planner continues
+  on qwen3:8b.` The result's first line adds `the summary was written by the fallback model`. If the summary cannot
+  be written at all, the finished steps are not lost: the main agent gets each step's own result, and the first line
+  says `the summary could not be written; the steps' own results follow`.
+- **Helpers get instructions fitted to their window.** A helper on a local model, and a helper that moves to the
+  fallback, get `AGENTX.md` and the work log shortened for that model's window (as below), not the chat's.
 - **On the screen** a step that finished on the fallback reads `✓ coder · tests  Done on qwen3:8b (fallback:
   claude-opus-5-5 out of credit)` with a `↺` mark (`*` where the terminal has no `↺`), and the same words are in the
   app window's Team panel and **Details**.
@@ -527,12 +542,20 @@ window, the server silently drops the start of it, which is where the instructio
 request inside the window, and says when it had to:
 
 1. `AGENTX.md` and the work log are shortened to fit a third of the window (a line says `(shortened to fit
-   qwen3:8b's 8,192-token window)`). The base prompt and the tool definitions are never cut.
+   qwen3:8b's 8,192-token window)`). The base prompt and the tool definitions are never cut. This holds from the
+   turn that switches to the fallback on: that turn already runs with the instructions fitted to the fallback.
 2. Old tool results become one-line stubs, newest kept whole.
 3. The conversation is summarised once it passes about 60% of the window, between two steps of a turn if need be.
 4. If the instructions and your newest message alone do not fit, the request is not sent. The turn stops with
    `qwen3:8b's 8,192-token window is too small for this conversation. A variant with a larger window fixes it: a
    Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create qwen3:8b-16k -f Modelfile.`
+
+**A window too small to work in.** When a local model is chosen or checked (`/model`, `/fallback`, the
+`fallbackModel` from your settings once its window is known), `agentx` estimates its own share of each request
+(the base prompt and the tool definitions). If less than a quarter of the request would be left for the
+conversation, you get one warning, and the model is still used: `qwen3:8b's 8,192-token window leaves almost no
+room for the conversation; a variant with a larger window fixes it: a Modelfile with FROM qwen3:8b and PARAMETER
+num_ctx 16384, then ollama create qwen3:8b-16k -f Modelfile.`
 
 Once per conversation, when steps 1 to 3 had to act, you get one notice: `qwen3:8b is working with less than the
 whole conversation: older tool results were shortened to fit its 8,192-token window.` (or `the earlier
@@ -554,7 +577,7 @@ PARAMETER num_ctx 16384
 ollama create qwen3-16k -f Modelfile
 ```
 
-then `agentx --model qwen3-16k`, and add `"localContext": 16384` if you also want it on a server that does not
+(the new name can be any local name: the messages suggest `qwen3:8b-16k`), then `agentx --model qwen3-16k`, and add `"localContext": 16384` if you also want it on a server that does not
 report it. A larger window needs more memory.
 
 ## MCP servers
@@ -980,6 +1003,7 @@ Besides the log, `agentx` writes a readable note for each turn that changed file
 The notes are indexed in `.agentx/memory/` so they can be found by meaning, not only by words:
 
 - With `OPENAI_API_KEY` set, the index uses OpenAI's embeddings (`text-embedding-3-small`): the note's text is sent to OpenAI's embeddings API when the note is written, and your search words when you search. Without a key (or when the API cannot be reached) a local similarity search is used, and if even that fails, keywords. Nothing else changes.
+- **While the chat runs on a [local model](#local-models-and-the-fallback)** (chosen, or the fallback), nothing goes to the embeddings API: the notes are searched by keywords, and a new note is written but not indexed. It is indexed the next time the notes are searched with Claude or GPT as the chat model.
 - The agent has a `recall` tool to search them (`recall("the login redirect")`): it returns the closest notes with their path, and the agent can open a whole note with `read_path`.
 - The first message of a fresh conversation (a new start or `/clear`) also gets up to 3 notes that are close to it, in a marked block of at most 1,500 characters. A resumed conversation does not.
 - `/memory` shows how many notes there are and how they are searched; `/memory <words>` shows what `recall` would find.

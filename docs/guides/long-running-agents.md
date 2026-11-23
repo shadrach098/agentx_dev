@@ -106,6 +106,12 @@ marked as data taken from earlier tool output, not instructions.
   errors that won't fix themselves — a bad API key, an invalid request —
   still raise straight away. A run with `stream_tokens=True` isn't
   retried mid-response.
+- **A `fallback_model` and transient errors:** a persistent run
+  never falls back on "unreachable". A connection error, a timeout or
+  a 5xx is waited out as above until the time budget is spent, and the
+  run then ends with the outcome `out_of_time` (the budget expired);
+  it does not move to the fallback. A rejected key, no credit or an unknown
+  model still switch to the fallback at once.
 - **Tool errors** never end the run: an exception raised inside your
   tool comes back to the agent as an error result, like any failed
   call, and counts toward the error streak above.

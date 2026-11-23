@@ -1777,6 +1777,9 @@ ollama create qwen3-16k -f Modelfile
 agentx --model qwen3-16k
 ```
 
+The new name can be any local name you like (the message suggests `qwen3:8b-16k`; `qwen3-16k` is shorter to
+type). A name that starts with `gpt`, `claude` or `o` and a digit is not one: agentx reads it as a hosted model.
+
 - On Ollama agentx reads the window the model is loaded with; on another server add `"localContext": 16384`.
 - A bigger window needs more memory. 16,384 is a good start for editing a few files; raise it if you see
   `working with less than the whole conversation` often.

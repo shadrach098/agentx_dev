@@ -377,6 +377,20 @@ A `Local` model never falls back to anything. `Supervisor(..., fallback_model=Lo
 fallback to each helper it builds. The fallback belongs to the sync `AgentRunner`; `AsyncAgentRunner` does not
 have it yet.
 
+**Persistent runs never fall back on "unreachable".** With `persistence=`, a connection error, a timeout or a 5xx is
+a transient error: the run waits it out with growing pauses until its time budget is spent, and then ends with
+the outcome `out_of_time` (the budget expired), not on the fallback. A rejected key, no credit and an unknown model still
+switch at once, as above.
+
+**Instructions for the fallback.** A small local model may not fit the instructions written for Claude.
+`fallback_addendum=` gives the `system_addendum` to use once the run has switched: a string, or a function that gets
+the fallback model and returns one (so it can read `fallback.context_window`). The sandbox hint and the skill index
+stay; `reset_fallback()` puts the first addendum back.
+
+**How much of a window is already taken.** `runner.fixed_request_chars(model=None)` is the characters every request
+on that model carries before any conversation: the system prompt for the binding mode it gets and the function specs
+that mode sends. Divide by about 4 for tokens and compare with 85% of the window to see what is left.
+
 ### An empty answer is not an answer
 
 For every model, a run that calls no tool and gives no answer ends with the outcome `no_answer` (its text is "The
