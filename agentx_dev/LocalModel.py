@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from .ChatModel import GPT
 
 DEFAULT_LOCAL_URL = "http://localhost:11434/v1"
-_DEFAULT_WINDOW = 8192
+DEFAULT_WINDOW = 8192
 _PLACEHOLDER_KEY = "local"
 
 
@@ -119,7 +119,7 @@ class Local(GPT):
                 return int(hit.group(1))
         except Exception:
             pass
-        return _DEFAULT_WINDOW
+        return DEFAULT_WINDOW
 
     def check(self, timeout: float = 120.0) -> LocalCheck:
         try:

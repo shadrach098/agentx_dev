@@ -4,16 +4,20 @@ A part of ``ChatApp`` (agentx_dev/cli/app.py), which inherits it."""
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence, Tuple
 
-from agentx_dev.LocalModel import _DEFAULT_WINDOW, Local
+from agentx_dev.LocalModel import DEFAULT_WINDOW, Local
 from agentx_dev.cli.models import (LOCAL_TYPO_HINT, SUGGESTED_MODELS, ModelError, describe_prompt, is_auto_note,
                                    key_variable, model_label, other_provider, parse_descriptions, parse_team_models,
                                    provider_for, team_models_line, usable_team_models)
 from agentx_dev.cli.settings import (project_settings_path, user_settings_path, write_project_mode,
                                      write_project_model,
                                      write_project_team_models, write_user_model)
+
+
+CHECK_WAIT_SEC = 150.0      # the check's own calls time out sooner (its model call after 120 s): a last resort
 
 
 class ModelCommands:
@@ -40,28 +44,54 @@ class ModelCommands:
         """Switch the model, keeping the conversation. A model that cannot be built, or a local one that fails its
         check, raises (``ModelError``) before anything changes, so the old model stays."""
         self.pick_up_saved_keys()
+        assert self.session is not None
         model = self._built_model(name)
+        # The runner first (it may read AGENTX.md again): a failure or Ctrl+C there leaves the old model in place.
+        before = (self.addendum, self._addendum_for, self._runner_skills)
+        try:
+            runner = self._make_runner(model)
+        except BaseException:
+            self.addendum, self._addendum_for, self._runner_skills = before
+            raise
         self.model = model
         self._track_usage_model(self.model_label, model, "chat")
         self.requested_model = name
-        assert self.session is not None
-        self.session.attach(self._make_runner(model))
+        self.session.attach(runner)
 
     def _built_model(self, name: Optional[str]) -> Any:
         """The model for ``name`` from the factory. A local one is checked first (the first time, the server loads
         the model, which can take a couple of minutes) and gets 8,192 tokens when its server does not say its window.
-        Raises ``ModelError`` when the model cannot be built or fails the check; Ctrl+C stops the check."""
+        Raises ``ModelError`` when the model cannot be built or fails the check. The check runs on its own thread
+        and this one waits in short slices, so Ctrl+C (and the window's Stop) ends the wait at once; the check
+        itself is left to finish on its own."""
         model = self.model_factory(name, self.env)
         if not getattr(model, "is_local", False):
             return model
         shown = self._safe(str(name or "").strip() or model_label(model), 80)
         self.progress.start(f"Loading {shown} on the local server")
+        box: dict = {}
+
+        def run() -> None:
+            try:
+                box["result"] = model.check()
+            except BaseException as error:              # noqa: BLE001 - reported below
+                box["error"] = error
+
+        worker = threading.Thread(target=run, name="agentx-local-check", daemon=True)
         try:
-            result = model.check()
-        except Exception as e:
-            raise ModelError(f"Could not use {shown}: the check failed ({type(e).__name__})") from None
+            worker.start()
+            waited = 0.0
+            while worker.is_alive() and waited < CHECK_WAIT_SEC:     # short waits: Ctrl+C and Stop reach this thread
+                worker.join(0.1)
+                waited += 0.1
         finally:
             self.progress.stop()
+        if worker.is_alive():
+            raise ModelError(f"Could not use {shown}: the local server did not finish the check in "
+                             f"{CHECK_WAIT_SEC:g}s")
+        if "error" in box:
+            raise ModelError(f"Could not use {shown}: the check failed ({type(box['error']).__name__})")
+        result = box["result"]
         if not result.ok:
             hint = f". {LOCAL_TYPO_HINT}" if shown.lower().startswith(("cl", "gp")) else ""
             raise ModelError(f"Could not use {shown}: {self._safe(result.reason, 400)}{hint}")
@@ -74,7 +104,7 @@ class ModelCommands:
         if not getattr(model, "is_local", False):
             return None
         window = getattr(model, "context_window", None)
-        return window if isinstance(window, int) and not isinstance(window, bool) and window > 0 else _DEFAULT_WINDOW
+        return window if isinstance(window, int) and not isinstance(window, bool) and window > 0 else DEFAULT_WINDOW
 
     def _local_window(self) -> Optional[int]:
         """The chat model's window in tokens when it is a local model; None for a hosted one."""

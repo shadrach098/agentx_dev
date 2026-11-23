@@ -403,7 +403,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         except Exception:
             pass
         # The models the local server lists (``local_server``: a real run's settings), asked in the background:
-        # starting up never waits for the answer, and /model and the model menu show it once it is here.
+        # starting up never waits for the answer, and /model lists them once it is here.
         self.local_models: List[str] = []
         self._local_discovery: Optional[threading.Thread] = None
         if local_server is not None:
@@ -976,7 +976,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         what = ("the earlier conversation was summarised" if event.get("how") == "summary"
                 else "older tool results were shortened")
         self.notice(f"{self._safe(self.model_label, 80)} is working with less than the whole conversation: {what} "
-                    f"to fit its {window or 0:,}-token window.")
+                    f"to fit its {window:,}-token window.")
 
     def _too_small(self, error: ContextWindowTooSmall) -> str:
         name = self._safe(self.model_label, 80)
@@ -1402,8 +1402,10 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             name, window = fitted
             share = window * 4 // 3                      # characters: about 4 a token, a third of the window
             max_log = min(MAX_LOG_CHARS, share // 4)
-            limits = dict(max_context_chars=min(MAX_CONTEXT_CHARS, share - max_log), max_log_chars=max_log,
-                          shortened_note=f"(shortened to fit {name}'s {window:,}-token window)")
+            max_context = min(MAX_CONTEXT_CHARS, share - max_log)
+            limits = dict(max_context_chars=max_context, max_log_chars=max_log)
+            if max_context < MAX_CONTEXT_CHARS or max_log < MAX_LOG_CHARS:     # else a cut is the usual cap
+                limits["shortened_note"] = f"(shortened to fit {name}'s {window:,}-token window)"
         self.addendum = build_addendum(self.cwd, self.home, log_text=self._addendum_log, **limits)
         self._addendum_for = fitted
 

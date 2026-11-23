@@ -1,6 +1,7 @@
 """agentx and local models: the check on choosing one, discovery at startup, and fitting the window."""
 
 import functools
+import threading
 import io
 import json
 import time
@@ -382,3 +383,96 @@ def test_run_binds_the_local_settings_into_the_factory(tmp_path, monkeypatch):
     model = given["model_factory"]("qwen3:8b", {})
     assert isinstance(model, Local)
     assert model.base_url == "http://127.0.0.1:1234/v1" and model.context_window == 16384
+
+
+# -- fix round 1: the check can be stopped, a switch is all or nothing, the note means the window ------------------
+
+def _started_on_cloud(tmp_path, factory_extra=None):
+    cloud = MockModel(script=[make_final("hi")])
+    models = {"first": cloud, **(factory_extra or {})}
+    app, out, cwd, home = make_app(tmp_path, Lines("/exit"), lambda name, env: models[name], model_name="first")
+    assert app.start() == 0
+    return app, out, cloud
+
+
+def test_ctrl_c_stops_a_slow_check_at_once(tmp_path):
+    from agentx_dev.cli.fullscreen import raise_in
+    release = threading.Event()
+    slow = local_mock()
+    slow.check = lambda timeout=120.0: (release.wait(), LocalCheck(True, "", 8192))[1]
+    app, _, cloud = _started_on_cloud(tmp_path, {"qwen3:8b": slow})
+    runner = app.session.runner
+    ended = []
+
+    def switch():
+        try:
+            app.switch_model("qwen3:8b")
+        except KeyboardInterrupt:
+            ended.append(time.monotonic())
+
+    waiter = threading.Thread(target=switch, daemon=True)
+    waiter.start()
+    try:
+        time.sleep(0.3)                                # the check is running
+        raised = time.monotonic()
+        assert raise_in(waiter)                        # what Ctrl+C in the window (and Stop) does
+        waiter.join(3)
+        assert ended and ended[0] - raised < 1
+    finally:
+        release.set()                                  # the abandoned check ends
+    assert app.model is cloud and app.session.runner is runner and app.requested_model == "first"
+
+
+def test_a_switch_that_fails_building_the_runner_changes_nothing(tmp_path, monkeypatch):
+    other = MockModel(script=[])
+    app, _, cloud = _started_on_cloud(tmp_path, {"other": other})
+    runner = app.session.runner
+
+    def broken(model):
+        raise RuntimeError("cannot read AGENTX.md")
+
+    monkeypatch.setattr(app, "_make_runner", broken)
+    with pytest.raises(RuntimeError):
+        app.switch_model("other")
+    assert app.model is cloud and app.session.runner is runner and app.requested_model == "first"
+
+
+def test_a_large_window_cut_is_the_usual_cap_not_the_window(tmp_path):
+    model = local_mock(window=1_000_000)
+    app, _, cwd, _ = make_app(tmp_path, Lines("/exit"), lambda name, env: model, model_name="qwen3:8b")
+    (cwd / "AGENTX.md").write_text("rule " * 6000, encoding="utf-8")          # past the usual 20,000
+    assert app.start() == 0
+    assert "(truncated)" in app.addendum and "shortened to fit" not in app.addendum
+
+
+def _with_log(cwd):
+    (cwd / ".agentx").mkdir(exist_ok=True)
+    (cwd / ".agentx" / "log.md").write_text("## 2026-11-20 10:00 earlier work\nDid the earlier thing.\n",
+                                             encoding="utf-8")
+
+
+def test_a_switch_after_resume_rebuilds_without_the_log(tmp_path):
+    local = local_mock(window=8192)
+    cloud = MockModel(script=[make_final("hi")])
+    models = {"first": cloud, "qwen3:8b": local}
+    app, _, cwd, _ = make_app(tmp_path, Lines("hello", "/exit"), lambda name, env: models[name], model_name="first")
+    _with_log(cwd)
+    assert app.start() == 0
+    old = app.session.session_id
+    app.new_conversation()
+    assert "<project-log>" in app.addendum            # a fresh conversation starts from the log
+    app.resume(old)
+    app.switch_model("qwen3:8b")
+    assert "<project-log>" not in app.addendum and "<project-log>" not in app.session.runner.system_addendum
+
+
+def test_a_local_to_cloud_switch_keeps_the_log(tmp_path):
+    local = local_mock(window=8192)
+    cloud = MockModel(script=[])
+    models = {"first": cloud, "qwen3:8b": local}
+    app, _, cwd, _ = make_app(tmp_path, Lines("/model first", "/exit"), lambda name, env: models[name],
+                              model_name="qwen3:8b")
+    _with_log(cwd)
+    assert app.start() == 0
+    assert app.model is cloud
+    assert "Did the earlier thing." in app.addendum and "Did the earlier thing." in app.session.runner.system_addendum
