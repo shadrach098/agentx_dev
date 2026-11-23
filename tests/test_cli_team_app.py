@@ -15,6 +15,17 @@ NO_TEAM_SENTENCE = ("You cannot start a team job; ignore any instruction above t
 CALL = {"task": "Survey the project and report", "why": "it spans many areas"}
 
 
+def helper_named(prompt, role, note=None):
+    """The job's name for a ``role`` helper, read from the planner's list as a planner would: the one whose
+    description has ``note``, else the first (the chat model's). The planner never sees model names."""
+    import re
+    for line in prompt.splitlines():
+        found = re.match(rf"- ({role}@model_[0-9a-f]+): (.*)", line)
+        if found and (note is None or note in found.group(2)):
+            return found.group(1)
+    raise AssertionError(f"no {role} helper{' for ' + note if note else ''} in the planner's list")
+
+
 def team_model(steps, synth="The survey is complete.", helper=None, main=("call", "final")):
     """One model that plays the main agent, the planner, the synthesizer and the helpers.
 
@@ -27,7 +38,7 @@ def team_model(steps, synth="The survey is complete.", helper=None, main=("call"
         if "A coding assistant can run helper steps on these models" in str(messages[-1]["content"]):
             return "{}"                                  # the question about helper models: no notes
         if PLANNER_MARK in first:
-            return plan_json(*steps)
+            return plan_json(*(steps(first) if callable(steps) else steps))
         if SYNTH_MARK in first:
             return synth
         if "Team role:" in first:
@@ -283,9 +294,11 @@ def test_an_error_text_with_the_api_key_never_reaches_the_result_string(tmp_path
     model._script_fn = script
     assert app.start() == 0
     history = history_text(app)
-    assert "Team job failed (RuntimeError)" in history
+    # the agent hears only that the job failed (no error text, which can name the model); the screen gets the
+    # error with the key hidden
+    assert "Team job failed." in history and "401" not in history
     assert secret not in history and secret not in out.getvalue()
-    assert "[hidden]" in history
+    assert "[hidden]" in out.getvalue()
 
 
 def test_a_helper_error_with_the_api_key_in_a_url_never_reaches_the_screen_the_chat_or_any_model(tmp_path):
@@ -361,18 +374,23 @@ def factory_for(chat, **extras):
 
 
 def test_a_step_runs_on_the_model_the_planner_picked(tmp_path):
-    chat = team_model([step("s1", "coder@claude-opus-5-5", "make the change")])
+    picked = []
+
+    def plan(prompt):
+        picked.append(helper_named(prompt, "coder", "hard coding"))   # by what the model is for, not its name
+        return [step("s1", picked[0], "make the change")]
+    chat = team_model(plan)
     chat.model_name = "claude-sonnet-5-5"
     opus = extra("claude-opus-5-5")
     app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"), env=KEYS,
                               model_factory=factory_for(chat, **{"claude-opus-5-5": opus}),
-                              team_models=["claude-opus-5-5"])
+                              team_models=["claude-opus-5-5"], team_model_uses={"claude-opus-5-5": "hard coding"})
     assert app.start() == 0
     text = out.getvalue()
     assert "Helper models: claude-sonnet-5-5 (chat), claude-opus-5-5" in text        # in the approval panel
-    assert "✓ coder@claude-opus-5-5 · make the change" in text
+    assert "✓ coder@claude-opus-5-5 · make the change" in text                      # you see the real model
     assert opus.calls and chat.state["helper_calls"] == 0
-    assert "coder@claude-opus-5-5 - done" in history_text(app)
+    assert f"{picked[0]} - done" in history_text(app)                              # the agent sees the job's ID
 
 
 def test_a_model_without_a_key_is_not_used_and_the_job_still_runs(tmp_path):
@@ -588,7 +606,7 @@ def squash_ws(text):
 
 
 def test_with_a_list_even_the_chat_model_helpers_name_their_model(tmp_path):
-    chat = team_model([step("s1", "runner@claude-sonnet-5-5", "check it")])
+    chat = team_model(lambda prompt: [step("s1", helper_named(prompt, "runner"), "check it")])   # the chat's
     chat.model_name = "claude-sonnet-5-5"
     opus = extra("claude-opus-5-5")
     app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), chat, read_short=Lines("y"), env=KEYS,
@@ -630,7 +648,7 @@ def test_team_models_folder_saves_the_notes(tmp_path):
 
 def test_a_note_on_the_chat_model_reaches_its_helpers(tmp_path):
     seen = []
-    chat = team_model([step("s1", "runner@claude-sonnet-5-5", "check")])
+    chat = team_model(lambda prompt: [step("s1", helper_named(prompt, "runner"), "check")])
     chat.model_name = "claude-sonnet-5-5"
     original = chat._script_fn
     chat._script_fn = lambda messages: seen.append(str(messages[0]["content"])) or original(messages)
@@ -638,7 +656,9 @@ def test_a_note_on_the_chat_model_reaches_its_helpers(tmp_path):
                             model_factory=factory_for(chat, **{"claude-opus-5-5": extra("claude-opus-5-5")}),
                             team_models=["claude-opus-5-5"], team_model_uses={"Claude-Sonnet-5-5": "everyday work"})
     assert app.start() == 0
-    assert any("Runs on claude-sonnet-5-5. Good for: everyday work." in text for text in seen)
+    planner = [text for text in seen if PLANNER_MARK in text]
+    assert planner and any("Good for: everyday work." in text for text in planner)
+    assert not any("Runs on" in text or "claude-sonnet-5-5" in text for text in planner)   # no model names
 
 
 def test_project_notes_are_shown_at_startup_and_in_settings(tmp_path):

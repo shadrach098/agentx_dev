@@ -94,6 +94,19 @@ def write_call(path="hello.txt", content="hi\n"):
     return make_react_response("write_file", {"path": path, "content": content, "if_exists": "refuse"})
 
 
+class TestTeamModelStatus:
+    def test_resolved_helper_model_reaches_live_rows(self, tmp_path):
+        from types import SimpleNamespace
+        from agentx_dev.cli.team import StepStatus
+
+        front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False)
+        status = StepStatus(0, "reviewer", "review")
+        status.model = "approved-model"
+        front.app = SimpleNamespace(progress=None, _team_rows={0: status}, _team_steps=(0, 1),
+                                    gate=SimpleNamespace(mode="default"))
+        assert front._status()["team"]["rows"][0]["model"] == "approved-model"
+
+
 class TestTheServer:
     def test_the_page_is_served_with_a_strict_policy(self, window):
         w = window(MockModel())

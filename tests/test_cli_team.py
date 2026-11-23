@@ -139,8 +139,10 @@ def test_a_supervisor_that_raises_gives_a_failure_result(tmp_path, tools, monkey
 
     FakeSupervisor.behaviour = staticmethod(behaviour)
     monkeypatch.setattr(team_module, "TeamSupervisor", FakeSupervisor)
-    result, _ = run(tmp_path, tools, router(), describe_error=lambda error: f"<{error}>")
-    assert result == ("Team job failed (RuntimeError): <boom> " + team_module.MAY_HAVE_CHANGED) and FakeSupervisor.closed
+    result, seen = run(tmp_path, tools, router(), describe_error=lambda error: f"<{error}>")
+    # the main agent gets no error type or text (a provider's error can name the model); the screen gets it all
+    assert result == ("Team job failed. " + team_module.MAY_HAVE_CHANGED) and FakeSupervisor.closed
+    assert ("error", {"text": "<boom>"}) in seen
 
 
 def test_a_supervisor_that_ends_without_a_result_says_so(tmp_path, tools, monkeypatch):
@@ -226,7 +228,7 @@ def test_a_failure_result_is_one_short_line_that_ends_with_the_warning(tmp_path,
     failing_supervisor(monkeypatch, RuntimeError("line one\n" + ("word " * 1000) + "\nlast line"))
     result, _ = run(tmp_path, tools, router())
     assert "\n" not in result and len(result) < 400 + len(CHANGED)
-    assert result.startswith("Team job failed (RuntimeError): line one word") and result.endswith(CHANGED)
+    assert result.startswith("Team job failed.") and result.endswith(CHANGED) and "line one" not in result
 
 
 def test_a_describe_error_that_raises_still_gives_a_result(tmp_path, tools, monkeypatch):
@@ -235,8 +237,9 @@ def test_a_describe_error_that_raises_still_gives_a_result(tmp_path, tools, monk
     def broken(error):
         raise ValueError("describing failed")
 
-    result, _ = run(tmp_path, tools, router(), describe_error=broken)
-    assert result == "Team job failed (RuntimeError). " + CHANGED
+    result, seen = run(tmp_path, tools, router(), describe_error=broken)
+    assert result == "Team job failed. " + CHANGED
+    assert any(kind == "error" for kind, _ in seen)      # the screen still hears of it
 
 
 def test_a_success_result_has_no_changed_files_warning(tmp_path, tools):
@@ -268,8 +271,9 @@ def test_a_supervisor_that_cannot_be_built_gives_a_failure_result(tmp_path, tool
             raise ValueError("bad agents")
 
     monkeypatch.setattr(team_module, "TeamSupervisor", Broken)
-    result, _ = run(tmp_path, tools, router())
-    assert result == "Team job failed (ValueError): bad agents " + CHANGED
+    result, seen = run(tmp_path, tools, router())
+    assert result == "Team job failed. " + CHANGED and "bad agents" not in result
+    assert ("error", {"text": "bad agents"}) in seen
 
 
 def test_a_notify_that_raises_does_not_abort_the_job(tmp_path, tools):
@@ -340,9 +344,11 @@ def test_helpers_get_room_for_a_real_change():
     assert HELPER_STEPS == 100
 
 
-def test_the_planner_picks_a_model_and_that_step_runs_on_it(tmp_path, tools):
+def test_the_planner_picks_a_model_and_that_step_runs_on_it(tmp_path, tools, monkeypatch):
+    tokens = iter(["1" * 24, "2" * 24])
+    monkeypatch.setattr("agentx_dev.cli.blind_models.secrets.token_hex", lambda n: next(tokens))
     chat_helper_calls = []
-    chat = router(plans=[plan_json(step("s1", "coder@claude-opus-5-5", "make the change"))], synth="All done.",
+    chat = router(plans=[plan_json(step("s1", "coder@model_222222222222222222222222", "make the change"))], synth="All done.",
                   agent=lambda messages: chat_helper_calls.append(1) or make_final("chat report"))
     chat.model_name = "claude-sonnet-5-5"
     opus = labelled("claude-opus-5-5")
@@ -350,25 +356,33 @@ def test_the_planner_picks_a_model_and_that_step_runs_on_it(tmp_path, tools):
     assert opus.calls and not chat_helper_calls                 # the step ran on opus, not on the chat's model
     assert any(kind == "dispatch" and (data["agent"], data["query"]) == ("coder@claude-opus-5-5", "make the change")
                for kind, data in seen)
-    assert "1. coder@claude-opus-5-5 - done" in result
+    assert any(kind == "result" and data["agent"] == "coder@claude-opus-5-5"
+               for kind, data in seen)                           # human status keeps the model label
+    assert "1. coder@model_222222222222222222222222 - done" in result
+    assert "claude-opus-5-5" not in result and "claude-sonnet-5-5" not in result
 
 
-def test_the_planner_always_runs_on_the_chat_model(tmp_path, tools):
-    chat = router(plans=[plan_json(step("s1", "explorer@claude-sonnet-5-5", "look"))], synth="Done.")
+def test_the_planner_always_runs_on_the_chat_model(tmp_path, tools, monkeypatch):
+    tokens = iter(["1" * 24, "2" * 24])
+    monkeypatch.setattr("agentx_dev.cli.blind_models.secrets.token_hex", lambda n: next(tokens))
+    chat = router(plans=[plan_json(step("s1", "explorer@model_111111111111111111111111", "look"))], synth="Done.")
     chat.model_name = "claude-sonnet-5-5"
     opus = labelled("claude-opus-5-5")
     run(tmp_path, tools, chat, extra_models=[HelperModel("claude-opus-5-5", opus)])
     assert chat.planner_prompts() and not opus.calls
-    assert "coder@claude-opus-5-5" in chat.planner_prompts()[0]          # the planner sees the extra helpers
+    assert "coder@model_222222222222222222222222" in chat.planner_prompts()[0]          # the planner sees the extra helpers
+    assert "claude-opus-5-5" not in chat.planner_prompts()[0]
 
 
-def test_a_helper_on_an_extra_model_still_goes_through_the_gate(tmp_path):
+def test_a_helper_on_an_extra_model_still_goes_through_the_gate(tmp_path, monkeypatch):
+    tokens = iter(["1" * 24, "2" * 24])
+    monkeypatch.setattr("agentx_dev.cli.blind_models.secrets.token_hex", lambda n: next(tokens))
     from agentx_dev.cli.approval import Answer
     asked = []
     gate = Gate(cwd=tmp_path)
     gate.ask = lambda request: asked.append(request.tool) or Answer("n", "no")
     gated = build_tools(tmp_path, [], gate)
-    chat = router(plans=[plan_json(step("s1", "coder@claude-opus-5-5", "write it"))], synth="Done.")
+    chat = router(plans=[plan_json(step("s1", "coder@model_222222222222222222222222", "write it"))], synth="Done.")
     replies = [make_react_response("write_file", {"path": "a.txt", "content": "x", "if_exists": "refuse"}),
                make_final("declined, stopped")]
     opus = labelled("claude-opus-5-5", script=lambda messages: replies.pop(0))
@@ -440,3 +454,22 @@ def test_the_job_limit_is_written_from_one_constant():
     from agentx_dev.cli.team import MAX_TEAM_JOBS_PER_MESSAGE, TOOL_DESCRIPTION
     assert f"up to {MAX_TEAM_JOBS_PER_MESSAGE}" in TOOL_DESCRIPTION.lower()
     assert f"up to {MAX_TEAM_JOBS_PER_MESSAGE} jobs per message" in BASE_PROMPT
+
+
+class TestAFailureSaysWhatToDoNext:
+    """A failed job tells the main agent the kind of failure when that changes what it should do (stop for credit,
+    wait for a rate limit), never the provider's own words, which can name the model the planner picked."""
+
+    @pytest.mark.parametrize("error, says", [
+        (RuntimeError("Error code: 429 - You have no credits remaining for gpt-secret-9"), "out of credit"),
+        (RuntimeError("insufficient_quota: exceeded your current quota"), "out of credit"),
+        (type("RateLimitError", (Exception,), {"status_code": 429})("slow down, claude-secret-1"), "limiting requests"),
+        (TimeoutError("read timed out talking to model-x"), "timed out"),
+    ])
+    def test_the_kind_is_said_and_the_words_are_not(self, tmp_path, tools, monkeypatch, error, says):
+        failing_supervisor(monkeypatch, error)
+        result, seen = run(tmp_path, tools, router())
+        assert result.startswith("Team job failed.") and says in result and result.endswith(CHANGED)
+        for secret in ("gpt-secret-9", "claude-secret-1", "model-x", "RateLimitError", "429"):
+            assert secret not in result
+        assert any(kind == "error" for kind, _ in seen)

@@ -399,7 +399,8 @@ class TestHelpersThePlannerMakes:
         sup = self.supervisor(tmp_path, [])
         assert "security-reviewer" in sup._build_agent_catalog()
 
-    def test_a_reading_helper_it_makes_runs_beside_an_explorer(self, tmp_path):
+    def test_a_reading_helper_it_makes_runs_beside_an_explorer(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agentx_dev.cli.blind_models.secrets.token_hex", lambda n: "1" * 24)
         from tests.subagent_helpers import new_agent_step
         together = threading.Barrier(2, timeout=10)
 
@@ -409,7 +410,9 @@ class TestHelpersThePlannerMakes:
 
         result, seen = job(tmp_path, [step("a", "explorer", "look A"),
                                       new_agent_step("b", "security-reviewer", "Review auth.", tools=["read_path", "grep"],
-                                                     query="review B")], work)
+                                                     query="review B", new_agent={"name": "security-reviewer",
+                                                         "instructions": "Review auth.", "tools": ["read_path", "grep"],
+                                                         "model": "model_" + "1" * 24})], work)
         assert result.count(" - done: ") == 2 and "security-reviewer - done" in result
         plan = seen[0][1]["steps"]
         assert plan[1]["agent"] == "security-reviewer" and plan[1]["new"] == ["read_path", "grep"]
@@ -429,8 +432,12 @@ class TestHelpersThePlannerMakes:
 
 
 class TestANewHelperOnAnotherModel:
-    """The planner may put a new helper on one of the models the user allows (/team-models); any other choice runs it
-    on the chat's model."""
+    """The planner selects an allowed model by opaque ID; invalid choices are rejected."""
+
+    @pytest.fixture(autouse=True)
+    def opaque_ids(self, monkeypatch):
+        tokens = iter(["1" * 24, "2" * 24])
+        monkeypatch.setattr("agentx_dev.cli.blind_models.secrets.token_hex", lambda n: next(tokens))
 
     def run(self, tmp_path, model_name):
         from agentx_dev.cli.models import HelperModel
@@ -450,13 +457,14 @@ class TestANewHelperOnAnotherModel:
         return result, seen, chat, luna, chat_helper_calls
 
     def test_the_planner_is_offered_the_allowed_models(self, tmp_path):
-        result, seen, chat, luna, _ = self.run(tmp_path, None)
+        result, seen, chat, luna, _ = self.run(tmp_path, "model_111111111111111111111111")
         prompt = chat.planner_prompts()[0]
-        assert 'one of: "chat-m", "luna-m" (good for: fast reading)' in prompt and "it runs on chat-m" in prompt
+        assert 'one of: "model_111111111111111111111111", "model_222222222222222222222222" (good for: fast reading)' in prompt
+        assert "chat-m" not in prompt and "luna-m" not in prompt
         assert "shared among them" in prompt and "no model is preferred" not in prompt
         assert "from each provider" not in prompt                  # neither name is a Claude or GPT model
 
-    def test_models_from_two_providers_each_get_a_step(self, tmp_path):
+    def test_models_from_two_providers_are_offered_without_provider_bias(self, tmp_path):
         from agentx_dev.cli.models import HelperModel
         chat = router(plans=[plan_json({"id": "s1", "agent": "explorer", "query": "look"})], synth="Done.",
                       agent=lambda messages: make_final("looked"))
@@ -466,29 +474,33 @@ class TestANewHelperOnAnotherModel:
         run_team_job("the job", model=chat, tools=build_tools(tmp_path, [], Gate(cwd=tmp_path)), addendum="",
                      notify=lambda kind, data: None, extra_models=[HelperModel("gpt-6-luna", luna, "fast reading")])
         prompt = chat.planner_prompts()[0]
-        assert ("give at least one step to a model from each provider: Claude (claude-opus-5-5); GPT (gpt-6-luna)"
-                in prompt)
+        assert 'one of: "model_111111111111111111111111", "model_222222222222222222222222" (good for: fast reading)' in prompt
+        assert "claude-opus-5-5" not in prompt and "gpt-6-luna" not in prompt
+        assert "from each provider" not in prompt
 
     def test_it_runs_on_the_model_asked_for_and_the_screen_says_so(self, tmp_path):
-        result, seen, chat, luna, chat_helper_calls = self.run(tmp_path, "LUNA-M")
+        result, seen, chat, luna, chat_helper_calls = self.run(tmp_path, "model_222222222222222222222222")
         assert luna.calls and not chat_helper_calls and "luna report" in str(seen)
         plan = dict(seen)["plan"]["steps"]
         assert plan[0]["agent"] == "reviewer@luna-m"
         started = next(data for kind, data in seen if kind == "dispatch")
         assert started["status"].helper == "reviewer@luna-m"
+        assert started["status"].snapshot()["model"] == "luna-m"
 
     def test_a_model_the_user_did_not_allow_is_not_used(self, tmp_path):
         result, seen, chat, luna, chat_helper_calls = self.run(tmp_path, "gpt-9-secret")
-        assert chat_helper_calls and not luna.calls
-        assert dict(seen)["plan"]["steps"][0]["agent"] == "reviewer@chat-m"
+        assert not chat_helper_calls and not luna.calls
+        assert "unknown model ID" in result
+        assert not any(kind == "dispatch" for kind, _ in seen)
 
-    def test_with_one_model_nothing_is_offered_and_the_name_has_no_model(self, tmp_path):
+    def test_with_one_model_an_opaque_id_is_offered_and_the_name_has_no_model(self, tmp_path):
         seen = []
-        spec = {"name": "reviewer", "instructions": "Review it.", "tools": ["read_path"], "model": "x"}
+        spec = {"name": "reviewer", "instructions": "Review it.", "tools": ["read_path"], "model": "model_111111111111111111111111"}
         chat = router(plans=[plan_json({"id": "s1", "query": "review it", "new_agent": spec})], synth="Done.")
         run_team_job("the job", model=chat, tools=build_tools(tmp_path, [], Gate(cwd=tmp_path)), addendum="",
                      notify=lambda kind, data: seen.append((kind, data)))
-        assert "To run it on another model" not in chat.planner_prompts()[0]
+        assert "model_" + "1" * 24 in chat.planner_prompts()[0]
+        assert any(kind == "dispatch" for kind, _ in seen)
         assert dict(seen)["plan"]["steps"][0]["agent"] == "reviewer"
 
 

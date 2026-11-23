@@ -1625,6 +1625,7 @@ class WebFront:
             for step in sorted(list(app._team_rows.values()), key=lambda s: getattr(s, "slot", 0)):
                 snapshot = step.snapshot()
                 rows.append({"helper": _text(step.helper, 120), "label": _text(step.label, 80),
+                             "model": _text(snapshot.get("model", ""), 120),
                              "activity": _text(helper_activity(step_counts(snapshot)), 300),
                              "stats": _text(step_stats(snapshot), 120)})
             done, total = app._team_steps

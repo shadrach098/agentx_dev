@@ -261,7 +261,7 @@ def team_job(tmp_path, plan, work):
 
 
 class TestTeam:
-    def test_a_note_reaches_the_running_helper_and_the_main_agent(self, tmp_path):
+    def test_a_note_goes_to_the_supervisor_not_the_running_helper(self, tmp_path):
         calls = []
 
         def work(messages):
@@ -271,7 +271,8 @@ class TestTeam:
                 return make_react_response("list_directory", {"path": "."})
             return make_final("looked")
         result, _ = team_job(tmp_path, [step("s1", "explorer", "look")], work)
-        assert "use gold buttons" in calls[1]                          # read at the helper's next step
+        assert "use gold buttons" not in calls[1]          # the supervisor decides what to do with a note
+        # one it did not act on reaches the main agent with the result
         assert USER_NOTES.split("(")[0] in result and "- use gold buttons" in result
         assert team_note("too late") is False                          # the job is over
 

@@ -88,7 +88,7 @@ class TeamCommands:
             self._team_plan = [step for step in steps if isinstance(step, dict)]
             self.screen.team_plan(steps)
             if getattr(self.progress, "typeahead", None) is not None or self.fullscreen:
-                self.notice("Type to add a note for the helpers · /skip <step> drops a step")
+                self.notice("Type to add a note for the team's supervisor · /skip <step> drops a step")
             self.progress.start("Starting the team")
         elif kind == "dispatch":
             self._team_running.append(str(data.get("agent", "")))
@@ -113,6 +113,10 @@ class TeamCommands:
                                   partial=bool(data.get("partial")), skipped=bool(data.get("skipped")),
                                   status=status)
             self.progress.start("Team is working")
+        elif kind == "error":
+            # why the whole job failed, for the person: the agent is told only the kind of failure (the provider's
+            # words can name the model its planner must not learn)
+            self.error(f"The team job failed: {self._safe(data.get('text') or 'no reason given', 500)}")
 
     def _team_question(self, question: str) -> Optional[str]:
         """The planner or a helper needs a fact: ask in the terminal. Enter, Ctrl+D and Ctrl+C skip it."""
