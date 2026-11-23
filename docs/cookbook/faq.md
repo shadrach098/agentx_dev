@@ -839,6 +839,44 @@ connection carries the window. The server needs an SSH server; on a Windows PC, 
 command prints how when none runs). Away from home, reach the machine through its public address or a private
 network such as Tailscale. See pattern 45.
 
+## Can I use a model on my own computer? *(3.10)*
+
+Yes: Ollama, LM Studio and llama.cpp's server all work. In code, `Local(model="qwen3:8b")` (Ollama at
+`http://localhost:11434/v1` by default; `base_url=` for another address). In `agentx`, `agentx --model qwen3:8b` or
+`/model qwen3:8b`: any name that does not start with `claude`, `gpt` or `o` and a digit is a local model. It needs no
+key and costs nothing per token, and `agentx` checks it first. Pick one that supports tool calls. See pattern 46
+and [Local models](../concepts/models.md#local-models).
+
+## Why does a small local model need a bigger window? *(3.10)*
+
+Ollama loads many models with a window of 8,192 tokens, and agentx's instructions plus its tools already take a good
+part of that. A request longer than the window loses its start, silently, and the start is where the instructions
+are. agentx keeps requests inside the window (it shortens `AGENTX.md` and the log, stubs old tool results, summarises
+the conversation) and refuses one that cannot fit. For real work make a variant with `PARAMETER num_ctx 16384`
+(pattern 49); on a server that does not report its window, set `"localContext"`.
+
+## Can `agentx` use Claude and a local model together? *(3.10)*
+
+Two ways. As a **fallback**: `/fallback qwen3:8b` makes the local model take over, marked, when Claude or GPT fails for
+good (no credit, a rejected key, an unknown model, an unreachable provider). It goes one way only: a local model that
+fails stops the turn. And as **helpers**: a local name in `/team-models` gives team helpers on that model. See
+pattern 48.
+
+## Does a conversation on a local model ever go to the cloud? *(3.10)*
+
+Not on its own. There is no fallback from local to paid, and the calls `agentx` makes for itself (summaries, the
+size check for automatic teams, notes) go to the chat model, which is the local one. What you chose explicitly stays:
+cloud helpers you listed in `teamModels` (the team's approval says `Helpers on claude-sonnet-5-5 will see this
+project's files.`) and voice input you start. A project cannot change where local models run: `localServer` is read
+from your own settings file only.
+
+## Why was an empty answer reported as done before? *(3.10)*
+
+A model that ended its turn with no text and no tool call was counted as finished. Now a run that called no tool and
+gave no answer ends with the outcome `no_answer`; one that did tool work and then said nothing stays `done`, and its
+answer says what it called: `The model gave no final answer. It called: read_path, write_file (files changed:
+done.txt).` See [An empty answer is not an answer](../concepts/models.md#an-empty-answer-is-not-an-answer).
+
 ## Where's the source of truth for each feature?
 
 Every feature has its own module under `agentx_dev/`. The docs cross-

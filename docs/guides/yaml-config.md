@@ -69,10 +69,21 @@ For a custom provider:
 model:
   provider: custom
   module: my_app.models
-  attr: OllamaChat
-  kwargs:
-    model: llama3.1
-    host: http://localhost:11434
+  attr: MyChat
+  model: my-model-name          # every other key is passed to MyChat(...)
+```
+
+For a model on your own machine (Ollama, LM Studio), point `custom` at `Local`; the keys are `Local`'s own
+arguments (there is no key to set):
+
+```yaml
+model:
+  provider: custom
+  module: agentx_dev
+  attr: Local
+  model: qwen3:8b                         # as the server lists it
+  base_url: http://localhost:11434/v1     # optional; LM Studio is http://localhost:1234/v1
+  context_window: 16384                   # optional: the model's window in tokens (see the models guide)
 ```
 
 ### `agent_type`

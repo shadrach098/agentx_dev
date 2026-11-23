@@ -7,7 +7,8 @@ Reusable shapes for common problems.
 > with `GPT()`. Same tools, same agent code, same runner APIs. Set
 > whichever API key you have (`ANTHROPIC_API_KEY` for Claude,
 > `OPENAI_API_KEY` for GPT) and swap the constructor. See
-> [chat models](../concepts/models.md) for adding other providers.
+> [chat models](../concepts/models.md) for adding other providers. A model on your own machine (Ollama,
+> LM Studio) is `Local()`: see patterns 46 to 49.
 
 ## 1. Single tool-using agent
 
@@ -1656,3 +1657,128 @@ agentx --ui --remote             # the app window only, the same two ways
   when none runs). From outside your network, use the Tailscale address it also prints, from a computer with
   Tailscale on.
 - See [The app window](../guides/cli.md#the-app-window) and step 17 of [zero to hero](../agentx/zero-to-hero.md).
+
+---
+
+## 46. Run `agentx` on Ollama *(3.10)*
+
+Start Ollama, pull a model that can call tools, and name it. Any name that does not start with `claude` or `gpt` is
+a local model, so there is nothing else to set:
+
+```bash
+ollama pull qwen3:8b
+agentx --model qwen3:8b
+```
+
+```text
+Loading qwen3:8b on the local server
+```
+
+`agentx` first checks the model (the server answers, has it, and the model calls a tool when asked), which can take
+a couple of minutes the first time because the server loads it. If the check fails you stay where you were and see
+why: `Could not use qwen3:8b: the local server at localhost:11434 is not answering`.
+
+Switch inside a conversation, and see what the server has:
+
+```text
+/model
+Model: claude-opus-5-5. Other models: qwen3:8b (local), llama3.1:8b (local). Switch for this session with ...
+/model qwen3:8b
+```
+
+- Nothing leaves your machine on its own: a local conversation never turns into a cloud one, and the summaries and
+  the size check for [automatic teams](../guides/cli.md#automatic-teams) use the local model too.
+- Ollama's default window (often 8,192 tokens) is small for agentx's instructions plus its tools. agentx keeps each
+  request inside the window and says so when it had to; for real work give the model a bigger one: see
+  [pattern 49](#49-give-a-local-model-a-bigger-window-310).
+- Ollama on another computer of yours: `"localServer": "http://192.168.1.20:11434/v1"` in `~/.agentx/settings.json`.
+  agentx says at start that conversations go to that host.
+- In your own code: `AgentRunner(model=Local(model="qwen3:8b"), agent=AgentType.ReAct, tools=[...])`; native tool
+  binding is chosen for you. See [Local models](../concepts/models.md#local-models).
+
+## 47. Run `agentx` on LM Studio *(3.10)*
+
+Load a model in LM Studio and start its local server (it listens on `http://localhost:1234/v1`). Tell agentx where
+it is, in your own `~/.agentx/settings.json`:
+
+```json
+{
+  "localServer": "http://localhost:1234/v1",
+  "localContext": 16384
+}
+```
+
+Then name the model as LM Studio lists it:
+
+```bash
+agentx --model qwen3-8b
+```
+
+- LM Studio does not report the window the model was loaded with, so say it with `localContext`. Without it agentx
+  assumes 8,192 tokens.
+- `localhost:1234` is accepted as an address; agentx adds `http://` and `/v1`.
+- Only your own settings file can say where local models run. A project's `.agentx/settings.json` that tries is
+  ignored with a warning, so a cloned repository cannot send your conversation to a server it picked.
+- In code: `Local(model="qwen3-8b", base_url="http://localhost:1234/v1", context_window=16384)`. Thinking that
+  LM Studio sends as `reasoning_content` is shown as thinking.
+
+## 48. Keep working when Claude or GPT stops *(3.10)*
+
+Name a local model as the fallback. When Claude or GPT fails for good (no credit, a rejected key, an unknown model,
+a provider you cannot reach), the conversation carries on there, marked, instead of stopping:
+
+```text
+/fallback qwen3:8b
+Fallback: qwen3:8b (local). Updated C:\Users\you\.agentx\settings.json with fallbackModel 'qwen3:8b'.
+```
+
+or `"fallbackModel": "qwen3:8b"` in the settings file. The first time agentx finds a local server and you have not
+chosen, it offers once: `Ollama is running with qwen3:8b. Use one as the fallback when Claude or GPT fails?`
+
+When it happens mid-turn:
+
+```text
+Claude failed: out of credit. This conversation continues on qwen3:8b (local). Choose a model to try Claude again.
+```
+
+- The turn goes on from where it stopped: an edit you already approved does not run twice.
+- The conversation stays on the fallback (the model chip reads `qwen3:8b · fallback`) until you pick a model with
+  `/model` or the menu. Each turn's heading in the work log says `(on qwen3:8b, fallback from claude-opus-5-5: out
+  of credit)`.
+- In a team job, a step whose model fails runs again on the fallback, told what the failed attempt did, and later
+  steps on that model start on it. Those steps are marked (`Done on qwen3:8b (fallback: claude-opus-5-5 out of
+  credit)`), and the main agent is told `2 steps ran on the fallback model; check their work`.
+- It goes one way only, paid to local; a local model that fails stops the turn with the reason. `/fallback off`
+  turns it off.
+- In your own code: `AgentRunner(model=Claude(), agent=AgentType.ReAct, tools=[...], fallback_model=Local(model="qwen3:8b"))`.
+  `completion.fallback` says whether a run finished there; `Supervisor(..., fallback_model=...)` covers its helpers.
+  See [A fallback model](../concepts/models.md#a-fallback-model).
+
+## 49. Give a local model a bigger window *(3.10)*
+
+A model on Ollama may be loaded with a window much smaller than its weights allow, and a request longer than the
+window loses its start, which is where the instructions are. agentx keeps requests inside the window it knows and
+refuses one that cannot fit:
+
+```text
+qwen3:8b's 8,192-token window is too small for this conversation. A variant with a larger window fixes it: a
+Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create qwen3:8b-16k -f Modelfile.
+```
+
+Make that variant. Write a file named `Modelfile`:
+
+```text
+FROM qwen3:8b
+PARAMETER num_ctx 16384
+```
+
+```bash
+ollama create qwen3-16k -f Modelfile
+agentx --model qwen3-16k
+```
+
+- On Ollama agentx reads the window the model is loaded with; on another server add `"localContext": 16384`.
+- A bigger window needs more memory. 16,384 is a good start for editing a few files; raise it if you see
+  `working with less than the whole conversation` often.
+- The same in code: `Local(model="qwen3-16k")` after `check()`, or `AgentRunner(..., context_window=16384)`. A run
+  that cannot fit raises `ContextWindowTooSmall`.

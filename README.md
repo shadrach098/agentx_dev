@@ -36,6 +36,14 @@ Every code block below is something you can paste and run.
 
 ---
 
+## What's new in 3.10 — local models *(not released yet)*
+
+Run a model on your own computer with `Local(model="qwen3:8b")` (Ollama, LM Studio, llama.cpp), or `agentx --model
+qwen3:8b`: any name that is not Claude or GPT is a local model. Name one as the fallback
+(`AgentRunner(fallback_model=Local(...))`, or `/fallback qwen3:8b` in `agentx`) and a long job carries on there,
+marked, when Claude or GPT fails for good. Requests are kept inside the model's context window, and an empty answer
+is no longer reported as done. See [What's new](docs/whats-new.md) and [Upgrading](docs/guides/upgrading.md).
+
 ## What's new in 3.9 — the orb and two conversations at once
 
 The `agentx` app window has an **orb**: a sphere of lime dots that shows what agentx is doing. It bubbles while it

@@ -71,13 +71,13 @@ Then the start screen, and the input line:
   commands ask first`, `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on`), how to change it, the model and
   the folder's name. Shift+Tab updates it.
 
-Keys are read from the environment, or from the keys saved in the app window's **Settings > API keys** (kept encrypted by your system's credential store; a saved key wins). With no `--model`, the first key found decides: `ANTHROPIC_API_KEY` (Claude), then `OPENAI_API_KEY` (GPT), each with its class's own default model. A name that starts with `claude` builds `Claude` (a version written with a dot, `claude-opus-5.5`, is read as the API's `claude-opus-5-5`); one that starts with `gpt`, or with `o` and a digit (`o3`), builds `GPT`. With no key, `agentx` prints a short message naming the two variables and exits with code 1.
+Keys are read from the environment, or from the keys saved in the app window's **Settings > API keys** (kept encrypted by your system's credential store; a saved key wins). With no `--model`, the first key found decides: `ANTHROPIC_API_KEY` (Claude), then `OPENAI_API_KEY` (GPT), each with its class's own default model. A name that starts with `claude` builds `Claude` (a version written with a dot, `claude-opus-5.5`, is read as the API's `claude-opus-5-5`); one that starts with `gpt`, or with `o` and a digit (`o3`), builds `GPT`; **any other name is a model on your own computer** (`qwen3:8b`), built as `Local` (see [Local models and the fallback](#local-models-and-the-fallback)). With no key, `agentx` prints a short message naming the two variables and exits with code 1.
 
 ### Flags
 
 | Flag | Does |
 |---|---|
-| `--model NAME` | Model to use, for example `claude-opus-5-5` or `gpt-6.1-sol`. Overrides `model` in the settings files. |
+| `--model NAME` | Model to use, for example `claude-opus-5-5`, `gpt-6.1-sol` or a local model such as `qwen3:8b`. Overrides `model` in the settings files. |
 | `--mode MODE` | `default`, `accept-edits`, `plan` or `auto`. Overrides `mode` in the settings files. |
 | `--add-dir PATH` | Let the tools work in this extra folder as well. Repeatable. A relative path starts at the current folder. |
 | `--continue` | Resume the latest conversation for this folder. With none saved, it says so and starts a new one. |
@@ -262,6 +262,8 @@ Two optional files, both JSON:
   folder `agentx` writes it for you with the model in use, and `/model <name> --folder` changes it (see
   [Project memory](#project-memory)).
 
+**Local models.** `localServer`, `fallbackModel` and `localContext` live in your own file only; see [Local models and the fallback](#local-models-and-the-fallback).
+
 **Switching providers.** If the saved model's key is gone but the other provider's key is set (you moved from GPT
 to Claude, say), `agentx` does not just stop: it lists that provider's models (for Claude: `claude-opus-5-5`,
 `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-1`), or asks you to type a name, uses the one you pick,
@@ -308,6 +310,7 @@ A repository you just cloned can contain `.agentx/settings.json`. So:
 
 - A project `mode` of `accept-edits` or `auto` is **ignored, with a warning**. Set it in your own settings or with `--mode`. `plan` and `default` from the project are honoured.
 - A project `addDirs` entry that resolves outside the project folder is **ignored, with a warning**. Your own file and `--add-dir` are not restricted.
+- A project `localServer`, `fallbackModel` or `localContext` is **ignored, with a warning** (`localServer in <path> is ignored: only your own settings file can set it.`): it could send your conversation, files included, to a server the project chooses. A project may name a local model as its `model`; a name is harmless.
 - A project `teamModels` list is **announced at startup**, with any notes on what each model is for (`This project's settings let team helpers also use: gpt-5.5 (fast reading), ...`), with no question: it lets team jobs send work to another model or provider. `/team-models clear` turns it off for the session. See [Helper models](#helper-models).
 - Allow rules that come from the project are **listed at startup and you are asked once**: `Honour these project rules? [y/N]`. Only `y` or `yes` keeps them. Bare Enter, Ctrl+D, Ctrl+C or an answer that stays unrecognised after one more try drops them for this session. A repository's `"allow": ["write_file", "edit_file"]` is `accept-edits` under another name, and `"allow": ["run_shell"]` runs every command that is not compound, so they are not taken on trust. Your own allow rules are never affected. The project's **deny** rules are always kept: they only restrict.
 
@@ -364,6 +367,195 @@ Accepts `https://github.com/<owner>/<repo>` (optionally `/tree/<branch>/<folder>
 | `/skills remove <name>` | Asks, then deletes the skill's folder from `~/.agentx/skills/`. A project skill is not removed by this: it belongs to the project. |
 
 **Only you can install.** The agent has no tool to install or remove a skill, and its file tools can never write to `.agentx` or `~/.agentx` (see [Default protections](#default-protections)). A skill is instructions the agent will follow, so install only skills you trust. A skill from a link or a project is shown to the model with a note that it cannot override the rules or the approval prompts. Only the skill folders are fetched: `agentx` asks GitHub for the repository's file list and downloads just the files of the folders holding a `SKILL.md` (hidden ones such as `.agents/skills` included), or of the folder the link names; a `/blob/` link to a skill's file works too. A repository with more than 500 skill files is downloaded as an archive (up to 100 MB) and only its skill folders are unpacked. Limits: 3,000 files, 10 MB a file, 50 MB in all, 50 skills; paths that leave the folder and links are refused, and so is any skill file path with a `:` in it when files are fetched one by one (nothing is installed); nothing is ever written outside the download folder, and a downloaded skill cannot take the name of a built-in one.
+
+## Local models and the fallback
+
+`agentx` can chat with a model on your own computer, through Ollama, LM Studio or llama.cpp's server. It costs
+nothing per token, keeps the code on the machine and needs no account. It can also use that model as a backup: when
+Claude or GPT stops working, a long job carries on there instead of stopping.
+
+`agentx` uses a server that is already running. It never installs, pulls, starts or stops a model or a server, and
+it never changes a model's settings on the server.
+
+### Choosing a local model
+
+**Any name that does not start with `claude`, `gpt` or `o` and a digit is a local model.** There is no prefix:
+type the name as the server lists it.
+
+```text
+agentx --model qwen3:8b
+/model qwen3:8b
+```
+
+or `"model": "qwen3:8b"` in a settings file (a project file may name a local model; see below for what it may not
+set). The address is `http://localhost:11434/v1` (Ollama) unless you set `localServer`.
+
+Switching runs a **check** first: `Loading qwen3:8b on the local server`, while `agentx` asks the server for its
+models, looks for yours, sends one tiny request with one tool and expects a tool call back. The first request can
+take a couple of minutes, because the server loads the model. Ctrl+C (and **Stop** in the app window) ends the wait
+at once. If the check fails, `agentx` stays on the model you had and says why, in one sentence:
+
+- `Could not use qwen3:8b: the local server at localhost:11434 is not answering`
+- `Could not use qwen3-agnet: the local server at localhost:11434 has no model named qwen3-agnet; it lists: qwen3:8b`
+- `Could not use qwen3:8b: qwen3:8b answered in text instead of calling the tool, so it cannot drive agentx's tools`
+
+A misspelt Claude or GPT name is a local name too, so it fails the same way, with a reminder: `Claude names start
+with claude, GPT names with gpt.`
+
+**Finding the models.** At start `agentx` asks the local server for its models in the background, with a short
+timeout (a refused connection answers at once). It never waits for the answer before the first prompt, and with no
+server it says nothing. When the list is in, `/model` shows it (`Other models: qwen3:8b (local)`), and the app
+window's model menu and the Settings field suggest the names, marked `local`. A model you type that is not listed
+still runs the check.
+
+Local models use the same tools, approvals, modes and rules as any other. Their thinking, when the server sends it,
+is shown as Thinking.
+
+### Settings
+
+Three keys, read from **your own** `~/.agentx/settings.json` (also in the app window's **Settings**, under **Local
+models**, in the all-folders settings):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `localServer` | `http://localhost:11434/v1` | The OpenAI-compatible address of the local server. `localhost:1234` is read as `http://localhost:1234/v1`. LM Studio is `http://localhost:1234/v1`. |
+| `fallbackModel` | none | The local model to carry on with when Claude or GPT fails for good. Empty turns it off. |
+| `localContext` | what the server says | The local model's context window in tokens, for a server that does not say (see [The context window](#the-context-window-of-a-local-model)). |
+
+```json
+{
+  "model": "claude-opus-5-5",
+  "localServer": "http://localhost:11434/v1",
+  "fallbackModel": "qwen3:8b",
+  "localContext": 16384
+}
+```
+
+- **Saved in Settings, used from the next start**, like the model and mode; `/fallback` changes the fallback at once.
+- **A project's `.agentx/settings.json` cannot set them.** A cloned project must not be able to send your
+  conversation, files included, to a server it chooses. Each one found there is ignored with a warning: `localServer
+  in <path> is ignored: only your own settings file can set it.`
+- **An address that is not on this machine** (not `localhost`, `127.0.0.1` or `::1`) is allowed, for a server on
+  another computer of yours, and `agentx` says at start `Conversations on local models go to <host>.`
+- **The fallback must be local.** A `claude*`, `gpt*` or `o<digit>*` name is ignored when read (`fallbackModel must
+  be a local model; gpt-6.1-sol is not.`) and refused by `/fallback` (`The fallback must be a local model; ... is
+  not.`).
+- `localServer` that is not a web address, and a `localContext` that is not a positive whole number, are ignored
+  with a warning.
+
+### The fallback
+
+| Command | Does |
+|---|---|
+| `/fallback` | Show the fallback model and, if this conversation runs on it, why. |
+| `/fallback <name>` | Check the local model (as `/model` does), save it as `fallbackModel` in `~/.agentx/settings.json`, and use it from now on in this conversation. |
+| `/fallback off` | Turn the fallback off (saved as `"fallbackModel": ""`). |
+
+**The one-time offer.** The first time `agentx` finds a local server and `fallbackModel` has never been set, it
+offers it once, as a notice (in the app window with two buttons, **Use qwen3:8b** and **No**; in the terminal, a
+line saying what to type): `Ollama is running with qwen3:8b, llama3.1:8b. Use one as the fallback when Claude or
+GPT fails? /fallback qwen3:8b sets it; /fallback off stops this question.` **No** is `/fallback off`: it is
+remembered and not asked again.
+
+**When it switches.** Only on a failure that waiting will not fix:
+
+| Failure | Falls back? |
+|---|---|
+| Key rejected (401, 403) | Yes (`key rejected`) |
+| Out of credit or quota | Yes (`out of credit`) |
+| The model name is unknown to the provider (404) | Yes (`model not found`) |
+| The provider cannot be reached, or answers 5xx, after the usual retries | Yes (`unreachable`) |
+| Rate limited, overloaded, a timeout a retry fixes | No: retried as before |
+| A request the provider refuses, a tool or code error | No: it would fail again |
+
+**Which way.** From Claude or GPT to a local model, only. If the chat model is itself local and fails, nothing else
+is tried: the turn stops with the reason (`The turn stopped: the local server at localhost:11434 is not
+answering.`). A local conversation never turns into a cloud one.
+
+**No key at start.** If the saved model's provider has no key, `agentx` first offers the other provider's models as
+before ([Switching providers](#settings)). Only if that is not possible or you decline does it start on the
+fallback: `No key for Anthropic: starting on qwen3:8b (local).`
+
+**The turn that was running carries on; it is not started again.** An edit or command you already approved does not
+run twice. The new model is told what the first one already did and to finish the task, and what it did is carried
+over as plain text, so nothing refers to a tool it cannot see.
+
+**It says so, everywhere.**
+
+- A notice: `Claude failed: out of credit. This conversation continues on qwen3:8b (local). Choose a model to try
+  Claude again.`
+- In the app window the model chip reads `qwen3:8b · fallback` (hover for why).
+- The [work log](#the-work-log) heading of each turn on the fallback ends with the model and why: `## 2026-11-23
+  14:03 - Add type hints (on qwen3:8b, fallback from claude-opus-5-5: out of credit)`, and the saved
+  conversation records it too.
+- Team steps are marked (below).
+
+**It stays until you choose a model.** A dead provider is not tried again on every turn. `/model <name>` or the
+model menu tries that model afresh. A new conversation opened in a second window while the first is on the fallback
+starts on the model you chose, and falls back again, marked, if it still fails.
+
+If the fallback fails too, the turn stops and says both: `claude-opus-5-5 failed (out of credit); the fallback
+qwen3:8b failed too: the local server at localhost:11434 is not answering.`
+
+### Local models in team jobs
+
+A local name in `teamModels` (or `/team-models`) gives helpers on that model (`coder@qwen3:8b`), counted in the
+same limit of 4 extra models, with notes as for any model. A local model needs no key, so it is never left out for
+a missing one.
+
+- **The fallback covers helpers too.** When a helper's model fails for good, its step runs again on the fallback,
+  told what the failed attempt already did (its tool calls and the files it changed), and the switch lasts for the
+  rest of the job: later steps on that model start on the fallback. If the fallback fails too, the step fails with
+  both reasons.
+- **On the screen** a step that finished on the fallback reads `✓ coder · tests  Done on qwen3:8b (fallback:
+  claude-opus-5-5 out of credit)` with a `↺` mark (`*` where the terminal has no `↺`), and the same words are in the
+  app window's Team panel and **Details**.
+- **The main agent is told too, without model names** (it must not learn which model is which): the result's first
+  line adds `2 steps ran on the fallback model; check their work`, and each such step reads `done on the fallback
+  model (fallback: <the job's model ID> out of credit)`. The saved team record says `Status: done on the fallback
+  model. Its own model failed (out of credit); check this work.`
+- **A local chat model never sends anything to the cloud on its own.** The size check for [automatic
+  teams](#automatic-teams), notes, summaries and the planner all use the chat model, which is local. The cloud
+  helpers you listed in `teamModels` stay allowed, and the approval says so: `Helpers on claude-sonnet-5-5 will see
+  this project's files.`
+
+### The context window of a local model
+
+A local server often loads a model with a small window: Ollama's default is often **8,192 tokens**, which is too
+small for `agentx`'s own instructions plus its tools, let alone a conversation. When a request is longer than the
+window, the server silently drops the start of it, which is where the instructions are. So `agentx` keeps every
+request inside the window, and says when it had to:
+
+1. `AGENTX.md` and the work log are shortened to fit a third of the window (a line says `(shortened to fit
+   qwen3:8b's 8,192-token window)`). The base prompt and the tool definitions are never cut.
+2. Old tool results become one-line stubs, newest kept whole.
+3. The conversation is summarised once it passes about 60% of the window, between two steps of a turn if need be.
+4. If the instructions and your newest message alone do not fit, the request is not sent. The turn stops with
+   `qwen3:8b's 8,192-token window is too small for this conversation. A variant with a larger window fixes it: a
+   Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create qwen3:8b-16k -f Modelfile.`
+
+Once per conversation, when steps 1 to 3 had to act, you get one notice: `qwen3:8b is working with less than the
+whole conversation: older tool results were shortened to fit its 8,192-token window.` (or `the earlier
+conversation was summarised`).
+
+**Knowing the window.** On Ollama the check reads the window the model is loaded with, else its `num_ctx`, else 8,192.
+On another server set `localContext`; without it `agentx` assumes 8,192. A fallback model's window is read in the
+background after a switch (`localContext` wins; until the server answers, 8,192 applies).
+
+**Making the window bigger** is a change on the server. For Ollama, make a variant with a larger `num_ctx`:
+
+```text
+# Modelfile
+FROM qwen3:8b
+PARAMETER num_ctx 16384
+```
+
+```bash
+ollama create qwen3-16k -f Modelfile
+```
+
+then `agentx --model qwen3-16k`, and add `"localContext": 16384` if you also want it on a server that does not
+report it. A larger window needs more memory.
 
 ## MCP servers
 
@@ -487,7 +679,8 @@ A line that starts with `/` followed by a plain name is a command and is never s
 |---|---|---|
 | `/help` | List the commands. | `/help` |
 | `/clear` | Save this conversation and start a new one, which begins from the newest entries of the [work log](#the-work-log). Clears the "don't ask again" grants (commands and web lookups) and undoes an edit grant; the mode and your settings rules stay. | `/clear` |
-| `/model [name] [--folder]` | Show or switch the model. The conversation is kept. A model that cannot be built (no key) leaves the old one in place. `/model <name>` lasts for this session only; `/model <name> --folder` also saves it for this folder (see [Project memory](#project-memory)). | `/model claude-opus-5-5 --folder` |
+| `/model [name] [--folder]` | Show or switch the model. The conversation is kept. A model that cannot be built (no key), or a local one that fails its check, leaves the old one in place; a local name is checked first (see [Choosing a local model](#choosing-a-local-model)). `/model` alone also lists the models the local server has (`Other models: qwen3:8b (local)`). Choosing a model clears a fallback. `/model <name>` lasts for this session only; `/model <name> --folder` also saves it for this folder (see [Project memory](#project-memory)). | `/model claude-opus-5-5 --folder` |
+| `/fallback [name\|off]` | Show, set or turn off the local model that takes over when Claude or GPT fails for good (see [The fallback](#the-fallback)). `/fallback <name>` checks the model and saves it as `fallbackModel` in your own settings file. | `/fallback qwen3:8b` |
 | `/mode [name] [--folder]` | Show or set the mode: `default`, `accept-edits`, `plan` or `auto` (see [Modes](#modes)), for this session. With `--folder`, `default` or `plan` is also saved in this folder's `.agentx/settings.json`; `auto` and `accept-edits` stay for this session, because a folder's file may not turn your prompts off (start with `--mode auto`, or put `"mode": "auto"` in your own `~/.agentx/settings.json`). | `/mode plan --folder` |
 | `/settings` | Show the model, mode, rules and helper models in force, and the paths of your settings file and the project's. | `/settings` |
 | `/resume [id]` | Load a saved conversation: with no id, a list to pick from; with an id, or its first characters, that one. | `/resume 3f9a2c1b` |
@@ -664,7 +857,7 @@ An entry is a model name, optionally with a short note on what that model is for
 
 **Notes the chat model writes.** You do not have to write notes. When you set a list with `/team-models`, `agentx` asks your chat model once, in one call, what each model on it is good for (the chat's own model included, so all of them are described alike), and keeps the answers as notes marked `auto:`, for example `gpt-5.5 (auto: fast, cheaper coding)`. A list loaded from a settings file is described the same way at the first team job of a session. Each model is asked about once per session: setting the list again keeps the notes already written and asks only about new models. If the answer cannot be read at all you are told so (`The model's answer about the helper models could not be read ...`). The chat's own note shows in `/team-models` as `<chat model> (chat; auto: ...)`. These notes are human-facing metadata; the planner sees only sanitized capability comments, without the `auto:` marker. A model can only know models older than itself: one it does not know (or one newer than what it was trained on) gets no note rather than a guess, and `agentx` says so (`No note for ...: the chat model does not know what they are good at.`). A note you wrote is never asked about or replaced. `/team-models describe` asks again, replacing only `auto:` notes (add `--folder` to save them). If the call fails you get `Could not describe the models (<kind of error>); add notes yourself ...` and the list works without notes. With `--folder`, auto notes are saved with the list (`{"model": "gpt-5.5", "use": "auto: fast, cheaper coding"}`); edit one into your own words to keep it from being replaced. The notes are the chat model's own view, not facts from the provider: neither OpenAI nor Anthropic publishes what each model is good at in a form `agentx` can read.
 
-- A name must start with `claude`, `gpt` or `o` and a digit (`o3`), be at most 100 characters, and contain no spaces or control characters. At most 5 names are kept (the first 5): up to 4 extra models, plus your chat's own model if you list it, which does not take an extra-model slot (list it to give it a note). With 5 other models, the fifth is reported at the job as `Not used: <name> (only 4 extra models)`. A repeat, in any case, is dropped. A bad entry is listed in the warnings at startup (or right after `/team-models`) and ignored; the rest of the list works. For a name that is too long or has a space or control character the warning reads `'teamModels': <name> is not a model name (too long, spaces or control characters); skipped`, and for an unknown provider `'teamModels': cannot tell which provider runs <name> (start the name with 'claude' or 'gpt'); skipped`. In both, `<name>` is shown in quotes (and cut at 40 characters). The provider hint names only `claude` and `gpt`, but `o3`-style names are accepted too.
+- A name is a Claude model (starts with `claude`), a GPT model (`gpt`, or `o` and a digit, `o3`) or, with any other start, a [local model](#local-models-and-the-fallback) (`qwen3:8b`; no key needed, so it is never "Not used" for a missing one). It must be at most 100 characters, and contain no spaces or control characters. At most 5 names are kept (the first 5): up to 4 extra models, plus your chat's own model if you list it, which does not take an extra-model slot (list it to give it a note). With 5 other models, the fifth is reported at the job as `Not used: <name> (only 4 extra models)`. A repeat, in any case, is dropped. A bad entry is listed in the warnings at startup (or right after `/team-models`) and ignored; the rest of the list works. For a name that is too long or has a space or control character the warning reads `'teamModels': <name> is not a model name (too long, spaces or control characters); skipped`, and for an unknown provider `'teamModels': cannot tell which provider runs <name> (start the name with 'claude' or 'gpt'); skipped`. In both, `<name>` is shown in quotes (and cut at 40 characters). The provider hint names only `claude` and `gpt`, but `o3`-style names are accepted too.
 - The folder's list **replaces** yours entirely; the lists are not joined. `"teamModels": []` in a folder's file (or a list whose entries are all invalid) turns extra models off for that folder. A value that is not a list is ignored with a warning (`'teamModels' must be a list of model names; ignored`) and your own list stays in force. As for `model`, a folder's file is read only after you trust the folder.
 - The list names models helpers may use **in addition to** the chat's model. The chat's model is never listed twice: if you name it, the name is dropped. After `/model <name>` the next job works out the list again against the new chat model.
 

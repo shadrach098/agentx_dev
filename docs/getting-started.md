@@ -59,7 +59,9 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 Everywhere the docs use `Claude()`, you can swap in `GPT()` and the
 code still works. Any subclass of `BaseChatModel` drops in the same
 way — see [chat models](concepts/models.md) for adding your own
-provider (Ollama, Bedrock, Together, etc.).
+provider (Bedrock, Together, etc.). A model on your own machine (Ollama, LM
+Studio) needs no code: use `Local(model="qwen3:8b")` — see
+[local models](concepts/models.md#local-models).
 
 ## Your first agent — 5 lines
 

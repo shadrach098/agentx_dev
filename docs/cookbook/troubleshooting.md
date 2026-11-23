@@ -900,6 +900,78 @@ agentx too. `--no-open` prints the address instead, and then agentx keeps runnin
 The title is written by the model a few seconds after the first answer; conversations from before this version
 keep their first message (without agentx's summary note).
 
+## Local models *(3.10)*
+
+**`Could not use qwen3:8b: the local server at localhost:11434 is not answering`**
+Nothing listens at that address. Start Ollama (or LM Studio's server) and try again. If the server is on another
+port or computer, set `"localServer"` in `~/.agentx/settings.json` (LM Studio is `http://localhost:1234/v1`). `agentx`
+uses a server that is already running; it never starts one.
+
+**`Could not use qwen3-agnet: ... has no model named qwen3-agnet; it lists: qwen3:8b`**
+The name is not one the server has. Type it as the server lists it (`ollama list`, or `/model` after the server is
+up). A misspelt Claude or GPT name lands here too, and the message adds that Claude names start with `claude` and
+GPT names with `gpt`.
+
+**`... answered in text instead of calling the tool, so it cannot drive agentx's tools`**
+That model, or the way the server runs it, does not support tool calls. Try another model or a newer build of the
+server; `Local(...).check()` runs the same test in code.
+
+**The first switch to a local model takes minutes**
+The server is loading the model into memory. The check waits up to two minutes (`Loading qwen3:8b on the local
+server`). Ctrl+C, or **Stop** in the app window, ends the wait; the later switch is quick.
+
+**`qwen3:8b's 8,192-token window is too small for this conversation`**
+The instructions and your message alone do not fit the model's window. Make a variant with a bigger one: a
+`Modelfile` with `FROM qwen3:8b` and `PARAMETER num_ctx 16384`, then `ollama create qwen3-16k -f Modelfile` (pattern
+49). For a server that does not report its window, set `"localContext"`. In code this is `ContextWindowTooSmall`.
+
+**`qwen3:8b is working with less than the whole conversation: older tool results were shortened ...`**
+Not an error: the window is nearly full, so agentx stubbed old tool results (or summarised the conversation) to keep
+each request inside it. It says so once per conversation. A bigger window stops it.
+
+**The answers got worse or ignore my instructions on a local model**
+Check the window first. A server that loaded the model with a small window cuts the start of a long request without
+saying so. `agentx` fits what it knows of the window; if it was told 8,192 and the server really has less, set
+`"localContext"` to the real number.
+
+**`localServer in <path> is ignored: only your own settings file can set it.`**
+A project's `.agentx/settings.json` set `localServer`, `fallbackModel` or `localContext`. Those are read from
+`~/.agentx/settings.json` only, so a cloned project cannot send your conversation to a server it picked.
+
+**`Conversations on local models go to <host>.`**
+Your own `localServer` points at a host that is not this computer. It is allowed (a server on another computer of
+yours); the line is there so you know.
+
+**`fallbackModel must be a local model; gpt-6.1-sol is not.`**
+The fallback is only ever a local model. `/fallback` refuses a Claude or GPT name; in a settings file it is ignored
+with this warning.
+
+**Claude failed and `agentx` did not fall back**
+Check `/fallback`: with `No fallback is set` or `The fallback is off`, a failure stops the turn. Only a failure that
+waiting will not fix switches (a rejected key, no credit, an unknown model, an unreachable provider after retries);
+a rate limit or a bad request is retried or reported as before. A fallback that could not be built says
+`The fallback <name> could not be set up: ...` once; `/fallback <name>` sets another.
+
+**The conversation stays on the local model after Claude works again**
+By design: once the fallback takes over it stays for the rest of the conversation, so a dead provider is not tried
+on every turn. Choose a model (`/model claude-opus-5-5`, or the menu) to try it afresh.
+
+**`claude-opus-5-5 failed (out of credit); the fallback qwen3:8b failed too: ...`**
+Both models failed. The turn stops and says both reasons (`FallbackFailed` in code, with the fallback's own error as
+its `__cause__`). Fix the local server (see the first entry) or the paid account.
+
+**`The turn stopped: the local server at localhost:11434 is not answering.`**
+The local model was the chat model and its server went away mid-turn. A local model never falls back to another one;
+start the server and say `continue`.
+
+**A run ends `no_answer`, or its answer is `The model gave no final answer. It called: ...`**
+The model sent an empty final message. With no tool call the outcome is `no_answer` (nothing was done); after tool
+calls the work happened and the note lists what it called and the files it changed. A small model that does this
+often usually needs a larger window or a stronger model. Before 3.10 both counted as `done` with an empty answer.
+
+**`LocalModelError: the local server at localhost:11434 has several models, name one: ...`**
+`Local()` with no `model` works only when the server has one model. Pass `model=`.
+
 ## Evals
 
 **`tool_error_count` is always 0**

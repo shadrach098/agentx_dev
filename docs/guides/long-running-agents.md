@@ -44,7 +44,8 @@ Every run — persistent or not — reports how it ended:
 
 | `result.outcome` | Meaning |
 |---|---|
-| `done` | The agent returned a final answer. |
+| `done` | The agent returned a final answer. (3.10: one that did tool work and then ended with nothing is still `done`; its answer says what it called.) |
+| `no_answer` | *(3.10)* The model called no tool and gave no answer, so nothing was done. The content is `The model gave no answer.` |
 | `stuck` | It tried the recovery steps below and was still stuck. |
 | `out_of_time` | `max_minutes` passed. |
 | `out_of_budget` | The model's cost cap was reached. |

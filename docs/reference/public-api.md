@@ -55,7 +55,7 @@ to_tool_spec tool_count track_async_tool_call track_tool_call used_agent used_sk
 vector_search_tool web_fetch_tool web_search_tool
 ```
 
-`Local` is a chat model for a server on your machine (Ollama, LM Studio, llama.cpp); `LocalCheck` is what `Local.check()` returns and `LocalModelError` is raised when the server cannot be used. `ContextWindowTooSmall` is raised by `AgentRunner` when even the instructions and the newest message do not fit the model's context window.
+`Local` is a chat model for a server on your machine (Ollama, LM Studio, llama.cpp); `LocalCheck` is what `Local.check()` returns and `LocalModelError` is raised when the server cannot be used. `ContextWindowTooSmall` is raised by `AgentRunner` when even the instructions and the newest message do not fit the model's context window. `FallbackFailed`, raised when the fallback model fails too, is imported from `agentx_dev.Runner.Fallback` (see [A fallback model](../concepts/models.md#a-fallback-model)); `agentx_dev.Runner.Fallback` is a stable path.
 
 `MCPClient`, `json_schema_to_pydantic` and `mcp_tool_to_async_structured_tool` are exported only when the `mcp`
 package is installed (`pip install "agentx-dev[mcp]"`).
@@ -78,6 +78,7 @@ These are documented in the guides and stay where they are:
 <!-- public-paths: the test reads this block -->
 ```text
 agentx_dev.Skills: Skills discover install open_source preview_text remove_skill
+agentx_dev.Runner.Fallback: FallbackFailed
 agentx_dev.Runner.Trim: TrimPolicy
 agentx_dev.VectorStores: ChromaVectorStore PgVectorStore QdrantVectorStore
 agentx_dev.SubAgents: AgentSpec SpawnConfig

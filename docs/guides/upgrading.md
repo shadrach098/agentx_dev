@@ -13,6 +13,51 @@ module stays imported until you do, which shows up as errors like
 
 ---
 
+## Upgrading to 3.10.0 *(not released yet)*
+
+**Local models and a fallback, in the library and in `agentx`; nothing you wrote has to change.** Three behaviours
+differ from 3.9, and you may notice them:
+
+- **Any other model name is now a local model, not an error.** In `agentx`, a name that does not start with `claude`,
+  `gpt` or `o` and a digit used to stop with `Cannot tell which provider runs ...`. It is now a model on your local
+  server (`http://localhost:11434/v1`, or your `localServer`), checked before `agentx` switches to it. A misspelt
+  Claude or GPT name (`cluade-opus-5-5`) therefore fails the check with `... has no model named ...` and a reminder
+  that Claude names start with `claude` and GPT names with `gpt`, instead of the old message. A `teamModels` entry
+  with such a name is a local helper rather than a skipped one. Names that start with `claude`, `gpt` or `o<digit>`
+  mean what they meant.
+- **An empty answer no longer counts as `done`.** A run that calls no tool and ends with no text now has the outcome
+  `no_answer` (its content is `The model gave no answer.`). A run that called tools and then ended with nothing
+  keeps the outcome `done`, but its answer is now a note: `The model gave no final answer. It called: read_path,
+  write_file (files changed: done.txt).` The new outcome is in the `result.outcome` table of
+  [Long-running agents](long-running-agents.md#what-comes-back); code that treated every outcome other than
+  `done`, `stuck`, `out_of_time`, `out_of_budget` and `iteration_limit` as impossible should handle it. This applies
+  to every model.
+- **A history that holds function calls is converted for a runner that does not bind them.** A history you pass in
+  (`history=`, a resumed session) can hold assistant `tool_calls` and `tool` results from function calling. Calls to
+  a function the runner does not bind (the agent type's response-format function, or every call when the runner is in
+  text mode) and their results are now turned into plain text before the request goes out, and so is a history handed
+  to a runner that switched to its fallback. Before, they were sent as they were, which Anthropic rejected for a
+  runner with no bound tools. A history that is already valid for the runner is unchanged.
+
+**New, all optional:**
+
+- `Local(model=..., base_url=...)`, `Local.models()` and `Local().check()`; `LocalCheck`, `LocalModelError`.
+  See [Local models](../concepts/models.md#local-models).
+- `AgentRunner(fallback_model=..., context_window=...)`; the stream events `fallback` and `context_trimmed`;
+  `completion.fallback`; `runner.fallback_used` and `runner.reset_fallback()`; `ContextWindowTooSmall` (exported) and
+  `FallbackFailed` (`agentx_dev.Runner.Fallback`). `Supervisor(fallback_model=...)`. The fallback and the window
+  budget belong to the sync `AgentRunner`; `AsyncAgentRunner` does not have them.
+- In `agentx`: `/fallback [name|off]`, and the settings `localServer`, `fallbackModel` and `localContext`, which only
+  your own `~/.agentx/settings.json` can set (a project file's are ignored with a warning). Nothing starts a local
+  server for you, and starting `agentx` does not wait for one.
+- Local models appear in `/model` and the app window's model menu once the server is found; the window has a **Local
+  models** group in Settings. See [Local models and the fallback](cli.md#local-models-and-the-fallback).
+
+**If you run Ollama:** its default window (often 8,192 tokens) is small for `agentx`. `agentx` fits what it can and
+refuses what cannot fit; for real work make a variant with `PARAMETER num_ctx 16384` (cookbook pattern 49).
+
+---
+
 ## Upgrading to 3.9.0
 
 **New features in the `agentx` app; no change to the Python API.** What you may notice:

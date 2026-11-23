@@ -8,6 +8,59 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **Local models.** `Local(model=None, base_url="http://localhost:11434/v1", api_key=None, context_window=None)`, a
+  `GPT` subclass for Ollama, LM Studio and llama.cpp: chat completions only, no key, never reads `OPENAI_API_KEY`
+  (a placeholder is sent; `api_key=` for a server that wants one), an address with no `http://` gets it, `model=None`
+  uses the server's only model (several raise `LocalModelError` naming them), `Local.models(base_url)` lists the
+  server's models and `check()` returns a `LocalCheck(ok, reason, context_window)` after asking the server, looking for
+  the model and sending one tiny request with one tool (it waits up to two minutes for the model to load; on Ollama
+  it reads the loaded window from `/api/ps` and `/api/show`). The thinking local servers send (`reasoning`,
+  `reasoning_content`) comes back as `"reasoning"` and is shown as thinking. A runner on a `Local` binds its tools
+  natively (a model attribute `prefers_native_tools`; an explicit `bind_tools_natively=False` wins). Exported: `Local`,
+  `LocalCheck`, `LocalModelError`.
+- **`AgentRunner(fallback_model=...)`.** When the model fails for good (no credit, a rejected key (401, 403), an
+  unknown model (404), an unreachable provider or a 5xx after the usual retries), the run switches to the fallback
+  for the rest of the runner's life: it carries on from where it stopped in the fallback's binding mode, with a note
+  telling it what happened and a history converted to be valid for it. `stream` yields `{"type": "fallback", "from",
+  "to", "reason"}`, a warning is logged, `completion.fallback` records it, `runner.fallback_used` holds it and
+  `runner.reset_fallback()` goes back. A rate limit, a bad request, a tool error and the framework's own stops never
+  switch; a `Local` model never falls back. A fallback that fails too raises `FallbackFailed`
+  (`agentx_dev.Runner.Fallback`). `Supervisor(fallback_model=...)` gives it to the helpers it builds. Sync runner
+  only.
+- **`AgentRunner(context_window=...)`.** With a window known (this argument, or the model's own `context_window`),
+  each request is kept to 85% of it, measured at 4 characters a token (fewer once a reply's usage shows it): old tool
+  results are stubbed (newest whole), then the history is summarised, then the newest oversized result is cut; a
+  request that cannot fit even so is not sent and raises `ContextWindowTooSmall` (exported). `stream` yields
+  `{"type": "context_trimmed", "window", "how"}`. Sync runner only.
+- **`agentx` runs local models.** Any model name that does not start with `claude`, `gpt` or `o<digit>` is a model on
+  the local server: `--model qwen3:8b`, `/model qwen3:8b`, the `model` setting, `teamModels` entries. It is checked
+  first (`Loading qwen3:8b on the local server`; Ctrl+C and Stop interrupt it; a failure says why in one sentence and
+  keeps the current model). The server's models are found in the background at start (never waited for) and listed
+  in `/model` (`Other models: qwen3:8b (local)`), the app window's model menu (marked local) and the Settings field.
+- **Settings `localServer`, `fallbackModel`, `localContext`.** User file only: a project's are ignored with a warning,
+  a `localServer` that is not on this machine is announced at start, a `fallbackModel` that is not a local name is
+  ignored with a warning, and Settings in the app window has a **Local models** group.
+- **`/fallback [name|off]` and the fallback in `agentx`.** `/fallback <name>` checks a local model and saves it; a
+  one-time offer (a notice with two buttons in the window) comes when a local server is first found and no fallback
+  was ever set. When Claude or GPT fails for good the turn continues, not started again, on the fallback
+  (`Claude failed: out of credit. This conversation continues on qwen3:8b (local). Choose a model to try Claude
+  again.`); it stays until a model is chosen, goes paid to local only, shows `qwen3:8b · fallback` on the app's model
+  chip, adds `(on qwen3:8b, fallback from claude-opus-5-5: out of credit)` to the work log's turn heading, and also
+  covers a saved model with no key at start (`No key for Anthropic: starting on qwen3:8b (local).`) after the other
+  provider's models were offered. A local conversation never sends anything to a cloud model on its own.
+- **Local and fallback in team jobs.** A local name in `teamModels` gives local helpers (no key needed). A step whose
+  model fails for good runs again on the fallback, told what the attempt did, later steps on that model start there
+  for the rest of the job; the screen reads `Done on <to> (fallback: <from> <reason>)` (also in the Team panel and
+  Details), and the agent is told `done on the fallback model (fallback: <job's model ID> <reason>)` and
+  `N steps ran on the fallback model; check their work`, never a model name. The approval of a job on a local chat
+  model says `Helpers on <names> will see this project's files.` when cloud helpers are listed.
+- **A local model's window in `agentx`.** On Ollama the check reads the loaded window; elsewhere `localContext`, else
+  8,192. `AGENTX.md` and the work log are shortened to a third of it, old tool results are stubbed, the conversation is
+  summarised at 60% of the window, one notice says when that happened, and when nothing fits the turn stops with the
+  Modelfile recipe (`PARAMETER num_ctx 16384`).
+- **Docs:** [Local models](docs/concepts/models.md#local-models), the CLI guide's [Local models and the
+  fallback](docs/guides/cli.md#local-models-and-the-fallback), cookbook patterns 46 to 49, the FAQ,
+  troubleshooting, What's new and Upgrading.
 - **The team's planner picks models by what they are for, not by name.** With extra team models, each job gives
   every model a random ID (`coder@model_3f9a…`) and the planner reads only the roles and your notes on what each
   model is for, with model and provider names taken out. A Claude planner kept choosing Claude models; it can no
@@ -35,6 +88,16 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Changed
 
+- **An empty final answer is not `done`.** A run that called no tool and ended with no text now has the outcome
+  `no_answer` (`The model gave no answer.`). A run that called tools and then ended with nothing stays `done`, with the
+  answer `The model gave no final answer. It called: read_path, write_file (files changed: done.txt).` Every model.
+- A model name that is not Claude or GPT in `agentx` is a local model, not the error `Cannot tell which provider runs
+  ...`; a misspelt Claude or GPT name fails the check with a reminder that Claude names start with `claude` and GPT
+  names with `gpt`.
+- A history of function calls and results given to a runner that does not bind those functions (text mode, or a
+  native-binding runner's response-format calls, or after a switch to the fallback) is turned into plain text first,
+  in every mode. It was sent as it was, which Anthropic rejected for a runner with no bound tools.
+- `docs/concepts/models.md`: the hand-written `Ollama(BaseChatModel)` example is replaced by `Local`.
 - Declining a team job now holds for the rest of that message: the agent is told not to start another and to ask
   you instead. Before, it could ask again straight away.
 

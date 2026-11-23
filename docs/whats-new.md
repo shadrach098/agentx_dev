@@ -3,6 +3,40 @@
 The newest release first. For what to change when you upgrade, see [Upgrading](guides/upgrading.md); every
 change in detail is in the [changelog](https://github.com/shadrach098/agentx_dev/blob/main/CHANGELOG.md).
 
+## 3.10 — local models *(not released yet)*
+
+A model on your own computer, through Ollama, LM Studio or llama.cpp, works in the library and in `agentx`. It costs
+nothing per token, keeps the code on the machine and needs no account. And when Claude or GPT stops working, a local
+model can carry on instead.
+
+```python
+from agentx_dev import AgentRunner, AgentType, Claude, Local
+
+runner = AgentRunner(model=Claude(), agent=AgentType.ReAct, tools=[...],
+                     fallback_model=Local(model="qwen3:8b"))     # takes over if Claude fails for good
+```
+
+```bash
+ollama pull qwen3:8b
+agentx --model qwen3:8b          # any name that is not Claude or GPT is a local model
+```
+
+| Feature | What you get |
+|---|---|
+| **`Local`** | A chat model for any server with an OpenAI-compatible address: `Local(model="qwen3:8b")` (Ollama at `http://localhost:11434/v1`), `base_url="http://localhost:1234/v1"` for LM Studio. It needs no key and never reads `OPENAI_API_KEY`. `Local.models()` lists what the server has; `check()` confirms the server answers, has the model and that the model calls a tool. A runner on a `Local` binds its tools natively without being told. Thinking the server sends (`reasoning`, `reasoning_content`) is shown as thinking. |
+| **A fallback in the runner** | `AgentRunner(fallback_model=...)`: when the model fails for good (no credit, a rejected key, an unknown model, an unreachable provider after the usual retries) the run carries on from where it stopped on the fallback, tool calls already made are not made again, and you get a `fallback` event, a log warning and `completion.fallback`. A rate limit or a bad request is not a reason to switch. `FallbackFailed` says both reasons when the fallback fails too. `Supervisor(fallback_model=...)` gives it to its helpers. |
+| **A window that is kept** | `AgentRunner(context_window=...)` (a `Local` knows its own after `check()`): each request stays inside 85% of the window: old tool results become stubs, then the conversation is summarised, then one oversized result is cut. A request that cannot fit even so is not sent (`ContextWindowTooSmall`). A `context_trimmed` event says it happened. |
+| **An empty answer is not `done`** | A run that called no tool and gave no answer now ends `no_answer`. One that did tool work and then said nothing stays `done`, with the answer `The model gave no final answer. It called: ...`. Every model, not only local ones. |
+| **Pick a local model in `agentx`** | `--model qwen3:8b`, `/model qwen3:8b`, or `"model"` in the settings. Any name that does not start with `claude`, `gpt` or `o` and a digit is local. `agentx` checks it before switching (Ctrl+C and **Stop** end the wait) and, if it fails, stays on your model and says why. `/model` and the app window's menu list the server's models, marked local. They are found in the background: starting never waits. |
+| **Settings** | `localServer`, `fallbackModel` and `localContext`, read from your own `~/.agentx/settings.json` only (a project's are ignored with a warning), and in the app window's **Settings > Local models**. |
+| **`/fallback`** | `/fallback qwen3:8b` checks a local model and saves it as the fallback; `/fallback off` turns it off; `/fallback` shows it. The first time `agentx` finds a local server it offers once to use one. |
+| **A fallback that says so** | When Claude or GPT fails for good, `Claude failed: out of credit. This conversation continues on qwen3:8b (local). Choose a model to try Claude again.` The turn goes on, not started again. The app's model chip reads `qwen3:8b · fallback`; the work log notes each turn on the fallback. It stays until you choose a model, goes paid to local only, and a local conversation never sends anything to the cloud on its own. |
+| **Local and fallback in team jobs** | A local name in `/team-models` gives local helpers. A step whose model fails runs again on the fallback, told what the first attempt did, and later steps on that model start there. The step reads `Done on qwen3:8b (fallback: claude-opus-5-5 out of credit)`; the main agent is told `2 steps ran on the fallback model; check their work`. A team job approval on a local chat model warns when cloud helpers will see the project's files. |
+| **Small windows, handled** | Ollama's default window (often 8,192 tokens) is small. `agentx` shortens `AGENTX.md` and the log to a third of the window, summarises at 60% and stubs old results, and when nothing fits says so and shows how to make a variant with `PARAMETER num_ctx 16384`. |
+
+See [Local models](concepts/models.md#local-models), [Local models and the fallback](guides/cli.md#local-models-and-the-fallback),
+cookbook patterns 46 to 49 and [Upgrading](guides/upgrading.md).
+
 ## 3.9 — the orb and two conversations at once
 
 The `agentx` app window, reworked around what agentx is doing:
