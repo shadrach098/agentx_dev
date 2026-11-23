@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from agentx_dev.ChatModel import CostBudgetExceeded
+from agentx_dev.Runner.Trim import cut_text
 
 logger = logging.getLogger(__name__)
 
@@ -694,17 +695,20 @@ class PersistentRun:
         self.emit({"type": "compact", "before_tokens": before, "after_tokens": after})
         self._say(f"compacted history: ~{before} -> ~{after} tokens")
 
-    def before_turn(self, model: Any) -> None:
-        """Raises ``BudgetExpired`` past the deadline; compacts an oversized history."""
+    def before_turn(self, model: Any, max_input_chars: Optional[int] = None) -> None:
+        """Raises ``BudgetExpired`` past the deadline; compacts an oversized history. ``max_input_chars``: the
+        most the summary call may be sent (the runner gives half the model's window when it knows one)."""
         self.budget.check()
         job = self._compaction_job()
         if job is None:
             return
         before, tail, middle, prior = job
+        text = render_for_summary(middle, prior)
+        if max_input_chars is not None:
+            text = cut_text(text, max_input_chars)
         summary: Optional[str] = None
         try:
-            summary = self.patient(lambda: model.Initialize(
-                messages=[{"role": "user", "content": render_for_summary(middle, prior)}]))
+            summary = self.patient(lambda: model.Initialize(messages=[{"role": "user", "content": text}]))
         except (CostBudgetExceeded, BudgetExpired):
             raise
         except Exception as e:

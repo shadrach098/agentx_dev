@@ -8,7 +8,8 @@ from agentx_dev.Runner.Persistence import (
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Runner.Changes import changed_paths
 from agentx_dev.Runner.Trim import (
-    coerce_trim_policy as _coerce_trim_policy, request_chars, trim_to_save, trim_tool_results,
+    coerce_trim_policy as _coerce_trim_policy, cut_newest_result, cut_text, request_chars, trim_to_save,
+    trim_tool_results,
 )
 from agentx_dev.Pictures import ToolContent, content_text, has_pictures, picture_parts, stub_old_pictures
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
@@ -694,22 +695,11 @@ _FALLBACK_NOTE = (
 
 
 # The context window budget (``context_window=``). Requests are measured in characters and the window in tokens:
-# a model is assumed to read CHARS_PER_TOKEN characters per token until a reply's usage shows what it reads.
+# a model is assumed to read CHARS_PER_TOKEN characters per token, or fewer once a reply's usage shows it does.
 CHARS_PER_TOKEN = 4
 REQUEST_SHARE = 0.85            # the share of the window a request may use; the rest is for the answer
 SUMMARY_SHARE = 0.5             # the share of the window the summary call's own input may use
-_PLAUSIBLE_CHARS_PER_TOKEN = (1.0, 8.0)     # an observed ratio outside this is a usage report to ignore
 _KEEP_RECENT = 2                # messages a summary of the turn keeps (the newest call and its results)
-_CUT_MARK = "\n[... cut to fit the model's window ...]\n"
-
-
-def _cut_to(text: str, cap: int) -> str:
-    """``text`` cut to at most ``cap`` characters: its start (the instructions) and its end (the newest turns)."""
-    if len(text) <= cap:
-        return text
-    head = cap // 4
-    tail = cap - head - len(_CUT_MARK)
-    return text[:cap] if tail <= 0 else text[:head] + _CUT_MARK + text[-tail:]
 
 
 def _usage_calls(model: Any) -> int:
@@ -1909,20 +1899,22 @@ class AgentRunner(PersistenceMixin):
                 A local ``model`` never falls back. If the fallback
                 fails too, the run raises ``FallbackFailed``.
                 Default ``None``: errors propagate as they are.
-            context_window: The model's context window, in tokens.
+            context_window: The context window of ``model``, in tokens.
                 Default ``None``: the model's own ``context_window``
-                (a ``Local`` model knows it after ``check()``), which
-                after a switch is the fallback's. When a window is
-                known, every request is kept to 85% of it (the rest is
-                for the answer), measured at 4 characters a token until
-                a reply's ``prompt_tokens`` shows what the model reads.
-                A longer request is first sent with old tool results
-                stubbed (the newest kept whole); if that is not enough
-                the history is summarised in place. ``stream`` yields
+                (a ``Local`` model knows it after ``check()``). After a
+                switch the fallback's own ``context_window`` applies.
+                When a window is known, every request is kept to 85% of
+                it (the rest is for the answer), measured at 4
+                characters a token, or fewer when a reply's token counts
+                show the model reads fewer. A longer request is first
+                sent with old tool results stubbed (the newest kept
+                whole); if that is not enough the history is summarised
+                in place; then the newest tool result is cut to the
+                room left (its start and end kept). ``stream`` yields
                 ``{"type": "context_trimmed", "window", "how"}`` (``how``:
                 ``"results"`` or ``"summary"``) the first time either
                 happens in a run. When even the instructions and the
-                newest message do not fit, the request is not sent and
+                task message do not fit, the request is not sent and
                 the run raises ``ContextWindowTooSmall``. No window: the
                 requests are sent as they are.
 
@@ -2234,24 +2226,38 @@ class AgentRunner(PersistenceMixin):
         return stub_old_pictures(trimmed)
 
     def _window(self) -> Optional[int]:
-        """The window of the model in use, in tokens (``context_window=``, else the model's own), or None."""
-        window = self.context_window if self.context_window is not None else getattr(self.model, "context_window", None)
+        """The window of the model in use, in tokens, or None: ``context_window=`` for the model the runner was
+        built with; after a switch, the fallback's own ``context_window``."""
+        window = self.context_window if self.fallback_used is None else None
+        if window is None:
+            window = getattr(self.model, "context_window", None)
         return window if isinstance(window, int) and not isinstance(window, bool) and window > 0 else None
+
+    def _summary_cap(self) -> Optional[int]:
+        """The most characters a summary call's input may have (half the window), or None without a window."""
+        window = self._window()
+        if window is None:
+            return None
+        return int(window * self._chars_per_token.get(id(self.model), CHARS_PER_TOKEN) * SUMMARY_SHARE)
 
     def _fit_window(
         self, history: List[Dict[str, Any]], task_index: int, specs: Optional[List[Any]], failed_text: str = "",
-    ) -> Tuple[List[Dict[str, Any]], Optional[str], int, Optional[int]]:
+        moved: Callable[[int], None] = lambda index: None,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[int]]:
         """What the model is sent for ``history`` (``_model_view``), kept inside its window. Returns
-        ``(messages, how, task_index, chars)``. ``how``: None, ``"results"`` (old tool results are stubs in what is
-        sent) or ``"summary"`` (the history was summarised in place, which can move the task message to the
-        returned ``task_index``). ``chars``: the size of the request, None when no window is known (the view is
+        ``(messages, how, chars)``. ``how``: None, ``"results"`` (tool results are stubbed or cut in what is
+        sent) or ``"summary"`` (the history was summarised in place; ``moved`` is told the task message's new
+        index when that moves it). ``chars``: the size of the request, None when no window is known (the view is
         then returned as it is). ``specs``: the function specs sent with the messages, which take room too.
-        Raises ``ContextWindowTooSmall`` when the system message and the newest user message alone do not fit, or
-        nothing more can be cut."""
+
+        In this order, each only when the one before was not enough: the oldest tool results are stubbed (the
+        newest kept whole); the turn so far, then the conversation before it, are summarised; the newest tool
+        result is cut to the room left (its start and end kept). Raises ``ContextWindowTooSmall`` when the system
+        message and the task message alone do not fit, or when nothing more can be cut."""
         view = self._model_view(history)
         window = self._window()
         if window is None:
-            return view, None, task_index, None
+            return view, None, None
         per_token = self._chars_per_token.get(id(self.model), CHARS_PER_TOKEN)
         budget = int(window * REQUEST_SHARE * per_token)
         fixed = len(json.dumps(specs, default=str)) if specs else 0
@@ -2269,20 +2275,20 @@ class AgentRunner(PersistenceMixin):
         def too_small(chars: int) -> ContextWindowTooSmall:
             return ContextWindowTooSmall(window, math.ceil(chars / per_token))
 
-        newest = next((m for m in reversed(view) if m.get("role") == "user"), None)
-        core = size(view[:1] + ([newest] if newest is not None else []))
+        task = view[task_index: task_index + 1]
+        core = size(view[:1] + task)
         if core > budget:
             raise too_small(core)
         before = size(view)
         if before <= budget:
-            return view, None, task_index, before
+            return view, None, before
         view = fitted(view)
         how = "results" if size(view) < before else None
         if size(view) > budget:
-            cap = int(window * per_token * SUMMARY_SHARE)
+            cap = self._summary_cap()
 
             def summarize(text: str) -> str:
-                return self.model.Initialize(messages=[{"role": "user", "content": _cut_to(text, cap)}])
+                return self.model.Initialize(messages=[{"role": "user", "content": cut_text(text, cap)}])
 
             # The turn so far, then the conversation before it; the newest messages stay as they are.
             if compact_history(history, task_index=task_index, keep_recent=_KEEP_RECENT, summarize=summarize,
@@ -2293,21 +2299,27 @@ class AgentRunner(PersistenceMixin):
                 if compact_history(earlier, task_index=0, keep_recent=0, summarize=summarize):
                     history[1:task_index] = earlier
                     task_index = 1 + len(earlier)
+                    moved(task_index)
                     how, view = "summary", fitted(self._model_view(history))
-            if size(view) > budget:
+        if size(view) > budget:
+            cut = cut_newest_result(view, size(view) - budget)
+            if cut is None or size(cut) > budget:
                 raise too_small(size(view))
-        return view, how, task_index, size(view)
+            how, view = how or "results", cut
+        return view, how, size(view)
 
     def _learn_chars_per_token(self, calls_before: int, chars: Optional[int]) -> None:
-        """After a call that sent ``chars`` characters: when the reply reported its ``prompt_tokens``, keep the
-        characters per token it shows for the model in use (the window budget uses it from then on)."""
+        """After a call that sent ``chars`` characters: when the reply reported its prompt tokens (cached ones
+        included), keep the characters per token it shows for the model in use. Only ever a stricter budget: a
+        ratio above ``CHARS_PER_TOKEN`` (a server that leaves cached tokens out, say) is not trusted."""
         if not chars or _usage_calls(self.model) <= calls_before:
             return
-        tokens = getattr(self.model.usage, "last_input_tokens", 0)
-        if isinstance(tokens, int) and tokens > 0:
-            low, high = _PLAUSIBLE_CHARS_PER_TOKEN
-            if low <= chars / tokens <= high:
-                self._chars_per_token[id(self.model)] = chars / tokens
+        usage = self.model.usage
+        tokens = sum(value for value in (getattr(usage, name, 0) for name in
+                                         ("last_input_tokens", "last_cache_read_tokens", "last_cache_creation_tokens"))
+                     if isinstance(value, int))
+        if tokens > 0 and chars / tokens >= 1.0:
+            self._chars_per_token[id(self.model)] = min(chars / tokens, CHARS_PER_TOKEN)
 
     def add_tool(self, tool) -> None:
         """Register ``tool`` on a built runner (used to attach ``delegate`` for the
@@ -2609,12 +2621,16 @@ class AgentRunner(PersistenceMixin):
         def _request(specs):
             """What the model is sent this step (with ``specs``), kept inside its window. Yields the
             ``context_trimmed`` event the first time old results are stubbed or the history summarised in a run."""
-            nonlocal task_index, request_chars_sent, trimmed_told
+            nonlocal request_chars_sent, trimmed_told
+
+            def moved(index: int) -> None:                # a summary moved the task message
+                nonlocal task_index
+                task_index = index
+                if state is not None:
+                    state.task_index = index
+
             failed = state.ledger.render_failed() if state is not None and self._window() is not None else ""
-            messages, how, task_index, request_chars_sent = self._fit_window(
-                working_history, task_index, specs, failed)
-            if state is not None:
-                state.task_index = task_index
+            messages, how, request_chars_sent = self._fit_window(working_history, task_index, specs, failed, moved)
             if how is not None and not trimmed_told:
                 trimmed_told = True
                 yield {"type": "context_trimmed", "window": self._window(), "how": how}
@@ -2656,7 +2672,7 @@ class AgentRunner(PersistenceMixin):
             for text in _take_interjections(self, working_history):
                 yield {"type": "interjection", "content": text}
             if state is not None:
-                state.before_turn(self.model)
+                state.before_turn(self.model, max_input_chars=self._summary_cap())
                 yield from state.drain()
             if self.bind_tools_natively:
                 # Native mode: LLM picks from the user's tools directly.

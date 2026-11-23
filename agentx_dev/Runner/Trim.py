@@ -314,6 +314,42 @@ def trim_to_save(messages: Sequence[Dict[str, Any]], chars: int) -> List[Dict[st
     return trim_tool_results(messages, replace(policy, keep_chars=max(0, total - chars)))
 
 
+def cut_text(text: str, cap: int) -> str:
+    """``text`` cut to at most ``cap`` characters: its start and its end, with a line in between saying how much
+    was cut."""
+    if len(text) <= cap:
+        return text
+    head = cap // 2
+    tail = cap - head - len(_cut_mark(len(text)))        # the mark is never longer than with every character cut
+    if tail <= 0:
+        return text[:cap]
+    return text[:head] + _cut_mark(len(text) - head - tail) + text[len(text) - tail:]
+
+
+def _cut_mark(chars: int) -> str:
+    return f"\n[... {chars:,} characters cut to fit the model's window ...]\n"
+
+
+def cut_newest_result(messages: Sequence[Dict[str, Any]], chars: int) -> Optional[List[Dict[str, Any]]]:
+    """A copy of ``messages`` in which the newest tool result is ``chars`` characters shorter (its start and end
+    kept, see ``cut_text``), or None when there is no text result long enough to cut that much from."""
+    for index in range(len(messages) - 1, -1, -1):
+        info = _result_info(messages[index])
+        if info is None:
+            continue
+        text = info[1]
+        cap = len(text) - chars
+        if cap < len(_cut_mark(len(text))) + 2:
+            return None
+        cut = cut_text(text, cap)
+        message = messages[index]
+        content = cut if message.get("role") == "tool" else OBSERVATION_PREFIX + cut
+        out = list(messages)
+        out[index] = {**message, "content": content}
+        return out
+    return None
+
+
 def coerce_trim_policy(value: Any) -> Optional[TrimPolicy]:
     """``None``/``False`` -> no trimming; ``True`` -> the default policy; a ``TrimPolicy`` as it is."""
     if value is None or value is False:

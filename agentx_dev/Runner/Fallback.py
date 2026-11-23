@@ -71,9 +71,10 @@ class FallbackFailed(RuntimeError):
 
 
 class ContextWindowTooSmall(RuntimeError):
-    """The model's context window cannot hold even the instructions and the newest message, after old tool results
-    were stubbed and the conversation was summarised, so the request was not sent (a server given a longer request
-    silently drops its start, which is where the instructions are). ``window`` and ``needed`` are in tokens."""
+    """The model's context window is too small for the request, which was not sent (a server given a longer request
+    silently drops its start, which is where the instructions are). Raised at once when the system message and the
+    task message alone do not fit; otherwise only after old tool results were stubbed, the conversation summarised
+    and the newest tool result cut, all of it not enough. ``window`` and ``needed`` are in tokens."""
 
     def __init__(self, window: int, needed: int):
         super().__init__(f"the request needs about {needed:,} tokens; the model's window is {window:,} tokens "

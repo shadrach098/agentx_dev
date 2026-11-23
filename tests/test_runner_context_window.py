@@ -177,7 +177,9 @@ class Counting(Scripted):
         self.tools_seen.append(tools)
         self.tool_calls_made.append(list(messages))
         chars = request_chars(messages) + len(json.dumps(tools, default=str))
-        self._record_usage_counts(input_tokens=math.ceil(chars / 2), output_tokens=5)
+        tokens = math.ceil(chars / getattr(self, "per_token", 2))
+        cached = int(tokens * getattr(self, "cached", 0.0))          # reported apart, as Anthropic does
+        self._record_usage_counts(input_tokens=tokens - cached, output_tokens=5, cache_read_tokens=cached)
         return self._tool_script.pop(0)
 
 
@@ -193,6 +195,58 @@ def test_observed_ratio_used():
     estimated = Scripted(five_reads(), context_window=window)
     list(make(estimated, size=1500).stream("read five parts"))
     assert max(sent_chars(r) for r in estimated.tool_calls_made) > 0.85 * window * 2
+
+
+@pytest.mark.parametrize("per_token, cached", [(4, 0.5), (6, 0.0)])
+def test_a_reply_never_loosens_the_budget(per_token, cached):
+    # Half the tokens reported as cache reads (input_tokens alone shows 8 characters a token), or a server that
+    # reports 6: the budget stays at 4 characters a token.
+    model = Counting(five_reads(), context_window=2000)
+    model.per_token, model.cached = per_token, cached
+    assert make(model).invoke("read five parts").content == "done"
+    assert all(sent_chars(r) <= 0.85 * 2000 * 4 for r in model.tool_calls_made)
+
+
+def test_one_oversized_result_is_cut_to_fit():
+    model = Scripted([call("read", "big", "c0"), respond()], script=["notes"] * 3, context_window=4000)
+    completion = make(model, size=60_000).invoke("read the big file")
+    assert completion.content == "done"
+    request = model.tool_calls_made[-1]
+    assert sent_chars(request) <= 0.85 * 4000 * 4
+    result = [m for m in request if m["role"] == "tool"][-1]["content"]
+    assert result.startswith("big:rrr") and result.endswith("rrr")             # its start and its end
+    assert "characters cut to fit the model's window" in result
+    kept = [m for m in completion.history if m["role"] == "tool" and m.get("name") == "read"]
+    assert len(kept[0]["content"]) == 60_000                                    # the history keeps it whole
+
+
+def test_one_oversized_observation_is_cut_in_text_mode():
+    model = MockModel(script=[make_react_response("read", "big"), make_final("done")])
+    completion = make(model, size=60_000, context_window=4000).invoke("read the big file")
+    assert completion.content == "done"
+    request = model.calls[-1]
+    assert sent_chars(request) <= 0.85 * 4000 * 4
+    assert "characters cut to fit the model's window" in request[-1]["content"]
+
+
+def test_persistence_summary_fits_the_window():
+    # Persistence compacts on its own schedule (here after ~6,000 tokens); its summary call fits the window too.
+    script = [call("read", str(i), f"c{i}") for i in range(24)] + [respond()]
+    model = Scripted(script, script=["notes"] * 10, context_window=8192)
+    runner = make(model, size=1400, max_iterations=40, persistence=Persistence(compact_at_tokens=6000))
+    events = list(runner.stream("read many parts"))
+    assert events[-1]["completion"].content == "done"
+    assert [e for e in events if e["type"] == "compact"], "persistence compacted"
+    assert model.calls
+    assert all(sum(len(m["content"]) for m in summary) <= 8192 * 4 // 2 for summary in model.calls)
+
+
+def test_explicit_window_is_the_primarys_not_the_fallbacks():
+    primary = Paid([react_call(str(i), f"c{i}") for i in range(5)] + [KeyRejected()])
+    fallback = Scripted([respond("finished")], script=["notes"] * 3, context_window=2000)
+    runner = make(primary, fallback_model=fallback, context_window=200_000)
+    assert runner.invoke("read five parts").content == "finished"
+    assert all(sent_chars(r) <= 0.85 * 2000 * 4 for r in fallback.tool_calls_made)
 
 
 def test_budget_follows_fallback():
