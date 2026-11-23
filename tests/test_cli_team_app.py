@@ -305,9 +305,9 @@ def test_an_error_text_with_the_api_key_never_reaches_the_result_string(tmp_path
     model._script_fn = script
     assert app.start() == 0
     history = history_text(app)
-    # the agent hears only that the job failed (no error text, which can name the model); the screen gets the
-    # error with the key hidden
-    assert "Team job failed." in history and "401" not in history
+    # the agent hears only that the summary could not be written, with the steps' own results (no error text, which
+    # can name the model); the screen gets the error with the key hidden
+    assert "the summary could not be written" in history and "401" not in history
     assert secret not in history and secret not in out.getvalue()
     assert "[hidden]" in out.getvalue()
 
@@ -947,8 +947,8 @@ def test_a_step_on_the_fallback_is_marked_on_the_screen_in_the_panel_and_for_the
 
 def started_for_a_job(tmp_path, chat, models, monkeypatch, **kw):
     """An app started on ``chat``, and what ``run_team_job`` is given when a job starts (the job itself not run)."""
-    app, _, _, _ = make_app(tmp_path, Lines("/exit"), chat, env=KEYS, model_factory=factory_for(chat, **models),
-                            local_context=32768, **kw)
+    kw.setdefault("local_context", 32768)
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), chat, env=KEYS, model_factory=factory_for(chat, **models), **kw)
     assert app.start() == 0
     given = {}
     monkeypatch.setattr(app_module, "run_team_job",
@@ -1086,3 +1086,25 @@ def test_the_terminal_approval_shows_the_warning_on_its_own_line(tmp_path):
     ask(Request(tool="start_team_job", kind="team", subject="Survey", args=CALL, remember=False, grant=""))
     shown = out.getvalue()
     assert "Helpers on claude-opus-5-5 will see this project's files." in shown and "\\n" not in shown
+
+
+def test_local_helpers_and_helper_fallbacks_get_instructions_fitted_to_their_window(tmp_path, monkeypatch):
+    chat = team_model([])
+    chat.model_name = "claude-sonnet-5-5"
+    small, fallback = LocalStandIn("llama3.1:8b"), LocalStandIn("qwen3:8b")
+    small.context_window = 16384                      # its check said so
+    (tmp_path / "proj").mkdir(exist_ok=True)
+    (tmp_path / "proj" / "AGENTX.md").write_text("rule " * 6000, encoding="utf-8")     # 30,000 characters
+    given = started_for_a_job(tmp_path, chat, {"llama3.1:8b": small, "qwen3:8b": fallback}, monkeypatch,
+                              team_models=["llama3.1:8b"], fallback_model="qwen3:8b", local_context=16384)
+    fitted_for = given["addendum_for"]
+    assert "shortened to fit this model's 16,384-token window" in fitted_for(fallback)
+    assert "qwen3" not in fitted_for(fallback) and "llama" not in fitted_for(small)     # blind, as all helper text
+    helpers = build_helpers(chat, [], given["addendum"], extra_models=given["extra_models"],
+                            fallback_model=given["fallback_model"], addendum_for=fitted_for)
+    local = helpers["coder@llama3.1:8b"][1].system_addendum
+    cloud = helpers["coder@claude-sonnet-5-5"][1]
+    assert "shortened to fit this model's 16,384-token window" in local and len(local) < 25_000
+    assert "shortened to fit" not in cloud.system_addendum and len(cloud.system_addendum) > 20_000
+    on_fallback = cloud.fallback_addendum(fallback)
+    assert "shortened to fit this model's 16,384-token window" in on_fallback and "coder helper" in on_fallback

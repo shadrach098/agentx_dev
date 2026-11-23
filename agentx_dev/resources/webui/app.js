@@ -959,10 +959,7 @@
     if (refocus) menuFor.focus();
     menuFor = null; menuPick = null;
   }
-  function openMenu(button, items, pick) {
-    if (menuFor === button) { closeMenu(true); return; }
-    closeMenu(); hidePalette();
-    menuFor = button; menuPick = pick;
+  function drawMenu(button, items) {
     menu.innerHTML = items.map((it, n) => `<div class="menu-item" role="option" tabindex="-1" data-n="${n}" aria-selected="${!!it.current}">` +
       `<span class="menu-text"><span class="menu-label">${esc(it.label)}${it.tag ? `<span class="menu-tag"> · ${esc(it.tag)}</span>` : ""}</span>${it.hint ?`<span class="menu-hint">${esc(it.hint)}</span>` : ""}</span>` +
       `${it.current ? CHECK : ""}</div>`).join("");
@@ -971,8 +968,25 @@
     const b = button.getBoundingClientRect();           // above its button, kept inside the window
     menu.style.left = Math.max(8, Math.min(b.left, window.innerWidth - menu.offsetWidth - 8)) + "px";
     menu.style.bottom = Math.max(8, window.innerHeight - b.top + 8) + "px";
+  }
+  function openMenu(button, items, pick) {
+    if (menuFor === button) { closeMenu(true); return; }
+    closeMenu(); hidePalette();
+    menuFor = button; menuPick = pick;
+    drawMenu(button, items);
     button.setAttribute("aria-expanded", "true");
     const start = Math.max(0, items.findIndex((it) => it.current));
+    menu.querySelector(`[data-n="${start}"]`).focus();
+  }
+  // The open menu's items replaced in place (a list that came in after it opened); the focused item keeps focus.
+  function refreshMenu(button, items) {
+    if (menuFor !== button) return;
+    const same = (a, b) => a.value === b.value && a.label === b.label && a.tag === b.tag && !!a.current === !!b.current;
+    if (items.length === menu.items.length && items.every((it, n) => same(it, menu.items[n]))) return;
+    const at = menu.contains(document.activeElement) ? menu.items[Number(document.activeElement.dataset.n)] : null;
+    drawMenu(button, items);
+    const keep = at ? items.findIndex((it) => it.value === at.value && it.label === at.label) : -1;
+    const start = keep >= 0 ? keep : Math.max(0, items.findIndex((it) => it.current));
     menu.querySelector(`[data-n="${start}"]`).focus();
   }
   function choose(n) {
@@ -1002,22 +1016,28 @@
   $("modeBtn").addEventListener("click", () => openMenu($("modeBtn"),
     MODES.map(([value, label, hint]) => ({value, label, hint, current: value === currentMode})),
     (it) => { if (it.value !== currentMode) { setMode(it.value); post("/api/send", {text: `/mode ${it.value}`}); } }));
-  $("modelBtn").addEventListener("click", async () => {
-    if (menuFor === $("modelBtn")) { closeMenu(true); return; }
-    await loadState();                             // the local server's models may have come in since
+  function modelItems() {
     const names = models.includes(currentModel) || !currentModel ? models : [currentModel, ...models];
-    openMenu($("modelBtn"), [...names.map((m) => ({value: m, label: m, tag: localModels.includes(m) ? "local" : "",
-                                                   current: m === currentModel})),
-                             {value: "", label: "Other model…", hint: "Type any model name"}],
-      async (it) => {
-        let name = it.value;
-        if (!name) {
-          name = await askText({title: "Use another model", text: "Any model your keys can reach, by its exact name.",
-                                placeholder: "for example claude-sonnet-5-5 or gpt-6.1-sol", ok: "Switch"});
-          if (!name) return;
-        }
-        if (name !== currentModel) { setModel(name); post("/api/send", {text: `/model ${name}`}); }
-      });
+    return [...names.map((m) => ({value: m, label: m, tag: localModels.includes(m) ? "local" : "",
+                                  current: m === currentModel})),
+            {value: "", label: "Other model…", hint: "Type any model name"}];
+  }
+  async function pickModel(it) {
+    let name = it.value;
+    if (!name) {
+      name = await askText({title: "Use another model", text: "Any model your keys can reach, by its exact name.",
+                            placeholder: "for example claude-sonnet-5-5 or gpt-6.1-sol", ok: "Switch"});
+      if (!name) return;
+    }
+    if (name !== currentModel) { setModel(name); post("/api/send", {text: `/model ${name}`}); }
+  }
+  // Opens at once from what is known (a second click closes it, as any menu); the local server's models may have
+  // come in since, so the list is asked again and the open menu updated in place.
+  $("modelBtn").addEventListener("click", () => {
+    const button = $("modelBtn");
+    const opening = menuFor !== button;
+    openMenu(button, modelItems(), pickModel);
+    if (opening) loadState().then(() => refreshMenu(button, modelItems()));
   });
   $("newChat").addEventListener("click", () => { if (live.joined) joinLive(false, "new"); else post("/api/send", {text: "/clear"}); });
   // -- the side panel: context, tokens, team work, MCP servers, memory ----------------------------------------------

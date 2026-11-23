@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Tuple
 
 from agentx_dev.cli.approval import MODES
-from agentx_dev.cli.models import ModelError
+from agentx_dev.cli.models import ModelError, runnable_local_names
 from agentx_dev.cli.ui import plain
 
 _MAX_SHOWN = 160
@@ -86,7 +86,8 @@ def _model(ctx: Any, arg: str) -> None:
         if folder:
             ctx.error("Usage: /model <name> --folder")
             return
-        local = [model for model in getattr(ctx, "local_models", None) or [] if model != ctx.model_label]
+        local = [model for model in runnable_local_names(getattr(ctx, "local_models", None))
+                 if model != ctx.model_label]
         others = (" Other models: " + shown(", ".join(f"{model} (local)" for model in local), 600) + "."
                   if local else "")
         ctx.notice(f"Model: {shown(ctx.model_label)}.{others} Switch for this session with /model <name>, for "

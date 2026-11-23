@@ -179,3 +179,17 @@ def test_check_server_down():
 def test_a_scheme_less_address_gets_http():
     assert normalise_base_url("localhost:1234") == "http://localhost:1234/v1"
     assert normalise_base_url("gpu-box.lan") == "http://gpu-box.lan/v1"
+
+
+def test_messages_name_the_server_without_its_credentials():
+    from agentx_dev.LocalModel import _not_answering
+    from agentx_dev.cli.app_models import server_name
+    text = _not_answering("http://user:s3cret@gpu-box:8080/v1")
+    assert text == "the local server at gpu-box:8080 is not answering"
+    assert _not_answering("http://[::1]:11434/v1") == "the local server at [::1]:11434 is not answering"
+    assert _not_answering("http://localhost/v1") == "the local server at localhost is not answering"
+    assert "s3cret" not in server_name("http://user:s3cret@gpu-box:8080/v1")
+    assert server_name("http://user:s3cret@gpu-box:8080/v1") == "The local server at gpu-box:8080"
+    with pytest.raises(LocalModelError) as e:
+        Local.models("http://user:s3cret@127.0.0.1:9/v1", timeout=0.5)
+    assert "s3cret" not in str(e.value) and "user" not in str(e.value)

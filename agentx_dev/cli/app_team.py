@@ -207,6 +207,9 @@ class TeamCommands:
                                   fallback={"to": data.get("fallback"), "from": data.get("fallback_from"),
                                             "reason": data.get("fallback_reason")})
             self.progress.start("Team is working")
+        elif kind == "notice":                     # the planner moved to the fallback: said once, real names
+            self.notice(self._safe(data.get("text") or "", 300))
+            self.progress.start("Team is working")
         elif kind == "error":
             # why the whole job failed, for the person: the agent is told only the kind of failure (the provider's
             # words can name the model its planner must not learn)

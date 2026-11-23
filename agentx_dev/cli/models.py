@@ -171,6 +171,21 @@ def _acceptable_name(name: str) -> bool:
             and not any(ch.isspace() for ch in name))
 
 
+def runnable_local_names(names: Any) -> List[str]:
+    """The names in ``names`` that agentx can run as local models, each once, in order: plain names
+    (``_acceptable_name``) that do not look hosted. A local server may list ``gpt-oss:20b``, but a gpt*, claude* or
+    o<digit>* name always means the hosted model, so choosing it would send the conversation to OpenAI or Anthropic."""
+    return list(dict.fromkeys(name for name in (str(n) for n in (names or []))
+                              if _acceptable_name(name) and is_local_name(name)))
+
+
+def local_copy_name(name: str) -> str:
+    """A local name for a hosted-looking one a local server lists, as ``ollama cp`` would give it: ``gpt-oss:20b``
+    becomes ``oss-20b``."""
+    rest = re.sub(r"^(gpt|claude)[-_.]?", "", str(name), flags=re.IGNORECASE).replace(":", "-")
+    return rest if rest and is_local_name(rest) else "local-" + str(name).replace(":", "-")
+
+
 def _shown_name(name: str) -> str:
     """The name as a message shows it: at most 40 characters, repr-escaped so control characters stay visible
     as text and cannot reach the output raw."""

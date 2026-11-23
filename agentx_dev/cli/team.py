@@ -28,11 +28,13 @@ from pydantic import BaseModel, Field
 
 from agentx_dev import AgentRunner, AgentType, AsyncSupervisor, SpawnConfig
 from agentx_dev.Runner.Changes import CHANGING_TOOLS, REFUSAL_STARTS, changed_paths
-from agentx_dev.Runner.Fallback import FallbackFailed
+from agentx_dev.Runner.AgentRun import CHARS_PER_TOKEN, REQUEST_SHARE, _FRAMEWORK_STOPS
+from agentx_dev.Runner.Fallback import FallbackFailed, fails_for_good
 from agentx_dev.cli.models import HelperModel, model_label, provider_for, without_auto_prefix
 from agentx_dev.cli.blind_models import BlindModelRoster
 from agentx_dev.cli.ui import summarize_result
-from agentx_dev.Runner.Trim import TrimPolicy
+from agentx_dev.Runner.Trim import TrimPolicy, cut_text
+from agentx_dev._supervisor.steps import _format_results_block
 from agentx_dev.SubAgents import AgentSpec
 from agentx_dev.Supervisor import Specialist, SubtaskResult, _plan_uses_deps, _result_failed, _step_agent_name
 from agentx_dev.Tools import StructuredTool
@@ -697,6 +699,12 @@ class _HelperRunner(AgentRunner):
         earlier = job.failed_for_good(self.model) if fallback is not None else None
         if earlier is not None:                     # its model failed for good in an earlier step: start on the fallback
             settings["model"], settings["fallback_model"] = fallback, None
+            fitted = settings.get("fallback_addendum")      # with the instructions fitted to its window
+            if fitted is not None:
+                try:
+                    settings["system_addendum"] = fitted(fallback) if callable(fitted) else fitted
+                except Exception:                   # the helper's own instructions stay
+                    pass
         if status is not None:
             with status._lock:
                 status.model = model_label(self.model)
@@ -738,15 +746,29 @@ class _HelperRunner(AgentRunner):
 
 def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
             describe_error: Callable[[BaseException], str], skills: Any = None,
-            name: str = "", every_mcp_tool: bool = True, fallback_model: Any = None) -> AgentRunner:
+            name: str = "", every_mcp_tool: bool = True, fallback_model: Any = None,
+            addendum_for: Optional[Callable[[Any], str]] = None) -> AgentRunner:
+    """One helper. ``addendum_for(model)`` (when given) is the chat's addendum fitted to a local model's window: a
+    helper on a local model gets it, and so does a helper that moves to the fallback."""
     chosen = [by_name[tool] for tool in role.tools if tool in by_name]
     if every_mcp_tool:
         # The user's MCP tools go to every built-in helper: what they do is up to the server, and each asks first.
         chosen += [tool for tool in by_name.values() if getattr(tool, "mcp_server", None) and tool not in chosen]
     # The binding mode is left to the runner (no bind_tools_natively / use_function_calling), so a helper on a local
     # model, or one that moved to the fallback, binds its tools the way that model needs.
+    local = getattr(model, "is_local", False)
+    own = addendum
+    if local and addendum_for is not None:
+        try:
+            own = addendum_for(model)
+        except Exception:                           # the chat's addendum, as before
+            own = addendum
+    on_fallback = None
+    if addendum_for is not None and not local and fallback_model is not None:
+        def on_fallback(fallback: Any) -> str:
+            return (addendum_for(fallback) or "") + role_prompt(role)
     return _HelperRunner(model=model, agent=AgentType.ReAct, tools=chosen,
-                         system_addendum=(addendum or "") + role_prompt(role),
+                         system_addendum=(own or "") + role_prompt(role), fallback_addendum=on_fallback,
                          max_iterations=HELPER_STEPS, auto_cache=False, verbose=False,
                          parallel_tool_workers=1, describe_error=describe_error, skills=skills,
                          trim_results=HELPER_TRIM, helper_name=name or role.name, strict_tool_dispatch=True,
@@ -757,7 +779,8 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
                   describe_error: Callable[[BaseException], str] = str,
                   extra_models: Sequence[HelperModel] = (), chat_use: str = "",
                   skills: Any = None, roster: Optional[BlindModelRoster] = None,
-                  fallback_model: Any = None) -> Dict[str, Tuple[str, AgentRunner]]:
+                  fallback_model: Any = None,
+                  addendum_for: Optional[Callable[[Any], str]] = None) -> Dict[str, Tuple[str, AgentRunner]]:
     """One ``AgentRunner`` per role. Without ``extra_models`` they run on ``model`` and are named ``explorer``,
     ``coder``, ``runner`` with the roles' own descriptions. With extra models every copy names its model, the
     chat's own included (``coder@<model>``), and every description says the same thing apart from the model and
@@ -768,7 +791,8 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
     list of the skills that fit its role's tools, so a step that says "use the X skill" can be done. An error a
     helper's run raises reaches the Supervisor as ``describe_error(error)`` only. Every helper whose model is not
     local falls back to ``fallback_model`` (a local model, or None) when its model fails for good: the step carries
-    on there, and its ``StepStatus.fallback`` says so."""
+    on there, and its ``StepStatus.fallback`` says so. ``addendum_for(model)`` fits the addendum to a local model's
+    window (see ``_helper``)."""
     by_name = {tool.name: tool for tool in tools}
     extras = list(extra_models)
     helpers: Dict[str, Tuple[str, AgentRunner]] = {}
@@ -778,7 +802,8 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
             for role in ROLES:
                 name = f"{role.name}@{model_id}" if extras else role.name
                 runner = _helper(role, roster.resolve(model_id), by_name, addendum,
-                                 describe_error, skills, name, fallback_model=fallback_model)
+                                 describe_error, skills, name, fallback_model=fallback_model,
+                                 addendum_for=addendum_for)
                 runner._blind_errors = True
                 runner.model_id = model_id
                 helpers[name] = (role.description + note, runner)
@@ -787,7 +812,7 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
         for role in ROLES:
             helpers[role.name] = (role.description,
                                   _helper(role, model, by_name, addendum, describe_error, skills, role.name,
-                                          fallback_model=fallback_model))
+                                          fallback_model=fallback_model, addendum_for=addendum_for))
         return helpers
     for helper_model in [HelperModel(model_label(model), model, chat_use), *extras]:
         note = MODEL_NOTE.format(model=helper_model.name,
@@ -797,7 +822,7 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
             name = f"{role.name}@{helper_model.name}"
             helpers[name] = (role.description + note,
                              _helper(role, helper_model.model, by_name, addendum, describe_error, skills, name,
-                                     fallback_model=fallback_model))
+                                     fallback_model=fallback_model, addendum_for=addendum_for))
     return helpers
 
 
@@ -814,13 +839,39 @@ def _steps(count: int) -> str:
     return f"{count} step{'s' if count != 1 else ''}"
 
 
+SUMMARY_BY_FALLBACK = "the summary was written by the fallback model"
+SUMMARY_NOT_WRITTEN = "the summary could not be written; the steps' own results follow"
+SUMMARY_MISSING = "No summary: the team's model failed while writing it. Each step's own result:\n\n"
+PLANNER_FALLBACK = "{from} failed ({reason}): the team's planner continues on {to}."
+SUMMARY_FAILED = "The team's summary could not be written ({why}); the main agent gets each step's own result."
+
+
+def _fit_to_window(messages: List[Dict[str, Any]], model: Any) -> List[Dict[str, Any]]:
+    """``messages`` for ``model``: when it has a window and they are too long for it (the runner's share of it,
+    about 4 characters a token), the longest message is cut (its start and end kept) until they fit."""
+    window = getattr(model, "context_window", None)
+    if not isinstance(window, int) or isinstance(window, bool) or window <= 0:
+        return messages
+    budget = int(window * REQUEST_SHARE * CHARS_PER_TOKEN)
+    total = sum(len(str(m.get("content") or "")) for m in messages)
+    if total <= budget or not messages:
+        return messages
+    longest = max(range(len(messages)), key=lambda i: len(str(messages[i].get("content") or "")))
+    text = str(messages[longest].get("content") or "")
+    fitted = [dict(m) for m in messages]
+    fitted[longest]["content"] = cut_text(text, max(0, len(text) - (total - budget)))
+    return fitted
+
+
 def format_result(result: Any,
-                  fallback_of: Optional[Callable[[Any], Optional[Dict[str, str]]]] = None) -> str:
+                  fallback_of: Optional[Callable[[Any], Optional[Dict[str, str]]]] = None,
+                  summary_by: str = "") -> str:
     """The one string the main agent gets back: the outcome, each step's fate, and the final answer.
     ``fallback_of(step)`` is ``{"from", "reason"}`` for a step that finished on the fallback model (None
     otherwise); such a step reads ``done on the fallback model (fallback: <from> <reason>)`` and the first line
     counts them, so the agent knows which work to check. ``from`` is what the agent may be told (the job's model
-    ID): no model is named, as everywhere the agent reads."""
+    ID): no model is named, as everywhere the agent reads. ``summary_by`` "fallback" (the summary was written on the
+    fallback) or "missing" (it could not be written: the content is the steps' own results) is said on line one."""
     subtasks = list(getattr(result, "subtasks", None) or [])
 
     def used(sub: Any) -> Optional[Dict[str, str]]:
@@ -839,6 +890,8 @@ def format_result(result: Any,
     on_fallback = sum(1 for sub in subtasks if used(sub) is not None)
     if on_fallback:
         outcome += f"; {_steps(on_fallback)} ran on the fallback model; check their work"
+    if summary_by in ("fallback", "missing"):
+        outcome += "; " + (SUMMARY_BY_FALLBACK if summary_by == "fallback" else SUMMARY_NOT_WRITTEN)
     head = f"Team job finished (outcome: {outcome})"
     content = str(getattr(result, "content", ""))
     if not subtasks:                           # nothing ran (no valid plan, say): the reason belongs on line one
@@ -973,13 +1026,56 @@ class TeamSupervisor(AsyncSupervisor):
     - ``planner_note``: the planner is told it may make helpers, and on which models."""
 
     async def _io_model(self, messages: List[Dict[str, str]]) -> str:
+        """A planner or summary call. When the team's model fails for good (or a step of this job already found it
+        gone) and the job has a fallback, the call is made on the fallback instead, its prompt fitted to the
+        fallback's window; the switch lasts the job. Blind: the prompt is the same one, naming no model."""
+        fallback = self._fallback_model
+        job = getattr(self, "_note_job", None)
+        earlier = job.failed_for_good(self.model) if (job is not None and fallback is not None) else None
+        if earlier is None:
+            try:
+                return await super()._io_model(messages)
+            except Exception as error:
+                reason = (None if fallback is None or isinstance(error, _FRAMEWORK_STOPS)
+                          or getattr(self.model, "is_local", False) else fails_for_good(error))
+                if reason is None:
+                    self._failed(error)
+                earlier = {"from": model_label(self.model), "to": model_label(fallback), "reason": reason}
+                if job is not None:
+                    job.mark_failed(self.model, earlier)
+        if not self._told_switch and self._on_fallback is not None:
+            self._told_switch = True
+            self._on_fallback(earlier)
         try:
-            return await super()._io_model(messages)
+            text = await asyncio.to_thread(fallback.Initialize, _fit_to_window(messages, fallback))
         except Exception as error:
-            if self._model_diagnostic is None:
-                raise
-            self._model_diagnostic(error)
-            raise RuntimeError("Team model request failed.") from None
+            self._failed(error)
+        if self._synthesizing:
+            self.summary_by = "fallback"
+        return text
+
+    def _failed(self, error: BaseException) -> None:
+        """Raise for a planner or summary call that failed: the whole error goes to the screen only (a summary's
+        to ``summary_diagnostic`` when given: the job still returns the steps' results)."""
+        tell = (self._summary_diagnostic if self._synthesizing and self._summary_diagnostic is not None
+                else self._model_diagnostic)
+        if tell is None:
+            raise error
+        tell(error)
+        raise RuntimeError("Team model request failed.") from None
+
+    async def _synthesize(self, user_task: str, subtask_results: List[SubtaskResult],
+                          unresolved: Optional[List[SubtaskResult]] = None) -> str:
+        """The summary; when it cannot be written (the model and any fallback failed), the steps' own results, so
+        the finished work still reaches the main agent."""
+        self._synthesizing = True
+        try:
+            return await super()._synthesize(user_task, subtask_results, unresolved=unresolved)
+        except Exception:                           # KeyboardInterrupt and SystemExit pass
+            self.summary_by = "missing"
+            return SUMMARY_MISSING + _format_results_block(subtask_results)
+        finally:
+            self._synthesizing = False
 
     def __init__(self, *args: Any, on_start: Optional[Callable[[str, str, StepStatus], None]] = None,
                  closed: Optional[Callable[[], Any]] = None,
@@ -987,9 +1083,20 @@ class TeamSupervisor(AsyncSupervisor):
                  models: Sequence[Tuple[str, str]] = (),
                  roster: Optional[BlindModelRoster] = None,
                  model_diagnostic: Optional[Callable[[BaseException], None]] = None,
-                 skipped: Optional[Callable[[Optional[int], Sequence[str]], bool]] = None, **kwargs: Any) -> None:
+                 skipped: Optional[Callable[[Optional[int], Sequence[str]], bool]] = None,
+                 fallback_model: Any = None, on_fallback: Optional[Callable[[Dict[str, str]], None]] = None,
+                 summary_diagnostic: Optional[Callable[[BaseException], None]] = None,
+                 **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._on_start = on_start
+        # The local model the planner and the summary move to when the team's model fails for good (None: none);
+        # on_fallback({"from", "to", "reason"}) is told once, for the screen.
+        self._fallback_model = fallback_model
+        self._on_fallback = on_fallback
+        self._summary_diagnostic = summary_diagnostic
+        self._told_switch = False
+        self._synthesizing = False
+        self.summary_by = ""                              # "fallback", "missing" (the steps' results instead) or ""
         self._closed = closed
         # skipped(number, names): whether the user asked to skip a step (its number on the screen, its names)
         self._skipped = skipped
@@ -1432,7 +1539,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                  describe_error: Callable[[BaseException], str] = str,
                  extra_models: Sequence[HelperModel] = (), chat_use: str = "", skills: Any = None,
                  step_tokens: int = 0, closed: Optional[Callable[[], Any]] = None, record: Any = None,
-                 lane: Optional[TeamLane] = None, fallback_model: Any = None) -> str:
+                 lane: Optional[TeamLane] = None, fallback_model: Any = None,
+                 addendum_for: Optional[Callable[[Any], str]] = None) -> str:
     """Plan ``task``, run the helpers (read-only steps side by side, any other step alone) and return the result
     text. Progress goes to ``notify`` and questions to ``ask_user``, both on the calling thread. ``extra_models``
     adds the roles on other models (see ``build_helpers``); the planner stays on ``model``. ``step_tokens`` is each
@@ -1440,7 +1548,10 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
     ``record`` (a ``TeamRecord``) writes the plan and each helper's whole report to disk as they happen.
     ``fallback_model`` (a local model, or None) takes over a step whose helper's model (not a local one) fails for
     good; the step's ``result`` event carries ``"fallback"`` (its name), ``"fallback_from"`` and
-    ``"fallback_reason"`` for the screen, and the result text marks the step without naming a model.
+    ``"fallback_reason"`` for the screen, and the result text marks the step without naming a model. The planner and
+    the summary move to the fallback too (the result's first line says when the summary was written there), and a
+    summary that cannot be written leaves the steps' own results. ``addendum_for(model)`` is ``addendum`` fitted to a
+    local model's window, for helpers on a local model and helpers that move to the fallback.
 
     Ctrl+C (``KeyboardInterrupt``) and ``SystemExit`` propagate, with the Supervisor's stream closed; any other
     error becomes a short failure result for the main agent to read."""
@@ -1449,6 +1560,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
     pump = _Pump()
     step_ids = _StepIds()
     fallbacks: Dict[int, Dict[str, str]] = {}      # id(SubtaskResult) -> its fallback, as the main agent is told
+    holder: Dict[str, Any] = {}                    # the job's supervisor, once made (how its summary was written)
 
     def tell(kind: str, data: Dict[str, Any]) -> None:
         on_main(notify, kind, data, wait=False, lane=lane)   # an error in it is dropped: a display error never aborts
@@ -1459,6 +1571,13 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
         except Exception:
             text = "Team execution failed."
         tell("error", {"text": text})
+
+    def summary_diagnostic(error: BaseException) -> None:
+        try:
+            text = str(describe_error(error))
+        except Exception:
+            text = type(error).__name__
+        tell("notice", {"text": SUMMARY_FAILED.format(why=text)})
 
     asker = (lambda question: on_main(ask_user, question, lane=lane)) if callable(ask_user) else ask_user
 
@@ -1478,7 +1597,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
     async def consume() -> Any:
         roster = BlindModelRoster(model, extra_models, chat_use=chat_use)
         helpers = build_helpers(model, tools, addendum, describe_error, extra_models=extra_models,
-                                chat_use=chat_use, skills=skills, roster=roster, fallback_model=fallback_model)
+                                chat_use=chat_use, skills=skills, roster=roster, fallback_model=fallback_model,
+                                addendum_for=addendum_for)
         for _, runner in helpers.values():
             runner.job = job
         by_name = {tool.name: tool for tool in tools}
@@ -1490,7 +1610,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             chosen = roster.resolve(model_name)
             shown = f"{name}@{model_label(chosen)}" if extra_models and model_name else name
             runner = _helper(role, chosen, by_name, addendum, describe_error, skills, shown,
-                             every_mcp_tool=False, fallback_model=fallback_model)
+                             every_mcp_tool=False, fallback_model=fallback_model, addendum_for=addendum_for)
             runner._blind_errors = True
             runner.model_id = model_name
             runner.job = job
@@ -1503,12 +1623,15 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             model=model, agents=helpers, max_subtasks=MAX_SUBTASKS, verbose=False, max_subtask_retries=0,
             max_plan_retries=1, ask_user=asker, max_questions=MAX_QUESTIONS, spawn_config=spawning,
             max_parallel=PARALLEL_HELPERS, closed=closed, make_helper=make_helper, roster=roster,
-            skipped=job.skipped, model_diagnostic=diagnostic,
+            skipped=job.skipped, model_diagnostic=diagnostic, fallback_model=fallback_model,
+            on_fallback=lambda used: tell("notice", {"text": PLANNER_FALLBACK.format(**used)}),
+            summary_diagnostic=summary_diagnostic,
             on_start=lambda agent, query, status: (
                 record.started(recorded_status(status, supervisor)) if record is not None else None,
                 tell("dispatch", {"agent": supervisor.shown_name(agent), "query": str(query), "label": status.label,
                                   "status": status, **step_ids.started(agent, query, status)})))
         supervisor._note_job = job
+        holder["supervisor"] = supervisor
         result = None
         async with aclosing(supervisor.astream(task)) as events:
             async for event in events:
@@ -1570,7 +1693,9 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                     _active_job = None
     if result is None:
         return _recorded(record, _with_notes(f"Team job ended without a result. {MAY_HAVE_CHANGED}", job))
-    return _recorded(record, _with_notes(format_result(result, fallback_of=lambda sub: fallbacks.get(id(sub))), job))
+    summary_by = str(getattr(holder.get("supervisor"), "summary_by", "") or "")
+    return _recorded(record, _with_notes(format_result(result, fallback_of=lambda sub: fallbacks.get(id(sub)),
+                                                       summary_by=summary_by), job))
 
 
 def _with_notes(text: str, job: _Job) -> str:

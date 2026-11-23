@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
-from agentx_dev.LocalModel import DEFAULT_WINDOW, Local
+from agentx_dev.LocalModel import DEFAULT_WINDOW, Local, _hostport
 from agentx_dev.cli.models import (LOCAL_TYPO_HINT, SUGGESTED_MODELS, ModelError, describe_prompt, is_auto_note,
-                                   is_local_name, key_variable, model_label, other_provider, parse_descriptions,
-                                   parse_team_models, provider_for, team_models_line, usable_team_models)
+                                   is_local_name, key_variable, local_copy_name, model_label, other_provider,
+                                   parse_descriptions, parse_team_models, provider_for, runnable_local_names,
+                                   team_models_line, usable_team_models)
 from agentx_dev.cli.models import _acceptable_name
 from agentx_dev.cli.settings import (project_settings_path, user_settings_path, write_project_mode,
                                      write_project_model,
@@ -29,6 +30,13 @@ NO_KEY_START = "No key for {provider}: starting on {fallback} (local)."
 FALLBACK_OFFER = ("{server} is running with {names}. Use one as the fallback when Claude or GPT fails? /fallback "
                   "{first} sets it; /fallback off stops this question.")
 NO_KEY = "no key"                     # the reason a conversation started on the fallback
+NO_ROOM = ("{name}'s {window:,}-token window leaves almost no room for the conversation; a variant with a larger "
+           "window fixes it: a Modelfile with FROM {name} and PARAMETER num_ctx {target}, then ollama create "
+           "{name}-{k}k -f Modelfile.")
+ROOM_SHARE = 0.25                     # below this share of a request left for the conversation, the window is too small
+HOSTED_LISTED = ("{server} lists {names}, but agentx treats names that start with gpt, claude or o and a digit as "
+                 "hosted models, so they can't be used as local models. To use one here, give it a local name: "
+                 "ollama cp {first} {copy}")
 
 
 def maker_of(name: str) -> str:
@@ -39,11 +47,10 @@ def maker_of(name: str) -> str:
 def server_name(url: str) -> str:
     """What the offer calls the local server: Ollama and LM Studio by their usual ports, else its address."""
     try:
-        parsed = urlparse(str(url or ""))
-        port = parsed.port
-        where = parsed.netloc or str(url or "")
+        port = urlparse(str(url or "")).port
     except ValueError:
-        port, where = None, str(url or "")
+        port = None
+    where = _hostport(str(url or ""))                # never a user:password@ the address may carry
     return {11434: "Ollama", 1234: "LM Studio"}.get(port or 0, f"The local server at {where}")
 
 
@@ -124,7 +131,47 @@ class ModelCommands:
             hint = f". {LOCAL_TYPO_HINT}" if shown.lower().startswith(("cl", "gp")) else ""
             raise ModelError(f"Could not use {shown}: {self._safe(result.reason, 400)}{hint}")
         model.context_window = self._window_of(model)      # the runner keeps each request inside it
+        self._warn_if_no_room(model)
         return model
+
+    def _fixed_chars(self, model: Any) -> int:
+        """The characters each request on ``model`` would carry before the conversation: agentx's base prompt (no
+        AGENTX.md or work log), the runner's own prompt for the binding mode ``model`` gets, the skill index, and the
+        tools' specs."""
+        from agentx_dev import AgentRunner, AgentType
+        from agentx_dev.cli.context import build_addendum
+        base = build_addendum(self.cwd, self.home, max_context_chars=0, max_log_chars=0)
+        runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=list(self.tools), system_addendum=base,
+                             skills=self.skills, verbose=False, auto_cache=False, strict_tool_dispatch=True)
+        return runner.fixed_request_chars()
+
+    def _warn_if_no_room(self, model: Any) -> None:
+        """One warning (per model and window) when a local model's window leaves less than ``ROOM_SHARE`` of a
+        request for the conversation once agentx's own prompt and tools are in: it is still used, but would soon stop
+        with "too small". May run on a background thread (the fallback's window read)."""
+        from agentx_dev.Runner.AgentRun import CHARS_PER_TOKEN, REQUEST_SHARE
+        window = self._window_of(model)
+        if window is None:
+            return
+        key = (model_label(model), window)
+        with self._offer_lock:
+            if key in self._room_warned:
+                return
+        try:
+            fixed = self._fixed_chars(model)
+        except Exception:                            # an estimate: when it cannot be made, nothing is said
+            logging.getLogger(__name__).debug("could not estimate the fixed part of a request", exc_info=True)
+            return
+        budget = window * REQUEST_SHARE * CHARS_PER_TOKEN
+        if budget - fixed >= ROOM_SHARE * budget:
+            return
+        with self._offer_lock:
+            if key in self._room_warned:
+                return
+            self._room_warned.add(key)
+        target = 16384 if window < 16384 else window * 2
+        self._notice_from_any_thread(NO_ROOM.format(name=self._safe(model_label(model), 80), window=window,
+                                                    target=target, k=target // 1024))
 
     @staticmethod
     def _window_of(model: Any) -> Optional[int]:
@@ -142,12 +189,19 @@ class ModelCommands:
         """In the background at startup: the models the local server lists, for ``/model`` and the model menu. A
         refused connection answers at once and a slow server gets half a second; no answer leaves the list empty
         and says nothing (typing a local name still runs the check). Models found with no ``fallbackModel`` ever set
-        bring the one-time offer to use one as the fallback."""
+        bring the one-time offer to use one as the fallback. A listed gpt*, claude* or o<digit>* name (Ollama's
+        ``gpt-oss:20b``) is left out, with one note saying why: choosing it would build the hosted model."""
         try:
-            names = Local.models(server, timeout=0.5)
+            names = [str(name) for name in Local.models(server, timeout=0.5)]
         except Exception:
             return
-        self.local_models[:] = [str(name) for name in names if str(name).strip()]
+        self.local_models[:] = runnable_local_names(names)
+        hosted = [name for name in names if _acceptable_name(name) and name.strip() and not is_local_name(name)]
+        if hosted:
+            shown = [self._safe(name, 100) for name in hosted[:8]]
+            self._discovery_note(HOSTED_LISTED.format(server=self._safe(server_name(server), 120),
+                                                      names=", ".join(shown), first=shown[0],
+                                                      copy=self._safe(local_copy_name(hosted[0]), 100)))
         self._offer_fallback(server)
 
     # -- the fallback model ----------------------------------------------------------------------------------------
@@ -173,14 +227,29 @@ class ModelCommands:
         if ready:
             self._show_fallback_offer()
 
+    def _discovery_note(self, text: str) -> None:
+        """A note from discovery (once per run): shown at once when the welcome box is drawn, else by ``start``."""
+        with self._offer_lock:
+            if self._hosted_note is not None:
+                return
+            self._hosted_note = text
+            ready = self._offer_ready
+        if ready:
+            self._show_fallback_offer()
+
     def _show_fallback_offer(self) -> None:
         """From now on the offer may be shown; show it now if discovery has made it (once; never once a fallback has
-        been set or turned off)."""
+        been set or turned off). Discovery's note on hosted-looking names comes first, also once."""
         with self._offer_lock:
             self._offer_ready = True
+            note = None if self._hosted_note_shown else self._hosted_note
+            if note is not None:
+                self._hosted_note_shown = True
             offer = None if self._offer_shown else self._offer
             if offer is not None:
                 self._offer_shown = True
+        if note is not None:
+            self._notice_from_any_thread(note)
         if offer is None or self.fallback_name is not None:
             return
         self._notice_from_any_thread(offer[0], offer[1])
@@ -232,8 +301,9 @@ class ModelCommands:
         once; its answer applies from the next request on (the runner reads ``context_window`` before each)."""
         if self.local_context:
             fallback.context_window = self.local_context
+            self._warn_if_no_room(fallback)
             return
-        fallback.context_window = DEFAULT_WINDOW
+        fallback.context_window = DEFAULT_WINDOW       # a guess until the server says: not warned about
         read = getattr(fallback, "server_window", None)
         if not callable(read):
             return
@@ -245,6 +315,7 @@ class ModelCommands:
                 return
             if isinstance(window, int) and not isinstance(window, bool) and window > 0 and not self.local_context:
                 fallback.context_window = window
+                self._warn_if_no_room(fallback)
 
         reader = threading.Thread(target=work, name="agentx-fallback-window", daemon=True)
         if remember:                                     # the fallback's own read; a team helper's is not kept
@@ -307,7 +378,7 @@ class ModelCommands:
             lines = [f"Fallback: {self._safe(name, 80)} (local). When Claude or GPT fails for good, the conversation "
                      "continues on it. /fallback <name> changes it; /fallback off turns it off."]
         else:
-            others = [self._safe(model, 80) for model in self.local_models[:8]]
+            others = [self._safe(model, 80) for model in runnable_local_names(self.local_models)[:8]]
             listed = f" The local server lists: {', '.join(others)}." if others else ""
             state = "The fallback is off" if name == "" else "No fallback is set"
             lines = [f"{state}: when Claude or GPT fails for good, the turn stops.{listed} /fallback <local name> "

@@ -114,6 +114,40 @@ def test_switch_to_local_runs_check_and_switches(tmp_path, monkeypatch):
     assert "Model: qwen3:8b" in out.getvalue()
 
 
+SMALL_WINDOW = ("qwen3:8b's 8,192-token window leaves almost no room for the conversation; a variant with a larger "
+                "window fixes it: a Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create "
+                "qwen3:8b-16k -f Modelfile.")
+
+
+def test_a_local_model_whose_window_leaves_no_room_is_warned_about_once(tmp_path, monkeypatch):
+    stub_check(monkeypatch, window=8192)
+    cloud = MockModel(script=[make_final("hi")])
+    app, out, _, _ = make_app(tmp_path, Lines("/model qwen3:8b", "/exit"), cloud_then_local(cloud),
+                              model_name="first")
+    assert app.start() == 0
+    text = out.getvalue()
+    assert text.count(SMALL_WINDOW) == 1
+    assert isinstance(app.model, Local) and app.model.model == "qwen3:8b"       # still allowed
+
+
+def test_a_window_with_room_left_is_not_warned_about(tmp_path, monkeypatch):
+    stub_check(monkeypatch, window=16384)
+    app, out, _, _ = make_app(tmp_path, Lines("/model qwen3:8b", "/exit"), cloud_then_local(MockModel(script=[])),
+                              model_name="first")
+    assert app.start() == 0
+    assert "leaves almost no room" not in out.getvalue()
+
+
+def test_the_estimate_counts_the_prompt_and_the_tool_specs(tmp_path, monkeypatch):
+    stub_check(monkeypatch, window=8192)
+    app, _, _, _ = make_app(tmp_path, Lines(), cloud_then_local(MockModel(script=[])), model_name="first")
+    model = local_mock(window=8192)
+    model.prefers_native_tools = True
+    (app.cwd / "AGENTX.md").write_text("rule " * 6000, encoding="utf-8")     # not part of the fixed share
+    fixed = app._fixed_chars(model)
+    assert 15_000 < fixed < 45_000                         # agentx's own prompt and its tools, before any message
+
+
 def test_failed_check_keeps_model_and_says_why(tmp_path, monkeypatch):
     stub_check(monkeypatch, ok=False, reason="the local server at 127.0.0.1:9 is not answering")
     cloud = MockModel(script=[make_final("still the cloud one")])

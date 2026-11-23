@@ -7,6 +7,7 @@ from datetime import datetime
 import pytest
 
 from agentx_dev.Embeddings import Embeddings, HashEmbeddings
+from agentx_dev.LocalModel import LocalCheck
 from agentx_dev.cli.commands import command_names, run_command
 from agentx_dev.cli.memory import TurnRecord
 from agentx_dev.cli.recall import (AUTO_OPEN, ProjectMemory, auto_block, make_recall_tool, note_text,
@@ -204,3 +205,96 @@ class TestDeletedNotes:
         path.unlink()
         assert memory.search("login redirect", 3) == []
         assert ProjectMemory(tmp_path, HashEmbeddings(), "hash").search("login redirect", 3) == []
+
+
+# -- a local conversation never sends note text to a cloud embeddings API ----------------------------------------
+
+CLOUD_ID = "openai:text-embedding-3-small"
+
+
+class TestCloudGuard:
+    def test_with_cloud_off_writing_and_searching_embed_nothing_and_keywords_still_find_notes(self, tmp_path):
+        cloud = Counting()
+        memory = ProjectMemory(tmp_path, cloud, CLOUD_ID, cloud_ok=lambda: False)
+        memory.write(record(), WHEN, str)
+        hits = memory.search("login redirect", 3)
+        assert hits and hits[0].title == "Fix the login redirect"
+        assert "Fix the login redirect" in make_recall_tool(memory).func(query="login redirect")
+        assert "Fix the login redirect" in auto_block(memory, "the login redirect")
+        assert cloud.count == 0
+        assert not (tmp_path / ".agentx" / "memory" / "vectors.json").exists()
+
+    def test_notes_written_while_cloud_was_off_are_indexed_once_a_cloud_model_is_in_use(self, tmp_path):
+        cloud, allowed = Counting(), [False]
+        memory = ProjectMemory(tmp_path, cloud, CLOUD_ID, cloud_ok=lambda: allowed[0])
+        memory.write(record(), WHEN, str)
+        assert cloud.count == 0
+        allowed[0] = True
+        assert memory.search("login redirect", 3)
+        assert cloud.count >= 2                    # the missing note, then the query
+
+    def test_with_cloud_allowed_nothing_changes(self, tmp_path):
+        cloud = Counting()
+        memory = ProjectMemory(tmp_path, cloud, CLOUD_ID, cloud_ok=lambda: True)
+        memory.write(record(), WHEN, str)
+        assert cloud.count == 1
+        assert memory.search("login redirect", 3) and cloud.count == 2
+
+    def test_offline_embeddings_are_used_whatever_the_guard_says(self, tmp_path):
+        offline = Counting()
+        memory = ProjectMemory(tmp_path, offline, "hash", cloud_ok=lambda: False)
+        memory.write(record(), WHEN, str)
+        assert offline.count == 1 and memory.search("login redirect", 3)
+
+
+def local_chat_model(script):
+    model = MockModel(script=script)
+    model.is_local = True
+    model.model = "qwen3:8b"
+    model.context_window = 32768
+    model.check = lambda timeout=120.0: LocalCheck(True, "", model.context_window)
+    return model
+
+
+def recall_call(query="hello file"):
+    return make_react_response("recall", {"query": query})
+
+
+class TestCloudGuardInTheApp:
+    """With OPENAI_API_KEY set the app picks OpenAI's embeddings; on a local chat model none of the first message's
+    notes, the turn's note or the recall tool may reach them."""
+
+    def run_two_sessions(self, tmp_path, monkeypatch, second_model):
+        from agentx_dev.cli import app as app_module
+        cloud = Counting()
+        monkeypatch.setattr(app_module, "choose_embeddings", lambda env: (cloud, CLOUD_ID))
+        env = {"OPENAI_API_KEY": "sk-test"}
+        first = MockModel(script=substantive_turn())
+        app, _, _, _ = make_app(tmp_path, Lines("make a hello file", "a", "/exit"), first, env=env)
+        assert app.start() == 0
+        before = cloud.count
+        assert before >= 1                           # a cloud chat model: the note was embedded
+        app2, out2, cwd, _ = make_app(tmp_path, Lines("the hello file needs a second line", "a", "/exit"),
+                                      second_model, env=env)
+        assert app2.start() == 0
+        return cloud.count - before, cwd
+
+    def test_a_local_conversation_embeds_nothing(self, tmp_path, monkeypatch):
+        seen = []
+        script = [recall_call(), write_call("second.txt", "two\n"), make_final("Added a second line. " * 30)]
+
+        def run(messages):
+            seen.append(str(messages[-1]["content"]))
+            return script.pop(0) if script else make_final("ok")
+
+        added, cwd = self.run_two_sessions(tmp_path, monkeypatch, local_chat_model(run))
+        assert added == 0
+        assert AUTO_OPEN in seen[0]                  # the notes still came back, found by keywords
+        assert any("make a hello file" in text for text in seen[1:])    # and the recall tool found them too
+        assert len(list((cwd / ".agentx" / "notes").glob("*.md"))) == 2
+
+    def test_a_cloud_conversation_still_uses_the_embeddings(self, tmp_path, monkeypatch):
+        script = [recall_call(), write_call("second.txt", "two\n"), make_final("Added a second line. " * 30)]
+        added, _ = self.run_two_sessions(tmp_path, monkeypatch,
+                                         MockModel(script=lambda m: script.pop(0) if script else make_final("ok")))
+        assert added >= 3                            # the first message, the recall query and the new note

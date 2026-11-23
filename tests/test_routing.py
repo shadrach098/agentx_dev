@@ -100,7 +100,7 @@ def test_what_the_main_agent_may_do_on_a_route():
 
 # -- through the whole app ----------------------------------------------------------------------------------------
 
-def routed_model(actions, assess_reply=TEAM, helper=None, synth_error=False, helper_name="explorer"):
+def routed_model(actions, assess_reply=TEAM, helper=None, plan_error=False, helper_name="explorer"):
     """The main agent does ``actions`` in turn ("call", "write", "read", "final"); the size question gets
     ``assess_reply`` (a callable may raise); planner, helpers and synthesizer are the team's usual script."""
     base = team_model([step("s1", helper_name, "look around")], helper=helper)
@@ -111,8 +111,8 @@ def routed_model(actions, assess_reply=TEAM, helper=None, synth_error=False, hel
         if ASSESS_MARK in last:
             state["assess"] += 1
             return assess_reply(last) if callable(assess_reply) else assess_reply
-        if synth_error and SYNTH_MARK in first:
-            raise RuntimeError("the synthesizer broke")
+        if plan_error and PLANNER_MARK in first:          # the team job fails (a broken summary would not)
+            raise RuntimeError("the planner broke")
         if PLANNER_MARK in first or SYNTH_MARK in first or "Team role:" in first \
                 or "A coding assistant can run helper steps" in last:
             return base._script_fn(messages)
@@ -201,7 +201,7 @@ def test_a_declined_team_is_not_retried_and_the_agent_must_ask_before_working_al
 
 
 def test_a_failed_team_means_asking_before_working_alone(tmp_path):
-    model = routed_model(["call", "write", "final"], synth_error=True)
+    model = routed_model(["call", "write", "final"], plan_error=True)
     app, _, cwd, _ = run(tmp_path, ["audit the whole repository for security problems"], model)
     assert not (cwd / "x.txt").exists()
     assert "needed a team and the team failed" in history_text(app)

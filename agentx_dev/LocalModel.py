@@ -38,7 +38,17 @@ def normalise_base_url(url: str) -> str:
 
 
 def _hostport(base_url: str) -> str:
-    return urlparse(base_url).netloc or base_url
+    """``host[:port]`` of the server, as messages show it: never a ``user:password@`` the address may carry (the
+    messages reach the screen, the history and saved sessions)."""
+    try:
+        parsed = urlparse(base_url)
+        host, port = parsed.hostname, parsed.port
+    except ValueError:
+        host, port = None, None
+    if not host:
+        return str(base_url or "").rsplit("@", 1)[-1]
+    host = f"[{host}]" if ":" in host else host
+    return f"{host}:{port}" if port else host
 
 
 def _root(base_url: str) -> str:

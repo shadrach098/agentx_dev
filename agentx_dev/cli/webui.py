@@ -274,14 +274,14 @@ def _local_models(app: Any) -> List[str]:
     window asks), as the model menu and the Settings suggestions offer them: plain names that agentx runs locally
     (a ``gpt*`` name a server lists still means OpenAI), each once; the chat model too when it is a local one the
     list lacks (the server did not answer at start)."""
-    from agentx_dev.cli.models import _acceptable_name, is_local_name
+    from agentx_dev.cli.models import runnable_local_names
     names = [str(name) for name in list(getattr(app, "local_models", None) or [])]
     if getattr(getattr(app, "model", None), "is_local", False):
         try:
             names.append(str(app.model_label))
         except Exception:
             pass
-    return list(dict.fromkeys(name for name in names if _acceptable_name(name) and is_local_name(name)))
+    return runnable_local_names(names)
 
 
 def _fallback_from(app: Any) -> Optional[Dict[str, str]]:

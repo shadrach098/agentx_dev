@@ -9,6 +9,9 @@
   changes, and a note written by another session is indexed the next time the index is used.
 * Embeddings come from the caller: OpenAI's when there is a key, the framework's offline ``HashEmbeddings``
   otherwise. When embedding fails (no network, say) the notes are still written and search falls back to keywords.
+* ``cloud_ok`` says whether note text may go to a cloud embeddings API right now (agentx: not while the chat runs on
+  a local model). When it says no, search uses keywords and a new note is written but not indexed; it is indexed
+  the next time the index is used with a cloud model (the notes on disk are the source of truth).
 
 Nothing here raises out of ``write``, ``search`` or the tool, and no terminal output is produced."""
 
@@ -36,6 +39,7 @@ NOTES = "notes"
 TEAM = "team"                         # team job records (team_record.py): each finished helper report is indexed too
 UNFINISHED = ("Status: **running**", "(The job has not finished")
 MEMORY = "memory"
+OFFLINE_EMBEDDERS = ("hash", "none")  # embedder ids that never send text anywhere
 VECTORS = "vectors.json"
 META = "meta.json"
 MAX_TITLE_CHARS = 80
@@ -120,14 +124,26 @@ def _snippet(text: str, limit: int = SNIPPET_CHARS) -> str:
 
 class ProjectMemory:
     """The notes and their index for one project folder. ``embedder_id`` names the embeddings (it is stored with
-    the vectors, so a change of embedder rebuilds the index instead of mixing vectors)."""
+    the vectors, so a change of embedder rebuilds the index instead of mixing vectors). ``cloud_ok``: asked before
+    each use of embeddings that are not offline; False means no note or query text is sent to them (keywords)."""
 
-    def __init__(self, cwd: Path, embeddings: Optional[Embeddings] = None, embedder_id: str = "hash") -> None:
+    def __init__(self, cwd: Path, embeddings: Optional[Embeddings] = None, embedder_id: str = "hash",
+                 cloud_ok: Optional[Callable[[], bool]] = None) -> None:
         self.cwd = Path(cwd)
         self.embeddings = embeddings or HashEmbeddings()
         self.embedder_id = str(embedder_id)
+        self.cloud_ok = cloud_ok
         self._store: Optional[VectorStore] = None
         self._broken = False          # embedding failed in this session: keyword search from now on
+
+    def _embeddings_allowed(self) -> bool:
+        """Offline embeddings always; cloud ones only when ``cloud_ok`` (if given) says so. A guard that fails is a no."""
+        if self.embedder_id in OFFLINE_EMBEDDERS or self.cloud_ok is None:
+            return True
+        try:
+            return bool(self.cloud_ok())
+        except Exception:
+            return False
 
     @property
     def notes_dir(self) -> Path:
@@ -184,6 +200,8 @@ class ProjectMemory:
         reports = len(self.team_reports())
         if self._broken or self.embedder_id == "none":
             how = "keyword matching (the embeddings could not be used)"
+        elif not self._embeddings_allowed():
+            how = "keyword matching while the chat runs on a local model (note text is not sent to the embeddings API)"
         elif self.embedder_id == "hash":
             how = "local similarity search (no embeddings API: set OPENAI_API_KEY for better matches)"
         else:
@@ -262,8 +280,10 @@ class ProjectMemory:
         return self._store
 
     def _index(self, paths: List[Path]) -> None:
+        if not paths or not self._embeddings_allowed():    # left out now: indexed when the index is next used
+            return
         store = self._open()
-        if store is None or not paths:
+        if store is None:
             return
         texts, ids, metadata = [], [], []
         for path in paths:
@@ -302,7 +322,7 @@ class ProjectMemory:
         query = str(query or "").strip()
         if not query:
             return []
-        store = self._load()
+        store = self._load() if self._embeddings_allowed() else None
         if store is not None and len(store):
             try:
                 found = store.search(query, top_k=k, min_score=min_score)

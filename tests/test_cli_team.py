@@ -560,8 +560,9 @@ def test_a_helper_that_fails_for_good_finishes_on_the_fallback(tmp_path, tools, 
     ended = next(data for kind, data in seen if kind == "result")
     assert ended["ok"] and ended["fallback"] == "qwen3:8b" and "found it on the fallback" in ended["text"]
     assert ended["status"].fallback == {"from": "claude-sonnet-5-5", "to": "qwen3:8b", "reason": "key rejected"}
+    # the summary too: the job knows the chat model is gone, so it is written on the fallback
     assert result.startswith("Team job finished (outcome: done; 1 step ran on the fallback model; check their "
-                             "work).")
+                             "work; the summary was written by the fallback model).")
     assert ("1. explorer - done on the fallback model (fallback: model_111111111111111111111111 key rejected): "
             "look around" in result)
     assert "claude-sonnet-5-5" not in result and "qwen3" not in result   # the agent sees the job's ID, no model
@@ -667,3 +668,112 @@ def test_partial_on_fallback():
     assert lines[2] == ("1. coder@model_x - partial on the fallback model (fallback: model_x key rejected; ran out "
                         "of steps): make the change")
     assert lines[3].startswith("2. runner@model_y - failed")         # a failed step is not counted as fallback work
+
+
+# -- the planner and the summary fall back too -----------------------------------------------------------------
+
+from tests.subagent_helpers import PLANNER_MARK, SYNTH_MARK
+
+
+def dying_chat(plan, *, plan_dies=False, synth_dies=True, agent=None):
+    """A Claude stand-in: plans (or dies planning), its helpers die, and it dies writing the summary."""
+    calls = {"planner": 0, "synth": 0}
+
+    def script(messages):
+        first = str(messages[0]["content"])
+        if PLANNER_MARK in first:
+            calls["planner"] += 1
+            if plan_dies:
+                raise KeyRejected()
+            return plan
+        if SYNTH_MARK in first:
+            calls["synth"] += 1
+            if synth_dies:
+                raise KeyRejected()
+            return "Summary by the chat model."
+        if agent is not None:
+            return agent(messages)
+        raise KeyRejected()
+
+    chat = MockModel(script=script)
+    chat.model_name = "claude-sonnet-5-5"
+    chat.counts = calls
+    return chat
+
+
+def local_writer(*replies, plan=None, window=None):
+    """The local fallback: helpers' steps from ``replies``; the planner's and the summary's text from its script."""
+    fallback = LocalStandIn("qwen3:8b", *replies)
+    fallback.prompts = []
+
+    def text(messages):
+        fallback.prompts.append(str(messages[0]["content"]))
+        return plan if PLANNER_MARK in str(messages[0]["content"]) else "Summary by the fallback."
+
+    fallback._script_fn = text
+    if window is not None:
+        fallback.context_window = window
+    return fallback
+
+
+SUMMARY_MARK = "the summary was written by the fallback model"
+
+
+def test_the_summary_is_written_on_the_fallback_after_the_helpers_moved(tmp_path, tools, monkeypatch):
+    fixed_ids(monkeypatch)
+    chat = dying_chat(plan_json(step("s1", "explorer", "look around")))
+    fallback = local_writer(respond("found it on the fallback"))
+    result, seen = run(tmp_path, tools, chat, fallback_model=fallback)
+    assert result.startswith("Team job finished (outcome: done; 1 step ran on the fallback model; check their "
+                             f"work; {SUMMARY_MARK}).")
+    assert "Summary by the fallback." in result and "Team job failed" not in result
+    assert "1. explorer - done on the fallback model" in result
+    assert chat.counts["synth"] == 0                           # the job already knew the chat model was gone
+    assert "claude-sonnet-5-5" not in result and "qwen3" not in result
+    assert "claude-sonnet-5-5" not in " ".join(fallback.prompts)     # blind: the summary prompt names no model
+
+
+def test_the_planner_falls_back_when_its_model_fails_for_good(tmp_path, tools, monkeypatch):
+    fixed_ids(monkeypatch)
+    chat = dying_chat("", plan_dies=True)
+    fallback = local_writer(respond("found it"), plan=plan_json(step("s1", "explorer", "look around")))
+    result, seen = run(tmp_path, tools, chat, fallback_model=fallback)
+    assert chat.counts == {"planner": 1, "synth": 0}           # tried once; from then on the job is on the fallback
+    assert result.startswith("Team job finished (outcome: done; 1 step ran on the fallback model")
+    assert SUMMARY_MARK in result.splitlines()[0] and "Summary by the fallback." in result
+    notices = [data["text"] for kind, data in seen if kind == "notice"]
+    assert notices == ["claude-sonnet-5-5 failed (key rejected): the team's planner continues on qwen3:8b."]
+
+
+def test_the_fallback_gets_a_summary_prompt_that_fits_its_window(tmp_path, tools, monkeypatch):
+    fixed_ids(monkeypatch)
+    long_report = "word " * 20_000
+    chat = dying_chat(plan_json(step("s1", "explorer", "look around")), agent=lambda m: make_final(long_report))
+    fallback = local_writer(window=8192)
+    result, _ = run(tmp_path, tools, chat, fallback_model=fallback)
+    assert SUMMARY_MARK in result.splitlines()[0]
+    assert fallback.prompts and len(fallback.prompts[-1]) <= int(8192 * 0.85 * 4)
+
+
+def test_a_summary_that_fails_still_returns_the_steps_results(tmp_path, tools, monkeypatch):
+    fixed_ids(monkeypatch)
+    chat = dying_chat(plan_json(step("s1", "explorer", "look around")),
+                      agent=lambda m: make_final("found the config in settings.py"))
+    result, seen = run(tmp_path, tools, chat)                  # no fallback: the summary cannot be written
+    assert result.startswith("Team job finished (outcome: done; the summary could not be written")
+    assert "found the config in settings.py" in result and "Team job failed" not in result
+    assert "x-api-key" not in result and "401" not in result      # the provider's words reach the screen only
+    notices = [data["text"] for kind, data in seen if kind == "notice"]
+    assert len(notices) == 1 and notices[0].startswith("The team's summary could not be written (")
+    assert "x-api-key" in notices[0]
+
+
+def test_a_planner_failure_that_is_not_for_good_still_fails_the_job(tmp_path, tools, monkeypatch):
+    def script(messages):
+        raise RuntimeError("Error code: 400 - bad request")
+
+    chat = MockModel(script=script)
+    chat.model_name = "claude-sonnet-5-5"
+    fallback = local_writer()
+    result, _ = run(tmp_path, tools, chat, fallback_model=fallback)
+    assert result.startswith("Team job failed.") and not fallback.prompts

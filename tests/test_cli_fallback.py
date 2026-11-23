@@ -154,6 +154,19 @@ def test_turn_continues_on_fallback_without_repeating_tool(tmp_path):
     assert fallback.checked == 0                            # checked lazily: the runner calls it only when needed
 
 
+def test_the_switching_turn_on_a_16k_fallback_fits_a_big_agentx_md(tmp_path):
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "proj" / "AGENTX.md").write_text("rule " * 6000, encoding="utf-8")       # 30,000 characters
+    primary = paid("claude-opus-5-5", OutOfCredit())
+    fallback = LocalTools("qwen3:8b", respond("Done on the small window."))
+    app, out, _, _ = started_on_claude(tmp_path, Lines("hello", "/exit"), primary, fallback, local_context=16384)
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "Done on the small window." in text and "too small" not in text
+    system = str(fallback.tool_calls_made[0][0]["content"])
+    assert "(shortened to fit qwen3:8b's 16,384-token window)" in system
+
+
 def test_usage_counts_both_models_on_the_switching_turn(tmp_path):
     primary = paid("claude-opus-5-5", write_call(), OutOfCredit())
     fallback = LocalTools("qwen3:8b", respond("done"), respond("again"))
@@ -300,6 +313,37 @@ def test_fallback_command_rejects_paid_name(tmp_path):
     assert "fallbackModel" not in (json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {})
 
 
+NO_ROOM = ("qwen3:8b's 8,192-token window leaves almost no room for the conversation; a variant with a larger window "
+           "fixes it: a Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create qwen3:8b-16k -f "
+           "Modelfile.")
+
+
+def test_a_fallback_with_too_small_a_window_is_warned_about_but_set(tmp_path):
+    primary = paid("claude-opus-5-5")
+    fallback = LocalTools("qwen3:8b")
+    fallback.context_window = 8192
+    app, out, _, home = make_app(tmp_path, Lines("/fallback qwen3:8b", "/exit"),
+                                 {"claude-opus-5-5": primary, "qwen3:8b": fallback}, model_name="claude-opus-5-5")
+    assert app.start() == 0
+    assert out.getvalue().count(NO_ROOM) == 1
+    assert app.fallback_name == "qwen3:8b"
+
+
+def test_a_fallback_from_the_settings_with_too_small_a_window_is_warned_about_once(tmp_path):
+    primary = paid("claude-opus-5-5")
+    app, out, _, _ = started_on_claude(tmp_path, Lines("/clear", "/exit"), primary, LocalTools("qwen3:8b"),
+                                       local_context=8192)
+    assert app.start() == 0
+    assert out.getvalue().count(NO_ROOM) == 1
+
+
+def test_a_fallback_window_with_room_is_not_warned_about(tmp_path):
+    primary = paid("claude-opus-5-5")
+    app, out, _, _ = started_on_claude(tmp_path, Lines("/exit"), primary, LocalTools("qwen3:8b"))
+    assert app.start() == 0
+    assert "leaves almost no room" not in out.getvalue()
+
+
 def test_fallback_command_checks_and_saves(tmp_path):
     primary = paid("claude-opus-5-5")
     fallback = LocalTools("qwen3:8b")
@@ -432,6 +476,51 @@ def test_no_offer_when_the_server_lists_nothing(tmp_path, monkeypatch):
     app._local_discovery.join(5)
     assert app.start() == 0
     assert "Use one as the fallback" not in out.getvalue()
+
+
+HOSTED_NOTE = ("Ollama lists gpt-oss:20b, but agentx treats names that start with gpt, claude or o and a digit as "
+               "hosted models, so they can't be used as local models. To use one here, give it a local name: "
+               "ollama cp gpt-oss:20b oss-20b")
+
+
+def test_hosted_looking_names_from_the_server_are_left_out_and_said_once(tmp_path, monkeypatch):
+    _listing(monkeypatch, ("gpt-oss:20b", "qwen3:8b", "o3-mini", "claude-local"))
+    primary = paid("claude-opus-5-5")
+    app, out, _, _ = make_app(tmp_path, Lines("/model", "/fallback", "/exit"), {"claude-opus-5-5": primary},
+                              model_name="claude-opus-5-5", local_server="http://localhost:11434/v1")
+    shown = _record_notices(app)
+    app._local_discovery.join(5)
+    assert app.local_models == ["qwen3:8b"]
+    assert app.start() == 0
+    app._discover_local_models("http://localhost:11434/v1")         # found again: not said again
+    text = out.getvalue()
+    notes = [t for t, _ in shown if "hosted models" in t]
+    assert notes == [HOSTED_NOTE.replace("lists gpt-oss:20b", "lists gpt-oss:20b, o3-mini, claude-local")]
+    assert "gpt-oss:20b (local)" not in text and "qwen3:8b (local)" in text        # /model
+    assert "The local server lists: qwen3:8b." in text                              # /fallback
+    offers = [t for t, _ in shown if "Use one as the fallback" in t]
+    assert offers and "gpt-oss" not in offers[0]
+    assert text.index("Welcome") < text.index("hosted models")
+
+
+def test_the_listings_never_offer_a_hosted_looking_name(tmp_path):
+    primary = paid("claude-opus-5-5")
+    app, out, _, _ = make_app(tmp_path, Lines("/model", "/fallback", "/exit"), {"claude-opus-5-5": primary},
+                              model_name="claude-opus-5-5")
+    app.local_models[:] = ["gpt-oss:20b", "qwen3:8b"]             # however the list was filled
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "gpt-oss" not in text and "qwen3:8b (local)" in text
+
+
+def test_no_hosted_note_when_every_listed_name_is_local(tmp_path, monkeypatch):
+    _listing(monkeypatch)
+    primary = paid("claude-opus-5-5")
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), {"claude-opus-5-5": primary}, model_name="claude-opus-5-5",
+                              local_server="http://localhost:11434/v1")
+    app._local_discovery.join(5)
+    assert app.start() == 0
+    assert "hosted models" not in out.getvalue()
 
 
 # -- marking --------------------------------------------------------------------------------------------------------

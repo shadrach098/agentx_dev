@@ -362,7 +362,10 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         self.project_memory: Optional[ProjectMemory] = None
         if self._memory_on:
             embeddings, embedder_id = choose_embeddings(self.env)
-            self.project_memory = ProjectMemory(self.cwd, embeddings, embedder_id)
+            # OpenAI's embeddings only while the chat runs on a hosted model: a local conversation's notes, its first
+            # message and the agent's recall queries never leave the machine (keyword search meanwhile).
+            self.project_memory = ProjectMemory(self.cwd, embeddings, embedder_id,
+                                                cloud_ok=lambda: not getattr(self.model, "is_local", False))
             self.tools.append(make_recall_tool(self.project_memory))
         self._recall_next = False                     # the next message is the first of a fresh conversation
         self._newly_trusted = bool(newly_trusted)    # main: the user said yes to the trust question in this run
@@ -422,6 +425,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         self._offer: Optional[Tuple[str, List[Dict[str, str]]]] = None
         self._offer_ready = False                # the welcome box is drawn: the offer may be shown at once
         self._offer_shown = False
+        self._hosted_note: Optional[str] = None  # discovery's note on gpt*/claude* names the server lists, said once
+        self._hosted_note_shown = False
+        self._room_warned: set = set()         # (local model, window) already said to leave no room (_warn_if_no_room)
         self._local_discovery: Optional[threading.Thread] = None
         if local_server is not None:
             self._local_discovery = threading.Thread(target=self._discover_local_models, args=(local_server,),
@@ -583,7 +589,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                              system_addendum=self.addendum,
                              max_iterations=self.max_steps, auto_cache=False, verbose=False, parallel_tool_workers=1,
                              skills=self.skills, trim_results=True, strict_tool_dispatch=True,
-                             fallback_model=self._fallback_for(model))
+                             fallback_model=self._fallback_for(model), fallback_addendum=self._fitted_addendum)
         # The skills THIS conversation's agent can open (what /<skill> and the `/` pop-up offer): taken from the
         # runner itself, so it is exactly what use_skill can read, and it follows /clear, /resume and a new model.
         tool = next((t for t in runner.tools if t.name == "use_skill"), None)
@@ -1478,8 +1484,14 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         return None if window is None else (str(label_of(model)), window)
 
     def _build_instructions(self, model: Any) -> None:
-        """``self.addendum`` for ``model``. A local model's instructions (AGENTX.md and the work log) get at most a
-        third of its window, the log a quarter of that, with a line saying when they were shortened."""
+        """``self.addendum`` for ``model`` (see ``_instructions_for``)."""
+        self.addendum, self._addendum_for = self._instructions_for(model)
+
+    def _instructions_for(self, model: Any, blind: bool = False) -> Tuple[str, Optional[Tuple[str, int]]]:
+        """The addendum for ``model``, and the (name, window) it was fitted to (None for a hosted model). A local
+        model's instructions (AGENTX.md and the work log) get at most a third of its window, the log a quarter of
+        that, with a line saying when they were shortened (``blind``: the line names no model, for team helpers).
+        Also what the fallback and local team helpers get."""
         fitted = self._fitted_for(model)
         limits: Dict[str, Any] = {}
         if fitted is not None:
@@ -1489,9 +1501,19 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             max_context = min(MAX_CONTEXT_CHARS, share - max_log)
             limits = dict(max_context_chars=max_context, max_log_chars=max_log)
             if max_context < MAX_CONTEXT_CHARS or max_log < MAX_LOG_CHARS:     # else a cut is the usual cap
-                limits["shortened_note"] = f"(shortened to fit {name}'s {window:,}-token window)"
-        self.addendum = build_addendum(self.cwd, self.home, log_text=self._addendum_log, **limits)
-        self._addendum_for = fitted
+                whose = "this model's" if blind else f"{name}'s"
+                limits["shortened_note"] = f"(shortened to fit {whose} {window:,}-token window)"
+        return build_addendum(self.cwd, self.home, log_text=self._addendum_log, **limits), fitted
+
+    def _fitted_addendum(self, model: Any) -> str:
+        """The addendum fitted to ``model``'s window: what a runner switching to the fallback, and a team helper on a
+        local model, are given instead of the chat's."""
+        return self._instructions_for(model)[0]
+
+    def _blind_fitted_addendum(self, model: Any) -> str:
+        """``_fitted_addendum`` for a team helper: its line names no model (helpers and the planner never learn which
+        model is which)."""
+        return self._instructions_for(model, blind=True)[0]
 
     def _start_fresh(self) -> None:
         """A new conversation (startup without --continue/--resume, or /clear): it starts from the work log."""
@@ -1658,7 +1680,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                                 describe_error=self._safe, extra_models=extras,
                                 chat_use=self._use_of(self.model_label), skills=self.skills,
                                 step_tokens=step_token_share(self.token_limit), closed=lambda: self.gate.closed,
-                                record=self._team_record(task), lane=self.team_lane, fallback_model=fallback)
+                                record=self._team_record(task), lane=self.team_lane, fallback_model=fallback,
+                                addendum_for=self._blind_fitted_addendum)
         except KeyboardInterrupt:                    # Ctrl+C or Esc: the steps still open were stopped
             self._team_panel.finish("interrupted")
             raise
