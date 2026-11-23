@@ -7,7 +7,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
+from agentx_dev.LocalModel import DEFAULT_LOCAL_URL, normalise_base_url
 from agentx_dev.cli.approval import MODES
 from agentx_dev.cli.models import parse_team_models, provider_for
 from agentx_dev.cli.safepaths import FOLDER, replace_file, safe_location
@@ -36,6 +38,9 @@ class Settings:
     team_model_uses: Dict[str, str] = field(default_factory=dict)   # notes on what a listed model is for
     token_limit: int = DEFAULT_TOKEN_LIMIT                 # "tokenLimit": tokens a message may use; 0 is off
     max_steps: int = DEFAULT_MAX_STEPS                     # "maxSteps": steps the agent may take for one message
+    local_server: str = DEFAULT_LOCAL_URL                  # "localServer": where local models run (user file only)
+    fallback_model: Optional[str] = None                   # "fallbackModel": None = never set, "" = set to off
+    local_context: Optional[int] = None                    # "localContext": the local model's window in tokens
 
 
 def user_settings_path(home: Path) -> Path:
@@ -161,6 +166,14 @@ def _write_key(folder: Path, key: str, value: Any, what: str) -> Tuple[Optional[
         return path, f"{verb} {path} with {what}."
     except (OSError, ValueError, TypeError):
         return None, f"Could not write {path}."
+
+
+def write_user_setting(home: Path, key: str, value: Any) -> None:
+    """Set one key in ``~/.agentx/settings.json`` (``localServer``, ``fallbackModel``, ``localContext``), keeping
+    the file's other keys. Same safety as ``_write_key``: no link followed, nothing outside the folder, no rewrite
+    of a file that is not a JSON object, a temporary file and mode 0o600. Never raises; a file left unchanged is
+    simply left unchanged."""
+    _write_key(Path(home), key, value, f"{key} {value!r}")
 
 
 def write_settings(folder: Path, changes: Mapping[str, Any]) -> Tuple[Optional[Path], str]:
@@ -328,6 +341,44 @@ def _read_token_limit(value: Any, path: Path, is_project: bool, settings: Settin
     settings.token_limit = value
 
 
+LOCAL_SETTING_KEYS = ("localServer", "fallbackModel", "localContext")
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def _read_local_settings(data: dict, path: Path, is_project: bool, settings: Settings) -> None:
+    """``localServer``, ``fallbackModel`` and ``localContext``: read from the user's own file only, so a cloned
+    project cannot send the conversation to another server."""
+    for key in LOCAL_SETTING_KEYS:
+        if key in data and is_project:
+            settings.problems.append(f"{key} in {path} is ignored: only your own settings file can set it.")
+    if is_project:
+        return
+    if "localServer" in data:
+        value = data["localServer"]
+        if not isinstance(value, str) or not value.strip():
+            settings.problems.append(f"settings file {path}: 'localServer' must be a web address; ignored")
+        else:
+            settings.local_server = normalise_base_url(value)
+            host = urlparse(settings.local_server).hostname or settings.local_server
+            if host not in _LOOPBACK_HOSTS:
+                settings.problems.append(f"Conversations on local models go to {_clean(host, 100)}.")
+    if "fallbackModel" in data:
+        value = data["fallbackModel"]
+        if not isinstance(value, str):
+            settings.problems.append(f"settings file {path}: 'fallbackModel' must be text; ignored")
+        elif value.strip() and provider_for(value.strip()) != "local":
+            settings.problems.append(f"fallbackModel must be a local model; {_clean(value.strip(), 80)} is not.")
+        else:
+            settings.fallback_model = value.strip()          # "" turns the fallback off
+    if "localContext" in data:
+        value = data["localContext"]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            settings.problems.append(f"settings file {path}: 'localContext' must be a positive whole number of "
+                                     "tokens; ignored")
+        else:
+            settings.local_context = value
+
+
 def load_settings(cwd: Path, home: Path) -> Settings:
     """User settings first, then the project's: scalars from the project win, lists are concatenated."""
     settings = Settings()
@@ -359,6 +410,7 @@ def load_settings(cwd: Path, home: Path) -> Settings:
             _read_token_limit(data.get("tokenLimit"), path, is_project, settings)
         if "maxSteps" in data:
             _read_max_steps(data.get("maxSteps"), path, settings)
+        _read_local_settings(data, path, is_project, settings)
         mode = data.get("mode")
         if mode is not None:
             if is_project and mode in ("accept-edits", "auto"):

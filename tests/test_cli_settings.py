@@ -180,7 +180,8 @@ def test_settings_field_order_ends_with_problems_then_project_allow():
     from agentx_dev.cli.settings import Settings
     names = [f.name for f in dataclasses.fields(Settings)]
     assert names == ["model", "mode", "add_dirs", "allow", "deny", "problems", "project_allow", "model_source",
-                     "team_models", "team_models_source", "team_model_uses", "token_limit", "max_steps"]
+                     "team_models", "team_models_source", "team_model_uses", "token_limit", "max_steps",
+                     "local_server", "fallback_model", "local_context"]
     assert Settings(None, None, [], [], [], ["p"]).project_allow == []
 
 
@@ -577,3 +578,103 @@ def test_max_steps_is_read_and_checked(tmp_path):
     (home / ".agentx" / "settings.json").write_text(json.dumps({"maxSteps": "lots"}), encoding="utf-8")
     settings = load_settings(cwd, home)
     assert settings.max_steps == 300 and any("maxSteps" in p for p in settings.problems)
+
+
+# ---- localServer, fallbackModel, localContext (the user's own file only) ----
+
+def _load_user(tmp_path, data):
+    home = tmp_path / "home"
+    project = tmp_path / "proj"
+    project.mkdir(exist_ok=True)
+    put(user_settings_path(home), data)
+    return load_settings(project, home)
+
+
+def test_local_settings_default_when_unset(tmp_path):
+    s = load_settings(tmp_path / "proj", tmp_path / "home")
+    assert s.local_server == "http://localhost:11434/v1"
+    assert s.fallback_model is None and s.local_context is None
+
+
+def test_user_file_sets_the_local_settings(tmp_path):
+    s = _load_user(tmp_path, {"localServer": "http://localhost:1234", "fallbackModel": "qwen-x",
+                              "localContext": 32768})
+    assert s.local_server == "http://localhost:1234/v1"       # normalised
+    assert s.fallback_model == "qwen-x" and s.local_context == 32768
+    assert s.problems == []
+
+
+@pytest.mark.parametrize("key,value", [("localServer", "http://evil.example:9/v1"), ("fallbackModel", "qwen-x"),
+                                       ("localContext", 4096)])
+def test_a_project_file_cannot_set_the_local_settings(tmp_path, key, value):
+    home = tmp_path / "home"
+    project = tmp_path / "proj"
+    put(project_settings_path(project), {key: value})
+    s = load_settings(project, home)
+    assert s.local_server == "http://localhost:11434/v1"
+    assert s.fallback_model is None and s.local_context is None
+    assert f"{key} in {project_settings_path(project)} is ignored: only your own settings file can set it." in s.problems
+
+
+def test_a_project_file_cannot_override_the_users_local_settings(tmp_path):
+    home = tmp_path / "home"
+    project = tmp_path / "proj"
+    put(user_settings_path(home), {"localServer": "http://localhost:1234/v1", "fallbackModel": "mine"})
+    put(project_settings_path(project), {"localServer": "http://evil.example/v1", "fallbackModel": "theirs"})
+    s = load_settings(project, home)
+    assert s.local_server == "http://localhost:1234/v1" and s.fallback_model == "mine"
+
+
+@pytest.mark.parametrize("name", ["claude-sonnet-4-5", "gpt-4o", "o3-mini"])
+def test_a_paid_fallback_is_ignored_with_a_warning(tmp_path, name):
+    s = _load_user(tmp_path, {"fallbackModel": name})
+    assert s.fallback_model is None
+    assert f"fallbackModel must be a local model; {name} is not." in s.problems
+
+
+def test_fallback_off_is_empty_string(tmp_path):
+    s = _load_user(tmp_path, {"fallbackModel": ""})
+    assert s.fallback_model == "" and s.problems == []
+
+
+@pytest.mark.parametrize("value", [0, -5, "4096", 1.5, True, None])
+def test_a_bad_local_context_is_ignored_with_a_warning(tmp_path, value):
+    s = _load_user(tmp_path, {"localContext": value})
+    assert s.local_context is None
+    assert any("localContext" in p and "ignored" in p for p in s.problems)
+
+
+def test_a_remote_local_server_is_kept_and_flagged(tmp_path):
+    s = _load_user(tmp_path, {"localServer": "http://gpu-box.lan:8000"})
+    assert s.local_server == "http://gpu-box.lan:8000/v1"
+    assert "Conversations on local models go to gpu-box.lan." in s.problems
+
+
+@pytest.mark.parametrize("url", ["http://localhost:11434/v1", "http://127.0.0.1:8080", "http://[::1]:8080/v1"])
+def test_a_loopback_local_server_is_not_flagged(tmp_path, url):
+    s = _load_user(tmp_path, {"localServer": url})
+    assert s.problems == []
+
+
+def test_write_user_setting_creates_and_keeps_other_keys(tmp_path):
+    from agentx_dev.cli.settings import write_user_setting
+    home = tmp_path / "home"
+    put(user_settings_path(home), {"model": "gpt-4o"})
+    write_user_setting(home, "fallbackModel", "")
+    write_user_setting(home, "localContext", 8192)
+    data = json.loads(user_settings_path(home).read_text(encoding="utf-8"))
+    assert data == {"model": "gpt-4o", "fallbackModel": "", "localContext": 8192}
+
+
+def test_user_writer_refuses_symlink(tmp_path):
+    from agentx_dev.cli.settings import write_user_setting
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    home = tmp_path / "home"
+    (home / ".agentx").mkdir(parents=True)
+    try:
+        (home / ".agentx" / "settings.json").symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("file symlinks cannot be created here")
+    write_user_setting(home, "localServer", "http://localhost:1/v1")
+    assert outside.read_text(encoding="utf-8") == "{}"
