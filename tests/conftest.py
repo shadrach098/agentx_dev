@@ -137,6 +137,45 @@ def _no_real_tailscale(monkeypatch):
     yield
 
 
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0", "")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_network(monkeypatch):
+    """No test reaches a computer other than this one (AGENTX.md: never call a real API in tests). A connection
+    to anywhere but this computer is refused at once and fails the test, even when the code under test catches
+    the error and falls back (recall does); servers on 127.0.0.1 are fine."""
+    import socket
+    real_connect = socket.socket.connect
+    tried: List[str] = []
+
+    def connect(self, address, *args, **kwargs):
+        host = str(address[0] if isinstance(address, tuple) else address)
+        if self.family in (socket.AF_INET, socket.AF_INET6) and host not in _LOCAL_HOSTS \
+                and not host.startswith("127."):
+            tried.append(host)
+            raise ConnectionRefusedError(f"tests may not reach {host} over the network")
+        return real_connect(self, address, *args, **kwargs)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    yield tried
+    assert not tried, f"the test tried to reach {sorted(set(tried))} over the network; use a stand-in instead"
+
+
+@pytest.fixture(autouse=True)
+def _offline_recall(monkeypatch):
+    """The app's project notes use the offline embeddings in tests, even when a test's env holds an OpenAI key
+    (a fake one would otherwise send note text to api.openai.com). ``choose_embeddings`` itself is tested directly."""
+    try:
+        from agentx_dev.cli import app
+        from agentx_dev.Embeddings import HashEmbeddings
+    except Exception:                                   # the CLI's packages are not installed: nothing to change
+        yield
+        return
+    monkeypatch.setattr(app, "choose_embeddings", lambda env: (HashEmbeddings(), "hash"))
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _forget_learned_endpoints():
     """Which OpenAI models need the Responses API is remembered for the whole process; each test starts fresh."""

@@ -843,8 +843,11 @@ class WebFront:
         # The card shows the whole title, subject and body or nothing: a cut could drop " and everything inside it",
         # " (replaces the existing ...)" or the "... N more lines" count, which say what Yes really does.
         shown: Dict[str, str] = {}
-        for key, value, limit, what in (("title", title, 2000, "action"), ("subject", getattr(request, "subject", ""),
-                                         2000, "target"), ("body", body, 400_000, "preview")):
+        # A team job's subject is its whole task (up to 12,000 characters), which the body shows whole as "Task:":
+        # a second copy under the title is not sent, so a detailed task is not declined unseen for its length.
+        subject = "" if request.tool == "start_team_job" else getattr(request, "subject", "")
+        for key, value, limit, what in (("title", title, 2000, "action"), ("subject", subject, 2000, "target"),
+                                        ("body", body, 400_000, "preview")):
             if truncated:
                 break
             text = _text(value, limit + 1)
@@ -1498,6 +1501,7 @@ class WebFront:
         last_action = ""
         from agentx_dev.Pictures import content_text
         from agentx_dev.Runner.AgentRun import _FORMAT_NAMES, INTERJECTION_PREFIX
+        from agentx_dev.cli.routing import typed_text
         _ANSWERED = "\x00answered"                 # a format call that carried the final answer: no result row
         for message in messages:
             if not isinstance(message, dict):
@@ -1523,6 +1527,11 @@ class WebFront:
                     text = text.split(marker, 1)[0]
                 if text.startswith(("[framework]", "[agentx]")):
                     continue
+                typed = typed_text(text)                         # a routed request or /team: what was typed
+                if typed is not None:
+                    if not typed:                                # agentx's own reminder to hand it over
+                        continue
+                    text = typed
                 items.append({"type": "user", "text": _text(text, 100_000)})
             elif role == "assistant":
                 if message.get("tool_calls") and text.strip():     # what it said before its steps: a note
@@ -1625,9 +1634,19 @@ class WebFront:
             for step in sorted(list(app._team_rows.values()), key=lambda s: getattr(s, "slot", 0)):
                 snapshot = step.snapshot()
                 rows.append({"helper": _text(step.helper, 120), "label": _text(step.label, 80),
+                             "model": _text(snapshot.get("model", ""), 120),
                              "activity": _text(helper_activity(step_counts(snapshot)), 300),
                              "stats": _text(step_stats(snapshot), 120)})
-            done, total = app._team_steps
+            panel = getattr(app, "_team_panel", None)
+            if panel is not None:
+                rows = [{key: _text(value, 300) if isinstance(value, str) else value for key, value in row.items()}
+                        for row in panel.snapshot()]
+                done = sum(row["state"] in ("done", "failed", "skipped") for row in rows)
+                total = len(rows)
+            else:
+                done, total = app._team_steps
+                for index, row in enumerate(rows):
+                    row.update(id=f"running-{index}", state="running")
             status["team"] = {"rows": rows, "done": done, "total": total} if rows else None
         except Exception:
             status["team"] = None

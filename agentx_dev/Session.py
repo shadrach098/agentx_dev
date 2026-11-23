@@ -55,6 +55,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,6 +95,28 @@ def _make_private_dirs(folder: Path) -> None:
         except FileExistsError:
             pass
     folder.mkdir(parents=True, exist_ok=True)      # raises the usual error if it still is not a folder
+
+
+REPLACE_TRIES = 10                    # Windows: renaming over a file another program has open fails briefly
+
+
+def _replace(tmp: Path, target: Path) -> None:
+    """``tmp`` renamed over ``target``. On Windows that is refused (``PermissionError``, "Access is denied") while
+    another program has ``target`` open: another agentx window listing its conversations, an antivirus or the
+    search indexer. Those hold it for a moment, so try again for about 2.5 seconds before giving up; the temp
+    file is removed when it never works."""
+    for attempt in range(REPLACE_TRIES):
+        try:
+            os.replace(str(tmp), str(target))
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == REPLACE_TRIES - 1:
+                try:
+                    os.unlink(str(tmp))
+                except OSError:
+                    pass
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 class Session(BaseModel):
@@ -301,7 +325,8 @@ class Session(BaseModel):
         # leave a half-written session file behind. The transcript holds
         # everything typed and every tool result, so only its owner may
         # read it (0o600; the mode is ignored on Windows).
-        tmp = target.with_suffix(target.suffix + ".tmp")
+        # A temp name of this process and thread: two windows saving at once never share (and truncate) one.
+        tmp = target.with_name(f"{target.name}.{os.getpid()}-{threading.get_ident()}.tmp")
         fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o600)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -312,7 +337,7 @@ class Session(BaseModel):
             except OSError:
                 pass
             raise
-        tmp.replace(target)
+        _replace(tmp, target)
         # The temp file may have existed already with a wider mode.
         try:
             os.chmod(str(target), 0o600)

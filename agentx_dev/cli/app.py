@@ -34,11 +34,12 @@ from agentx_dev.cli.sessions import (SessionInfo, find_session, latest_session, 
                                      sessions_dir)
 from agentx_dev.cli.settings import (DEFAULT_MAX_STEPS, DEFAULT_TOKEN_LIMIT, MAX_MAX_STEPS, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
-                                     read_user_fullscreen, write_user_fullscreen)
+                                     read_user_auto_team, read_user_fullscreen, write_user_fullscreen)
 from agentx_dev.cli.team import (MAX_TEAM_JOBS_PER_MESSAGE, counted_tokens, current_helper, make_team_tool, note_usage, on_main, run_team_job, skip_team_step, step_token_share, team_note, TeamLane)
 from agentx_dev.cli.typeahead import TypeAhead
 from agentx_dev.cli.ui_text import plain
 from agentx_dev.cli.team_record import TeamRecord
+from agentx_dev.cli.routing import ROUTE_THREAD, Route, routed_request
 from agentx_dev.cli.tools import build_tools, gate_tool
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker, status_line
@@ -266,7 +267,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                  model_source: Optional[Path] = None, team_models: Optional[Sequence[str]] = None,
                  team_models_source: Optional[Path] = None,
                  team_model_uses: Optional[Mapping[str, str]] = None,
-                 token_limit: int = DEFAULT_TOKEN_LIMIT, max_steps: int = DEFAULT_MAX_STEPS) -> None:
+                 token_limit: int = DEFAULT_TOKEN_LIMIT, max_steps: int = DEFAULT_MAX_STEPS,
+                 auto_team: Optional[bool] = None) -> None:
         self.cwd = Path(cwd).resolve()
         self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
@@ -309,6 +311,11 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         self._team_log: List[Any] = []        # every step of the last team job, for /team log
         self._team_jobs = 0                # team jobs started for the current message
         self._team_stalled = False         # the last job in this message finished no step
+        self._team_declined = False        # the user said no to a team job in this message: no other one starts
+        # Automatic delegation (see routing.py): on in a real run unless ~/.agentx/settings.json says
+        # "autoTeam": false; off in a test's env unless the test turns it on.
+        self.auto_team = (read_user_auto_team(self.home) if env is None else False) if auto_team is None             else bool(auto_team)
+        self._route: Optional[Route] = None   # this message's decision: direct or a team
         # self.select / self.read_short are looked up at each question, so the type-ahead hold that
         # _start_typeahead wraps them in later also covers approvals.
         def select_now(*args: Any, **kwargs: Any) -> Any:
@@ -536,7 +543,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         # auto_cache=False: a cached result must never stand in for a call that needs approval or has side
         # effects. No timeout is set anywhere: an approval prompt waits for the user as long as it takes.
         # One tool call at a time: one approval prompt open, on the main thread, and edits made in order.
-        runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=self.tools, system_addendum=self.addendum,
+        # The main agent's tools only (a team's helpers use the plain ones): checked against this message's route.
+        runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=[self._route_guarded(t) for t in self.tools],
+                             system_addendum=self.addendum,
                              max_iterations=self.max_steps, auto_cache=False, verbose=False, parallel_tool_workers=1,
                              skills=self.skills, trim_results=True, strict_tool_dispatch=True)
         # The skills THIS conversation's agent can open (what /<skill> and the `/` pop-up offer): taken from the
@@ -551,6 +560,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         web grant are emptied, and accept-edits that came from answering "a" at an edit prompt goes back to the
         mode that was in force when the user answered. A mode the user chose since (``/mode``, Shift+Tab) is kept."""
         self._compact_wait = 0
+        if hasattr(self, "_team_panel"):
+            from agentx_dev.cli.team_panel import TeamPanel
+            self._team_panel = TeamPanel()
         self.gate.grants.clear()
         self.gate.web_allowed = False
         if self._mode_before_grant is not None and self.gate.mode == "accept-edits":
@@ -926,7 +938,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             except Exception as e:
                 self.error(self._failure(e))
                 continue
-            self.send(line)
+            self.send(line, route=True)
         self.save()
         if self.session is not None and self.session.history and self.session_path is not None:
             self.notice("To pick up this conversation later: agentx --continue (add --model <name> to switch model).")
@@ -977,13 +989,16 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             if self.project_memory is not None and worth_a_note(record):
                 self.project_memory.write(record, now, self._hide)
 
-    def send(self, text: str, log_title: Optional[str] = None) -> None:
+    def send(self, text: str, log_title: Optional[str] = None, route: bool = False) -> None:
         """One turn: summarise a very long conversation first, stream the events to the screen, then autosave
         and, for a finished turn only, add an entry to the work log (titled ``log_title`` when given, else the
-        message). Ctrl+C cancels the turn."""
+        message). Ctrl+C cancels the turn. ``route``: a message the user typed, which agentx may hand to a team
+        (see routing.py); commands such as /team and /init say how they want to work themselves."""
         assert self.session is not None
         self._team_jobs = 0                            # a new message may start new team jobs
         self._team_stalled = False
+        self._team_declined = False
+        self._route = None
         events: List[dict] = []
         finished = False
         stopped = ""                                   # why the turn stopped before it finished, if it did
@@ -1004,33 +1019,42 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                 sent = text + CARRY_ON_NOTE
             elif self._stopped_turn and _is_carry_on(text):
                 sent = text + STOPPED_CARRY_ON_NOTE
+            carried_on = self._stopped_at_step_limit or self._stopped_turn
             self._stopped_at_step_limit = False
             self._stopped_turn = False
+            if route:
+                self._route = self._decide_route(text, carried_on or _is_carry_on(text))
             if self._recall_next:                      # the first message of a fresh conversation: add close notes
                 self._recall_next = False
                 if self.project_memory is not None:
                     sent = text + auto_block(self.project_memory, text)
-            answered = False
-            for event in self.session.stream(sent):
-                self.progress.stop()                       # erase the spinner, then print
-                kind = event.get("type") if isinstance(event, dict) else None
-                if kind == "interjection":                 # a message typed while it worked reached the agent
-                    self.screen.flush()
-                    self._read_by_agent(str(event.get("content") or ""))
-                    self.progress.start("Thinking")
-                    continue
-                if kind == "completion":
-                    self._show_unanswered(event.get("completion"), answered)
-                self.screen.show_event(event)
-                answered = answered or kind == "final"
-                if kind in ("tool_call", "tool_result", "final"):
-                    events.append(event)
-                if kind == "thought" and str(event.get("content") or "").strip():
-                    last_said = str(event.get("content"))
-                if kind == "tool_call":                    # an open look-around flow is drawn above the spinner
-                    self.progress.start(f"Running {self._safe(event.get('name', ''), 40)}")
-                elif kind not in ("final", "completion"):
-                    self.progress.start("Thinking")
+            if self._route is not None and self._route.team:
+                sent = routed_request(sent, self._route.reason)
+            while sent:
+                answered, said = False, ""             # each run (the reminder's too) is judged on its own
+                for event in self.session.stream(sent):
+                    self.progress.stop()                       # erase the spinner, then print
+                    kind = event.get("type") if isinstance(event, dict) else None
+                    if kind == "interjection":                 # a message typed while it worked reached the agent
+                        self.screen.flush()
+                        self._read_by_agent(str(event.get("content") or ""))
+                        self.progress.start("Thinking")
+                        continue
+                    if kind == "completion":
+                        self._show_unanswered(event.get("completion"), answered)
+                    self.screen.show_event(event)
+                    answered = answered or kind == "final"
+                    if kind == "final":
+                        said = str(event.get("content") or "")
+                    if kind in ("tool_call", "tool_result", "final"):
+                        events.append(event)
+                    if kind == "thought" and str(event.get("content") or "").strip():
+                        last_said = str(event.get("content"))
+                    if kind == "tool_call":                    # an open look-around flow is drawn above the spinner
+                        self.progress.start(f"Running {self._safe(event.get('name', ''), 40)}")
+                    elif kind not in ("final", "completion"):
+                        self.progress.start("Thinking")
+                sent = self._route_nudge(answered, said)   # the team it was routed to never started: once
             self.screen.flush()
             finished = True
         except TokenLimitReached as stop:
@@ -1151,6 +1175,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         running at the same time wait for the answer; "a" goes on without asking again in this message. Outside a
         turn, or with no limit, nothing. A team helper's reply also counts against its step's share."""
         note_usage(_model)                   # a helper whose job is over stops here
+        if threading.current_thread().name == ROUTE_THREAD:
+            return                           # a late size check: counted, but it never asks a question
         with self._limit_lock:
             if self._turn_start is None or not self.token_limit:
                 return
@@ -1464,6 +1490,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         for note in notes:
             self.notice(self._safe(note, 300))
         self._team_rows, self._team_log, self._team_steps = {}, [], (0, 0)
+        from agentx_dev.cli.team_panel import TeamPanel
+        self._team_panel = TeamPanel()
         self.progress.start("Planning the team job")
         try:
             text = run_team_job(task, model=self.model, tools=[*self.base_tools, *self._mcp_tools],
@@ -1473,7 +1501,11 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                                 chat_use=self._use_of(self.model_label), skills=self.skills,
                                 step_tokens=step_token_share(self.token_limit), closed=lambda: self.gate.closed,
                                 record=self._team_record(task), lane=self.team_lane)
+        except KeyboardInterrupt:                    # Ctrl+C or Esc: the steps still open were stopped
+            self._team_panel.finish("interrupted")
+            raise
         finally:
+            self._team_panel.finish()                # any step still open: how it ended is not known
             self._team_running = []
             self._team_rows = {}
             self.progress.stop()

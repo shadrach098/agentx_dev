@@ -6,6 +6,55 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ## [Unreleased]
 
+### Added
+
+- **The team's planner picks models by what they are for, not by name.** With extra team models, each job gives
+  every model a random ID (`coder@model_3f9a…`) and the planner reads only the roles and your notes on what each
+  model is for, with model and provider names taken out. A Claude planner kept choosing Claude models; it can no
+  longer tell which is which. You still see the real names on the screen and in the approval box. A helper the
+  planner creates must use one of the job's IDs, or it is refused before it runs (`unknown model ID`). A failed team
+  job tells the main agent only what kind of failure it was (out of credit, rate limited, timed out), never the
+  provider's own words; you see the whole error. The saved record names each step by its role.
+- **Notes you type while a team works go to its supervisor**, not into whichever helper happens to be running. Once
+  that helper's step ends, the supervisor reads the note and adds steps for it, or leaves it for the main agent,
+  which gets every note the team did not act on with the team's result.
+- **A Team panel in the app window.** One row for every step of the job, which keeps its place from waiting to
+  running to done, failed or skipped, with the helper, its model, what it has done and its tool (`Now · Editing
+  app.js` while it runs, `Last · Read app.js` after). Steps that run in parallel, the same helper twice and a
+  supervisor's new plan each get rows of their own; a step the new plan replaced shows skipped. Esc or Ctrl+C
+  marks open steps interrupted, and a step the job ended without reporting shows unknown, never a made-up failure.
+  It stays after the job and clears when you start or open another conversation.
+- **agentx decides by itself when a job needs a team.** You no longer need `/team` for a big job: before the agent
+  starts on a message, agentx asks the chat model one short question, without tools, whether it is a large,
+  multi-part job, and shows the answer (`Handing this to a team: it spans the whole project.` or `Working on this
+  directly: a one-line fix.`). A message that rules out a team ("don't use a team") stays direct without asking,
+  and a short message stays direct. A job sent to a team still asks for your approval. Until it starts, the agent
+  may only look around a little; changes and commands are the team's. If you decline the team, no other team job
+  starts in that message; after a plain no, or a failed job, the agent asks you before working alone. A slow or unreadable answer leaves the message
+  direct and says so. `/team auto off` turns it off (saved as `"autoTeam": false`).
+
+### Changed
+
+- Declining a team job now holds for the rest of that message: the agent is told not to start another and to ask
+  you instead. Before, it could ask again straight away.
+
+### Fixed
+
+- A long team job is no longer declined unseen in the app window. Its task (up to 12,000 characters) was also sent
+  as the card's heading, which may hold only 2,000, so a detailed hand-off came back "too long to show in the window
+  in full" without a question. The card shows the task whole, once, in its body.
+- Saving a conversation on Windows no longer fails with "Access is denied" when another program has its file open
+  for a moment (another agentx window listing its conversations, an antivirus, the search indexer): the save tries
+  again for about 2.5 seconds, and two windows saving at once each use their own temporary file.
+- `/mode auto --folder` said "mode must be one of: default, accept-edits, plan, auto". `/mode` now understands
+  `--folder`: `default` and `plan` are saved for the folder; `auto` and `accept-edits` are set for this session,
+  with where to set them instead (a folder's file may not turn your prompts off). An unknown mode is named.
+- The tests never reach the network: the app's project notes use the offline embeddings in tests (a test's fake
+  OpenAI key used to send note text to api.openai.com), and a test that opens a connection off this computer fails.
+
+- Refreshing the app window restores the conversation opened beside it, reconnecting to the same running
+  agentx and replaying its messages instead of losing the side. Closing the side still closes it intentionally.
+
 ## [3.9.0] - 2026-11-16
 
 ### Added

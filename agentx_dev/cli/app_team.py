@@ -6,7 +6,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from agentx_dev.cli.approval import DECLINED
 from agentx_dev.cli.commands import command_names, skill_request
+from agentx_dev.cli.routing import NUDGE, TEAM_DECLINED, Route, assess, by_rule
+from agentx_dev.cli.settings import write_user_auto_team
 from agentx_dev.cli.team import MAX_TEAM_JOBS_PER_MESSAGE, current_status, team_request
 from agentx_dev.Skills import SkillInstallError, remove_skill
 
@@ -24,15 +27,99 @@ class TeamCommands:
         """``/team <task>``: ask the main agent to call the team tool for ``task`` (same prompt, gate and history)."""
         self.send(team_request(task), log_title=f"/team {task}")
 
+    # -- automatic delegation (routing.py) ---------------------------------------------------------------------
+
+    def _decide_route(self, text: str, carry_on: bool) -> Optional[Route]:
+        """This message's route, shown with its reason; None when agentx does not route (turned off, plan mode, no
+        model). Ctrl+C here stops the turn like any other."""
+        if not self.auto_team or self.model is None or self.gate.mode == "plan":
+            return None
+        route = by_rule(text, carry_on)
+        if route is None:
+            self.progress.start("Sizing up the request")
+            try:
+                route = assess(text, self._summary_call)
+            finally:
+                self.progress.stop()
+        if route.reason:
+            self.notice(self._safe(route.shown(), 200))
+        return route
+
+    def _route_guarded(self, tool: Any) -> Any:
+        """``tool`` for the main agent: refused while this message's route says it is the team's work (see
+        ``Route.refusal``). The team tool and a team's helpers are never held back by it."""
+        inner = tool.func
+
+        def routed(**kwargs):
+            route = self._route
+            refusal = (route.refusal(tool.name) if route is not None and current_status() is None
+                       and not self.gate.closed else "")           # wrapping up: the gate's own refusal
+            return refusal if refusal else inner(**kwargs)
+
+        routed.__name__, routed.__qualname__, routed.__module__ = tool.name, f"routed.{tool.name}", __name__
+        wrapped = type(tool)(func=routed, args_schema=tool.args_schema, name=tool.name, description=tool.description)
+        for attr in ("cacheable", "mcp_server", "mcp_remote"):
+            if hasattr(tool, attr):
+                setattr(wrapped, attr, getattr(tool, attr))
+        wrapped.cacheable = False
+        return wrapped
+
+    def _route_nudge(self, answered: bool, said: str = "") -> str:
+        """After the agent's turn: the reminder to send once when a message routed to a team got an answer with no
+        team job, else "". An answer that asks the user something is left alone: the user answers first. The
+        second time it only says so; /team hands it over for sure."""
+        route = self._route
+        if route is None or not route.team or route.started or route.blocked or not answered or self.gate.closed:
+            return ""
+        if said.rstrip().rstrip("*_`)\"'").endswith("?"):
+            return ""
+        if route.nudged:
+            self.notice("The agent answered without the team this request was routed to. /team <task> hands a job "
+                        "to the team for sure.")
+            return ""
+        route.nudged = True
+        self.notice("No team job started for a request routed to a team: reminding the agent once.")
+        self.progress.start("Thinking")
+        return NUDGE.format(reason=route.reason or "a large job")
+
+    def show_auto_team(self) -> None:
+        self.notice(f"Automatic teams are {'on' if self.auto_team else 'off'}. With them on, agentx sizes up each "
+                    "message first: a large, multi-part job is handed to a team (you still approve it), a small one "
+                    "is done directly, and it says why. /team auto off turns this off (saved for next time); /team "
+                    "<task> always uses a team.")
+
+    def set_auto_team(self, on: bool) -> None:
+        self.auto_team = bool(on)
+        _, message = write_user_auto_team(self.home, on)
+        self.notice(f"Automatic teams {'on' if on else 'off'}. {self._safe(message, 300)}")
+
     def _within_job_limit(self, gated: Any) -> Any:
         """``gated`` (the team tool behind the gate) with the jobs-per-message limit checked first, so a call past
         ``MAX_TEAM_JOBS_PER_MESSAGE`` is refused without asking the user again. Other calls go through the gate
-        as before; a job the user declined does not count (``_team_jobs`` grows only when a job starts)."""
+        as before; a job the user declined does not count (``_team_jobs`` grows only when a job starts), and after
+        it no other team job starts in this message. A message routed to a team learns whether its job started,
+        was declined or failed."""
         inner = gated.func
 
         def once(**kwargs):
             refusal = self._team_refusal()
-            return refusal if refusal else inner(**kwargs)
+            if refusal:
+                return refusal
+            jobs = self._team_jobs
+            result = inner(**kwargs)
+            route = self._route
+            if self._team_jobs > jobs:                    # a job ran
+                if route is not None and route.team:
+                    route.started = True
+                    route.blocked = "failed" if self._team_stalled else ""
+            elif isinstance(result, str) and (result == DECLINED or result.startswith("The user declined")):
+                self._team_declined = True
+                if route is not None and route.team and not route.started:
+                    if result == DECLINED:            # a plain no: ask before working alone
+                        route.blocked = "was declined"
+                    else:                             # no, with what to do instead: that is the user's answer
+                        route.team = False
+            return result
 
         once.__name__, once.__qualname__, once.__module__ = gated.name, f"within_job_limit.{gated.name}", __name__
         wrapped = type(gated)(func=once, args_schema=gated.args_schema, name=gated.name,
@@ -81,6 +168,11 @@ class TeamCommands:
         return f"Running {len(running)} helpers"
 
     def _team_notify(self, kind: str, data: dict) -> None:
+        from agentx_dev.cli.team_panel import TeamPanel
+
+        if getattr(self, "_team_panel", None) is None:
+            self._team_panel = TeamPanel()
+        self._team_panel.notify(kind, data)
         self.progress.stop()
         if kind == "plan":
             steps = data.get("steps") or []
@@ -88,7 +180,7 @@ class TeamCommands:
             self._team_plan = [step for step in steps if isinstance(step, dict)]
             self.screen.team_plan(steps)
             if getattr(self.progress, "typeahead", None) is not None or self.fullscreen:
-                self.notice("Type to add a note for the helpers · /skip <step> drops a step")
+                self.notice("Type to add a note for the team's supervisor · /skip <step> drops a step")
             self.progress.start("Starting the team")
         elif kind == "dispatch":
             self._team_running.append(str(data.get("agent", "")))
@@ -113,6 +205,10 @@ class TeamCommands:
                                   partial=bool(data.get("partial")), skipped=bool(data.get("skipped")),
                                   status=status)
             self.progress.start("Team is working")
+        elif kind == "error":
+            # why the whole job failed, for the person: the agent is told only the kind of failure (the provider's
+            # words can name the model its planner must not learn)
+            self.error(f"The team job failed: {self._safe(data.get('text') or 'no reason given', 500)}")
 
     def _team_question(self, question: str) -> Optional[str]:
         """The planner or a helper needs a fact: ask in the terminal. Enter, Ctrl+D and Ctrl+C skip it."""
@@ -126,6 +222,8 @@ class TeamCommands:
 
     def _team_refusal(self) -> str:
         """Why another team job may not start in this message ("" when it may)."""
+        if self._team_declined:
+            return TEAM_DECLINED
         if self._team_jobs >= MAX_TEAM_JOBS_PER_MESSAGE:
             return TEAM_LIMIT_REACHED
         if self._team_stalled:

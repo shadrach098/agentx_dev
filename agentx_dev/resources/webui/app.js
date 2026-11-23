@@ -734,9 +734,19 @@
     const team = $("team");
     if (ev.team && ev.team.rows && ev.team.rows.length) {
       team.hidden = false;
-      team.innerHTML = `<div class="team-head">Team · ${ev.team.rows.length} running · ${ev.team.done} of ${ev.team.total} done</div>` +
-        ev.team.rows.map((r) => `<div class="team-row"><span class="who">${esc(r.helper)}${r.label && r.label !== r.helper ? ` · ${esc(r.label)}` : ""}</span>` +
-          `<span class="stats">${esc(r.stats)}</span>${r.activity ? `<span class="act">${esc(r.activity)}</span>` : ""}</div>`).join("");
+      const running = ev.team.rows.filter((r) => r.state === "running").length;
+      team.setAttribute("aria-label", "Team progress");
+      team.innerHTML = `<div class="team-head">Team · ${running} running · ${ev.team.done} of ${ev.team.total} finished</div>` +
+        ev.team.rows.map((r) => {
+          const state = ["waiting", "running", "done", "failed", "skipped", "interrupted", "unknown"].includes(r.state) ? r.state : "unknown";
+          // A tool still running says what it is doing now; a finished one is the last thing it did
+          const doing = r.inFlight ? `Now · ${DOING[r.action] || toolLook(r.action)[0]}` : `Last · ${toolLook(r.action)[0]}`;
+          const detail = r.action ? `<span class="tool-action">${esc(doing)}</span>${r.path ? ` <span class="tool-path">${esc(r.path)}</span>` : ""}${r.summary ? `<span class="tool-summary">${esc(r.summary)}</span>` : ""}` : "";
+          return `<div class="team-row is-${state}" data-deployment="${esc(r.id || "")}">` +
+            `<div class="team-identity"><span class="team-marker" aria-hidden="true"></span><strong class="who">${esc(r.label || r.helper)}</strong><span class="team-state">${state}</span>` +
+            `<span class="team-meta">${esc(r.helper)}${r.model ? ` · ${esc(r.model)}` : ""}</span><span class="stats">${esc(r.stats || "")}</span></div>` +
+            `${detail || r.activity ? `<div class="act${r.actionFailed ? " tool-failed" : ""}">${detail}${r.activity ? `<span class="activity-counts">${esc(r.activity)}</span>` : ""}</div>` : ""}</div>`;
+        }).join("");
     } else { team.hidden = true; team.innerHTML = ""; }
     const others = Number(ev.othersWorking || 0);         // other devices' conversations working in this folder
     $("others").hidden = !others;
@@ -1405,6 +1415,32 @@
   // has its own history, settings, approvals and orb; closing a side ends its agentx (its conversation is saved).
   const beside = {session: "", busy: false};
   let besideOrb = null;
+  function showBeside(res, restoring = false) {
+    const url = new URL(res.url);
+    if (url.protocol !== location.protocol || url.hostname !== location.hostname || url.origin === location.origin) return;
+    beside.session = res.session || "";
+    $("besideTitle").textContent = res.title || "Conversation";
+    $("besideFolder").textContent = res.folderName || "";
+    $("besideFolder").title = res.folder || "";
+    const saved = {url: url.origin + "/#embed", session: beside.session,
+                   title: res.title, folderName: res.folderName, folder: res.folder};
+    // Each child already keeps its key in its own tab storage. Never save launch codes or keys here.
+    try { sessionStorage.setItem("agentx-beside", JSON.stringify(saved)); } catch (_) { /* no storage */ }
+    $("beside").hidden = false;
+    $("splitHandle").hidden = false;
+    document.querySelector(".app").classList.add("split");
+    applySplit();
+    const frame = $("besideFrame");
+    frame.onload = () => { $("besideWait").hidden = true; frame.hidden = false; };
+    frame.src = restoring ? saved.url : `${res.url}&embed=1`;
+  }
+  function restoreBeside() {
+    if (EMBED) return;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem("agentx-beside") || "null");
+      if (saved && saved.url) showBeside(saved, true);
+    } catch (_) { /* stale or unavailable storage */ }
+  }
   async function openBeside(what) {
     if (EMBED || beside.busy) return;
     beside.busy = true;
@@ -1428,15 +1464,11 @@
       addNotice({level: "error", text: res.message || "That conversation could not be opened beside this one."});
       return;
     }
-    beside.session = res.session || "";
-    $("besideTitle").textContent = res.title || "Conversation";
-    $("besideFolder").textContent = res.folderName || "";
-    $("besideFolder").title = res.folder || "";
-    frame.src = `${res.url}&embed=1`;
-    frame.onload = () => { $("besideWait").hidden = true; frame.hidden = false; };
+    showBeside(res);
     drawSessions();
   }
   function closeBeside() {
+    try { sessionStorage.removeItem("agentx-beside"); } catch (_) { /* no storage */ }
     const frame = $("besideFrame");
     frame.onload = null;
     frame.src = "about:blank";                       // its window is gone: that agentx saves and quits
@@ -1737,5 +1769,5 @@
   mountOrbs($("stage"), orbState, {interactive: true});   // and large on the stage while agentx works
   setComposer();
   input.focus();
-  claimLaunch().then(() => { loadState(); loadSessions(); connect(); });
+  claimLaunch().then(() => { restoreBeside(); loadState(); loadSessions(); connect(); });
 })();

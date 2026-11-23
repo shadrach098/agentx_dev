@@ -106,17 +106,26 @@ def _settings(ctx: Any, arg: str) -> None:
 
 
 def _mode(ctx: Any, arg: str) -> None:
-    if not arg:
-        ctx.notice(f"Mode: {ctx.gate.mode}. Choose one of: {', '.join(MODES)}")
+    words = arg.split()
+    folder = "--folder" in words
+    name = " ".join(word for word in words if word != "--folder").lower()
+    if not name:
+        if folder:
+            ctx.error("Usage: /mode <mode> --folder, where <mode> is default or plan")
+            return
+        ctx.notice(f"Mode: {ctx.gate.mode}. Choose one of: {', '.join(MODES)}. Add --folder to keep default or "
+                   "plan mode for this folder.")
         return
-    try:
-        ctx.gate.set_mode(arg.lower())
-    except ValueError as e:
-        ctx.error(shown(e))
+    if name not in MODES:
+        ctx.error(f"There is no {shown(name)} mode. Choose one of: {', '.join(MODES)}"
+                  + (" (with --folder: default or plan)." if folder else "."))
         return
+    ctx.gate.set_mode(name)
     ctx.notice(f"Mode: {ctx.gate.mode}")
     if ctx.gate.mode == "auto":
         ctx.notice(AUTO_NOTICE)
+    if folder:
+        ctx.save_folder_mode(name)
 
 
 def _resume(ctx: Any, arg: str) -> None:
@@ -135,10 +144,18 @@ def _team(ctx: Any, arg: str) -> None:
     if not arg:
         ctx.notice("Usage: /team <task>. Hands a big job to a team of helpers (explorer, coder, runner). "
                    "You are asked before it starts. Small jobs are better done in the normal chat. "
-                   "/team log lists every call the last team job made.")
+                   "/team log lists every call the last team job made. /team auto [on|off] shows or sets whether "
+                   "agentx hands large jobs to a team by itself.")
         return
     if arg.strip().lower() == "log":
         ctx.show_team_log()
+        return
+    words = arg.strip().lower().split()
+    if words == ["auto"]:                                     # /team auto [on|off]; "/team auto refactor" is a task
+        ctx.show_auto_team()
+        return
+    if len(words) == 2 and words[0] == "auto" and words[1] in ("on", "off"):
+        ctx.set_auto_team(words[1] == "on")
         return
     ctx.run_team_command(arg)
 
@@ -343,12 +360,12 @@ COMMANDS = (
     Command("help", "List the commands", _help),
     Command("clear", "Start a new conversation.", _clear),
     Command("model", "Show or switch the model: /model [name] [--folder]", _model),
-    Command("mode", "Show or set the mode: /mode [default|accept-edits|plan|auto]", _mode),
+    Command("mode", "Show or set the mode: /mode [default|accept-edits|plan|auto] [--folder]", _mode),
     Command("settings", "Show the model, mode and rules in force, and the files that change them", _settings),
     Command("resume", "Load a saved conversation: /resume [id]", _resume),
     Command("sessions", "List this folder's saved conversations", _sessions),
     Command("init", "Draft an AGENTX.md for this project", _init),
-    Command("team", "Hand a big job to a team of helpers: /team <task>, or /team log", _team),
+    Command("team", "Hand a big job to a team of helpers: /team <task>, /team log, or /team auto [on|off]", _team),
     Command("team-models", "Models team helpers may also use: /team-models [name[=use] ...|clear] [--folder]",
             _team_models),
     Command("skills", "List the skills, or add one: /skills [install <link>|remove <name>]", _skills),

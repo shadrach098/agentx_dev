@@ -94,6 +94,19 @@ def write_call(path="hello.txt", content="hi\n"):
     return make_react_response("write_file", {"path": path, "content": content, "if_exists": "refuse"})
 
 
+class TestTeamModelStatus:
+    def test_resolved_helper_model_reaches_live_rows(self, tmp_path):
+        from types import SimpleNamespace
+        from agentx_dev.cli.team import StepStatus
+
+        front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False)
+        status = StepStatus(0, "reviewer", "review")
+        status.model = "approved-model"
+        front.app = SimpleNamespace(progress=None, _team_rows={0: status}, _team_steps=(0, 1),
+                                    gate=SimpleNamespace(mode="default"))
+        assert front._status()["team"]["rows"][0]["model"] == "approved-model"
+
+
 class TestTheServer:
     def test_the_page_is_served_with_a_strict_policy(self, window):
         w = window(MockModel())
@@ -586,6 +599,17 @@ def test_the_details_panel_never_scrolls_sideways():
     assert "white-space: nowrap" not in css.split(".d-target {", 1)[1].split("}", 1)[0]
     assert "@media (max-width: 1199px)" in css and 'id="detailsScrim"' in page
     assert '$("detailsScrim").addEventListener("click"' in script
+
+
+def test_a_pick_list_folds_away_once_answered():
+    """A list to pick from ("Which conversation?") stayed on screen with every choice after one was picked, until the
+    page was reloaded: a finished card hid its buttons and body, but a pick list's choices sit in their own block. Once
+    answered, only the choice is left, in one quiet line like an answered approval."""
+    from agentx_dev.cli.webui import RESOURCES
+    css = (RESOURCES / "style.css").read_text(encoding="utf-8")
+    hidden = [rule.split("{", 1)[0] for rule in css.split("}") if "display: none" in rule.split("{", 1)[-1]]
+    assert any(".card.done .options" in selectors for selectors in hidden)
+    assert ".question.done .card-outcome" in css
 
 
 class TestSigningInFromAnotherDevice:
