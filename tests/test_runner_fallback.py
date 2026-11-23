@@ -5,7 +5,9 @@ import logging
 import pytest
 
 from agentx_dev import AgentRunner, AgentType, StandardTool
+from agentx_dev.ChatModel import CostBudgetExceeded
 from agentx_dev.Runner.Fallback import FallbackFailed
+from agentx_dev.Runner.Persistence import BudgetExpired
 from tests.conftest import MockModel, _MockToolCallingModel
 
 
@@ -98,6 +100,20 @@ def test_tool_call_before_failure_is_not_repeated():
     assert [c.name for c in completion.tool_calls] == ["count"]
 
 
+def assert_valid_for(messages, bound):
+    """Review Focus 5, plus strict chat templates: no tool message without its call, no call to a function the
+    mode does not bind, and no two non-system messages in a row from the same role."""
+    open_ids = set()
+    for message in messages:
+        for call in message.get("tool_calls") or []:
+            assert call["function"]["name"] in bound
+            open_ids.add(call["id"])
+        if message["role"] == "tool":
+            assert message["tool_call_id"] in open_ids
+    roles = [m["role"] for m in messages if m["role"] != "system"]
+    assert all(a != b for a, b in zip(roles, roles[1:])), roles
+
+
 def test_history_valid_for_native_mode():
     fallback = Local([respond("3 apples")])
     runner = make(Paid([react_call("count", "apples", "c1"), KeyRejected()]), fallback)
@@ -106,16 +122,10 @@ def test_history_valid_for_native_mode():
     messages = fallback.tool_calls_made[0]
     bound = {spec["name"] for spec in fallback.tools_seen[0]}
     assert bound == {"count", "respond"}
-    open_ids = set()
-    for message in messages:
-        for call in message.get("tool_calls") or []:
-            assert call["function"]["name"] in bound
-            open_ids.add(call["id"])
-        if message["role"] == "tool":
-            assert message["tool_call_id"] in open_ids
+    assert_valid_for(messages, bound)
     texts = [str(m.get("content")) for m in messages]
     assert any(t.startswith("[earlier step] called React_ with ") and "apples" in t for t in texts)
-    assert any(t == "[earlier result] counted apples" for t in texts)
+    assert any(t.startswith("[earlier result] counted apples") for t in texts)
     assert "Call the 'respond' tool" in messages[0]["content"]       # the native system prompt
     assert runner.bind_tools_natively is True and runner.use_function_calling is False
 
@@ -167,11 +177,94 @@ def test_local_model_never_falls_back():
 
 
 def test_fallback_failing_raises_fallback_failed():
-    runner = make(Paid([KeyRejected()]), Local([ConnectionError("connection refused")]))
+    refused = ConnectionError("connection refused")
+    runner = make(Paid([KeyRejected()]), Local([refused]))
     with pytest.raises(FallbackFailed) as raised:
         runner.invoke("go")
     text = str(raised.value)
     assert text == "paid-model failed (key rejected); the fallback local-model failed too: connection refused"
+    assert raised.value.__cause__ is refused
+    assert raised.value.fallback == SWITCH
+
+
+@pytest.mark.parametrize("stop", [BudgetExpired("time limit reached"), CostBudgetExceeded(2.0, 1.0)])
+def test_framework_stops_never_switch(stop):
+    fallback = Local([respond("never")])
+    runner = make(Paid([stop]), fallback)
+    with pytest.raises(type(stop)):
+        runner.invoke("go")
+    assert fallback.tool_calls_made == []
+    assert runner.fallback_used is None
+
+
+def test_framework_stop_on_the_fallback_is_not_reported_as_fallback_failed():
+    runner = make(Paid([KeyRejected()]), Local([CostBudgetExceeded(2.0, 1.0)]))
+    with pytest.raises(CostBudgetExceeded):
+        runner.invoke("go")
+
+
+def test_fallback_is_told_what_happened():
+    fallback = Local([respond("3 apples")])
+    runner = make(Paid([react_call("count", "apples", "c1"), KeyRejected()]), fallback)
+    runner.invoke("count the apples")
+    messages = fallback.tool_calls_made[0]
+    note = ("[framework] The earlier model (paid-model) stopped: key rejected. You are taking over this task. "
+            "What it already did is above; check it and finish the task without redoing steps that are done.")
+    last = messages[-1]
+    assert last["role"] == "user" and str(last["content"]).endswith(note)
+    step = next(i for i, m in enumerate(messages) if str(m.get("content")).startswith("[earlier step]"))
+    assert step < len(messages) - 1                              # the note comes after the converted history
+
+
+def test_switch_over_a_two_turn_fc_history_alternates():
+    fallback = Local([respond("done twice")])
+    primary = Paid([react_call("count", "a", "c1"), react_call("Final_Answer", "one", "c2"),
+                    react_call("count", "b", "c3"), KeyRejected()])
+    runner = make(primary, fallback)
+    first = runner.invoke("FIRST-QUESTION")
+    runner.invoke("SECOND-QUESTION", chat_history=first.history)
+
+    messages = fallback.tool_calls_made[0]
+    assert_valid_for(messages, {"count", "respond"})
+    text = "\n".join(str(m.get("content")) for m in messages)
+    assert "FIRST-QUESTION" in text and "SECOND-QUESTION" in text
+    assert "(final answer delivered)" not in text
+
+
+def test_incoming_fc_history_is_carried_over_for_a_native_runner():
+    fc_runner = make(Paid([react_call("count", "a", "c1"), react_call("Final_Answer", "one", "c2")]), None)
+    saved = fc_runner.invoke("FIRST-QUESTION").history
+    assert any(c["function"]["name"] == "React_" for m in saved for c in m.get("tool_calls") or [])
+
+    local = Local([respond("two")])
+    native = make(local, None)
+    assert native.bind_tools_natively is True
+    assert native.invoke("SECOND-QUESTION", chat_history=saved).content == "two"
+    messages = local.tool_calls_made[0]
+    assert_valid_for(messages, {"count", "respond"})
+    text = "\n".join(str(m.get("content")) for m in messages)
+    assert "FIRST-QUESTION" in text and "SECOND-QUESTION" in text
+    assert "[earlier step] called React_" in text
+
+
+def test_valid_incoming_history_is_left_as_it_is():
+    fc_runner = make(Paid([react_call("count", "a", "c1"), react_call("Final_Answer", "one", "c2")]), None)
+    saved = fc_runner.invoke("FIRST-QUESTION").history
+    again = Paid([react_call("Final_Answer", "two", "c3")])
+    make(again, None).invoke("SECOND-QUESTION", chat_history=saved)
+    assert again.tool_calls_made[0][1:-1] == saved[1:]          # everything but the system prompt and new task
+
+
+def test_helpers_built_after_a_switch_use_the_fallback():
+    from agentx_dev.SubAgents import AgentSpec, SpawnConfig
+
+    primary, fallback = Paid([KeyRejected()]), Local([respond("done")])
+    runner = make(primary, fallback, delegation=SpawnConfig(enabled=True, capabilities={"web"}))
+    runner.invoke("go")
+    spec = AgentSpec(name="helper", instructions="Help.")
+    assert runner._delegation._make_runner(spec, [], [], False).model is fallback
+    runner.reset_fallback()
+    assert runner._delegation._make_runner(spec, [], [], False).model is primary
 
 
 def test_text_mode_primary_switches_too(make_react):
@@ -223,14 +316,13 @@ def test_carry_over_keeps_valid_calls_and_their_results():
         {"role": "tool", "tool_call_id": "a", "name": "count", "content": "kept"},
         {"role": "user", "content": "next"},
     ]
-    _carry_over_history(history, {"count", "respond"})
+    assert _carry_over_history(history, {"count", "respond"}, keep=5) == 4
     assert history == [
         {"role": "system", "content": "s"},
         {"role": "user", "content": "task"},
         {"role": "assistant", "content": "[earlier step] called React_ with {}", "tool_calls": [call("a", "count")]},
         {"role": "tool", "tool_call_id": "a", "name": "count", "content": "kept"},
-        {"role": "user", "content": "[earlier result] gone"},
-        {"role": "user", "content": "next"},
+        {"role": "user", "content": "[earlier result] gone\n\nnext"},
     ]
 
 

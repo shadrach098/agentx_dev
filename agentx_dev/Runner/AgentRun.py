@@ -611,6 +611,10 @@ def _settle_empty_final(final_answer: Any, output: Any, tool_calls: List[ToolCal
     return (note + f" (files changed: {', '.join(paths)})" if paths else note), None
 
 
+# The result _close_open_tool_calls gives a final-answer call: bookkeeping for the provider, nothing the model did.
+_FINAL_DELIVERED = "(final answer delivered)"
+
+
 def _close_open_tool_calls(history: List[Dict[str, Any]]) -> None:
     """Answer a trailing assistant ``tool_calls`` message that has no tool message after it.
 
@@ -637,7 +641,7 @@ def _close_open_tool_calls(history: List[Dict[str, Any]]) -> None:
                 "role": "tool",
                 "name": (call.get("function") or {}).get("name", ""),
                 "tool_call_id": call_id,
-                "content": "(final answer delivered)",
+                "content": _FINAL_DELIVERED,
             })
 
 
@@ -679,6 +683,12 @@ def _resolve_binding(
 # and never reported as the fallback failing.
 _FRAMEWORK_STOPS = (BudgetExpired, CostBudgetExceeded, RunStuck)
 
+# Told to the fallback model when it takes over a run (after the history it inherits).
+_FALLBACK_NOTE = (
+    "[framework] The earlier model ({from}) stopped: {reason}. You are taking over this task. What it already "
+    "did is above; check it and finish the task without redoing steps that are done."
+)
+
 
 class _SwitchedToFallback(Exception):
     """Raised by a model call that failed for good after the runner moved to its fallback model. The loop
@@ -689,49 +699,89 @@ class _SwitchedToFallback(Exception):
         self.event = event
 
 
-def _carry_over_history(history: List[Dict[str, Any]], bound: set) -> None:
-    """Make ``history`` valid for a mode that binds only the functions named in ``bound`` (in place).
+def _call_name(call: Dict[str, Any]) -> Any:
+    return (call.get("function") or {}).get("name")
+
+
+def _binds_every_call(history: List[Dict[str, Any]], bound: set) -> bool:
+    """Whether every assistant tool call in ``history`` is to a function in ``bound``."""
+    return all(_call_name(c) in bound for m in history if m.get("role") == "assistant"
+               for c in (m.get("tool_calls") or []))
+
+
+def _join_content(first: Any, second: Any) -> Any:
+    """Two messages' contents as one: strings joined by a blank line, otherwise one list of parts."""
+    if isinstance(first, str) and isinstance(second, str):
+        return "\n\n".join(text for text in (first, second) if text)
+
+    def parts(content: Any) -> List[Any]:
+        if isinstance(content, list):
+            return list(content)
+        return [{"type": "text", "text": content}] if content else []
+    return parts(first) + parts(second)
+
+
+def _carry_over_history(history: List[Dict[str, Any]], bound: set, keep: Optional[int] = None) -> Optional[int]:
+    """Make ``history`` valid for a mode that binds only the functions named in ``bound`` (in place), and
+    return the new index of the message that was at ``keep`` (None when ``keep`` is None).
 
     An assistant tool call to any other function becomes the text ``[earlier step] called <name> with <args>``
     and its result the user message ``[earlier result] <text>``, so nothing in the history refers to a tool the
-    model cannot see. Valid calls and their results are kept as they are. One message in, one message out, so
-    indexes into the history (the task message's) stay right; a result of a call turned to text waits until the
-    tool messages answering the calls that were kept have been placed."""
-    out: List[Dict[str, Any]] = []
+    model cannot see. Valid calls and their results are kept as they are; a result of a call turned to text
+    waits until the tool messages answering the calls that were kept have been placed. The bookkeeping result
+    of a delivered final answer is dropped. Then consecutive user (or assistant) messages are joined, blank line
+    between, because strict chat templates (LM Studio, llama.cpp ``--jinja``) refuse two turns in a row from
+    the same role; an assistant message with tool calls only takes in the text before it."""
+    pieces: List[Tuple[int, Dict[str, Any]]] = []           # (index in history it came from, message)
     kept_ids: set = set()
-    waiting: List[Dict[str, Any]] = []
-    for message in history:
+    waiting: List[Tuple[int, Dict[str, Any]]] = []
+    for index, message in enumerate(history):
         role = message.get("role")
         if role == "tool":
+            text = content_text(message.get("content"))
             if message.get("tool_call_id") in kept_ids:
-                out.append(message)
-            else:
-                waiting.append({"role": "user",
-                                "content": f"[earlier result] {content_text(message.get('content'))}"})
+                pieces.append((index, message))
+            elif text != _FINAL_DELIVERED:
+                waiting.append((index, {"role": "user", "content": f"[earlier result] {text}"}))
             continue
-        out.extend(waiting)
+        pieces.extend(waiting)
         waiting = []
         calls = message.get("tool_calls") if role == "assistant" else None
         if not calls:
-            out.append(message)
+            pieces.append((index, message))
             continue
-        kept = [c for c in calls if (c.get("function") or {}).get("name") in bound]
-        steps = [
-            f"[earlier step] called {(c.get('function') or {}).get('name', '?')} "
-            f"with {(c.get('function') or {}).get('arguments', '')}"
-            for c in calls if (c.get("function") or {}).get("name") not in bound
-        ]
+        kept = [c for c in calls if _call_name(c) in bound]
+        steps = [f"[earlier step] called {_call_name(c) or '?'} with {(c.get('function') or {}).get('arguments', '')}"
+                 for c in calls if _call_name(c) not in bound]
         kept_ids.update(c.get("id") for c in kept)
         if not steps:
-            out.append(message)
+            pieces.append((index, message))
             continue
-        text = "\n".join([content_text(message.get("content"))] + steps).strip()
-        carried = {"role": "assistant", "content": text}
+        carried = {"role": "assistant", "content": "\n".join([content_text(message.get("content"))] + steps).strip()}
         if kept:
             carried["tool_calls"] = kept
-        out.append(carried)
-    out.extend(waiting)
+        pieces.append((index, carried))
+    pieces.extend(waiting)
+
+    out: List[Dict[str, Any]] = []
+    origins: List[set] = []
+    for index, message in pieces:
+        last = out[-1] if out else None
+        role = message.get("role")
+        if (last is not None and role in ("user", "assistant") and role == last.get("role")
+                and not last.get("tool_calls")):
+            joined = {**last, "content": _join_content(last.get("content"), message.get("content"))}
+            if message.get("tool_calls"):
+                joined["tool_calls"] = message["tool_calls"]
+            out[-1] = joined
+            origins[-1].add(index)
+            continue
+        out.append(message)
+        origins.append({index})
     history[:] = out
+    if keep is None:
+        return None
+    return next(i for i, came_from in enumerate(origins) if keep in came_from)
 
 
 class ToolRegistry:
@@ -1821,8 +1871,8 @@ class AgentRunner(PersistenceMixin):
                 rejected key, an unknown model, or no route to the
                 provider after the usual retries. The run carries on
                 from where it stopped (tool calls already made are not
-                made again), in the binding mode the fallback needs;
-                ``stream`` yields ``{"type": "fallback", "from", "to",
+                made again), in the binding mode the fallback needs,
+                with a note telling it what happened; ``stream`` yields ``{"type": "fallback", "from", "to",
                 "reason"}`` and a warning is logged. The switch lasts
                 for the rest of the runner's life (``fallback_used``
                 says so, and every completion carries it as
@@ -2202,24 +2252,34 @@ class AgentRunner(PersistenceMixin):
             return {self.parser.__name__}
         return set()
 
-    def _switch_to_fallback(self, reason: str, history: List[Dict[str, Any]], user_input: str) -> Dict[str, str]:
-        """Move the run to ``fallback_model``: its binding mode, the system prompt for that mode, and a history
-        valid for it (in place). Returns the ``fallback`` event."""
+    def _use_model(self, model: BaseChatModel) -> None:
+        """Run on ``model`` from now on: its binding mode, and the helpers ``delegate`` builds."""
+        self.model = model
+        self.use_function_calling, self.bind_tools_natively = _resolve_binding(model, *self._binding_asked)
+        delegation = getattr(self, "_delegation", None)
+        if delegation is not None:
+            delegation.model = model
+
+    def _switch_to_fallback(
+        self, reason: str, history: List[Dict[str, Any]], user_input: str, task_index: Optional[int] = None,
+    ) -> Tuple[Dict[str, str], Optional[int]]:
+        """Move the run to ``fallback_model``: its binding mode, the system prompt for that mode, a history valid
+        for it (in place) and a note telling it what happened. Returns the ``fallback`` event and the new index
+        of the task message (the history may get shorter)."""
         used = {"from": _model_name(self.model), "to": _model_name(self.fallback_model), "reason": reason}
         logger.warning("%s failed (%s); the run continues on the fallback %s", used["from"], reason, used["to"])
         self._primary_model = self.model
-        self.model = self.fallback_model
-        self.use_function_calling, self.bind_tools_natively = _resolve_binding(self.model, *self._binding_asked)
+        self._use_model(self.fallback_model)
         self.fallback_used = used
         history[0] = {"role": "system", "content": self._system_prompt(user_input)}
-        _carry_over_history(history, self._bound_function_names())
-        return {"type": "fallback", **used}
+        history.append({"role": "user", "content": _FALLBACK_NOTE.format(**used)})
+        task_index = _carry_over_history(history, self._bound_function_names(), task_index)
+        return {"type": "fallback", **used}, task_index
 
     def reset_fallback(self) -> None:
         """Go back to the model the runner was built with (and its binding mode) after a fallback took over."""
         if self._primary_model is not None:
-            self.model = self._primary_model
-            self.use_function_calling, self.bind_tools_natively = _resolve_binding(self.model, *self._binding_asked)
+            self._use_model(self._primary_model)
             self._primary_model = None
         self.fallback_used = None
 
@@ -2355,6 +2415,12 @@ class AgentRunner(PersistenceMixin):
         working_history.append({"role": "user",
                                 "content": user_content(user_input, media)})
         task_index = len(working_history) - 1
+        # A history from another mode (a function-calling conversation resumed on a natively bound local model,
+        # say) carries calls to functions this mode does not bind: carry them over as text. A history that is
+        # valid for this mode is left exactly as it is.
+        bound = self._bound_function_names()
+        if not _binds_every_call(working_history, bound):
+            task_index = _carry_over_history(working_history, bound, task_index)
 
         if not isinstance(self.model, BaseChatModel):
             raise TypeError(
@@ -2399,7 +2465,7 @@ class AgentRunner(PersistenceMixin):
         def _take_over(error: Exception) -> Dict[str, str]:
             """Handle a model call that raised ``error`` (after the model's own retries): move the run to the
             fallback model and return the ``fallback`` event, or raise."""
-            nonlocal parser_tool_spec, parser_tool_name, native_tool_specs
+            nonlocal parser_tool_spec, parser_tool_name, native_tool_specs, task_index
             if isinstance(error, _FRAMEWORK_STOPS):
                 raise error
             if self.fallback_used is not None and self.model is self.fallback_model:
@@ -2408,7 +2474,9 @@ class AgentRunner(PersistenceMixin):
             if (reason is None or self.fallback_model is None or self.fallback_used is not None
                     or getattr(self.model, "is_local", False)):
                 raise error
-            event = self._switch_to_fallback(reason, working_history, user_input)
+            event, task_index = self._switch_to_fallback(reason, working_history, user_input, task_index)
+            if state is not None:
+                state.task_index = task_index                 # the history may have got shorter
             parser_tool_spec, parser_tool_name, native_tool_specs = _bound_specs()
             return event
 
