@@ -371,9 +371,10 @@ def test_the_transcript_is_created_owner_only(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "open", recording_open)
     target = tmp_path / "home" / ".agentx" / "sessions" / "p-12345678" / "20260101T000000Z-abcd1234.json"
     _session().save(target)
-    assert modes[str(target) + ".tmp"] == 0o600
+    temps = [path for path in modes if path.startswith(str(target) + ".") and path.endswith(".tmp")]
+    assert len(temps) == 1 and modes[temps[0]] == 0o600
     assert Session.load(target).history[0]["content"] == "hello"
-    assert not Path(str(target) + ".tmp").exists()
+    assert not Path(temps[0]).exists()
 
 
 def test_the_title_file_is_created_owner_only(tmp_path, monkeypatch):

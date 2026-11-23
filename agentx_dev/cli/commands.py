@@ -106,17 +106,26 @@ def _settings(ctx: Any, arg: str) -> None:
 
 
 def _mode(ctx: Any, arg: str) -> None:
-    if not arg:
-        ctx.notice(f"Mode: {ctx.gate.mode}. Choose one of: {', '.join(MODES)}")
+    words = arg.split()
+    folder = "--folder" in words
+    name = " ".join(word for word in words if word != "--folder").lower()
+    if not name:
+        if folder:
+            ctx.error("Usage: /mode <mode> --folder, where <mode> is default or plan")
+            return
+        ctx.notice(f"Mode: {ctx.gate.mode}. Choose one of: {', '.join(MODES)}. Add --folder to keep default or "
+                   "plan mode for this folder.")
         return
-    try:
-        ctx.gate.set_mode(arg.lower())
-    except ValueError as e:
-        ctx.error(shown(e))
+    if name not in MODES:
+        ctx.error(f"There is no {shown(name)} mode. Choose one of: {', '.join(MODES)}"
+                  + (" (with --folder: default or plan)." if folder else "."))
         return
+    ctx.gate.set_mode(name)
     ctx.notice(f"Mode: {ctx.gate.mode}")
     if ctx.gate.mode == "auto":
         ctx.notice(AUTO_NOTICE)
+    if folder:
+        ctx.save_folder_mode(name)
 
 
 def _resume(ctx: Any, arg: str) -> None:
@@ -351,7 +360,7 @@ COMMANDS = (
     Command("help", "List the commands", _help),
     Command("clear", "Start a new conversation.", _clear),
     Command("model", "Show or switch the model: /model [name] [--folder]", _model),
-    Command("mode", "Show or set the mode: /mode [default|accept-edits|plan|auto]", _mode),
+    Command("mode", "Show or set the mode: /mode [default|accept-edits|plan|auto] [--folder]", _mode),
     Command("settings", "Show the model, mode and rules in force, and the files that change them", _settings),
     Command("resume", "Load a saved conversation: /resume [id]", _resume),
     Command("sessions", "List this folder's saved conversations", _sessions),

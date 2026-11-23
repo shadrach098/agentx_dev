@@ -488,7 +488,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/help` | List the commands. | `/help` |
 | `/clear` | Save this conversation and start a new one, which begins from the newest entries of the [work log](#the-work-log). Clears the "don't ask again" grants (commands and web lookups) and undoes an edit grant; the mode and your settings rules stay. | `/clear` |
 | `/model [name] [--folder]` | Show or switch the model. The conversation is kept. A model that cannot be built (no key) leaves the old one in place. `/model <name>` lasts for this session only; `/model <name> --folder` also saves it for this folder (see [Project memory](#project-memory)). | `/model claude-opus-5-5 --folder` |
-| `/mode [name]` | Show or set the mode: `default`, `accept-edits`, `plan` or `auto` (see [Modes](#modes)). | `/mode plan` |
+| `/mode [name] [--folder]` | Show or set the mode: `default`, `accept-edits`, `plan` or `auto` (see [Modes](#modes)), for this session. With `--folder`, `default` or `plan` is also saved in this folder's `.agentx/settings.json`; `auto` and `accept-edits` stay for this session, because a folder's file may not turn your prompts off (start with `--mode auto`, or put `"mode": "auto"` in your own `~/.agentx/settings.json`). | `/mode plan --folder` |
 | `/settings` | Show the model, mode, rules and helper models in force, and the paths of your settings file and the project's. | `/settings` |
 | `/resume [id]` | Load a saved conversation: with no id, a list to pick from; with an id, or its first characters, that one. | `/resume 3f9a2c1b` |
 | `/sessions` | List this folder's saved conversations, newest first: date, first message and id. | `/sessions` |

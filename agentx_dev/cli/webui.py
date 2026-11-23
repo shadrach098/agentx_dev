@@ -843,8 +843,11 @@ class WebFront:
         # The card shows the whole title, subject and body or nothing: a cut could drop " and everything inside it",
         # " (replaces the existing ...)" or the "... N more lines" count, which say what Yes really does.
         shown: Dict[str, str] = {}
-        for key, value, limit, what in (("title", title, 2000, "action"), ("subject", getattr(request, "subject", ""),
-                                         2000, "target"), ("body", body, 400_000, "preview")):
+        # A team job's subject is its whole task (up to 12,000 characters), which the body shows whole as "Task:":
+        # a second copy under the title is not sent, so a detailed task is not declined unseen for its length.
+        subject = "" if request.tool == "start_team_job" else getattr(request, "subject", "")
+        for key, value, limit, what in (("title", title, 2000, "action"), ("subject", subject, 2000, "target"),
+                                        ("body", body, 400_000, "preview")):
             if truncated:
                 break
             text = _text(value, limit + 1)

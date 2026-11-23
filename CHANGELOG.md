@@ -40,6 +40,18 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- A long team job is no longer declined unseen in the app window. Its task (up to 12,000 characters) was also sent
+  as the card's heading, which may hold only 2,000, so a detailed hand-off came back "too long to show in the window
+  in full" without a question. The card shows the task whole, once, in its body.
+- Saving a conversation on Windows no longer fails with "Access is denied" when another program has its file open
+  for a moment (another agentx window listing its conversations, an antivirus, the search indexer): the save tries
+  again for about 2.5 seconds, and two windows saving at once each use their own temporary file.
+- `/mode auto --folder` said "mode must be one of: default, accept-edits, plan, auto". `/mode` now understands
+  `--folder`: `default` and `plan` are saved for the folder; `auto` and `accept-edits` are set for this session,
+  with where to set them instead (a folder's file may not turn your prompts off). An unknown mode is named.
+- The tests never reach the network: the app's project notes use the offline embeddings in tests (a test's fake
+  OpenAI key used to send note text to api.openai.com), and a test that opens a connection off this computer fails.
+
 - Refreshing the app window restores the conversation opened beside it, reconnecting to the same running
   agentx and replaying its messages instead of losing the side. Closing the side still closes it intentionally.
 

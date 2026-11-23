@@ -208,6 +208,14 @@ def write_project_model(cwd: Path, model: str) -> Tuple[Optional[Path], str]:
     return _write_project_key(cwd, "model", str(model), f"model {model}")
 
 
+def write_project_mode(cwd: Path, mode: str) -> Tuple[Optional[Path], str]:
+    """Save ``mode`` as this folder's mode (``/mode <mode> --folder``): ``default`` or ``plan`` only, since a folder's
+    file may not turn the prompts off (see ``load_settings``). See ``_write_project_key``."""
+    if mode not in ("default", "plan"):
+        raise ValueError(f"a folder's settings file cannot keep {mode} mode")
+    return _write_project_key(cwd, "mode", str(mode), f"mode {mode}")
+
+
 def write_project_team_models(cwd: Path, names: Sequence[str],
                               uses: Optional[Mapping[str, str]] = None) -> Tuple[Optional[Path], str]:
     """Save ``names`` as this folder's ``teamModels`` (``/team-models ... --folder``); a name with a note in

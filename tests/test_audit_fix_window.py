@@ -527,3 +527,18 @@ def test_remote_off_ends_the_windows_that_came_through_tailscale(tmp_path, monke
         near_conn.close()
     finally:
         front.close()
+
+
+def test_a_long_team_task_is_shown_whole_in_the_card_not_declined_unseen(tmp_path):
+    """A team job's subject is its task; a detailed one (over 2,000 characters, under the tool's 12,000) used to be
+    declined without asking. The body shows it whole once; the card has no second copy under the title."""
+    from agentx_dev.cli.team import MAX_TASK_CHARS
+    front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False)
+    task = ("Finish the delegation slice: " + "read the reports and the diffs, then change and test. " * 300)
+    task = task[:MAX_TASK_CHARS].rstrip()
+    request = Request(tool="start_team_job", kind="team", subject=task, args={"task": task, "why": "many areas"},
+                      remember=False, grant="")
+    fields = front.approval_fields(request)
+    assert isinstance(fields, dict), fields
+    assert task in fields["body"] and fields["subject"] == ""
+    assert not any(e["type"] == "notice" and "Declined without asking" in e["text"] for e in front.bus.after(0))

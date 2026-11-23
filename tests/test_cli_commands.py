@@ -73,7 +73,7 @@ def test_mode_shows_sets_and_rejects():
     run_command(ctx, "/mode plan")
     assert ctx.gate.mode == "plan"
     run_command(ctx, "/mode yolo")
-    assert ctx.gate.mode == "plan" and "mode must be one of" in ctx.errors[-1]
+    assert ctx.gate.mode == "plan" and "There is no yolo mode" in ctx.errors[-1]
 
 
 def test_resume_passes_the_id_or_none():
@@ -414,3 +414,17 @@ def test_an_unclosed_quote_is_named_in_the_error():
     ctx = Ctx()
     run_command(ctx, "/team-models gpt-5.5=user's pick")
     assert "quote" in ctx.errors[-1].lower()
+
+
+def test_mode_folder_saves_default_or_plan_and_explains_auto(tmp_path):
+    from agentx_dev.cli.settings import load_settings
+    from tests.conftest import MockModel
+    from tests.test_cli_app import Lines, make_app
+    app, out, cwd, home = make_app(tmp_path, Lines("/mode plan --folder", "/mode auto --folder", "/mode sideways",
+                                                   "/exit"), MockModel(script=[]))
+    app.start()
+    text = " ".join(out.getvalue().split())
+    assert load_settings(cwd, home).mode == "plan"              # saved for the folder
+    assert app.gate.mode == "auto"                               # set for this session
+    assert "a folder's settings file cannot keep it" in text and "--mode auto" in text
+    assert "mode must be one of" not in text and "There is no sideways mode" in text

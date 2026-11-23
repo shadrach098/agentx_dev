@@ -10,7 +10,8 @@ from typing import Any, Callable, List, Optional, Sequence, Tuple
 from agentx_dev.cli.models import (SUGGESTED_MODELS, ModelError, describe_prompt, is_auto_note, key_variable,
                                    other_provider, parse_descriptions, parse_team_models, provider_for,
                                    team_models_line, usable_team_models)
-from agentx_dev.cli.settings import (project_settings_path, user_settings_path, write_project_model,
+from agentx_dev.cli.settings import (project_settings_path, user_settings_path, write_project_mode,
+                                     write_project_model,
                                      write_project_team_models, write_user_model)
 
 
@@ -51,6 +52,22 @@ class ModelCommands:
             self.notice("No folder settings file is kept for your home folder or a drive root.")
             return
         path, message = write_project_model(self.cwd, name)
+        (self.notice if path is not None else self.error)(self._safe(message, 600))
+
+    def save_folder_mode(self, mode: str) -> None:
+        """``/mode <mode> --folder``: keep default or plan mode for this folder. A folder's file may not turn the
+        prompts off (a cloned project could ship one), so auto and accept-edits stay for this session and the user
+        is told where to set them instead."""
+        if mode not in ("default", "plan"):
+            self.notice(f"{mode} mode is on for this session only: a folder's settings file cannot keep it, so a "
+                        f"project you clone cannot switch off your prompts. To start in {mode} mode, use "
+                        f'agentx --mode {mode}, or put "mode": "{mode}" in your own settings file '
+                        f"({self._safe(user_settings_path(self.home), 300)}), which applies to every folder.")
+            return
+        if not self._memory_on:
+            self.notice("No folder settings file is kept for your home folder or a drive root.")
+            return
+        path, message = write_project_mode(self.cwd, mode)
         (self.notice if path is not None else self.error)(self._safe(message, 600))
 
     def helper_models_line(self) -> str:
