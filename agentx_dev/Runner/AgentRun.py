@@ -1498,7 +1498,7 @@ class AgentRunner(PersistenceMixin):
         auto_memory: bool = False,
         use_function_calling: Optional[bool] = None,
         verbose: bool = True,
-        bind_tools_natively: bool = False,
+        bind_tools_natively: Optional[bool] = None,
         parallel_tool_workers: int = 8,
         *,
         agent: AgentFormattor | AgentPrompt | str | None = None,
@@ -1588,7 +1588,9 @@ class AgentRunner(PersistenceMixin):
                 per turn are dispatched concurrently on a bounded
                 ``ThreadPoolExecutor``. Best latency for multi-tool
                 turns. Mutually exclusive with
-                ``use_function_calling``. Uses a minimal system
+                ``use_function_calling``. Default None: bound natively
+                when the model sets ``prefers_native_tools`` (local models).
+                Uses a minimal system
                 prompt (not the AgentType template) so the parser
                 scaffolding doesn't fight the native interface.
             parallel_tool_workers: Max concurrent dispatches per turn
@@ -1774,6 +1776,15 @@ class AgentRunner(PersistenceMixin):
         # mode otherwise. Callers who explicitly pass True/False keep
         # that value. bind_tools_natively forces FC off (they're
         # mutually exclusive by design).
+        # bind_tools_natively=None means "ask the model": a model that sets
+        # prefers_native_tools (a small local model, which fails the ReAct
+        # format) is bound natively. An explicit use_function_calling=True
+        # beats that preference; an explicit True/False is kept as given.
+        if bind_tools_natively is None:
+            bind_tools_natively = (
+                bool(getattr(model, "prefers_native_tools", False))
+                and use_function_calling is not True
+            )
         if use_function_calling is None:
             if bind_tools_natively:
                 use_function_calling = False
