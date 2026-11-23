@@ -493,7 +493,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/resume [id]` | Load a saved conversation: with no id, a list to pick from; with an id, or its first characters, that one. | `/resume 3f9a2c1b` |
 | `/sessions` | List this folder's saved conversations, newest first: date, first message and id. | `/sessions` |
 | `/init` | Ask the model to draft an `AGENTX.md` for this project. Writing it goes through the approval prompt. | `/init` |
-| `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage; `/team log` lists every call the last team job made. | `/team add type hints to every module and run the tests` |
+| `/team <task>` | Ask the agent to hand a big job to a team of helpers (see [Team jobs](#team-jobs)). With no task it prints the usage; `/team log` lists every call the last team job made; `/team auto [on\|off]` shows or sets [automatic teams](#automatic-teams). | `/team add type hints to every module and run the tests` |
 | `/team-models [name[=use] ...\|describe\|clear] [--folder]` | Show or set the extra models team helpers may run on, with an optional note on what each is for (see [Helper models](#helper-models)). `/team-models <names>` lasts for this session only; with `--folder` it is also saved for this folder. `/team-models describe` asks the chat model to write the missing notes (marked `auto:`). `/team-models clear` empties the list. | `/team-models gpt-6.1-sol="hard coding" claude-sonnet-5-5 --folder` |
 | `/skills [install <link>\|remove <name>\|use <name> ...]` | List the skills the agent can read (each is also a `/name` command in the pop-up, e.g. `/changing-files rename the helper`), or add one from a `https://github.com/<owner>/<repo>` link or a folder (you are shown what it contains and asked first), or remove one. See [Skills](#skills). | `/skills install https://github.com/obra/superpowers` |
 | `/memory [words]` | Show the project notes kept for later (how many, how they are searched, the newest), or search them. See [Notes and recall](#notes-and-recall). | `/memory login redirect` |
@@ -520,6 +520,20 @@ For a big, multi-part job (several files or areas: research, then changes, then 
 
 `/team <task>` asks for the same thing by hand: it sends the agent a message asking it to call `start_team_job` for your task. It is an ordinary message, so the model may still decline, and then nothing runs.
 
+### Automatic teams
+
+You do not have to type `/team` for a big job. Before the agent starts on a message you typed, `agentx` decides whether it goes to a team, and shows why (`Handing this to a team: it spans the whole project.` or `Working on this directly: a one-line fix.`):
+
+- A message that rules out a team ("don't use a team", "never start a team", "no need for subagents", "without a team") stays direct, with no question asked (`Working on this directly: the message reads as asking for no team.`), so a team you ruled out never starts, even in `auto` mode. A message that asks for one ("use a team for this") or only mentions teams ("rename the subagents field") goes to the size question below, which is told to follow what the message asks.
+- A message under 3 words ("fix it", "yes") and one that carries on the last turn ("go on") stay direct, with no line shown.
+- Anything else gets one short question to the chat model, without tools: is this a large, multi-part job? It sees the first 2,000 characters of your message (as data, not instructions) and answers with a yes or no and a short reason. The answer only advises; it cannot approve anything. If it takes over 20 seconds, fails or cannot be read, the message stays direct and the line says so (`Working on this directly: the size check took over 20s.`). The question costs one small model call.
+
+A message sent to a team reaches the agent with a request to call `start_team_job` with the whole task. Until a job starts, the agent may look around (6 reading calls), but changes, commands and MCP tools are refused with a note telling it to hand the job over; a team's helpers are not held back. If it answers without starting a job (and without asking you something: an answer that ends in a question waits for yours), `agentx` reminds it once (`No team job started for a request routed to a team: reminding the agent once.`); if it answers again without one, you are told, and `/team <task>` hands it over for sure.
+
+The team job is asked about as always (see [The approval](#the-approval)). If you decline it, no other team job starts in that message. A plain no, or a job that fails, leaves the agent able only to read: it must tell you what happened and ask whether to do the work without a team. A no with a reason ("just fix the footer yourself") is your answer, and the agent follows it. Your next message can say yes, or start a team again.
+
+No question is asked, and nothing is routed, in `plan` mode, for commands such as `/team`, `/init` and skills (they say how they want to work themselves), or with automatic teams off. `/team auto` shows whether they are on; `/team auto off` turns them off and saves `"autoTeam": false` in `~/.agentx/settings.json` (`/team auto on` turns them back on). They are on unless that file says `false`.
+
 ### The helpers
 
 | Helper | Tools | For |
@@ -540,7 +554,7 @@ Before a job starts you get a prompt like any other, with the task, the reason t
 | `plan` | Refused, like every other change. |
 | `auto` | Runs without asking. |
 
-A deny rule turns the feature off in every mode (see [Turning it off](#turning-it-off)). An allow rule of your own, `"allow": ["start_team_job"]`, lets it run without asking. If you decline, the agent may ask again in the same message. One message may run **up to 5 team jobs**: a big task ("move all the calls") often takes several batches, so when a job ends partial and the task is not finished, the agent starts the next batch itself instead of stopping to ask you to "continue" (in `default` and `accept-edits` mode each job is still asked about; in `auto` mode they just run). A sixth is refused at once, before any prompt ("5 team jobs already ran for this message"), and the agent reports what is done and what remains; your next message can start more.
+A deny rule turns the feature off in every mode (see [Turning it off](#turning-it-off)). An allow rule of your own, `"allow": ["start_team_job"]`, lets it run without asking. If you decline, no other team job starts in that message ("the user declined a team job for this request"); your next message may start one. One message may run **up to 5 team jobs**: a big task ("move all the calls") often takes several batches, so when a job ends partial and the task is not finished, the agent starts the next batch itself instead of stopping to ask you to "continue" (in `default` and `accept-edits` mode each job is still asked about; in `auto` mode they just run). A sixth is refused at once, before any prompt ("5 team jobs already ran for this message"), and the agent reports what is done and what remains; your next message can start more.
 
 ### What the helpers may do
 

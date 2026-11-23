@@ -269,12 +269,23 @@ def test_a_job_past_the_limit_is_refused_before_the_user_is_asked_again(tmp_path
     assert "already ran for this message" in history_text(app)
 
 
-def test_a_declined_hand_off_may_be_asked_again_in_the_same_turn(tmp_path):
-    answers = Lines("n", "", "y")
+def test_a_declined_hand_off_is_not_asked_again_in_the_same_message(tmp_path):
+    """No means no for this message: the agent's second try is refused without asking, and it must ask instead."""
+    answers = Lines("n", "")
     model = team_model([step("s1", "explorer", "look around")], main=("call", "call", "final"))
     app, out, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), model, read_short=answers)
     assert app.start() == 0
-    assert out.getvalue().count("Team plan:") == 1 and "already ran for this message" not in history_text(app)
+    assert out.getvalue().count("Team plan:") == 0
+    assert "the user declined a team job for this request" in history_text(app)
+
+
+def test_a_declined_hand_off_may_be_asked_again_in_the_next_message(tmp_path):
+    answers = Lines("n", "", "y")
+    model = team_model([step("s1", "explorer", "look around")], main=("call", "final", "call", "final"))
+    app, out, _, _ = make_app(tmp_path, Lines("do the big job", "try the team again", "/exit"), model,
+                              read_short=answers)
+    assert app.start() == 0
+    assert out.getvalue().count("Team plan:") == 1
 
 
 def test_an_error_text_with_the_api_key_never_reaches_the_result_string(tmp_path, monkeypatch):

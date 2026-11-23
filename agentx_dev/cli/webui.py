@@ -1498,6 +1498,7 @@ class WebFront:
         last_action = ""
         from agentx_dev.Pictures import content_text
         from agentx_dev.Runner.AgentRun import _FORMAT_NAMES, INTERJECTION_PREFIX
+        from agentx_dev.cli.routing import typed_text
         _ANSWERED = "\x00answered"                 # a format call that carried the final answer: no result row
         for message in messages:
             if not isinstance(message, dict):
@@ -1523,6 +1524,11 @@ class WebFront:
                     text = text.split(marker, 1)[0]
                 if text.startswith(("[framework]", "[agentx]")):
                     continue
+                typed = typed_text(text)                         # a routed request or /team: what was typed
+                if typed is not None:
+                    if not typed:                                # agentx's own reminder to hand it over
+                        continue
+                    text = typed
                 items.append({"type": "user", "text": _text(text, 100_000)})
             elif role == "assistant":
                 if message.get("tool_calls") and text.strip():     # what it said before its steps: a note

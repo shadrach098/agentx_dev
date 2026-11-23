@@ -24,6 +24,19 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   supervisor's new plan each get rows of their own; a step the new plan replaced shows skipped. Esc or Ctrl+C
   marks open steps interrupted, and a step the job ended without reporting shows unknown, never a made-up failure.
   It stays after the job and clears when you start or open another conversation.
+- **agentx decides by itself when a job needs a team.** You no longer need `/team` for a big job: before the agent
+  starts on a message, agentx asks the chat model one short question, without tools, whether it is a large,
+  multi-part job, and shows the answer (`Handing this to a team: it spans the whole project.` or `Working on this
+  directly: a one-line fix.`). A message that rules out a team ("don't use a team") stays direct without asking,
+  and a short message stays direct. A job sent to a team still asks for your approval. Until it starts, the agent
+  may only look around a little; changes and commands are the team's. If you decline the team, no other team job
+  starts in that message; after a plain no, or a failed job, the agent asks you before working alone. A slow or unreadable answer leaves the message
+  direct and says so. `/team auto off` turns it off (saved as `"autoTeam": false`).
+
+### Changed
+
+- Declining a team job now holds for the rest of that message: the agent is told not to start another and to ask
+  you instead. Before, it could ask again straight away.
 
 ### Fixed
 

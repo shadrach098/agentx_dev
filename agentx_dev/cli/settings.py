@@ -112,6 +112,22 @@ def write_user_fullscreen(home: Path, on: bool) -> Tuple[Optional[Path], str]:
     return _write_key(Path(home), "fullscreen", bool(on), f"fullscreen {'true' if on else 'false'}")
 
 
+def read_user_auto_team(home: Path) -> bool:
+    """``"autoTeam"`` in ~/.agentx/settings.json: whether agentx decides by itself to hand a large job to a team.
+    On unless the user's own file says ``false``."""
+    path = Path(home) / FOLDER / SETTINGS_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return True
+    return not (isinstance(data, dict) and data.get("autoTeam") is False)
+
+
+def write_user_auto_team(home: Path, on: bool) -> Tuple[Optional[Path], str]:
+    """Save ``"autoTeam"`` in ~/.agentx/settings.json (``/team auto on|off``)."""
+    return _write_key(Path(home), "autoTeam", bool(on), f"autoTeam {'true' if on else 'false'}")
+
+
 def write_user_model(home: Path, model: str) -> Tuple[Optional[Path], str]:
     """Save ``model`` as the default model in ``~/.agentx/settings.json``."""
     return _write_key(Path(home), "model", str(model), f"model {model}")
