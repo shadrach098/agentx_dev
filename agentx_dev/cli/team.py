@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from agentx_dev import AgentRunner, AgentType, AsyncSupervisor, SpawnConfig
 from agentx_dev.Runner.Changes import CHANGING_TOOLS, REFUSAL_STARTS, changed_paths
+from agentx_dev.Runner.Fallback import FallbackFailed
 from agentx_dev.cli.models import HelperModel, model_label, provider_for, without_auto_prefix
 from agentx_dev.cli.blind_models import BlindModelRoster
 from agentx_dev.cli.ui import summarize_result
@@ -151,7 +152,8 @@ class JobStopped(KeyboardInterrupt):
 
 class _Job:
     """What every step of one team job shares: whether the job is over, each step's token share, the notes the user
-    typed while it ran (``add_note``) and the steps they asked to skip (``skip``)."""
+    typed while it ran (``add_note``), the steps they asked to skip (``skip``) and the models that failed for good
+    (``failed_for_good``): a later step on one of those starts on the fallback, so the switch lasts the whole job."""
 
     def __init__(self, step_tokens: int = 0) -> None:
         self.stopped = False
@@ -161,8 +163,21 @@ class _Job:
         self._read: List[bool] = []
         self._handled: set = set()
         self.skips: set = set()
+        self._dead: Dict[int, Tuple[Any, Dict[str, str]]] = {}   # id(model) -> (model, {"from", "to", "reason"})
         self._lock = threading.Lock()
         self.pump: Any = None                       # the _Pump its questions go through (set when it runs)
+
+    def failed_for_good(self, model: Any) -> Optional[Dict[str, str]]:
+        """The switch an earlier step of this job made away from ``model`` (None when it has not failed for good)."""
+        with self._lock:
+            found = self._dead.get(id(model))
+        return dict(found[1]) if found is not None and found[0] is model else None
+
+    def mark_failed(self, model: Any, used: Any) -> None:
+        if isinstance(used, dict) and used.get("to"):
+            with self._lock:
+                self._dead.setdefault(id(model), (model, {key: str(used.get(key) or "")
+                                                          for key in ("from", "to", "reason")}))
 
     def add_note(self, text: str, on_read: Optional[Callable[[str], None]] = None) -> int:
         with self._lock:
@@ -300,7 +315,7 @@ class StepStatus:
         with self._lock:
             return {"calls": dict(self.calls), "files": dict(self.files), "skills": list(self.skills),
                     "tokens": self.tokens, "cached": self.cached, "tool_uses": self.tool_uses, "model": self.model,
-                    "seconds": self.seconds(),
+                    "seconds": self.seconds(), "fallback": dict(self.fallback) if self.fallback else None,
                     "log": list(self.log), "current_call": self.current_call}
 
     def seconds(self) -> float:
@@ -656,7 +671,11 @@ class _HelperRunner(AgentRunner):
     When the run raises an ``Exception``, a ``RuntimeError`` that carries only ``describe_error(error)`` is raised
     instead. The Supervisor catches such an error itself and shows its text on the screen, in the result and in the
     synthesizer's prompt, so the text must be safe before it leaves the runner. ``KeyboardInterrupt`` and
-    ``SystemExit`` pass through untouched."""
+    ``SystemExit`` pass through untouched.
+
+    With a ``fallback_model``, a step whose model fails for good carries on there (``StepStatus.fallback``), and
+    every later step of the job on that model starts on the fallback. With blind errors the fallback is told the
+    earlier model's job ID (``model_id``), never its name, so the name cannot reach its report."""
 
     def __init__(self, *args: Any, describe_error: Callable[[BaseException], str] = str, helper_name: str = "",
                  **kwargs: Any) -> None:
@@ -665,24 +684,37 @@ class _HelperRunner(AgentRunner):
         self._blind_errors = False
         self._settings = (args, kwargs)
         self.helper_name = helper_name
+        self.model_id = ""                          # the job's ID for this helper's model (blind jobs)
         self.job: Optional[_Job] = None
 
     def Initialize(self, *args: Any, **kwargs: Any) -> Any:
         status = _running_status.get()
-        step = _Step(self.helper_name, self.job or _Job(), status)
+        job = self.job or _Job()
+        step = _Step(self.helper_name, job, status)
         settings_args, settings = self._settings
+        settings = {**settings, "tools": [_step_tool(tool, step) for tool in settings.get("tools") or []]}
+        fallback = settings.get("fallback_model")
+        earlier = job.failed_for_good(self.model) if fallback is not None else None
+        if earlier is not None:                     # its model failed for good in an earlier step: start on the fallback
+            settings["model"], settings["fallback_model"] = fallback, None
         if status is not None:
             with status._lock:
                 status.model = model_label(self.model)
         previous, _local.step = getattr(_local, "step", None), step
         try:
-            runner = AgentRunner(*settings_args, **{**settings, "tools": [_step_tool(tool, step) for tool in
-                                                                           settings.get("tools") or []]})
+            runner = AgentRunner(*settings_args, **settings)
+            if self._blind_errors:
+                runner.fallback_note_label = self.model_id or "the step's own model"
             runner.interjections = self.interjections        # the user's notes, typed while the team works
             completion = runner.Initialize(*args, **kwargs)
         except Exception as error:
+            if isinstance(error, FallbackFailed):
+                job.mark_failed(self.model, error.fallback)  # the step's own model is still gone for this job
             try:
                 text = str(self._describe_error(error))
+                if earlier is not None:
+                    text = (f"{earlier['from']} failed earlier in this job ({earlier['reason']}); the fallback "
+                            f"{earlier['to']} failed too: {text}")
             except Exception:                       # a broken describer must not let the raw text through
                 text = type(error).__name__
             if self._blind_errors and status is not None:
@@ -694,7 +726,11 @@ class _HelperRunner(AgentRunner):
         if str(getattr(completion, "content", "") or "").startswith(NO_ANSWER_START):
             raise RuntimeError(NO_REPORT)
         used = getattr(completion, "fallback", None)     # the step's model failed for good; the fallback finished it
-        if isinstance(used, dict) and used.get("to") and status is not None:
+        if isinstance(used, dict) and used.get("to"):
+            job.mark_failed(self.model, used)
+        else:
+            used = earlier
+        if used is not None and status is not None:
             with status._lock:
                 status.fallback = {key: str(used.get(key) or "") for key in ("from", "to", "reason")}
         return _partial_if_out_of_steps(completion)
@@ -744,6 +780,7 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
                 runner = _helper(role, roster.resolve(model_id), by_name, addendum,
                                  describe_error, skills, name, fallback_model=fallback_model)
                 runner._blind_errors = True
+                runner.model_id = model_id
                 helpers[name] = (role.description + note, runner)
         return helpers
     if not extras:
@@ -780,9 +817,10 @@ def _steps(count: int) -> str:
 def format_result(result: Any,
                   fallback_of: Optional[Callable[[Any], Optional[Dict[str, str]]]] = None) -> str:
     """The one string the main agent gets back: the outcome, each step's fate, and the final answer.
-    ``fallback_of(step)`` is ``{"from", "to", "reason"}`` for a step that finished on the fallback model (None
-    otherwise); such a step reads ``done on <to> (fallback: <from> <reason>)`` and the first line counts them, so
-    the agent knows which work to check. ``from`` is whatever the agent may be told (the job's model ID)."""
+    ``fallback_of(step)`` is ``{"from", "reason"}`` for a step that finished on the fallback model (None
+    otherwise); such a step reads ``done on the fallback model (fallback: <from> <reason>)`` and the first line
+    counts them, so the agent knows which work to check. ``from`` is what the agent may be told (the job's model
+    ID): no model is named, as everywhere the agent reads."""
     subtasks = list(getattr(result, "subtasks", None) or [])
 
     def used(sub: Any) -> Optional[Dict[str, str]]:
@@ -792,7 +830,7 @@ def format_result(result: Any,
             found = fallback_of(sub)
         except Exception:                           # a broken lookup must not lose the result
             return None
-        return found if isinstance(found, dict) and found.get("to") else None
+        return found if isinstance(found, dict) and found else None
 
     outcome = str(getattr(result, "outcome", "done"))
     partial = sum(1 for sub in subtasks if _ran_out_of_steps(sub) and not _result_failed(sub))
@@ -816,10 +854,9 @@ def format_result(result: Any,
                     "unknown model ID", "spawn refused: unknown model ID",
                 ) else "failed: Helper execution failed.")
             elif fallback is not None:
-                to = _first_line(fallback["to"], 80)
                 why = f"fallback: {_first_line(fallback.get('from'), 80)} {_first_line(fallback.get('reason'), 80)}"
-                state = (f"partial on {to} ({why}; ran out of steps)" if _ran_out_of_steps(sub)
-                         else f"done on {to} ({why})")
+                state = (f"partial on the fallback model ({why}; ran out of steps)" if _ran_out_of_steps(sub)
+                         else f"done on the fallback model ({why})")
             elif _ran_out_of_steps(sub):
                 state = "partial (ran out of steps)"
             else:
@@ -1402,7 +1439,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
     step's token share (see ``step_token_share``; 0 is none). Once ``closed()`` is true no further step starts.
     ``record`` (a ``TeamRecord``) writes the plan and each helper's whole report to disk as they happen.
     ``fallback_model`` (a local model, or None) takes over a step whose helper's model (not a local one) fails for
-    good; the step's ``result`` event carries ``"fallback": <its name>`` and the result text marks the step.
+    good; the step's ``result`` event carries ``"fallback"`` (its name), ``"fallback_from"`` and
+    ``"fallback_reason"`` for the screen, and the result text marks the step without naming a model.
 
     Ctrl+C (``KeyboardInterrupt``) and ``SystemExit`` propagate, with the Supervisor's stream closed; any other
     error becomes a short failure result for the main agent to read."""
@@ -1433,8 +1471,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
         saved.helper = supervisor.recorded_name(helper, supervisor._roles.get((helper, status.query), ""))
         saved.model = ""
         saved.diagnostic = ""
-        if status.fallback:                       # the configured model it moved from is not saved
-            saved.fallback = {"to": status.fallback.get("to", "")}
+        if status.fallback:                       # read by the agent later: no model is named
+            saved.fallback = {"reason": status.fallback.get("reason", "")}
         return saved
 
     async def consume() -> Any:
@@ -1454,6 +1492,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             runner = _helper(role, chosen, by_name, addendum, describe_error, skills, shown,
                              every_mcp_tool=False, fallback_model=fallback_model)
             runner._blind_errors = True
+            runner.model_id = model_name
             runner.job = job
             return runner
 
@@ -1493,11 +1532,15 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                         text = (getattr(status, "diagnostic", "") or getattr(sub, "error", "") or
                                 getattr(sub, "content", ""))
                         used = getattr(status, "fallback", None) if not failed else None
-                        if used:                  # the agent is told the job's ID, never the configured model
-                            fallbacks[id(sub)] = {**used, "from": supervisor.job_model_id(sub.agent) or "its model"}
+                        if used:                  # the agent is told the job's ID, never a configured model
+                            fallbacks[id(sub)] = {"from": supervisor.job_model_id(sub.agent) or "its model",
+                                                  "reason": used.get("reason", "")}
                         tell("result", {"agent": supervisor.shown_name(sub.agent), "ok": not failed, "text": _first_line(text),
                                         "partial": not failed and _ran_out_of_steps(sub),
+                                        # for the screen only: the real names, and why
                                         "fallback": used["to"] if used else "",
+                                        "fallback_from": used["from"] if used else "",
+                                        "fallback_reason": used["reason"] if used else "",
                                         "skipped": bool(getattr(sub, "skipped", False)),
                                         "label": supervisor.label_of(sub.agent, sub.query),
                                         "status": status, **step_ids.ended(sub.agent, sub.query, status)})

@@ -260,6 +260,14 @@ class WebScreen(Screen):
         self.bus.emit("team_plan", steps=shown)
 
 
+def _step_fallback(fallback: Any) -> Optional[Dict[str, str]]:
+    """A team step the fallback model finished, for the Details panel: ``{"to", "from", "reason"}`` (None for any
+    other step)."""
+    if not isinstance(fallback, dict) or not fallback.get("to"):
+        return None
+    return {key: _text(fallback.get(key) or "", 120) for key in ("to", "from", "reason")}
+
+
 def _team_tasks(history: List[Any]) -> List[str]:
     """The tasks of the team jobs a conversation's history asked for (``start_team_job``, also when a model wrapped
     the call in its response format)."""
@@ -1229,7 +1237,7 @@ class WebFront:
                           "query": _text(getattr(step, "query", ""), 600), "done": getattr(step, "ended", None) is not None,
                           "seconds": round(float(snap.get("seconds") or 0)), "tokens": int(snap.get("tokens") or 0),
                           "toolUses": int(snap.get("tool_uses") or 0), "files": len(snap.get("files") or {}),
-                          "actions": actions})
+                          "actions": actions, "fallback": _step_fallback(snap.get("fallback"))})
         return {"steps": shown, "running": bool(getattr(app, "_team_rows", None))}
 
     # -- the Settings panel ------------------------------------------------------------------------------------

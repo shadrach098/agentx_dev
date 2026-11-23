@@ -226,7 +226,7 @@ class ModelCommands:
         self._track_usage_model(model_label(built[1]), built[1], "chat")
         return built[1]
 
-    def _fit_fallback_window(self, fallback: Any) -> None:
+    def _fit_fallback_window(self, fallback: Any, remember: bool = True) -> None:
         """The window of a fallback built from the settings, without its check (which loads the model): the user's
         ``localContext`` when set; else 8,192 for now, and the server is asked in the background (``server_window``)
         once; its answer applies from the next request on (the runner reads ``context_window`` before each)."""
@@ -246,8 +246,10 @@ class ModelCommands:
             if isinstance(window, int) and not isinstance(window, bool) and window > 0 and not self.local_context:
                 fallback.context_window = window
 
-        self._fallback_window_reader = threading.Thread(target=work, name="agentx-fallback-window", daemon=True)
-        self._fallback_window_reader.start()
+        reader = threading.Thread(target=work, name="agentx-fallback-window", daemon=True)
+        if remember:                                     # the fallback's own read; a team helper's is not kept
+            self._fallback_window_reader = reader
+        reader.start()
 
     def _took_over(self, event: Dict[str, Any]) -> None:
         """The runner's ``fallback`` event: the chat model failed for good and the fallback carries the turn on. The

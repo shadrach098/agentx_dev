@@ -928,15 +928,21 @@ def test_a_step_on_the_fallback_is_marked_on_the_screen_in_the_panel_and_for_the
                               local_context=32768)
     assert app.start() == 0
     text = out.getvalue()
-    assert "↺ explorer · look around  Done on qwen3:8b (fallback) (" in text and "found it on the fallback" in text
+    assert ("↺ explorer · look around  Done on qwen3:8b (fallback: claude-sonnet-5-5 key rejected) (" in text
+            and "found it on the fallback" in text)                # the screen names the models and says why
     history = history_text(app)
     assert "1 step ran on the fallback model; check their work" in history
-    assert "1. explorer - done on qwen3:8b (fallback: model_" in history and " key rejected): look around" in history
+    assert ("1. explorer - done on the fallback model (fallback: model_" in history
+            and " key rejected): look around" in history)
     rows = app._team_panel.snapshot()                              # what the window's Team panel draws
-    assert rows[0]["state"] == "done" and rows[0]["fallback"] == "qwen3:8b"
+    assert rows[0]["state"] == "done"
+    assert (rows[0]["fallback"], rows[0]["fallbackFrom"], rows[0]["fallbackReason"]) == (
+        "qwen3:8b", "claude-sonnet-5-5", "key rejected")
     saved = [path.read_text(encoding="utf-8") for path in (app.cwd / ".agentx" / "team").rglob("*.md")]
-    assert any("Status: **done on qwen3:8b (fallback)**" in text for text in saved)    # the step's saved record
-    assert all("claude-sonnet-5-5" not in text for text in saved)  # the agent reads it later: no configured model
+    assert any("Status: **done on the fallback model**. Its own model failed (key rejected); check this work."
+               in text for text in saved)                          # the step's saved record says why
+    for text in saved:                                             # the agent reads it later: no model is named
+        assert "claude-sonnet-5-5" not in text and "qwen3" not in text
 
 
 def started_for_a_job(tmp_path, chat, models, monkeypatch, **kw):
@@ -975,6 +981,7 @@ def test_a_local_helper_without_a_window_gets_one(tmp_path, monkeypatch):
     chat.model_name = "claude-sonnet-5-5"
     small = LocalStandIn("llama3.1:8b")
     small.context_window = None                   # the settings set no localContext and it was never checked
+    small.server_window = lambda timeout=2.0: None   # the server does not say
     started_for_a_job(tmp_path, chat, {"llama3.1:8b": small}, monkeypatch, team_models=["llama3.1:8b"])
     assert small.context_window == 32768          # the user's localContext
     (tmp_path / "b").mkdir()
@@ -986,19 +993,41 @@ def test_a_local_helper_without_a_window_gets_one(tmp_path, monkeypatch):
     app._describe_models = lambda *args, **kwargs: None
     app._start_team_job("Survey the project", "it is big")
     assert small.context_window == DEFAULT_WINDOW  # no localContext: the default until the server says more
+    assert app._fallback_window_reader is None     # a helper's window read does not take the fallback's handle
 
 
 def test_team_done_fallback_mark():
     from agentx_dev.cli.ui import Screen
     out = io.StringIO()
     screen = Screen(Console(file=out, width=200, force_terminal=False, color_system=None))
-    screen.team_done("coder@claude-opus-5-5", "make the change", True, "changed it", fallback="qwen3:8b")
-    screen.team_done("runner@gpt-5.5", "run the tests", True, "ran some", partial=True, fallback="qwen3:8b")
-    screen.team_done("coder@gpt-5.5", "fix it", True, "fixed it")
+    screen.team_done("coder@claude-opus-5-5", "make the change", True, "changed it",
+                     fallback={"to": "qwen3:8b", "from": "claude-opus-5-5", "reason": "out of credit"})
+    screen.team_done("runner@gpt-5.5", "run the tests", True, "ran some", partial=True,
+                     fallback={"to": "qwen3:8b", "from": "gpt-5.5", "reason": "key rejected"})
+    screen.team_done("coder@gpt-5.5", "fix it", True, "fixed it", fallback={"to": "", "from": "", "reason": ""})
     lines = out.getvalue().splitlines()
-    assert lines[0] == "↺ coder@claude-opus-5-5 · make the change  Done on qwen3:8b (fallback)"
-    assert lines[2] == "↺ runner@gpt-5.5 · run the tests  Partial (ran out of steps) on qwen3:8b (fallback)"
+    assert lines[0] == ("↺ coder@claude-opus-5-5 · make the change  Done on qwen3:8b (fallback: claude-opus-5-5 out "
+                        "of credit)")
+    assert lines[2] == ("↺ runner@gpt-5.5 · run the tests  Partial (ran out of steps) on qwen3:8b (fallback: gpt-5.5 "
+                        "key rejected)")
     assert lines[4] == "✓ coder@gpt-5.5 · fix it  Done"
+
+
+def test_team_log_and_details_mark_the_fallback():
+    from agentx_dev.cli.team import StepStatus
+    from agentx_dev.cli.ui import Screen
+    from agentx_dev.cli.webui import _step_fallback
+    status = StepStatus(1, "coder@claude-opus-5-5", "make the change")
+    plain_step = StepStatus(2, "runner@gpt-5.5", "run the tests")
+    status.fallback = {"from": "claude-opus-5-5", "to": "qwen3:8b", "reason": "out of credit"}
+    out = io.StringIO()
+    Screen(Console(file=out, width=200, force_terminal=False, color_system=None)).team_log([status, plain_step])
+    lines = out.getvalue().splitlines()
+    assert lines[0].endswith("↺ on qwen3:8b (fallback: claude-opus-5-5 out of credit)")   # /team log
+    assert "fallback" not in lines[1]
+    assert _step_fallback(status.snapshot()["fallback"]) == {"to": "qwen3:8b", "from": "claude-opus-5-5",
+                                                            "reason": "out of credit"}   # the window's Details data
+    assert _step_fallback(plain_step.snapshot()["fallback"]) is None
 
 
 def test_the_window_panel_row_carries_the_fallback():
@@ -1006,10 +1035,13 @@ def test_the_window_panel_row_carries_the_fallback():
     panel = TeamPanel()
     panel.notify("plan", {"steps": [{"agent": "coder@claude-opus-5-5", "label": "fix", "query": "fix it"},
                                     {"agent": "runner@gpt-5.5", "label": "run", "query": "run it"}], "round": 1})
-    panel.notify("result", {"round": 1, "step": 0, "ok": True, "fallback": "qwen3:8b"})
-    panel.notify("result", {"round": 1, "step": 1, "ok": True})
+    panel.notify("result", {"round": 1, "step": 0, "ok": True, "fallback": "qwen3:8b",
+                            "fallback_from": "claude-opus-5-5", "fallback_reason": "out of credit"})
+    panel.notify("result", {"round": 1, "step": 1, "ok": True, "fallback": "", "fallback_from": "",
+                            "fallback_reason": ""})
     rows = panel.snapshot()
-    assert [row["fallback"] for row in rows] == ["qwen3:8b", ""]
+    assert [(row["fallback"], row["fallbackFrom"], row["fallbackReason"]) for row in rows] == [
+        ("qwen3:8b", "claude-opus-5-5", "out of credit"), ("", "", "")]
 
 
 def local_chat_app(tmp_path, team_models, env=KEYS):

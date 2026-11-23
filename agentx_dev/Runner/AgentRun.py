@@ -1991,6 +1991,9 @@ class AgentRunner(PersistenceMixin):
         # The model that takes over when `model` fails for good, and the switch once it happened (sticky).
         self.fallback_model = fallback_model
         self.fallback_used: Optional[Dict[str, str]] = None
+        # What the fallback is told the earlier model was called (None: its name). A caller that must not let the
+        # model's name reach the fallback's answer (agentx's team helpers) sets a neutral label.
+        self.fallback_note_label: Optional[str] = None
         self._primary_model: Optional[BaseChatModel] = None
         self.verbose = verbose
         # Native-binding mode: expose the user's tools directly as
@@ -2407,7 +2410,8 @@ class AgentRunner(PersistenceMixin):
         self._use_model(self.fallback_model)
         self.fallback_used = used
         history[0] = {"role": "system", "content": self._system_prompt(user_input)}
-        history.append({"role": "user", "content": _FALLBACK_NOTE.format(**used)})
+        history.append({"role": "user", "content": _FALLBACK_NOTE.format(
+            **{**used, "from": self.fallback_note_label or used["from"]})})
         task_index = _carry_over_history(history, self._bound_function_names(), task_index)
         return {"type": "fallback", **used}, task_index
 

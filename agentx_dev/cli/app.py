@@ -1639,7 +1639,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
             self._track_usage_model(extra.name, extra.model, "helper")
             window = getattr(extra.model, "context_window", None)
             if getattr(extra.model, "is_local", False) and not (isinstance(window, int) and window > 0):
-                self._fit_fallback_window(extra.model)     # unchecked, as the fallback: its requests stay inside it
+                self._fit_fallback_window(extra.model, remember=False)   # unchecked, like the fallback
         # Every helper not on a local model falls back to the user's local fallback (the same object as the chat's),
         # also when the chat model itself is local and so has none of its own.
         fallback = next((self._fallback_for(candidate) for candidate in [self.model, *(e.model for e in extras)]

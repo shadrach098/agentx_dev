@@ -746,7 +746,7 @@
             `<div class="team-identity"><span class="team-marker" aria-hidden="true"></span><strong class="who">${esc(r.label || r.helper)}</strong><span class="team-state">${state}</span>` +
             `<span class="team-meta">${esc(r.helper)}${r.model ? ` · ${esc(r.model)}` : ""}</span><span class="stats">${esc(r.stats || "")}</span>` +
             // work the fallback model finished is always marked
-            `${r.fallback ? `<span class="team-fallback">↺ on ${esc(r.fallback)} (fallback)</span>` : ""}</div>` +
+            `${r.fallback ? `<span class="team-fallback">↺ on ${esc(r.fallback)} (fallback${r.fallbackFrom || r.fallbackReason ? `: ${esc([r.fallbackFrom, r.fallbackReason].filter(Boolean).join(" "))}` : ""})</span>` : ""}</div>` +
             `${detail || r.activity ? `<div class="act${r.actionFailed ? " tool-failed" : ""}">${detail}${r.activity ? `<span class="activity-counts">${esc(r.activity)}</span>` : ""}</div>` : ""}</div>`;
         }).join("");
     } else { team.hidden = true; team.innerHTML = ""; }

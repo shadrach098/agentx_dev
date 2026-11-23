@@ -304,6 +304,16 @@ def prompt_message(width: Optional[int] = None) -> List[Tuple[str, str]]:
     return [("class:rule", "─" * max(1, width - 1) + "\n"), ("class:prompt", "❯ ")]
 
 
+def fallback_words(fallback: Any) -> str:
+    """``on qwen3:8b (fallback: claude-opus-5-5 out of credit)`` for a team step the fallback model finished
+    (``{"to", "from", "reason"}``), "" for any other. For the screen only: it names the models."""
+    if not isinstance(fallback, dict) or not fallback.get("to"):
+        return ""
+    why = " ".join(part for part in (_short(fallback.get("from") or "", 60), _short(fallback.get("reason") or "", 60))
+                   if part)
+    return f"on {_short(fallback['to'], 60)} (fallback{': ' + why if why else ''})"
+
+
 class Screen:
     """Draws what the agent does. Everything is printed as ``Text``, so square brackets in tool output are
     never read as rich markup.
@@ -387,10 +397,11 @@ class Screen:
         return Group(*lines)
 
     def team_done(self, agent: Any, label: Any, ok: bool, text: Any, *, partial: bool = False,
-                  skipped: bool = False, status: Any = None, fallback: Any = "") -> None:
+                  skipped: bool = False, status: Any = None, fallback: Any = None) -> None:
         """A step's permanent line when it ends: ``✓ explorer · security audit  Done (20 tool uses · 41k tokens ·
         1m 30s)``, then the start of its report (or why it failed) under it. A step that finished on the fallback
-        model (``fallback``, its name) is marked ``↺`` and says ``on <fallback> (fallback)``."""
+        model (``fallback``: ``{"to", "from", "reason"}``) is marked ``↺`` and says
+        ``on <to> (fallback: <from> <reason>)``."""
         self.flush_helper(agent)
         utf = self._utf()
         if skipped:
@@ -401,9 +412,10 @@ class Screen:
             mark, word, style = ("◐" if utf else "~"), "Partial (ran out of steps)", "yellow"
         else:
             mark, word, style = ("✓" if utf else "+"), "Done", "green"
-        if fallback and ok and not skipped:           # work done by the fallback is always marked
+        on_fallback = fallback_words(fallback)
+        if on_fallback and ok and not skipped:         # work done by the fallback is always marked, with why
             mark, style = ("↺" if utf else "*"), "yellow"
-            word += f" on {_short(fallback, 60)} (fallback)"
+            word += f" {on_fallback}"
         line = Text(f"{mark} ", style=f"bold {style}")
         line.append(f"{_short(agent, MAX_HELPER_CHARS)} · {_short(label or agent, 40)}", style="bold")
         stats = ""
@@ -427,6 +439,9 @@ class Screen:
             head = Text(f"{bullet(self.console)} {_short(status.helper, MAX_HELPER_CHARS)} · {_short(status.label, 40)}",
                         style="bold")
             head.append(f"  ({step_stats(snapshot)})", style="dim")
+            on_fallback = fallback_words(snapshot.get("fallback"))
+            if on_fallback:
+                head.append(f"  {'↺' if self._utf() else '*'} {on_fallback}", style="yellow")
             _print(self.console, head)
             for name, args, summary, failed in snapshot["log"]:
                 try:

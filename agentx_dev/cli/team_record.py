@@ -140,13 +140,17 @@ class TeamRecord:
         error = str(getattr(result, "error", "") or "").strip()
         state = "done" if ok else ("skipped" if getattr(result, "skipped", False) else "failed")
         fallback = getattr(status, "fallback", None)
-        if ok and isinstance(fallback, dict) and fallback.get("to"):
-            state += f" on {_first_line(fallback['to'], 80)} (fallback)"
+        why = ""
+        if ok and isinstance(fallback, dict) and fallback:
+            # the agent reads this later: it says why, without naming a model
+            state = "done on the fallback model"
+            why = (f"Its own model failed ({_first_line(fallback.get('reason'), 80) or 'for good'}); check this "
+                   "work. ")
         files = list(getattr(status, "files", {}) or {})
         calls = getattr(status, "calls", {}) or {}
         lines = [f"# {getattr(status, 'helper', '')} · {getattr(status, 'label', '')}",
                  f"Date: {datetime.now():%Y-%m-%d %H:%M}", "",
-                 f"Finished {datetime.now():%Y-%m-%d %H:%M:%S}. Status: **{state}**. "
+                 f"Finished {datetime.now():%Y-%m-%d %H:%M:%S}. Status: **{state}**. {why}"
                  f"{getattr(status, 'tool_uses', 0)} tool uses, {getattr(status, 'tokens', 0):,} tokens.", "",
                  "## Asked", "", str(getattr(status, "query", "")).strip(), ""]
         if error:
