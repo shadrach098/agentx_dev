@@ -396,6 +396,7 @@ class SpawnPolicy:
         run: Optional[SpawnRun] = None,
         budget: Optional[RunBudget] = None,
         operator: Any = None,
+        fallback_model: Any = None,
     ):
         self.config = config
         self.model = model
@@ -411,6 +412,8 @@ class SpawnPolicy:
         # The run's OperatorChannel (set by the Supervisor). When present, every helper this
         # policy builds gets the ask_user tool.
         self.operator = operator
+        # The sync helpers it builds fall back to this model (AsyncAgentRunner has no fallback).
+        self.fallback_model = fallback_model
 
     @property
     def enabled(self) -> bool:
@@ -528,8 +531,10 @@ class SpawnPolicy:
         perms = Permissions(allowed_paths=list(cfg.allowed_paths), **flags) if flags else None
         cls = AsyncAgentRunner if is_async else AgentRunner
         steps = max(1, int(cfg.max_iterations))
+        extra = {} if is_async or self.fallback_model is None else {"fallback_model": self.fallback_model}
         return cls(
             model=self.model,
+            **extra,
             agent=AgentType.ReAct,
             tools=tools,
             permissions=perms,

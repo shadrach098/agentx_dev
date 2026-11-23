@@ -87,6 +87,7 @@ class Supervisor(_SupervisorCore):
         follow_up: bool = False,
         max_follow_ups: int = 5,
         planner_note: str = "",
+        fallback_model: Optional[BaseChatModel] = None,
     ):
         """
         Args:
@@ -187,6 +188,10 @@ class Supervisor(_SupervisorCore):
                 Implies ``ask_when_done``. ``result.rounds`` lists every round.
             max_follow_ups: (3.6.2) Rounds allowed after the first (default 5). After the last
                 one no question is asked.
+            fallback_model: A model (typically ``Local(...)``) every helper this Supervisor runs falls back
+                to when its own model fails for good (see ``AgentRunner(fallback_model=)``). It is given to
+                the specialists it spawns and, for the duration of a run, to registered runners that have
+                none; a runner with its own keeps it. The planning/synthesis model is not switched.
         """
         self._configure(
             model=model,
@@ -209,6 +214,7 @@ class Supervisor(_SupervisorCore):
             follow_up=follow_up,
             max_follow_ups=max_follow_ups,
             planner_note=planner_note,
+            fallback_model=fallback_model,
         )
 
     # -- I/O: sync calls; the shared coroutines never suspend ------------------------------------------

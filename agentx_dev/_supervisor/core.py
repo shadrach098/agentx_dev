@@ -25,7 +25,7 @@ from agentx_dev.Runner.Persistence import (
 )
 from agentx_dev._supervisor.results import (
     Specialist, SubtaskResult, SupervisorResult, _normalize_agents,
-    _per_run_agents,
+    _per_run_agents, apply_fallback,
 )
 from agentx_dev._supervisor.prompts import (
     SUPERVISOR_PLAN_PROMPT, SUPERVISOR_SYNTHESIZE_PROMPT,
@@ -59,7 +59,8 @@ class _SpawnMixin:
 
     def _new_spawn_policy(self) -> SpawnPolicy:
         return SpawnPolicy(self.spawn_config, self.model, persistence=self.persistence,
-                           is_async=self._SPAWN_ASYNC, verbose=self.verbose)
+                           is_async=self._SPAWN_ASYNC, verbose=self.verbose,
+                           fallback_model=self.fallback_model)
 
     def _spawn_policy(self) -> SpawnPolicy:
         """The policy for the run in progress (created on demand outside a run)."""
@@ -214,8 +215,9 @@ class _SupervisorCore(_SpawnMixin):
     def _configure(self, model, agents, max_subtasks, verbose, max_subtask_retries, subtask_success_check,
                    max_plan_retries, persistence, spawn_config, ask_user, max_questions, ask_timeout, memory,
                    memory_top_k, memory_min_score, memory_write, ask_when_done, follow_up, max_follow_ups,
-                   planner_note) -> None:
+                   planner_note, fallback_model=None) -> None:
         self.model = model
+        self.fallback_model = fallback_model       # for the helpers; sync runners only
         # Normalize (and copy) so run-time spawns don't mutate the caller's dict. Accepts
         # (description, runner) tuples or Specialist entries (3.3); everything is stored as
         # Specialist, which still tuple-unpacks for older code.
@@ -565,7 +567,8 @@ class _SupervisorCore(_SpawnMixin):
         with _per_run_agents(self), \
                 attach_delegation([s.runner for s in self.agents.values()], self._spawn_policy()), \
                 attach_ask_user({n: s.runner for n, s in self.agents.items()}, self._operator), \
-                apply_persistence([s.runner for s in self.agents.values()], self.persistence):
+                apply_persistence([s.runner for s in self.agents.values()], self.persistence), \
+                apply_fallback([s.runner for s in self.agents.values()], self.fallback_model):
             async with aclosing(self._plan_events(plan, subtask_results, results_by_id, budget)) as events:
                 async for event in events:
                     yield event

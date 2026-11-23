@@ -111,6 +111,26 @@ def _per_run_agents(sup):
         sup.agents = base
 
 
+@contextmanager
+def apply_fallback(runners, fallback_model):
+    """Give each ``AgentRunner`` that has no ``fallback_model`` the Supervisor's for the block, then take it
+    back. Runners with their own, and objects that are not AgentRunners, are untouched. A runner that
+    switched to it keeps it, so its model and its fallback stay consistent."""
+    from agentx_dev.Runner.AgentRun import AgentRunner
+    given = []
+    if fallback_model is not None:
+        for r in runners:
+            if isinstance(r, AgentRunner) and r.fallback_model is None:
+                r.fallback_model = fallback_model
+                given.append(r)
+    try:
+        yield
+    finally:
+        for r in given:
+            if r.fallback_used is None:
+                r.fallback_model = None
+
+
 def _step_agent_name(item: dict) -> Optional[str]:
     """The agent a plan step runs on: its ``agent``, or the name its ``new_agent`` defines."""
     name = item.get("agent")
