@@ -472,7 +472,8 @@ remembered and not asked again.
 | Out of credit or quota | Yes (`out of credit`) |
 | The model name is unknown to the provider (404) | Yes (`model not found`) |
 | The provider cannot be reached, or answers 5xx, after the usual retries | Yes (`unreachable`) |
-| Rate limited, overloaded, or a timeout that clears within the client's retries | No; once the retries are spent it counts as unreachable |
+| Rate limited (429 without a quota or credit message) | No, never: it is retried as today |
+| Overloaded, or a timeout or dropped connection that clears within the client's retries | No; once the retries are spent it counts as unreachable |
 | A request the provider refuses, a tool or code error | No: it would fail again |
 
 **Which way.** From Claude or GPT to a local model, only. If the chat model is itself local and fails, nothing else
