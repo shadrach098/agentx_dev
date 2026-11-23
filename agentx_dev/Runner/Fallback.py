@@ -4,6 +4,8 @@ A run on a paid model switches to a local fallback only when the paid model
 cannot answer at all: no credit, a rejected key, an unknown model, or no
 route to the provider. Rate limits, bad requests and the framework's own
 stops are not in that group; they are retried or reported as they are today.
+
+Also the errors a run on such a model ends with: ``FallbackFailed`` and ``ContextWindowTooSmall``.
 """
 
 from __future__ import annotations
@@ -66,3 +68,15 @@ class FallbackFailed(RuntimeError):
         super().__init__(f"{fallback['from']} failed ({fallback['reason']}); "
                          f"the fallback {fallback['to']} failed too: {error}")
         self.fallback = dict(fallback)
+
+
+class ContextWindowTooSmall(RuntimeError):
+    """The model's context window cannot hold even the instructions and the newest message, after old tool results
+    were stubbed and the conversation was summarised, so the request was not sent (a server given a longer request
+    silently drops its start, which is where the instructions are). ``window`` and ``needed`` are in tokens."""
+
+    def __init__(self, window: int, needed: int):
+        super().__init__(f"the request needs about {needed:,} tokens; the model's window is {window:,} tokens "
+                         "(a model with a larger window fixes it)")
+        self.window = window
+        self.needed = needed

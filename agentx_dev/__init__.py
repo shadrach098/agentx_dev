@@ -7,6 +7,7 @@ from .Agents.Agent import (
 from .Runner.AgentRun import AgentRunner, ToolRegistry, CircuitBreaker, CircuitBreakerConfig
 from .Runner.AsyncAgentRun import AsyncAgentRunner
 from .Runner.Persistence import Persistence
+from .Runner.Fallback import ContextWindowTooSmall
 from .ChatModel import (
     BaseChatModel, GPT, Claude,
     StructuredOutputRunnable,
@@ -97,6 +98,7 @@ __all__ = [
     "AgentRunner",
     "AsyncAgentRunner",
     "Persistence",
+    "ContextWindowTooSmall",
     "AgentSpec",
     "AgentCompletion",
     "ToolCall",

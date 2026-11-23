@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 OBSERVATION_PREFIX = "Observation: "          # how a text-mode (no native tool calls) result is framed
@@ -273,6 +273,45 @@ def trim_tool_results(messages: Sequence[Dict[str, Any]], policy: TrimPolicy) ->
         if out[index].get("role") == "assistant":
             out[index] = _shorten_arguments(out[index], policy)
     return out
+
+
+MEDIA_CHARS = 6_000          # a picture or other non-text part, counted as about 1,500 tokens
+
+
+def request_chars(messages: Sequence[Dict[str, Any]]) -> int:
+    """How big a request is, in characters: every message's text, every call's name and arguments, and a flat
+    ``MEDIA_CHARS`` for each picture or other non-text part."""
+    total = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    total += len(str(part.get("text", "")))
+                elif isinstance(part, str):
+                    total += len(part)
+                else:
+                    total += MEDIA_CHARS
+        calls = message.get("tool_calls")
+        if isinstance(calls, list):
+            for call in calls:
+                function = call.get("function") if isinstance(call, dict) else None
+                if isinstance(function, dict):
+                    total += len(str(function.get("name") or "")) + len(str(function.get("arguments") or ""))
+    return total
+
+
+def trim_to_save(messages: Sequence[Dict[str, Any]], chars: int) -> List[Dict[str, Any]]:
+    """A copy of ``messages`` in which the oldest big tool results are stubbed until about ``chars`` characters
+    are saved (all of them but the newest when ``chars`` is more than they hold). The newest result stays whole.
+    Used to keep a request inside a model's window, so the results of ``exempt`` tools are stubbed too, all but
+    the newest, and the window slides at every request (``step_chars=0``)."""
+    policy = TrimPolicy(keep_chars=0, step_chars=0, shrink_exempt_at=1)
+    total = sum(len(info[1]) for message in messages
+                if (info := _result_info(message)) is not None and info[0] not in policy.exempt)
+    return trim_tool_results(messages, replace(policy, keep_chars=max(0, total - chars)))
 
 
 def coerce_trim_policy(value: Any) -> Optional[TrimPolicy]:

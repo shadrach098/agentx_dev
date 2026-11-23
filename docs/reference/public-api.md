@@ -35,7 +35,7 @@ paths below it. Their names, their documented arguments and what they return kee
 AgentCompletion AgentConfigError AgentFormatter AgentFormattor AgentRunner AgentSpec AgentType
 AsyncAgentRunner AsyncStandardTool AsyncStructuredTool AsyncSupervisor BaseChatModel CallbackHook
 ChainOfThought CircuitBreaker CircuitBreakerConfig Claude CompileResult Compiled ConsoleHook
-ConversationMemory CostBudgetExceeded DEFAULT_PERMISSIONS_PATH DefaultTools Document Embeddings
+ContextWindowTooSmall ConversationMemory CostBudgetExceeded DEFAULT_PERMISSIONS_PATH DefaultTools Document Embeddings
 EvalCase EvalReport EvalResult EvalRunner Event EventType FewShot FileCache FileHook GPT
 HandoffCoordinator HandoffRequest HandoffResult HashEmbeddings ImportanceBasedMemory InMemoryCache
 Instruction_Tuned_ LRUCache Local LocalCheck LocalModelError MCPClient Media MetricsHook ModelDeclined OTelHook ObservabilityManager
@@ -55,7 +55,7 @@ to_tool_spec tool_count track_async_tool_call track_tool_call used_agent used_sk
 vector_search_tool web_fetch_tool web_search_tool
 ```
 
-`Local` is a chat model for a server on your machine (Ollama, LM Studio, llama.cpp); `LocalCheck` is what `Local.check()` returns and `LocalModelError` is raised when the server cannot be used.
+`Local` is a chat model for a server on your machine (Ollama, LM Studio, llama.cpp); `LocalCheck` is what `Local.check()` returns and `LocalModelError` is raised when the server cannot be used. `ContextWindowTooSmall` is raised by `AgentRunner` when even the instructions and the newest message do not fit the model's context window.
 
 `MCPClient`, `json_schema_to_pydantic` and `mcp_tool_to_async_structured_tool` are exported only when the `mcp`
 package is installed (`pip install "agentx-dev[mcp]"`).

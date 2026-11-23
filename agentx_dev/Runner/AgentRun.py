@@ -1,13 +1,15 @@
 from agentx_dev.Agents import AgentFormattor, AgentCompletion, AgentPrompt
 from agentx_dev.ChatModel import BaseChatModel, CostBudgetExceeded
-from agentx_dev.Runner.Fallback import FallbackFailed, fails_for_good
+from agentx_dev.Runner.Fallback import ContextWindowTooSmall, FallbackFailed, fails_for_good
 from agentx_dev.Runner.Persistence import (
     OUTCOME_ITERATION_LIMIT, OUTCOME_STUCK, BudgetExpired, Persistence, PersistenceMixin, RunBudget, RunStuck,
-    run_persistent, unrecognized_action_headline,
+    compact_history, run_persistent, unrecognized_action_headline,
 )
 from agentx_dev.Agents.Agent import StandardParser, ToolCall, ToolError
 from agentx_dev.Runner.Changes import changed_paths
-from agentx_dev.Runner.Trim import coerce_trim_policy as _coerce_trim_policy, trim_tool_results
+from agentx_dev.Runner.Trim import (
+    coerce_trim_policy as _coerce_trim_policy, request_chars, trim_to_save, trim_tool_results,
+)
 from agentx_dev.Pictures import ToolContent, content_text, has_pictures, picture_parts, stub_old_pictures
 from agentx_dev.Tools import StandardTool, StructuredTool, logger
 from typing import Dict, Callable, List, Type, Optional, Any, Sequence, Tuple
@@ -16,6 +18,7 @@ from pydantic import BaseModel, Field
 import asyncio
 import contextvars
 import json
+import math
 import re
 import time as _time
 import threading as _threading
@@ -688,6 +691,31 @@ _FALLBACK_NOTE = (
     "[framework] The earlier model ({from}) stopped: {reason}. You are taking over this task. What it already "
     "did is above; check it and finish the task without redoing steps that are done."
 )
+
+
+# The context window budget (``context_window=``). Requests are measured in characters and the window in tokens:
+# a model is assumed to read CHARS_PER_TOKEN characters per token until a reply's usage shows what it reads.
+CHARS_PER_TOKEN = 4
+REQUEST_SHARE = 0.85            # the share of the window a request may use; the rest is for the answer
+SUMMARY_SHARE = 0.5             # the share of the window the summary call's own input may use
+_PLAUSIBLE_CHARS_PER_TOKEN = (1.0, 8.0)     # an observed ratio outside this is a usage report to ignore
+_KEEP_RECENT = 2                # messages a summary of the turn keeps (the newest call and its results)
+_CUT_MARK = "\n[... cut to fit the model's window ...]\n"
+
+
+def _cut_to(text: str, cap: int) -> str:
+    """``text`` cut to at most ``cap`` characters: its start (the instructions) and its end (the newest turns)."""
+    if len(text) <= cap:
+        return text
+    head = cap // 4
+    tail = cap - head - len(_CUT_MARK)
+    return text[:cap] if tail <= 0 else text[:head] + _CUT_MARK + text[-tail:]
+
+
+def _usage_calls(model: Any) -> int:
+    """How many replies with usage ``model`` has recorded (0 when it keeps no usage)."""
+    calls = getattr(getattr(model, "usage", None), "total_calls", 0)
+    return calls if isinstance(calls, int) else 0
 
 
 class _SwitchedToFallback(Exception):
@@ -1682,6 +1710,7 @@ class AgentRunner(PersistenceMixin):
         trim_results: Optional[Any] = None,
         log: Any = None,
         fallback_model: Optional[BaseChatModel] = None,
+        context_window: Optional[int] = None,
     ):
         """Construct an ``AgentRunner``.
 
@@ -1880,6 +1909,22 @@ class AgentRunner(PersistenceMixin):
                 A local ``model`` never falls back. If the fallback
                 fails too, the run raises ``FallbackFailed``.
                 Default ``None``: errors propagate as they are.
+            context_window: The model's context window, in tokens.
+                Default ``None``: the model's own ``context_window``
+                (a ``Local`` model knows it after ``check()``), which
+                after a switch is the fallback's. When a window is
+                known, every request is kept to 85% of it (the rest is
+                for the answer), measured at 4 characters a token until
+                a reply's ``prompt_tokens`` shows what the model reads.
+                A longer request is first sent with old tool results
+                stubbed (the newest kept whole); if that is not enough
+                the history is summarised in place. ``stream`` yields
+                ``{"type": "context_trimmed", "window", "how"}`` (``how``:
+                ``"results"`` or ``"summary"``) the first time either
+                happens in a run. When even the instructions and the
+                newest message do not fit, the request is not sent and
+                the run raises ``ContextWindowTooSmall``. No window: the
+                requests are sent as they are.
 
         Raises:
             TypeError: If both ``Agent`` and ``agent`` are passed, if
@@ -2018,6 +2063,8 @@ class AgentRunner(PersistenceMixin):
         # iteration cap and suspend the tool-result cache (see PersistenceMixin).
         self.persistence = persistence
         self._trim_policy = _coerce_trim_policy(trim_results)
+        self.context_window = context_window
+        self._chars_per_token: Dict[int, float] = {}     # id(model) -> what its replies' usage showed
         self.log = RunLog.to(log)          # the run log (``log=``); None: nothing is logged
         self._log_run = None               # the run in progress, for the model-call lines
         self.func: Dict[str, Callable] = self.registry.sync_std
@@ -2185,6 +2232,82 @@ class AgentRunner(PersistenceMixin):
         tool results are stubs. The history itself is never changed."""
         trimmed = trim_tool_results(messages, self._trim_policy) if self._trim_policy is not None else messages
         return stub_old_pictures(trimmed)
+
+    def _window(self) -> Optional[int]:
+        """The window of the model in use, in tokens (``context_window=``, else the model's own), or None."""
+        window = self.context_window if self.context_window is not None else getattr(self.model, "context_window", None)
+        return window if isinstance(window, int) and not isinstance(window, bool) and window > 0 else None
+
+    def _fit_window(
+        self, history: List[Dict[str, Any]], task_index: int, specs: Optional[List[Any]], failed_text: str = "",
+    ) -> Tuple[List[Dict[str, Any]], Optional[str], int, Optional[int]]:
+        """What the model is sent for ``history`` (``_model_view``), kept inside its window. Returns
+        ``(messages, how, task_index, chars)``. ``how``: None, ``"results"`` (old tool results are stubs in what is
+        sent) or ``"summary"`` (the history was summarised in place, which can move the task message to the
+        returned ``task_index``). ``chars``: the size of the request, None when no window is known (the view is
+        then returned as it is). ``specs``: the function specs sent with the messages, which take room too.
+        Raises ``ContextWindowTooSmall`` when the system message and the newest user message alone do not fit, or
+        nothing more can be cut."""
+        view = self._model_view(history)
+        window = self._window()
+        if window is None:
+            return view, None, task_index, None
+        per_token = self._chars_per_token.get(id(self.model), CHARS_PER_TOKEN)
+        budget = int(window * REQUEST_SHARE * per_token)
+        fixed = len(json.dumps(specs, default=str)) if specs else 0
+
+        def size(messages: List[Dict[str, Any]]) -> int:
+            return fixed + request_chars(messages)
+
+        def fitted(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            """``messages``, or a copy with the oldest tool results stubbed until it fits (the newest kept whole)."""
+            if size(messages) <= budget:
+                return messages
+            messages = trim_to_save(messages, size(messages) - budget)
+            return messages if size(messages) <= budget else trim_to_save(messages, size(messages))
+
+        def too_small(chars: int) -> ContextWindowTooSmall:
+            return ContextWindowTooSmall(window, math.ceil(chars / per_token))
+
+        newest = next((m for m in reversed(view) if m.get("role") == "user"), None)
+        core = size(view[:1] + ([newest] if newest is not None else []))
+        if core > budget:
+            raise too_small(core)
+        before = size(view)
+        if before <= budget:
+            return view, None, task_index, before
+        view = fitted(view)
+        how = "results" if size(view) < before else None
+        if size(view) > budget:
+            cap = int(window * per_token * SUMMARY_SHARE)
+
+            def summarize(text: str) -> str:
+                return self.model.Initialize(messages=[{"role": "user", "content": _cut_to(text, cap)}])
+
+            # The turn so far, then the conversation before it; the newest messages stay as they are.
+            if compact_history(history, task_index=task_index, keep_recent=_KEEP_RECENT, summarize=summarize,
+                               failed_text=failed_text):
+                how, view = "summary", fitted(self._model_view(history))
+            if size(view) > budget and task_index > 1:
+                earlier = history[1:task_index]
+                if compact_history(earlier, task_index=0, keep_recent=0, summarize=summarize):
+                    history[1:task_index] = earlier
+                    task_index = 1 + len(earlier)
+                    how, view = "summary", fitted(self._model_view(history))
+            if size(view) > budget:
+                raise too_small(size(view))
+        return view, how, task_index, size(view)
+
+    def _learn_chars_per_token(self, calls_before: int, chars: Optional[int]) -> None:
+        """After a call that sent ``chars`` characters: when the reply reported its ``prompt_tokens``, keep the
+        characters per token it shows for the model in use (the window budget uses it from then on)."""
+        if not chars or _usage_calls(self.model) <= calls_before:
+            return
+        tokens = getattr(self.model.usage, "last_input_tokens", 0)
+        if isinstance(tokens, int) and tokens > 0:
+            low, high = _PLAUSIBLE_CHARS_PER_TOKEN
+            if low <= chars / tokens <= high:
+                self._chars_per_token[id(self.model)] = chars / tokens
 
     def add_tool(self, tool) -> None:
         """Register ``tool`` on a built runner (used to attach ``delegate`` for the
@@ -2480,15 +2603,35 @@ class AgentRunner(PersistenceMixin):
             parser_tool_spec, parser_tool_name, native_tool_specs = _bound_specs()
             return event
 
+        request_chars_sent: Optional[int] = None      # the size of the request being sent; None: no window
+        trimmed_told = False
+
+        def _request(specs):
+            """What the model is sent this step (with ``specs``), kept inside its window. Yields the
+            ``context_trimmed`` event the first time old results are stubbed or the history summarised in a run."""
+            nonlocal task_index, request_chars_sent, trimmed_told
+            failed = state.ledger.render_failed() if state is not None and self._window() is not None else ""
+            messages, how, task_index, request_chars_sent = self._fit_window(
+                working_history, task_index, specs, failed)
+            if state is not None:
+                state.task_index = task_index
+            if how is not None and not trimmed_told:
+                trimmed_told = True
+                yield {"type": "context_trimmed", "window": self._window(), "how": how}
+            return messages
+
         def _model_call(fn):
             # Persistent runs wait out transient provider errors (429/5xx/timeouts).
             call = (lambda: state.patient(fn)) if state is not None else fn
             record = self._log_run
+            calls_before = _usage_calls(self.model)
             try:
-                return record.model_call(call) if record is not None else call()
+                result = record.model_call(call) if record is not None else call()
             except Exception as error:
                 # The loop catches this, yields the event and runs the step again on the fallback.
                 raise _SwitchedToFallback(_take_over(error)) from error
+            self._learn_chars_per_token(calls_before, request_chars_sent)
+            return result
 
         # Loop-level circuit breaker. The tool-layer dup-guard refuses
         # on the 5th identical call, but a stubborn model (gpt-4o-mini
@@ -2519,9 +2662,10 @@ class AgentRunner(PersistenceMixin):
                 # Native mode: LLM picks from the user's tools directly.
                 # Multiple tool_use blocks in one turn → concurrent dispatch
                 # via ThreadPoolExecutor. Synthetic "respond" tool ends the loop.
+                request = yield from _request(native_tool_specs)
                 try:
                     call_result = _model_call(lambda: self.model.call_with_tools(
-                        messages=self._model_view(working_history),
+                        messages=request,
                         tools=native_tool_specs,
                         force_tool=None,
                     ))
@@ -2761,9 +2905,10 @@ class AgentRunner(PersistenceMixin):
                 continue
 
             if self.use_function_calling:
+                request = yield from _request([parser_tool_spec])
                 try:
                     call_result = _model_call(lambda: self.model.call_with_tools(
-                        messages=self._model_view(working_history),
+                        messages=request,
                         tools=[parser_tool_spec],
                         force_tool=parser_tool_name,
                     ))
@@ -2824,6 +2969,7 @@ class AgentRunner(PersistenceMixin):
                 # Stash for the tool-result message a few lines down.
                 self._last_function_call_id = tool_call_id
             else:
+                request = yield from _request(None)
                 if stream_tokens:
                     # Token-level streaming: yield text_delta events as the
                     # LLM emits chunks; accumulate into the full response so
@@ -2832,18 +2978,19 @@ class AgentRunner(PersistenceMixin):
                     # the default stream_text fallback. Streamed responses are
                     # not retried (a response cannot be replayed half-way).
                     parts: List[str] = []
+                    calls_before = _usage_calls(self.model)
                     try:
-                        for chunk in self.model.stream_text(self._model_view(working_history)):
+                        for chunk in self.model.stream_text(request):
                             parts.append(chunk)
                             yield {"type": "text_delta", "content": chunk}
                     except Exception as error:
                         yield _take_over(error)
                         continue                          # the same step, in the fallback's mode
+                    self._learn_chars_per_token(calls_before, request_chars_sent)
                     response = "".join(parts)
                 else:
                     try:
-                        response = _model_call(
-                            lambda: self.model.Initialize(messages=self._model_view(working_history)))
+                        response = _model_call(lambda: self.model.Initialize(messages=request))
                     except _SwitchedToFallback as switched:
                         yield switched.event
                         continue                          # the same step, in the fallback's mode
