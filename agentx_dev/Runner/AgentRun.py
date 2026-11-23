@@ -13,6 +13,7 @@ from typing import Dict, Callable, List, Type, Optional, Any, Sequence, Tuple
 from pydantic import BaseModel, Field
 
 import asyncio
+import contextvars
 import json
 import re
 import time as _time
@@ -589,6 +590,7 @@ _FORMAT_NAMES = frozenset({"React_", "StandardParser", "ChainOfThought", "ZeroSh
 
 NO_ANSWER_TEXT = "The model gave no answer."
 NO_ANSWER_OUTCOME = "no_answer"
+_CALL_SCHEMA: "contextvars.ContextVar[Any]" = contextvars.ContextVar("agentx_call_schema", default=None)
 
 
 def _settle_empty_final(final_answer: Any, output: Any, tool_calls: List[ToolCall]) -> Tuple[Any, Optional[str]]:
@@ -2071,6 +2073,11 @@ class AgentRunner(PersistenceMixin):
         self._tool_prompt_block = self.registry.prompt_block()
         self._tool_names_block = self.registry.names_block()
 
+    def _output_wanted(self) -> Any:
+        """The output schema of the running call (per-call, else the runner's own), or None."""
+        call = _CALL_SCHEMA.get()
+        return call if call is not None else self.output_schema
+
     def _iter_run(
         self,
         user_input: str,
@@ -2328,7 +2335,7 @@ class AgentRunner(PersistenceMixin):
                         nudge_budget -= 1
                         count += 1
                         continue
-                    final_answer, override = _settle_empty_final(text, self.output_schema, tool_calls)
+                    final_answer, override = _settle_empty_final(text, self._output_wanted(), tool_calls)
                     outcome = override or outcome
                     yield {"type": "final", "content": final_answer}
                     break
@@ -2360,7 +2367,7 @@ class AgentRunner(PersistenceMixin):
                     turn_calls = [c for c in turn_calls if c["name"] != "respond"]
                 if respond_call is not None:
                     final_answer, override = _settle_empty_final(
-                        str(respond_call["input"].get("answer", "")), self.output_schema, tool_calls)
+                        str(respond_call["input"].get("answer", "")), self._output_wanted(), tool_calls)
                     outcome = override or outcome
                     working_history.append({
                         "role": "assistant",
@@ -2568,7 +2575,7 @@ class AgentRunner(PersistenceMixin):
                         nudge_budget -= 1
                         count += 1
                         continue
-                    final_answer, override = _settle_empty_final(text, self.output_schema, tool_calls)
+                    final_answer, override = _settle_empty_final(text, self._output_wanted(), tool_calls)
                     outcome = override or outcome
                     yield {"type": "final", "content": final_answer}
                     break
@@ -2669,7 +2676,7 @@ class AgentRunner(PersistenceMixin):
                         nudge_budget -= 1
                         count += 1
                         continue
-                    final_answer, override = _settle_empty_final(response, self.output_schema, tool_calls)
+                    final_answer, override = _settle_empty_final(response, self._output_wanted(), tool_calls)
                     outcome = override or outcome
                     yield {"type": "final", "content": final_answer}
                     break
@@ -2696,7 +2703,7 @@ class AgentRunner(PersistenceMixin):
             # Under use_function_calling=True the schema doesn't
             # constrain `action` to any spelling, so we accept them all.
             if _is_terminal_action(action):
-                final_answer, override = _settle_empty_final(action_input, self.output_schema, tool_calls)
+                final_answer, override = _settle_empty_final(action_input, self._output_wanted(), tool_calls)
                 outcome = override or outcome
                 yield {"type": "final", "content": final_answer}
                 break
@@ -3038,9 +3045,14 @@ class AgentRunner(PersistenceMixin):
             ChatHistory = chat_history
 
         completion: Optional[AgentCompletion] = None
-        for event in self._iter_run(user_input, ChatHistory, media=media, _budget=_budget):
-            if event["type"] == "completion":
-                completion = event["completion"]
+        # The loop needs the schema of this call to know a structured answer is wanted.
+        token = _CALL_SCHEMA.set(output_schema)
+        try:
+            for event in self._iter_run(user_input, ChatHistory, media=media, _budget=_budget):
+                if event["type"] == "completion":
+                    completion = event["completion"]
+        finally:
+            _CALL_SCHEMA.reset(token)
         assert completion is not None, "Loop exited without yielding completion"
 
         # Per-call schema beats the constructor default; None on both means

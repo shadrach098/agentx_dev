@@ -71,3 +71,39 @@ def test_normal_answer_untouched():
     for c in runs(lambda: MockModel(script=[make_final("all good")])):
         assert c.outcome == "done"
         assert c.content == "all good"
+
+
+import pytest
+from pydantic import BaseModel
+
+
+class Out(BaseModel):
+    x: str = ""
+
+
+def _model():
+    return MockModel(script=[make_final(""), make_final("")])
+
+
+def _each(**kw):
+    """Sync and async runners; the schema coercion sees the empty answer as before this task, never our note."""
+    yield AgentRunner(model=_model(), agent=AgentType.ReAct, tools=TOOLS, verbose=False, **kw), False
+    yield AsyncAgentRunner(model=_model(), agent=AgentType.ReAct, tools=TOOLS, verbose=False, **kw), True
+
+
+def _go(runner, is_async, **kw):
+    return asyncio.run(runner.ainvoke("go", **kw)) if is_async else runner.invoke("go", **kw)
+
+
+def test_per_call_schema_exempts_empty_answer():
+    for runner, is_async in _each():
+        with pytest.raises(ValueError, match="not JSON") as e:
+            _go(runner, is_async, output_schema=Out)
+        assert "The model gave no" not in str(e.value)
+
+
+def test_constructor_schema_exempts_empty_answer():
+    for runner, is_async in _each(output_schema=Out):
+        with pytest.raises(ValueError, match="not JSON") as e:
+            _go(runner, is_async)
+        assert "The model gave no" not in str(e.value)
