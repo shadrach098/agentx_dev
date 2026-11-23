@@ -796,11 +796,11 @@ class TestLocalModelsAndTheFallback:
 
     def test_settings_view_has_local_keys(self, window):
         w = window(MockModel())
+        w.ready()      # first: the app writes its default settings file while starting; writing ours before raced it
         (w.home / ".agentx").mkdir(exist_ok=True)
         (w.home / ".agentx" / "settings.json").write_text(json.dumps(
             {"localServer": "http://localhost:1234/v1", "fallbackModel": "qwen3:8b", "localContext": 16384}),
             encoding="utf-8")
-        w.ready()
         w.app.local_models[:] = ["qwen3:8b", "llama3.1:8b"]
         view = w.request("GET", "/api/settings")[1]
         values = view["user"]["values"]
