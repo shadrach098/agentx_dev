@@ -14,12 +14,14 @@ from agentx_dev.LocalModel import DEFAULT_WINDOW, Local
 from agentx_dev.cli.models import (LOCAL_TYPO_HINT, SUGGESTED_MODELS, ModelError, describe_prompt, is_auto_note,
                                    is_local_name, key_variable, model_label, other_provider, parse_descriptions,
                                    parse_team_models, provider_for, team_models_line, usable_team_models)
+from agentx_dev.cli.models import _acceptable_name
 from agentx_dev.cli.settings import (project_settings_path, user_settings_path, write_project_mode,
                                      write_project_model,
                                      write_project_team_models, write_user_model, write_user_setting)
 
 
 CHECK_WAIT_SEC = 150.0      # the check's own calls time out sooner (its model call after 120 s): a last resort
+FALLBACK_WINDOW_WAIT_SEC = 2.0    # how long the background read of the fallback's window waits for the server
 
 FALLBACK_NOTICE = ("{maker} failed: {reason}. This conversation continues on {to} (local). Choose a model to try "
                    "{maker} again.")
@@ -154,12 +156,14 @@ class ModelCommands:
         """Once per run, when the local server lists models and no fallback was ever set (``/fallback off`` stops it):
         a notice offering them. It comes from the discovery thread; until the welcome box is drawn it waits for
         ``start`` to show it (``_show_fallback_offer``)."""
-        if self.fallback_name is not None or not self.local_models:
+        usable = [name for name in self.local_models if _acceptable_name(name) and is_local_name(name)]
+        if self.fallback_name is not None or not usable:
             return
-        names = [self._safe(name, 80) for name in self.local_models[:8]]
+        first = usable[0]                     # a plain name: what the button sends is the name itself, never cut
+        names = [self._safe(name, 100) for name in usable[:8]]
         text = FALLBACK_OFFER.format(server=self._safe(server_name(server), 120), names=", ".join(names),
                                      first=names[0])
-        actions = [{"label": f"Use {names[0]}", "send": f"/fallback {names[0]}"},
+        actions = [{"label": f"Use {self._safe(first, 80)}", "send": f"/fallback {first}"},
                    {"label": "No", "send": "/fallback off"}]
         with self._offer_lock:
             if self._offer is not None:
@@ -179,30 +183,71 @@ class ModelCommands:
                 self._offer_shown = True
         if offer is None or self.fallback_name is not None:
             return
-        # Printed as it is, also from the discovery thread (as /voice's lines are): the spinner belongs to the main
-        # thread, and the console prints above it.
-        self.screen.notice(offer[0], actions=offer[1])
+        self._notice_from_any_thread(offer[0], offer[1])
+
+    def _notice_from_any_thread(self, text: str, actions: Any = None) -> None:
+        """A notice that may come from another thread: above the terminal's open prompt (so the line being typed is
+        not broken, as ``remote.py`` does), else printed (the console prints above the spinner; the window's bus
+        takes it from any thread)."""
+        session = getattr(getattr(self, "prompt_input", None), "_chat", None)
+        application = getattr(session, "app", None)
+        loop = getattr(application, "loop", None) if application is not None else None
+        if loop is not None and getattr(application, "is_running", False):
+            try:
+                from prompt_toolkit.application import run_in_terminal
+                loop.call_soon_threadsafe(lambda: run_in_terminal(lambda: self.screen.notice(text, actions=actions)))
+                return
+            except Exception:
+                pass
+        self.screen.notice(text, actions=actions)
 
     def _fallback_for(self, model: Any) -> Any:
         """The model a runner on ``model`` falls back to: the ``fallbackModel``, built once and not checked (the
         runner calls it only when ``model`` fails for good). None when none is set, when ``model`` is local (a local
         model never falls back) or when it cannot be built."""
         name = self.fallback_name
-        if not name or model is None or getattr(model, "is_local", False):
+        if not name or model is None or getattr(model, "is_local", False) or name == self._fallback_unusable:
             return None
         built = self._fallback_built
         if built is None or built[0] != name:
             try:
                 fallback = self.model_factory(name, self.env)
-            except Exception:
+                why = "" if getattr(fallback, "is_local", False) else "it is not a local model"   # only ever local
+            except Exception as error:
                 logging.getLogger(__name__).warning("the fallback model %r could not be set up", name, exc_info=True)
+                fallback, why = None, (str(error) if isinstance(error, ModelError) else type(error).__name__)
+            if why:
+                self._fallback_unusable = name                  # said once; not tried again in this session
+                self.notice(f"The fallback {self._safe(name, 80)} could not be set up: {self._safe(why, 300)}. Claude "
+                            "or GPT failing will not fall back in this session; /fallback <name> sets another.")
                 return None
-            if not getattr(fallback, "is_local", False):        # only ever a local one
-                return None
-            fallback.context_window = self._window_of(fallback)
+            self._fit_fallback_window(fallback)
             built = self._fallback_built = (name, fallback)
         self._track_usage_model(model_label(built[1]), built[1], "chat")
         return built[1]
+
+    def _fit_fallback_window(self, fallback: Any) -> None:
+        """The window of a fallback built from the settings, without its check (which loads the model): the user's
+        ``localContext`` when set; else 8,192 for now, and the server is asked in the background (``server_window``)
+        once; its answer applies from the next request on (the runner reads ``context_window`` before each)."""
+        if self.local_context:
+            fallback.context_window = self.local_context
+            return
+        fallback.context_window = DEFAULT_WINDOW
+        read = getattr(fallback, "server_window", None)
+        if not callable(read):
+            return
+
+        def work() -> None:
+            try:
+                window = read(timeout=FALLBACK_WINDOW_WAIT_SEC)
+            except Exception:                            # no answer: 8,192 stays
+                return
+            if isinstance(window, int) and not isinstance(window, bool) and window > 0 and not self.local_context:
+                fallback.context_window = window
+
+        self._fallback_window_reader = threading.Thread(target=work, name="agentx-fallback-window", daemon=True)
+        self._fallback_window_reader.start()
 
     def _took_over(self, event: Dict[str, Any]) -> None:
         """The runner's ``fallback`` event: the chat model failed for good and the fallback carries the turn on. The
@@ -210,6 +255,7 @@ class ModelCommands:
         so; choosing a model again clears it."""
         model = getattr(getattr(self.session, "runner", None), "model", None)
         if model is None or not getattr(model, "is_local", False):
+            logging.getLogger(__name__).warning("a fallback event, but the runner's model %r is not local", model)
             return
         self.model = model
         self._track_usage_model(model_label(model), model, "chat")
@@ -287,6 +333,7 @@ class ModelCommands:
         path, message = write_user_setting(self.home, "fallbackModel", name)
         self.fallback_name = name
         self._fallback_built = (name, model) if model is not None else None
+        self._fallback_unusable = None
         if self.session is not None and self.model is not None and not getattr(self.model, "is_local", False):
             self.session.attach(self._make_runner(self.model))      # this conversation falls back from now on
         saved = f" {self._safe(message, 400)}" if path is not None else ""

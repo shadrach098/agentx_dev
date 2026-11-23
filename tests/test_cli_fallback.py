@@ -126,6 +126,8 @@ NOTICE = ("Claude failed: out of credit. This conversation continues on qwen3:8b
 
 
 def started_on_claude(tmp_path, lines, primary, fallback, **kw):
+    # A window the agentx prompt fits in (a fallback built from the settings gets 8,192 until its server says more).
+    kw.setdefault("local_context", 32768)
     models = {"claude-opus-5-5": primary, "qwen3:8b": fallback}
     return make_app(tmp_path, lines, models, model_name="claude-opus-5-5", fallback_model="qwen3:8b", **kw)
 
@@ -472,3 +474,138 @@ def test_a_stopped_turn_on_the_fallback_is_marked(tmp_path):
     log = (cwd / ".agentx" / "log.md").read_text(encoding="utf-8")
     assert MARK in log
     assert MARK in str(app.session.history[-1]["content"])
+
+
+# -- fix round 1 ----------------------------------------------------------------------------------------------------
+
+import threading
+from types import SimpleNamespace
+
+
+class WindowedLocal(LocalTools):
+    """A local stand-in whose server says its window when asked (``server_window``), after ``release`` is set."""
+
+    def __init__(self, name, *tool_script, window=16384, release=None):
+        super().__init__(name, *tool_script)
+        self.context_window = None                  # as the settings build it: the window is not known yet
+        self.server_window_asked = []
+        self._window = window
+        self._release = release
+
+    def server_window(self, timeout=5.0):
+        self.server_window_asked.append(timeout)
+        if self._release is not None:
+            self._release.wait(10)
+        return self._window
+
+
+def test_fallback_reads_its_window_in_the_background(tmp_path):
+    release = threading.Event()
+    primary = paid("claude-opus-5-5", OutOfCredit())
+    fallback = WindowedLocal("qwen3:8b", respond("done"), window=16384, release=release)
+    app, _, _, _ = started_on_claude(tmp_path, Lines("hi", "/clear", "/exit"), primary, fallback, local_context=None)
+    seen = []
+    send = app.send
+
+    def spy(text, *args, **kwargs):
+        release.set()                               # the server answers while the conversation goes on
+        app._fallback_window_reader.join(5)
+        send(text, *args, **kwargs)
+        seen.append(app.session.runner._window())
+
+    app.send = spy
+    assert app.start() == 0
+    assert fallback.server_window_asked == [2.0]    # asked once, however many runners were built
+    assert fallback.context_window == 16384 and seen == [16384]
+
+
+def test_local_context_wins_over_the_server_window(tmp_path):
+    primary = paid("claude-opus-5-5")
+    fallback = WindowedLocal("qwen3:8b", window=16384)
+    app, _, _, _ = started_on_claude(tmp_path, Lines("/exit"), primary, fallback, local_context=4096)
+    assert app.start() == 0
+    assert fallback.context_window == 4096 and fallback.server_window_asked == []
+
+
+def test_a_silent_server_leaves_8192_and_never_blocks_the_turn(tmp_path):
+    never = threading.Event()
+    primary = paid("claude-opus-5-5", OutOfCredit())
+    fallback = WindowedLocal("qwen3:8b", respond("done anyway"), window=16384, release=never)
+    app, out, _, _ = started_on_claude(tmp_path, Lines("hi", "/exit"), primary, fallback, local_context=None)
+    began = time.monotonic()
+    try:
+        assert app.start() == 0
+        assert time.monotonic() - began < 5
+        assert "done anyway" in out.getvalue()
+        assert fallback.context_window == 8192 and app.session.runner._window() == 8192
+    finally:
+        never.set()
+
+
+def test_a_new_window_conversation_tries_the_chosen_model(tmp_path):
+    primary = paid("claude-opus-5-5", OutOfCredit())
+    fallback = LocalTools("qwen3:8b", respond("done"))
+    app, _, _, _ = started_on_claude(tmp_path, Lines("hi", "/exit"), primary, fallback)
+    assert app.start() == 0 and app.fallback_from is not None
+    room = SimpleNamespace(console=Console(file=io.StringIO()), read=Lines(), read_short=Lines(), select=None)
+    other = app_module.device_app(app, room)
+    assert other.requested_model == "claude-opus-5-5" and other.fallback_name == "qwen3:8b"
+
+    (tmp_path / "plain").mkdir()
+    app, _, _, _ = started_on_claude(tmp_path / "plain", Lines("/exit"), paid("claude-opus-5-5"),
+                                     LocalTools("qwen3:8b"))
+    assert app.start() == 0
+    assert app_module.device_app(app, room).requested_model == "claude-opus-5-5"
+
+
+def test_the_offer_from_the_thread_goes_above_an_open_prompt(tmp_path, monkeypatch):
+    import prompt_toolkit.application as pt_application
+    ran = []
+    monkeypatch.setattr(pt_application, "run_in_terminal", lambda fn: (ran.append(fn), fn())[1])
+    primary = paid("claude-opus-5-5")
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), {"claude-opus-5-5": primary}, model_name="claude-opus-5-5")
+    assert app.start() == 0
+    scheduled = []
+    loop = SimpleNamespace(call_soon_threadsafe=lambda fn: (scheduled.append(fn), fn()))
+    app.prompt_input = SimpleNamespace(_chat=SimpleNamespace(app=SimpleNamespace(loop=loop, is_running=True)))
+    _listing(monkeypatch, ("qwen3:8b",))
+    worker = threading.Thread(target=app._discover_local_models, args=("http://localhost:11434/v1",))
+    worker.start()
+    worker.join(5)
+    assert scheduled and ran
+    assert "Ollama is running with qwen3:8b." in out.getvalue()
+
+
+def test_a_stopped_switching_turn_keeps_the_fallbacks_usage(tmp_path):
+    primary = paid("claude-opus-5-5", OutOfCredit())
+    fallback = LocalTools("qwen3:8b", openai.APIConnectionError(
+        request=httpx.Request("POST", "http://localhost:11434/v1/chat/completions")))
+    app, _, _, _ = started_on_claude(tmp_path, Lines("hi", "/exit"), primary, fallback)
+    assert app.start() == 0
+    assert fallback.usage.total_calls == 1
+    saved = json.loads(app.session_path.read_text(encoding="utf-8"))
+    assert saved["usage"]["calls"] == primary.usage.total_calls + fallback.usage.total_calls
+
+
+def test_a_fallback_that_cannot_be_built_is_said_once(tmp_path):
+    primary = paid("claude-opus-5-5", make_final("one"), make_final("two"))
+    asked = []
+    app, out, _, _ = make_app(tmp_path, Lines("hi", "/clear", "again", "/exit"), {"claude-opus-5-5": primary}, asked,
+                              model_name="claude-opus-5-5", fallback_model="qwen3:8b")
+    assert app.start() == 0
+    assert asked.count("qwen3:8b") == 1
+    assert out.getvalue().count("The fallback qwen3:8b could not be set up") == 1
+
+
+def test_the_offer_sends_the_whole_name(tmp_path, monkeypatch):
+    long_name = "q" * 90
+    _listing(monkeypatch, (long_name,))
+    primary = paid("claude-opus-5-5")
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), {"claude-opus-5-5": primary}, model_name="claude-opus-5-5",
+                            local_server="http://localhost:11434/v1")
+    shown = _record_notices(app)
+    app._local_discovery.join(5)
+    assert app.start() == 0
+    (_, actions), = [(text, actions) for text, actions in shown if actions]
+    assert actions[0]["send"] == f"/fallback {long_name}"
+    assert actions[0]["label"].startswith("Use q") and len(actions[0]["label"]) <= 84

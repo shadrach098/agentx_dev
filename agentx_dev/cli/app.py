@@ -273,7 +273,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
                  team_model_uses: Optional[Mapping[str, str]] = None,
                  token_limit: int = DEFAULT_TOKEN_LIMIT, max_steps: int = DEFAULT_MAX_STEPS,
                  auto_team: Optional[bool] = None, local_server: Optional[str] = None,
-                 fallback_model: Optional[str] = None) -> None:
+                 fallback_model: Optional[str] = None, local_context: Optional[int] = None) -> None:
         self.cwd = Path(cwd).resolve()
         self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
@@ -411,6 +411,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         # The local model a Claude or GPT chat falls back to (``fallbackModel``): None when never set, "" when off.
         self.fallback_name: Optional[str] = fallback_model
         self._fallback_built: Optional[Tuple[str, Any]] = None     # (name, model), built once (``_fallback_for``)
+        self._fallback_unusable: Optional[str] = None   # a fallback name that could not be built: said once, not retried
+        self._fallback_window_reader: Optional[threading.Thread] = None   # asks the server the fallback's window
+        self.local_context = local_context              # "localContext": the window the user gave local models
         # Set while the conversation runs on the fallback: {"model": the one that failed, "reason"}.
         self.fallback_from: Optional[Dict[str, str]] = None
         self._rebuild_after_turn = False         # the running turn moved to the fallback: a new runner after it
@@ -1043,6 +1046,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         if not self._rebuild_after_turn or self.session is None:
             return
         self._rebuild_after_turn = False
+        # What the fallback used in a turn that stopped (no completion counted it) is counted before attaching a new
+        # runner sets its baseline afresh; after a finished turn this adds nothing.
+        self.session._count_usage(self.model)
         try:
             self.session.attach(self._make_runner(self.model))
         except Exception:                  # the switched runner still works: it stays on the fallback
@@ -1180,10 +1186,11 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         except Exception as e:
             self.error(self._failure(e))
             self.notice(KEPT_SO_FAR + " " + (OUT_OF_CREDIT_NEXT if self._no_credit(e) else ERROR_NEXT))
+            silent = self._server_silent(self.model, e)
             if isinstance(e, FallbackFailed):
                 stopped = f"the fallback {self._safe(e.fallback.get('to'), 80)} failed too"
-            elif self._server_silent(self.model, e):
-                stopped = self._server_silent(self.model, e)
+            elif silent:
+                stopped = silent
             elif self._no_credit(e):
                 stopped = f"the {provider_name(self.model_label)} account is out of credit"
             else:
@@ -1815,15 +1822,18 @@ def device_app(template: "ChatApp", room: Any) -> "ChatApp":
     window (``room``, a ``webui.WebFront``). It starts on the model the main conversation uses now and the settings
     as saved (not a mode switched on for the main one only); the folder was trusted when agentx started."""
     settings = load_settings(template.cwd, template.home)
+    # While the main conversation is on the fallback, a new one starts on the model the user chose: it tries it,
+    # and falls back again (with its own notice and marks) if it still fails.
+    model_name = template.requested_model if template.fallback_from else str(template.model_label)
     app = ChatApp(cwd=template.cwd, home=template.home, console=room.console, read_line=room.read,
-                  read_short=room.read_short, select=room.select, model_name=str(template.model_label),
+                  read_short=room.read_short, select=room.select, model_name=model_name,
                   mode=settings.mode or "default", allow=settings.allow, deny=settings.deny,
                   add_dirs=list(template.add_dirs), problems=[], project_allow=settings.project_allow,
                   newly_trusted=False, model_source=None, team_models=settings.team_models,
                   team_models_source=settings.team_models_source, team_model_uses=settings.team_model_uses,
                   token_limit=settings.token_limit, max_steps=settings.max_steps,
                   model_factory=template.model_factory, env=getattr(template, "_given_env", None),
-                  fallback_model=template.fallback_name)
+                  fallback_model=template.fallback_name, local_context=template.local_context)
     app.auto_titles = bool(getattr(template, "auto_titles", False))
     app.local_models = template.local_models               # one list, filled by the main conversation's search
     return app
@@ -1878,7 +1888,8 @@ def _run(args: argparse.Namespace, home: Path, console: Console, read: Callable[
                       # every model built by name reaches the local server in the user's settings (Ruling A)
                       model_factory=functools.partial(choose_model, local_server=settings.local_server,
                                                       local_context=settings.local_context),
-                      local_server=settings.local_server, fallback_model=settings.fallback_model)
+                      local_server=settings.local_server, fallback_model=settings.fallback_model,
+                      local_context=settings.local_context)
         app.auto_titles = True                         # a real run: conversations get a short title from the model
         app.remote_at_start = bool(getattr(args, "remote", False)) and not getattr(args, "ui", False)
         if wire is not None:
