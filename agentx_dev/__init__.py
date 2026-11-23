@@ -12,6 +12,7 @@ from .ChatModel import (
     StructuredOutputRunnable,
     TokenBucket, TokenUsage, RetryBudgetExceeded, CostBudgetExceeded, ModelDeclined,
 )
+from .LocalModel import Local, LocalModelError, LocalCheck
 from .Tools import StandardTool, StructuredTool
 from .Config import config, get_config, set_config
 from .AsyncTools import AsyncStandardTool, AsyncStructuredTool, execute_tools_concurrently
@@ -86,6 +87,9 @@ except Exception:
     _MCP_AVAILABLE = False
 
 __all__ = [
+    "Local",
+    "LocalModelError",
+    "LocalCheck",
     # Core agent
     "AgentType",
     "AgentFormatter",
