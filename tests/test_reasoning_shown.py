@@ -99,6 +99,40 @@ class TestGPT:
         ChatModel._NO_REASONING_SUMMARY.discard("gpt-6.1-sol")
 
 
+class TestChatCompletionsReasoning:
+    """Local servers (Ollama: `reasoning`; LM Studio, vLLM: `reasoning_content`) send thinking in a field the
+    OpenAI schema does not have."""
+
+    def _call(self, monkeypatch, message):
+        pytest.importorskip("openai")
+        model = ChatModel.GPT(model="gpt-4o", api_key="test-key")
+        response = SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+        monkeypatch.setattr(model, "_create", lambda **kw: response)
+        return model.call_with_tools(messages=[{"role": "user", "content": "hi"}],
+                                     tools=[{"name": "step", "description": "d",
+                                             "parameters": {"type": "object", "properties": {}}}])
+
+    def test_chat_completions_reasoning_field_is_returned(self, monkeypatch):
+        msg = SimpleNamespace(content="", tool_calls=None, reasoning="thinking…")
+        result = self._call(monkeypatch, msg)
+        assert result["reasoning"] == "thinking…" and result["text"] == ""
+
+    def test_reasoning_content_field_is_returned(self, monkeypatch):
+        msg = SimpleNamespace(content="", tool_calls=None, reasoning_content="thinking…")
+        result = self._call(monkeypatch, msg)
+        assert result["reasoning"] == "thinking…" and result["text"] == ""
+
+    def test_reasoning_in_model_extra_or_a_dict_is_returned(self, monkeypatch):
+        msg = SimpleNamespace(content="hi", tool_calls=None, model_extra={"reasoning": "from extra"})
+        assert self._call(monkeypatch, msg)["reasoning"] == "from extra"
+        assert ChatModel._chat_reasoning({"content": "", "reasoning_content": "from dict"}) == "from dict"
+
+    def test_no_reasoning_field_no_key(self, monkeypatch):
+        result = self._call(monkeypatch, SimpleNamespace(content="plain", tool_calls=None))
+        assert "reasoning" not in result and result["text"] == "plain"
+        assert "reasoning" not in self._call(monkeypatch, SimpleNamespace(content="x", tool_calls=None, reasoning=""))
+
+
 def test_the_cli_builds_its_models_with_reasoning_shown(monkeypatch):
     pytest.importorskip("anthropic")
     from agentx_dev.cli.models import choose_model

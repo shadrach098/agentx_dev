@@ -811,6 +811,22 @@ def _pictures_message(pictures: List[Dict[str, Any]], render: Callable[[Any], An
         *pictures])}
 
 
+def _chat_reasoning(message: Any) -> str:
+    """The thinking a chat-completions server sent on a message: Ollama's `reasoning`, or `reasoning_content`
+    (LM Studio, vLLM). Not in the OpenAI schema, so it may be an attribute, in `model_extra`, or a dict key."""
+    extra = message.get("model_extra") if isinstance(message, dict) else getattr(message, "model_extra", None)
+    for key in ("reasoning", "reasoning_content"):
+        if isinstance(message, dict):
+            value = message.get(key)
+        else:
+            value = getattr(message, key, None)
+        if not value and isinstance(extra, dict):
+            value = extra.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def _parse_responses_output(response: Any) -> Dict[str, Any]:
     """Responses output items -> the framework's call_with_tools result."""
     tool_calls = []
@@ -1928,6 +1944,7 @@ class GPT(BaseChatModel):
             )
 
         msg = response.choices[0].message
+        reasoning = _chat_reasoning(msg)
         if getattr(msg, "tool_calls", None):
             tool_calls = []
             for call in msg.tool_calls:
@@ -1953,14 +1970,20 @@ class GPT(BaseChatModel):
             # Backward-compatible: callers reading .name/.input get the first;
             # callers wanting concurrency iterate `tool_calls`.
             first = tool_calls[0]
-            return {
+            out = {
                 "type": "tool_use",
                 "name": first["name"],
                 "input": first["input"],
                 "id": first["id"],
                 "tool_calls": tool_calls,
             }
-        return {"type": "text", "text": msg.content or ""}
+            if reasoning:
+                out["reasoning"] = reasoning
+            return out
+        out = {"type": "text", "text": msg.content or ""}
+        if reasoning:
+            out["reasoning"] = reasoning
+        return out
 
     def stream_text(self, messages: List[Dict[str, Any]]) -> Iterator[str]:
         """OpenAI native streaming. Yields the ``delta.content`` of each
