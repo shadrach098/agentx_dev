@@ -49,7 +49,9 @@ from agentx_dev.cli.app_usage import UsageCommands
 from agentx_dev.cli.app_team import TeamCommands
 from agentx_dev.cli.app_voice import LiveVoice, VoiceCommands
 from agentx_dev.cli.app_team import TEAM_LIMIT_REACHED, TEAM_STALLED  # noqa: F401  (re-exported)
-from agentx_dev.Skills import (SkillInstallError, Skills, discover, install, open_source, preview_text)
+from agentx_dev.Skills import Skills
+from agentx_dev.cli.app_skills import SkillCommands
+from agentx_dev.cli.skill_trust import SkillTrust
 
 INIT_PROMPT = (
     "Look at this project: list the top-level files, read the README and the main config files. Then write a "
@@ -210,6 +212,10 @@ def default_deny(home: Optional[Path] = None) -> List[str]:
             rules.append(f"{tool}:{place}")
         rules.append(f"move_file:{place} -> *")
         rules.append(f"move_file:* -> {place}")
+    # A shell or Python command that names a skills folder or the record of approved skills is refused: only the
+    # user's /skills commands add or change a skill (see skill_trust.py, which also catches what this misses).
+    for tool in ("run_shell", "run_python"):
+        rules += [f"{tool}:*.agentx*skills*", f"{tool}:*skills-trust*"]
     return rules
 
 
@@ -250,7 +256,8 @@ def _version() -> str:
         return "unknown"
 
 
-class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceCommands, LiveVoice, KeyCommands):
+class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamCommands, VoiceCommands, LiveVoice,
+              KeyCommands):
     """One interactive session. All terminal I/O comes in through ``console``, ``read_line`` (the chat prompt)
     and ``read_short`` (approvals and choices), so it runs the same in tests.
 
@@ -350,8 +357,11 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         # observer: a team helper opening a skill is drawn like its other tool calls (the chat's own are drawn from
         # the runner's events; ``_observe_tool`` ignores a call made outside a team job).
         # remember_reads: a skill already read in this conversation is not sent again in full.
+        # check: a skill is offered only while its files are the ones the user approved (see skill_trust.py)
+        self.skill_trust = SkillTrust(self.home)
         self.skills = Skills.default(self.home, project_dirs=project_skills, observer=self._observe_tool,
-                                     remember_reads=True, guard=lambda: self.gate.closed)    # wrapping up: no reads
+                                     remember_reads=True, guard=lambda: self.gate.closed,    # wrapping up: no reads
+                                     check=self.skill_trust.check)
         self._runner_skills: Dict[str, str] = {}      # name -> description, for the current runner (_make_runner)
         # Project memory: a note per worthwhile turn in .agentx/notes, an index over them, the recall tool, and the
         # relevant notes added to the first message of a fresh conversation. Not for the home folder or a drive root.
@@ -616,6 +626,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
         if self._newly_trusted and self._memory_on:         # never overwrites a file that is already there
             self.project_settings_created = ensure_project_settings(self.cwd, self.home, self.model_label)
         self._show_welcome()
+        self._announce_skills()                  # before the first runner: the first run records what is installed
         self._connect_mcp()                      # before the first runner, so it has the servers' tools
         if resume is None:
             self._start_fresh()
@@ -1401,42 +1412,6 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, TeamCommands, VoiceComm
     # -- team jobs ----------------------------------------------------------
 
     # -- skills ---------------------------------------------------------------
-
-    def install_skills(self, link: str) -> None:
-        """``/skills install [name ...] <link>``. Only the user can start this (no tool does), and nothing is saved
-        until they have seen what was found and said yes. Names before a github.com link pick those skills only."""
-        wanted: List[str] = []
-        words = link.split()
-        if len(words) > 1 and "github.com" in words[-1].lower() and "github.com" not in " ".join(words[:-1]).lower():
-            link, wanted = words[-1], [w.strip(",").lower() for w in words[:-1] if w.strip(",")]
-        self.notice("Downloading...")
-        try:
-            with open_source(link) as fetched:
-                found, problems = discover(fetched.root, fetched.subpath)
-                if found and wanted:
-                    picked = [c for c in found if c.name.lower() in wanted]
-                    if not picked:
-                        self.error(f"No skill named {', '.join(self._safe(w, 40) for w in wanted)} there. It has: "
-                                   + ", ".join(c.name for c in found) + ".")
-                        return
-                    found = picked
-                if not found:
-                    skipped = "".join(f"\n  {self._safe(p, 160)}" for p in problems[:5])
-                    self.error("No skills found there (a skill is a folder with a SKILL.md file)." + skipped)
-                    return
-                self.notice(preview_text(fetched, found, problems))
-                if not self._yes(f"Install {len(found)} skill{'s' if len(found) != 1 else ''} into "
-                                 f"{self._safe(self.skills.dir, 200)}? [y/N] "):
-                    self.notice("Nothing was installed.")
-                    return
-                names = install(found, self.skills.dir, fetched)
-        except SkillInstallError as e:
-            self.error(self._safe(e, 400))
-            return
-        self.reload_skills()
-        self.notice("Installed: " + ", ".join(names) + ". " + ("They are" if len(names) != 1 else "It is")
-                    + " ready in this conversation: " + ", ".join(f"/{name}" for name in names)
-                    + " or ask for it by name.")
 
     def reload_skills(self, say: bool = False) -> None:
         """Give this conversation the skills on disk now (after an install or a removal, or ``/skills reload``):

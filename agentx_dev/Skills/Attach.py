@@ -53,7 +53,8 @@ class Skills:
 
     def __init__(self, dir: Optional[PathLike] = None, *, project_dirs: Sequence[PathLike] = (),
                  seed: bool = True, observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
-                 remember_reads: bool = False, guard: Optional[Callable[[], Optional[str]]] = None) -> None:
+                 remember_reads: bool = False, guard: Optional[Callable[[], Optional[str]]] = None,
+                 check: Optional[Callable[[Skill], Optional[str]]] = None) -> None:
         self.dir = Path(dir).expanduser() if dir is not None else None
         self.project_dirs = [Path(p).expanduser() for p in project_dirs]
         self.seed = bool(seed)
@@ -66,14 +67,20 @@ class Skills:
         # Called before each read: a text it returns is the tool's answer instead of the skill (the terminal app
         # refuses skill reads, like every other tool, once the user has said to wrap up). A failing guard is ignored.
         self.guard = guard
+        # Asked about every skill on disk before it is offered: a text it returns holds the skill back (it is not
+        # listed and use_skill cannot open it) and becomes one of ``Loaded.problems``. The terminal app holds back
+        # a skill whose files are not the ones the user approved. A failing check holds the skill back too.
+        self.check = check
 
     @classmethod
     def default(cls, home: Optional[PathLike] = None, *, project_dirs: Sequence[PathLike] = (),
                 observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
-                remember_reads: bool = False, guard: Optional[Callable[[], Optional[str]]] = None) -> "Skills":
+                remember_reads: bool = False, guard: Optional[Callable[[], Optional[str]]] = None,
+                check: Optional[Callable[[Skill], Optional[str]]] = None) -> "Skills":
         """The usual place: ``~/.agentx/skills``."""
         return cls(Path(home if home is not None else Path.home()) / ".agentx" / "skills",
-                   project_dirs=project_dirs, observer=observer, remember_reads=remember_reads, guard=guard)
+                   project_dirs=project_dirs, observer=observer, remember_reads=remember_reads, guard=guard,
+                   check=check)
 
     def roots(self) -> List[Tuple[Path, str]]:
         return ([(self.dir, "user")] if self.dir is not None else []) + [(p, "project") for p in self.project_dirs]
@@ -89,12 +96,29 @@ class Skills:
         if self.dir is not None and self.seed:
             seed_defaults(self.dir)
         store = self.store()
+        problems = list(store.problems)
+        allowed = []
+        for skill in store.all():
+            reason = self.held_back(skill)
+            if reason:
+                problems.append(f"{skill.name}: held back: {reason}")
+            else:
+                allowed.append(skill)
         present = {t.name for t in tools}
-        chosen = {s.name: s for s in store.all() if not s.tools or present.intersection(s.tools)}
-        generated = custom_tools_skill(tools, {name for s in store.all() for name in s.tools})
+        chosen = {s.name: s for s in allowed if not s.tools or present.intersection(s.tools)}
+        generated = custom_tools_skill(tools, {name for s in allowed for name in s.tools})
         if generated is not None and generated.name not in store.skills:
             chosen[generated.name] = generated
-        return Loaded(chosen, index_block([chosen[n] for n in sorted(chosen)]), list(store.problems))
+        return Loaded(chosen, index_block([chosen[n] for n in sorted(chosen)]), problems)
+
+    def held_back(self, skill: Skill) -> str:
+        """Why ``skill`` is not offered ("" when it is): what ``check`` says."""
+        if self.check is None or skill.folder is None:
+            return ""
+        try:
+            return str(self.check(skill) or "")
+        except Exception as e:              # a check that fails must not let an unchecked skill through
+            return f"it could not be checked ({type(e).__name__})"
 
 
 def make_use_skill_tool(skills: Dict[str, Skill],

@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from .Defaults import bundled_skills
 from .Store import (
@@ -412,9 +412,13 @@ def preview_text(fetched: Fetched, found: Sequence[Candidate], problems: Sequenc
 
 # -- writing --------------------------------------------------------------------
 
-def install(found: Sequence[Candidate], target: Path, fetched: Fetched) -> List[str]:
+def install(found: Sequence[Candidate], target: Path, fetched: Fetched,
+            contents: Optional[Mapping[str, Any]] = None) -> List[str]:
     """Copy ``found`` into ``target/<name>/`` and write each one's sidecar. Checks every name first and installs
-    nothing when one is taken or is the name of a built-in skill. Returns the names installed."""
+    nothing when one is taken or is the name of a built-in skill. Returns the names installed.
+
+    ``contents`` (by skill name, a ``Snapshot`` from ``Inspect``): write exactly those bytes instead of reading the
+    download again, so what is installed is what was inspected and approved, byte for byte."""
     target = Path(target)
     built_in = {b.name for b in bundled_skills()}
     for c in found:
@@ -431,11 +435,20 @@ def install(found: Sequence[Candidate], target: Path, fetched: Fetched) -> List[
     for c in found:
         staging = Path(tempfile.mkdtemp(prefix=".incoming-", dir=str(target)))
         try:
-            for relative in c.files:
-                source, dest = c.folder / relative, staging / relative
+            approved = contents.get(c.name) if contents is not None else None
+            if contents is not None and approved is None:
+                raise SkillInstallError(f"{c.name} was not inspected, so nothing more was installed. Installed so "
+                                        f"far: {', '.join(done) or 'nothing'}.")
+            for relative in (sorted(approved.files) if approved is not None else c.files):
+                dest = staging / relative
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if approved is not None:
+                    with open(dest, "wb") as out:
+                        out.write(approved.files[relative])
+                    continue
+                source = c.folder / relative
                 if _is_link(source):
                     continue
-                dest.parent.mkdir(parents=True, exist_ok=True)
                 with open(source, "rb") as src, open(dest, "wb") as out:
                     shutil.copyfileobj(src, out)
             sidecar = {"managed": False, "source": fetched.label, "commit": fetched.commit,
