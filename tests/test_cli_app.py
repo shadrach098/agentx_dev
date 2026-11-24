@@ -1236,6 +1236,34 @@ def test_main_sets_the_logging_up_before_the_app_is_built(tmp_path, monkeypatch)
     assert order == [("log", home), "app"]
 
 
+def test_the_app_window_writes_the_log_too(tmp_path, monkeypatch):
+    """``agentx --ui`` sets the log up before the window starts, as the terminal does, so a failure while the window
+    starts (or in it) leaves a trace in ~/.agentx/agentx.log."""
+    import logging
+    from agentx_dev.cli import webui
+    home = tmp_path / "home"
+    home.mkdir()
+    seen = {}
+
+    class FakeFront:
+        def __init__(self, **kwargs):
+            self.app = None
+
+        def run(self, work):
+            seen["handlers"] = [h for h in logging.getLogger("agentx_dev").handlers if getattr(h, "_agentx_cli", False)]
+            logging.getLogger("agentx_dev.cli.webui").warning("the window could not start")
+            return 0
+
+    monkeypatch.delenv("AGENTX_PANE_HANDOFF", raising=False)
+    monkeypatch.setattr(webui, "WebFront", FakeFront)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    assert main(["--ui", "--no-open"]) == 0
+    assert [Path(h.baseFilename) for h in seen["handlers"]] == [home / ".agentx" / "agentx.log"]
+    for handler in seen["handlers"]:
+        handler.flush()
+    assert "the window could not start" in (home / ".agentx" / "agentx.log").read_text(encoding="utf-8")
+
+
 def test_a_protected_folder_cannot_be_moved_into_place_by_naming_its_parent_as_the_destination(tmp_path):
     model = MockModel(script=[write_call("stuff/.agentx/settings.json", "{}"),
                               make_react_response("move_file", {"source": "stuff/.agentx", "destination": "."}),

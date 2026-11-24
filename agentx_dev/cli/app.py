@@ -1845,9 +1845,11 @@ def device_app(template: "ChatApp", room: Any) -> "ChatApp":
 
 
 def _run_ui(args: argparse.Namespace) -> int:
-    """``agentx --ui``: the same app, drawn in a browser window (see ``webui``)."""
+    """``agentx --ui``: the same app, drawn in a browser window (see ``webui``). The log is set up first, as in the
+    terminal (``_run`` sets it up again, the same way), so the window's own start and its server leave a trace too."""
     from agentx_dev.cli.webui import WebFront
     home = Path.home()
+    setup_logging(home)
     handoff = os.environ.pop("AGENTX_PANE_HANDOFF", "")      # started as a side of another window (split view)
     front = WebFront(cwd=Path.cwd().resolve(), home=home, port=max(0, int(args.port or 0)),
                      open_it=bool(handoff) or not args.no_open, remote=bool(getattr(args, "remote", False)))
