@@ -156,7 +156,11 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   A start meant for a local model never moves to Claude or GPT on its own: when no local one works, it asks once
   (`Start on gpt-6.2-sol instead? Your messages and the files it reads would go to OpenAI.`, **Start on ...** or
   **Quit**, the default) and starts there only on a yes. Quit, no answer or nothing usable stops as before. No
-  settings file is rewritten. A Claude or GPT model failing at start is unchanged.
+  settings file is rewritten. A Claude or GPT model failing at start is unchanged. A model is not tried twice under
+  another spelling (case and a trailing `:latest` are ignored), and a server that is not answering, or whose check ran
+  out of time, is not waited on again for the other models on it; those checks share one 150-second wait in total.
+- **`LocalCheck.unreachable`.** `True` when the local server did not answer (the default is `False`), so a caller can
+  tell a server that is down from a model it does not have.
 
 - **Tests no longer write your real `~/.agentx/agentx.log`.** The split-view test ran `_run_ui` with the real home,
   leaving a file handler there that later tests logged their tracebacks through. It now uses a tmp home, and an

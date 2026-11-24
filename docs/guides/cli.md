@@ -417,7 +417,10 @@ folder's settings file, your own, or `--model`) and fails its check, it tries th
 only when it is not the one that failed: your own `model` in `~/.agentx/settings.json` when it is local, then your
 `fallbackModel` (both checked the same way). The first that works is used and said once, before the first prompt:
 `Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Starting on qwen3-agent:latest
-instead; /model qwen3-4b-40k tries it again.`, followed by the settings file that named the model.
+instead; /model qwen3-4b-40k tries it again.`, followed by the settings file that named the model. A model is not
+tried twice under another spelling (`Qwen3-Agent` and `qwen3-agent:latest` are the same one). When the server is not
+answering, or the check ran out of time (a model still loading), the other models on that server are skipped, since
+they would wait the same way; the checks after the first share one 150-second wait in total.
 
 **It never moves to Claude or GPT on its own.** When no local model works, `agentx` asks once about the cloud one
 (your own `model` when it is a Claude or GPT name, else the usual choice with no name, the first key found): `Could
