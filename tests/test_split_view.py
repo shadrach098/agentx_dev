@@ -119,7 +119,7 @@ def test_the_window_has_the_split_view():
     css = (RESOURCES / "style.css").read_text(encoding="utf-8")
     assert 'id="beside"' in html and 'id="besideFrame"' in html and 'id="dropBeside"' in html
     assert "async function openBeside" in script and 'post("/api/pane"' in script and "function closeBeside" in script
-    assert 'draggable="${!s.current && !EMBED}"' in script and "data-beside=" in script
+    assert 'draggable="${!s.current && !EMBED}"' in script and 'data-rm="beside"' in script
     assert "Open a folder beside…" in script and "const EMBED" in script
     assert ".app.split {" in css and "html.embedded .side" in css
 

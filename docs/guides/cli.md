@@ -1145,6 +1145,16 @@ on the left and in `/resume`; until then, and for older conversations, the first
   take effect at once.
 - **Recent is a tree.** The folder agentx opened is the top row (click it to fold the list), and its conversations
   hang from it on an L-shaped line. A conversation you opened while another was working hangs from that one.
+- **The ⋯ menu on a conversation in Recent** (point at its row): **Rename** gives it a title of your own (Enter keeps
+  it, Esc cancels); **Open beside** opens it on the right half of the window; **Delete** asks first, then moves its
+  file to a `deleted` folder next to your saved conversations (`~/.agentx/sessions/<project>/deleted/`), so moving it
+  back restores it. An open conversation cannot be deleted: switch to another one first.
+- **Editing a message you sent.** Point at one of your messages and press the pencil to its left, change the text
+  and press **Send** (or Enter; Shift+Enter adds a line, Esc cancels). The conversation goes back to just before that
+  message, and the new text is sent in its place. The whole conversation as it was is kept first, as its own
+  conversation in Recent titled "… (before edit)", so nothing is lost. Only the conversation goes back: files agentx
+  changed and commands it ran stay done. You can edit while agentx waits for a message; stop it (or let it finish)
+  first.
 - **Switching while one works.** Click another conversation in **Recent** (or **New conversation**) while the agent is
   working, and the window shows that one at once; the first goes on working behind it. Recent marks a conversation
   working behind the one you see with a green dot, or an amber one when it waits for your answer; click it to go
@@ -1153,8 +1163,8 @@ on the left and in `/resume`; until then, and for older conversations, the first
   started with; one that is done and unused for 15 minutes is put away (it is saved; open it again from Recent). A
   conversation is never open twice: clicking one that already runs shows it. Closing the window still quits agentx,
   and with it everything that runs. Before, a click while it worked queued `/resume` to run when it was done.
-- **Two conversations side by side.** Drag a conversation from **Recent** onto the chat, or press the split button
-  that shows when you point at its row: it opens on the right half of the window and the one you are in stays on the
+- **Two conversations side by side.** Drag a conversation from **Recent** onto the chat, or choose **Open beside**
+  in the **⋯** menu on its row: it opens on the right half of the window and the one you are in stays on the
   left. The folder menu's **Open a folder beside…** opens a new conversation in another project there instead (the
   first time, that folder asks whether you trust it). Each side runs an agentx of its own, with its own history,
   settings, approvals, mode, MCP servers and memory, so you can type in one while the other works; both use the same
@@ -1194,8 +1204,11 @@ on the left and in `/resume`; until then, and for older conversations, the first
   is too long to show. The folder trust card highlights **No, exit**, as in the terminal.
 - **Above the message box:** what it is doing, for how long and the tokens this message has used so far (the
   terminal's spinner line), from the moment you send; a soft light runs along the top of the message box while it
-  works. Also the team's running steps, and the messages you
-  typed while it works, each with ✕ to take it back (`/unsend`).
+  works. Also the team's running steps, and the messages you typed while it works. Each one wraps inside the window
+  (three lines, then **Show all**, so a long paste never runs out of the frame) and has **Send now** (stop the current
+  step, as Esc does, keeping what was done, so that message is the next one the agent reads), **Edit** (take it back
+  into the message box) and ✕ (take it back, `/unsend`). In the conversation, a long message typed while it worked
+  shows its first lines; click it to see the rest.
 - **The message box:** Enter sends, Shift+Enter adds a line, `/` opens the commands and skills. Under the text: **+**
   (add a picture, mention a file by searching for it, or open another folder: agentx starts there in a new window and
   this one keeps running; the new agentx loads nothing from that folder before its trust question), then the mode and the model as menus (they send `/mode` and `/model`), the microphone (`/voice`)

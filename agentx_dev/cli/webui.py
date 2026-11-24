@@ -1083,6 +1083,85 @@ class WebFront:
             return "interrupted"
         return "idle"
 
+    def edit_message(self, which: Any, original: str) -> Dict[str, Any]:
+        """Edit a message you sent: the conversation goes back to just before user message ``which`` (1 = the
+        first one shown; ``original`` is its text, to be sure it is that one), and the window then sends the new
+        text. The whole conversation as it was is kept first as a conversation of its own, "... (before edit)", so
+        nothing is lost. Only while agentx waits for a message. Files it changed stay changed: only the
+        conversation goes back."""
+        import uuid
+        from agentx_dev.cli.sessions import new_session_path, read_titles, save_title
+        app = self.app
+        session = getattr(app, "session", None)
+        path = getattr(app, "session_path", None)
+        if app is None or session is None or path is None:
+            return {"ok": False, "error": "there is no conversation to edit"}
+        if self._pending_of("message") is None or self._working():
+            return {"ok": False, "error": "agentx is working: stop it or wait, then edit"}
+        try:
+            number = int(which)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "which message?"}
+        shown = [item for item in self.history() if item.get("type") == "user" and "at" in item]
+        wanted = _text(str(original or ""), 100_000).strip()
+        same = [item for item in shown if str(item.get("text", "")).strip() == wanted]
+        if 1 <= number <= len(shown) and str(shown[number - 1].get("text", "")).strip() == wanted:
+            item = shown[number - 1]
+        elif len(same) == 1:
+            item = same[0]
+        else:
+            return {"ok": False, "error": "the conversation changed: reload the window and try again"}
+        history = list(session.history)
+        at = int(item["at"])
+        if not 0 <= at < len(history) or history[at].get("role") != "user":
+            return {"ok": False, "error": "the conversation changed: reload the window and try again"}
+        # the conversation as it was, first: a copy of its own in Recent
+        try:                                     # from what is saved (the live runner is not copied)
+            copy = type(session).model_validate({**json.loads(json.dumps(session.to_dict(), default=str)),
+                                                 "session_id": str(uuid.uuid4())})
+            kept = new_session_path(self.home, self.cwd, copy.session_id)
+            copy.save(kept)
+        except (OSError, ValueError, TypeError) as error:
+            return {"ok": False, "error": f"the conversation as it was could not be kept ({type(error).__name__}), "
+                                          "so nothing was changed"}
+        title = read_titles(self.home, self.cwd).get(path.name) or next(
+            (str(i.get("text", "")).split("\n")[0] for i in shown), "Conversation")
+        save_title(self.home, self.cwd, kept.name, f"{_text(str(title), 80)} (before edit)")
+        session.history = history[:at]
+        try:
+            session.save(path)
+        except OSError as error:
+            session.history = history
+            return {"ok": False, "error": f"it could not be saved ({type(error).__name__})"}
+        # what windows were shown of it before is gone: one reloaded later starts from here, not from old events
+        self.bus.emit("conversation", path=str(path), base=len(session.history))
+        return {"ok": True, "kept": copy.session_id}
+
+    def queue_action(self, action: str, which: Any) -> Dict[str, Any]:
+        """The buttons on a message waiting while the agent works: ``now`` stops the running step (as Esc does:
+        what was done is kept) so that message is the next one it gets; ``edit`` takes it back and gives its text
+        to the message box; ``remove`` takes it back."""
+        app = self.app
+        try:
+            number = int(which)
+        except (TypeError, ValueError):
+            return {"ok": False, "text": "which message?"}
+        if app is None:
+            return {"ok": False, "text": "not ready"}
+        if action == "now":
+            outcome, done = app.send_now(number)
+            if done:
+                stopped = self.stop()
+                if stopped == "cancelled":            # a question was open: it was answered "no" instead
+                    outcome = "sent now (the open question was cancelled)"
+            return {"ok": done, "text": outcome}
+        if action in ("edit", "remove"):
+            entries = app._waiting_entries()
+            text = entries[number - 1]["text"] if 1 <= number <= len(entries) else ""
+            outcome, done = app._unsend(str(number))
+            return {"ok": done, "text": outcome, **({"edit": text} if done and action == "edit" else {})}
+        return {"ok": False, "text": "unknown action"}
+
     def voice(self) -> str:
         """The mic button: start or stop ``/voice``, whether the agent is working or not."""
         app = self.app
@@ -1619,7 +1698,7 @@ class WebFront:
         from agentx_dev.Runner.AgentRun import _FORMAT_NAMES, INTERJECTION_PREFIX
         from agentx_dev.cli.routing import typed_text
         _ANSWERED = "\x00answered"                 # a format call that carried the final answer: no result row
-        for message in messages:
+        for at, message in enumerate(messages):
             if not isinstance(message, dict):
                 continue
             role = message.get("role")
@@ -1648,7 +1727,7 @@ class WebFront:
                     if not typed:                                # agentx's own reminder to hand it over
                         continue
                     text = typed
-                items.append({"type": "user", "text": _text(text, 100_000)})
+                items.append({"type": "user", "text": _text(text, 100_000), "at": at})
             elif role == "assistant":
                 if message.get("tool_calls") and text.strip():     # what it said before its steps: a note
                     items.append({"type": "thought", "text": _text(text.strip(), 20_000)})
@@ -1750,7 +1829,8 @@ class WebFront:
             except Exception:
                 pass
         try:
-            status["waiting"] = [{"text": _text(text, 300), "where": where} for text, where in app._waiting_shown()]
+            status["waiting"] = [{"text": _text(entry["text"], 4000), "where": entry["where"], "kind": entry["kind"]}
+                                 for entry in app._waiting_entries()]
         except Exception:
             status["waiting"] = []
         rows = []
@@ -1905,6 +1985,34 @@ class WebFront:
         room.opened_from = (parent if parent is not None else self.route(device)).conversation_id()
         room._begin(session or None)
         return {"ok": True, "lane": lane}
+
+    def manage_session(self, action: str, ident: str, title: str = "") -> Dict[str, Any]:
+        """The menu on a conversation in Recent: ``rename`` keeps ``title`` as its title; ``delete`` moves its saved
+        file into a ``deleted`` folder beside the others (it can be moved back), never one that is open."""
+        from agentx_dev.cli.sessions import find_session, save_title, sessions_dir
+        ident = re.sub(r"[^A-Za-z0-9_.-]", "", str(ident or ""))[:120]
+        info = find_session(self.home, self.cwd, ident) if ident else None
+        if info is None:
+            return {"ok": False, "error": "it is not saved yet, or not in the list any more"}
+        if action == "rename":
+            clean = " ".join(str(title or "").split())[:120]
+            if not clean:
+                return {"ok": False, "error": "give it a title"}
+            return {"ok": save_title(self.home, self.cwd, info.path.name, clean)}
+        if action == "delete":
+            with self._lock:
+                fronts = [self, *self.rooms.values()]
+            if any(front.conversation_id() and front.conversation_id() == info.session_id and not front.ended
+                   for front in fronts):
+                return {"ok": False, "error": "it is open: switch to another conversation first"}
+            bin_ = sessions_dir(self.home, self.cwd) / "deleted"
+            try:
+                bin_.mkdir(parents=True, exist_ok=True)
+                os.replace(info.path, bin_ / info.path.name)
+            except OSError as error:
+                return {"ok": False, "error": f"it could not be moved ({type(error).__name__})"}
+            return {"ok": True, "where": str(bin_)}
+        return {"ok": False, "error": "unknown action"}
 
     def lane_marks(self, device: str) -> Dict[str, Dict[str, Any]]:
         """For the list of conversations: ``{conversation id: {lane, working, asking}}`` for each one this device
@@ -2491,6 +2599,9 @@ class _Handler(BaseHTTPRequestHandler):
         device = self._device(parse_qs(url.query))
         if url.path == "/api/join":                         # open the main conversation, or go back to its own
             return self._json(self.front.join(device, bool(data.get("live")), str(data.get("then") or "")))
+        if url.path == "/api/session":                      # the menu on a conversation in Recent
+            return self._json(self.front.manage_session(str(data.get("action") or ""), str(data.get("id") or ""),
+                                                        str(data.get("title") or "")))
         if url.path == "/api/lanes":                        # run another conversation beside this one
             return self._json(self.front.open_lane(device, str(data.get("session") or ""),
                                                    self._lane(parse_qs(url.query))))
@@ -2505,6 +2616,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json({"ok": front.answer(ident, data.get("value"))})
         if url.path == "/api/stop":
             return self._json({"result": front.stop()})
+        if url.path == "/api/edit":                         # edit a message you sent: back to before it
+            return self._json(front.edit_message(data.get("n"), str(data.get("text") or "")))
+        if url.path == "/api/waiting":                      # Send now / Edit / Remove on a waiting message
+            return self._json(front.queue_action(str(data.get("action") or ""), data.get("n")))
         if url.path == "/api/voice":
             return self._json({"result": front.voice()})
         if url.path == "/api/upload":

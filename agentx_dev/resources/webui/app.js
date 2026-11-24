@@ -255,6 +255,14 @@
     const command = /^\/\w/.test(text);              // a command (often from a menu) is not a chat message
     const u = el("div", command ? "user command" : "user");
     u.textContent = text;
+    if (!command && !EMBED) {                        // hover: Edit, to change it and send it again
+      const b = el("button", "u-edit");
+      b.type = "button";
+      b.title = "Edit this message and send it again";
+      b.setAttribute("aria-label", "Edit this message");
+      b.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">${ICONS.edit}</svg>`;
+      u.append(b);
+    }
     // once you write, the orb takes the top: the mode note goes (Details keeps it)
     for (const chip of column.querySelectorAll(":scope > .notice-chip-row")) chip.remove();
     column.append(u);
@@ -499,7 +507,9 @@
   function addEcho(ev) {
     lastPrint = null; turn = null;
     const e = el("div", `echo${ev.done ? "" : " failed"}`);
-    e.innerHTML = `<span class="echo-text">${esc(ev.text)}</span><span class="echo-out">${ev.done ? "✓" : "✗"} ${esc(ev.outcome)}</span>`;
+    const long = String(ev.text || "").length > 400 || String(ev.text || "").split("\n").length > 6;
+    e.innerHTML = `<span class="echo-text${long ? " long" : ""}"${long ? ' title="Click to show all"' : ""}>${esc(ev.text)}</span><span class="echo-out">${ev.done ? "✓" : "✗"} ${esc(ev.outcome)}</span>`;
+    if (long) e.querySelector(".echo-text").addEventListener("click", (c) => c.currentTarget.classList.add("open"));
     column.append(e);
   }
   function addPlan(ev) {
@@ -800,11 +810,7 @@
     $("others").textContent = others === 1
       ? "Another conversation is working in this folder: it may change the same files."
       : `${others} other conversations are working in this folder: they may change the same files.`;
-    const waiting = $("waiting");
-    const items = ev.waiting || [];
-    waiting.hidden = !items.length;
-    waiting.innerHTML = items.map((w, n) => `<li><span class="w-text">${items.length > 1 ? `${n + 1}. ` : ""}${esc(w.text)}</span>` +
-      `<span class="w-where">${esc(w.where)}</span><button type="button" data-unsend="${n + 1}" aria-label="Take back this message">✕</button></li>`).join("");
+    drawWaiting(ev.waiting || []);
     $("micBtn").classList.toggle("recording", !!ev.recording);
     $("micBtn").setAttribute("aria-label", ev.recording ? "Stop recording" : "Speak instead of typing");
     if (ev.mode) setMode(ev.mode);
@@ -824,9 +830,50 @@
     drawStage();
   }
   setInterval(tickTime, 1000);
-  $("waiting").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-unsend]");
-    if (b) post("/api/send", {text: `/unsend ${b.dataset.unsend}`});
+  // Messages typed while agentx works, waiting to be read. Each wraps (three lines, then "Show all"), and has Send
+  // now (stop what it does, as Esc does, and make this the next message it reads), Edit (back into the message box)
+  // and Remove.
+  const openWaiting = new Set();
+  let waitingShown = "";
+  function drawWaiting(items) {
+    const waiting = $("waiting");
+    const key = JSON.stringify(items) + [...openWaiting].join("|");
+    if (key === waitingShown) return;                // the status comes often: redraw only on a change
+    waitingShown = key;
+    waiting.hidden = !items.length;
+    waiting.innerHTML = items.map((w, n) => {
+      const long = w.text.length > 220 || w.text.split("\n").length > 3;
+      const open = openWaiting.has(w.text);
+      const message = ["agent", "team", "later"].includes(w.kind);
+      return `<li class="w-item${open ? " open" : ""}" data-n="${n + 1}">` +
+        `<div class="w-body"><span class="w-text">${items.length > 1 ? `${n + 1}. ` : ""}${esc(w.text)}</span>` +
+        `<span class="w-where">${esc(w.where)}${long ? ` · <button type="button" class="w-more" data-wact="more">${open ? "Show less" : "Show all"}</button>` : ""}</span></div>` +
+        `<div class="w-acts">${message ? `<button type="button" class="w-now" data-wact="now" title="Stop what agentx is doing (what it did is kept) and send this now">Send now</button>` +
+        `<button type="button" data-wact="edit" title="Take it back into the message box">Edit</button>` : ""}` +
+        `<button type="button" class="w-remove" data-wact="remove" aria-label="Take back this message" title="Take it back">✕</button></div></li>`;
+    }).join("");
+  }
+  $("waiting").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-wact]");
+    const li = e.target.closest("[data-n]");
+    if (!b || !li) return;
+    const n = Number(li.dataset.n);
+    const text = li.querySelector(".w-text").textContent.replace(/^\d+\. /, "");
+    if (b.dataset.wact === "more") {
+      if (openWaiting.has(text)) openWaiting.delete(text); else openWaiting.add(text);
+      li.classList.toggle("open");
+      b.textContent = li.classList.contains("open") ? "Show less" : "Show all";
+      return;
+    }
+    b.disabled = true;
+    const res = await post("/api/waiting", {action: b.dataset.wact, n}).catch(() => null);
+    if (res && res.ok && typeof res.edit === "string") {          // into the message box, ready to change
+      input.value = input.value.trim() ? `${input.value.replace(/\s*$/, "")}\n${res.edit}` : res.edit;
+      grow(); setComposer(); input.focus();
+    } else if (res && !res.ok) {
+      addNotice({level: "error", text: `Could not ${b.dataset.wact === "now" ? "send it now" : "take it back"}: ${res.text || "it was read already"}.`});
+    }
+    b.disabled = false;
   });
 
   // -- the composer -------------------------------------------------------------------------------------------
@@ -1510,8 +1557,9 @@
       `<span class="session-title">${typeof s.lane === "string" && !s.current && (s.working || s.asking)
         ? `<span class="session-run ${s.asking ? "asking" : "working"}" title="${s.asking ? "Waiting for you" : "Working"}" ` +
           `aria-label="${s.asking ? "waiting for you" : "working"}"></span>` : ""}${esc(s.title)}</span></button>` +
-      (s.current || EMBED ? "" : `<button type="button" class="session-beside" data-beside="${esc(s.id)}" title="Open beside this conversation" aria-label="Open ${esc(s.title)} beside this conversation">` +
-        `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 3v10" stroke="currentColor" stroke-width="1.3"/></svg></button>`) +
+      (EMBED ? "" : `<button type="button" class="session-more" data-more="${esc(s.id)}" title="More: rename, open beside, delete" ` +
+        `aria-label="More for ${esc(s.title)}" aria-haspopup="menu">` +
+        `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3" fill="currentColor"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/><circle cx="12.5" cy="8" r="1.3" fill="currentColor"/></svg></button>`) +
       `</div>`;
     const ids = new Set(sessionList.map((s) => s.id));
     const under = (parent) => sessionList.filter((s) => parent ? s.from === parent : !(s.from && ids.has(s.from) && s.from !== s.id));
@@ -1542,7 +1590,133 @@
     await post("/api/join", {live: on, then: then || ""});
     location.reload();
   }
+  // -- edit a message you sent: change it and send it again. The conversation goes back to just before it (the
+  // whole conversation as it was is kept in Recent as "... (before edit)"); files agentx changed stay changed. ------
+  function userText(u) { return [...u.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join(""); }
+  column.addEventListener("click", (e) => {
+    const b = e.target.closest(".u-edit");
+    if (!b) return;
+    const u = b.closest(".user");
+    if (!u || u.classList.contains("editing")) return;
+    if ($("composer").classList.contains("busy")) {
+      addNotice({level: "warn", text: "agentx is working: stop it or wait, then edit a message."});
+      return;
+    }
+    const original = userText(u);
+    const n = [...column.querySelectorAll(".user:not(.command)")].indexOf(u) + 1;
+    const saved = [...u.childNodes];
+    u.classList.add("editing");
+    u.textContent = "";
+    const box = el("textarea", "u-field");
+    box.value = original;
+    box.setAttribute("aria-label", "Edit your message");
+    const note = el("p", "u-note");
+    note.textContent = "Sends this instead, and the conversation goes back to just before it. The conversation as it is now is kept in Recent (“… (before edit)”). Files agentx changed stay changed.";
+    const acts = el("div", "u-acts");
+    acts.innerHTML = `<button type="button" class="u-cancel">Cancel</button><button type="button" class="u-send">Send</button>`;
+    u.append(box, note, acts);
+    const fit = () => { box.style.height = "auto"; box.style.height = `${Math.min(box.scrollHeight, window.innerHeight * 0.5)}px`; };
+    fit(); box.addEventListener("input", fit);
+    box.focus(); box.setSelectionRange(box.value.length, box.value.length);
+    const cancel = () => { u.classList.remove("editing"); u.textContent = ""; saved.forEach((c) => u.append(c)); };
+    const send = async () => {
+      const text = box.value.trim();
+      if (!text) return;
+      if (text === original.trim()) { cancel(); return; }
+      acts.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+      const res = await post("/api/edit", {n, text: original}).catch(() => null);
+      if (!res || !res.ok) {
+        acts.querySelectorAll("button").forEach((x) => { x.disabled = false; });
+        addNotice({level: "error", text: `Could not edit it: ${(res && res.error) || "no answer"}.`});
+        return;
+      }
+      await reloadConversation();
+      post("/api/send", {text});
+    };
+    acts.querySelector(".u-cancel").addEventListener("click", cancel);
+    acts.querySelector(".u-send").addEventListener("click", send);
+    box.addEventListener("keydown", (k) => {
+      k.stopPropagation();
+      if (k.key === "Escape") { k.preventDefault(); cancel(); }
+      else if (k.key === "Enter" && !k.shiftKey && !k.isComposing) { k.preventDefault(); send(); }
+    });
+  });
+
+  // -- the menu on a conversation in Recent: rename it, open it beside, delete it (it is moved, not erased) -----
+  function closeRowMenu() { const m = document.querySelector(".row-menu"); if (m) m.remove(); }
+  function rowMenu(button) {
+    closeRowMenu();
+    const id = button.dataset.more;
+    const s = sessionList.find((x) => x.id === id);
+    if (!s) return;
+    const open = typeof s.lane === "string";
+    const menu = el("div", "row-menu");
+    menu.setAttribute("role", "menu");
+    menu.innerHTML = `<button type="button" role="menuitem" data-rm="rename">Rename</button>` +
+      (s.current ? "" : `<button type="button" role="menuitem" data-rm="beside">Open beside</button>`) +
+      `<button type="button" role="menuitem" class="danger" data-rm="delete"${open ? ' disabled title="It is open: switch to another first"' : ""}>Delete</button>`;
+    const box = button.getBoundingClientRect(), side = $("side").getBoundingClientRect();
+    menu.style.top = `${box.bottom - side.top + 4}px`;
+    menu.style.right = `${side.right - box.right}px`;
+    $("side").append(menu);
+    menu.querySelector("button").focus();
+    menu.addEventListener("click", async (e) => {
+      e.stopPropagation();                         // its content may change below: not a click outside it
+      const b = e.target.closest("[data-rm]");
+      if (!b || b.disabled) return;
+      if (b.dataset.rm === "beside") { closeRowMenu(); openBeside({session: id}); $("side").classList.remove("open"); return; }
+      if (b.dataset.rm === "rename") { closeRowMenu(); renameRow(id); return; }
+      if (b.dataset.rm === "delete") {
+        menu.innerHTML = `<p class="row-menu-ask">Delete “${esc(s.title)}”? It leaves the list; the file is moved to a <code>deleted</code> folder beside your saved conversations, so it can be put back.</p>` +
+          `<div class="row-menu-acts"><button type="button" class="danger" data-rm="yes">Delete</button><button type="button" data-rm="no">Cancel</button></div>`;
+        menu.querySelector('[data-rm="no"]').focus();
+        return;
+      }
+      if (b.dataset.rm === "no") { closeRowMenu(); return; }
+      if (b.dataset.rm === "yes") {
+        const res = await post("/api/session", {action: "delete", id}).catch(() => null);
+        closeRowMenu();
+        if (!res || !res.ok) addNotice({level: "error", text: `Could not delete it: ${(res && res.error) || "no answer"}.`});
+        loadSessions();
+      }
+    });
+  }
+  function renameRow(id) {
+    const button = $("sessions").querySelector(`.session[data-id="${CSS.escape(id)}"]`);
+    const s = sessionList.find((x) => x.id === id);
+    if (!button || !s) return;
+    const title = button.querySelector(".session-title");
+    const field = el("input", "rename-field");
+    field.value = s.title;
+    field.setAttribute("aria-label", "New title");
+    title.replaceWith(field);
+    field.focus(); field.select();
+    let done = false;
+    const finish = async (save) => {
+      if (done) return;
+      done = true;
+      const value = field.value.trim();
+      if (save && value && value !== s.title) {
+        const res = await post("/api/session", {action: "rename", id, title: value}).catch(() => null);
+        if (!res || !res.ok) addNotice({level: "error", text: `Could not rename it: ${(res && res.error) || "no answer"}.`});
+      }
+      loadSessions();
+    };
+    field.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") { e.preventDefault(); finish(true); }
+      else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+    });
+    field.addEventListener("click", (e) => e.stopPropagation());
+    field.addEventListener("blur", () => finish(true));
+  }
+  document.addEventListener("click", (e) => { if (!e.target.closest(".row-menu, .session-more")) closeRowMenu(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeRowMenu(); });
+
   $("sessions").addEventListener("click", (e) => {
+    const more = e.target.closest("[data-more]");
+    if (more) { e.stopPropagation(); if (document.querySelector(".row-menu")) closeRowMenu(); else rowMenu(more); return; }
+    if (e.target.closest(".rename-field")) return;
     if (e.target.closest(".tree-folder")) {                       // fold or unfold the folder's conversations
       treeOpen = !treeOpen;
       try { localStorage.setItem("agentx-tree", treeOpen ? "open" : "closed"); } catch (_) { /* no storage */ }
@@ -1551,8 +1725,6 @@
     }
     const l = e.target.closest("[data-live]");
     if (l) { joinLive(l.dataset.live === "join"); return; }
-    const side = e.target.closest("[data-beside]");
-    if (side) { openBeside({session: side.dataset.beside}); $("side").classList.remove("open"); return; }
     const b = e.target.closest("[data-id]");
     if (b && beside.session === b.dataset.id) { $("besideFrame").focus(); return; }   // it is open beside: go there
     if (b && b.getAttribute("aria-current") !== "true") {
