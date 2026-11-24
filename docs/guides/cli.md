@@ -1143,6 +1143,16 @@ on the left and in `/resume`; until then, and for older conversations, the first
   or Auto, as in the file. Project allow rules you turned down at start stay off for the session after you save, and
   so do rules something else added to the project file since the start; rules you type in the **This folder** tab
   take effect at once.
+- **Recent is a tree.** The folder agentx opened is the top row (click it to fold the list), and its conversations
+  hang from it on an L-shaped line. A conversation you opened while another was working hangs from that one.
+- **Switching while one works.** Click another conversation in **Recent** (or **New conversation**) while the agent is
+  working, and the window shows that one at once; the first goes on working behind it. Recent marks a conversation
+  working behind the one you see with a green dot, or an amber one when it waits for your answer; click it to go
+  back (a question it asked is there). Each runs as its own conversation in the same agentx, with your saved
+  settings (a mode you switched on for one conversation is not carried over). Up to 6 run beside the one you
+  started with; one that is done and unused for 15 minutes is put away (it is saved; open it again from Recent). A
+  conversation is never open twice: clicking one that already runs shows it. Closing the window still quits agentx,
+  and with it everything that runs. Before, a click while it worked queued `/resume` to run when it was done.
 - **Two conversations side by side.** Drag a conversation from **Recent** onto the chat, or press the split button
   that shows when you point at its row: it opens on the right half of the window and the one you are in stays on the
   left. The folder menu's **Open a folder beside…** opens a new conversation in another project there instead (the

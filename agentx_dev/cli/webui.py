@@ -31,7 +31,7 @@ from concurrent.futures import Future
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from rich.console import Console
@@ -73,6 +73,19 @@ CLOSE_GRACE_SEC = 8.0               # how long the window may be gone (a reload)
 SHARE_CHECK_SEC = 30.0              # remote use: how often agentx checks Tailscale still shares it (after a sleep)
 LAUNCH_CODE_SEC = 120.0             # how long the one-time code the browser is started with can be used
 ROOM_IDLE_SEC = 15 * 60            # a device's own conversation no window used for this long is closed (and saved)
+MAX_LANES = 6                       # conversations one device may have running beside its own (see open_lane)
+_LANE = re.compile(r"^l[0-9]{1,4}$")
+
+
+def command_like(text: str) -> bool:
+    """A slash command (``/clear``, ``/resume x``) is not a message of the conversation."""
+    return str(text or "").lstrip().startswith("/")
+
+
+def _lane_id(value: Any) -> str:
+    """A lane the page names (``l1``, ``l2``...), or "" (the device's own conversation)."""
+    text = str(value or "")
+    return text if _LANE.match(text) else ""
 ROOM_REMOTE_NOTE = ("Remote control is turned on and off on the computer agentx runs on; this device has its own "
                     "conversation there.")
 _DEVICE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
@@ -835,6 +848,17 @@ class WebFront:
         # its own ChatApp, built by ``make_device_app(room)``. Without that factory every window shares the main one.
         self.host: Optional["WebFront"] = None              # on a room: the front that serves the window
         self.device = ""                                     # on a room: the device it belongs to
+        # Lanes: a device may run more conversations than the one it shows. Each is a room of its own (its own app
+        # on its own thread), kept in ``rooms`` under "<device>~<lane>"; the window names the lane it shows, so
+        # clicking another conversation while one works switches to it and the first goes on working.
+        self.key = ""                                        # on a room: its key in the host's ``rooms``
+        self.lane = ""                                       # on a lane's room: its lane ("" for a device's own)
+        self.wanted = ""                                     # on a lane's room: the conversation it was opened on
+        self.opened_from = ""                                # on a lane's room: the conversation shown when it opened
+        self._in_flight = ""                                 # the message the app was handed last
+        self._lane_seq = 0
+        self._all_windows = 0                                # on the host: windows showing any of its conversations
+        self._all_alone_since: Optional[float] = None        # on the host: since when none has
         self.rooms: Dict[str, "WebFront"] = {}
         self.joined: set = set()                             # devices that opened the main conversation instead
         self.main_owner: Optional[str] = None
@@ -882,6 +906,7 @@ class WebFront:
 
     def read(self, prompt: str = "> ", default: str = "") -> str:
         text = self._ask("message", default=str(default or ""))
+        self._in_flight = str(text or "")                   # until its turn is saved, a reloaded window shows it
         self.bus.emit("user", text=_text(text, 100_000))
         return text
 
@@ -1695,7 +1720,15 @@ class WebFront:
             pending = [{"type": "ask", "id": ident, "kind": request["kind"],
                         **{k: v for k, v in request.items() if k not in ("kind", "future", "request")}}
                        for ident, request in sorted(self._pending.items())]
-        return {"seq": seq, "items": self.history(upto), "pending": pending, "status": self._status()}
+        items = self.history(upto)
+        # The message being worked on is not in the saved conversation until its turn ends: a window opened (or
+        # switched here) meanwhile shows it, so the conversation reads as it is
+        working = self._in_flight.strip() if upto is None and self._working() else ""
+        if working and not command_like(working):
+            last_user = next((i for i in reversed(items) if i.get("type") == "user"), None)
+            if last_user is None or last_user.get("text") != _text(working, 100_000):
+                items.append({"type": "user", "text": _text(working, 100_000)})
+        return {"seq": seq, "items": items, "pending": pending, "status": self._status()}
 
     def _status(self) -> Dict[str, Any]:
         app = self.app
@@ -1781,12 +1814,19 @@ class WebFront:
 
     # -- one conversation per device ------------------------------------------------------------------------------
 
-    def route(self, device: str) -> "WebFront":
-        """The front a device's requests go to: the main conversation for the device that has it (the first one to
-        connect in ``--ui``) and for devices that joined it; else that device's own room, made on its first request."""
+    def route(self, device: str, lane: str = "") -> "WebFront":
+        """The front a device's requests go to: the lane it shows when it names one that is open; else the main
+        conversation for the device that has it (the first one to connect in ``--ui``) and for devices that joined
+        it; else that device's own room, made on its first request."""
         if self.host is not None:
             return self
         device = _device_id(device)
+        lane = _lane_id(lane)
+        if device and lane:
+            with self._lock:
+                room = self.rooms.get(f"{device}~{lane}")
+            if room is not None and not room.ended:
+                return room
         if not device or self.make_device_app is None:
             return self
         with self._lock:
@@ -1803,10 +1843,95 @@ class WebFront:
                 return self
             room = WebFront(cwd=self.cwd, home=self.home, open_it=False, remote=self.remote)
             room.host, room.device, room.token, room.on_window = self, device, self.token, self.on_window
+            room.key = device
             room._alone_since = time.monotonic()           # closed when no window comes (see _sweep_rooms)
             self.rooms[device] = room
         room._begin(self.last_session.pop(device, None))
         return room
+
+    # -- lanes: more than one conversation per device --------------------------------------------------------------
+
+    def fronts_of(self, device: str) -> List[Tuple[str, "WebFront"]]:
+        """``[(lane, front)]``: every conversation this device has open, its own first ("" lane)."""
+        device = _device_id(device)
+        out: List[Tuple[str, WebFront]] = [("", self.route(device))]
+        with self._lock:
+            for key, room in self.rooms.items():
+                if device and key.startswith(device + "~") and not room.ended:
+                    out.append((room.lane, room))
+        return out
+
+    def conversation_id(self) -> str:
+        """The id of the conversation this front shows ("" before one is open); a lane being opened gives the one
+        it was asked for."""
+        session = getattr(self.app, "session", None)
+        found = str(getattr(session, "session_id", "") or "")
+        return found or self.wanted
+
+    def open_lane(self, device: str, session: str = "", from_lane: str = "") -> Dict[str, Any]:
+        """Run conversation ``session`` (or, with "", a new one) beside the ones this device has: the lane the window
+        should show. A conversation already open there gives that lane; one open in another device's window is
+        refused (two apps must never write one conversation)."""
+        device = _device_id(device)
+        session = re.sub(r"[^A-Za-z0-9_.-]", "", str(session or ""))[:120]
+        if not device or self.host is not None or self.make_device_app is None:
+            return {"ok": False, "error": "this window cannot run another conversation beside this one"}
+        if session:
+            for lane, front in self.fronts_of(device):
+                if front.conversation_id() and front.conversation_id().startswith(session):
+                    return {"ok": True, "lane": lane}
+            with self._lock:
+                others = [self, *self.rooms.values()]
+            for front in others:
+                found = front.conversation_id()
+                if found and found.startswith(session) and not front.ended:
+                    return {"ok": False, "error": "that conversation is open in another window"}
+        with self._lock:
+            if self._closed:
+                return {"ok": False, "error": "agentx is closing"}
+            open_lanes = [k for k, r in self.rooms.items() if k.startswith(device + "~") and not r.ended]
+            if len(open_lanes) >= MAX_LANES:
+                return {"ok": False, "error": f"{MAX_LANES} conversations already run beside this one: let one "
+                                              "finish, or close the window's other conversations first"}
+            self._lane_seq += 1
+            lane = f"l{self._lane_seq}"
+            room = WebFront(cwd=self.cwd, home=self.home, open_it=False, remote=self.remote)
+            room.host, room.device, room.token, room.on_window = self, device, self.token, self.on_window
+            room.key, room.lane, room.wanted = f"{device}~{lane}", lane, session
+            parent = self.rooms.get(f"{device}~{_lane_id(from_lane)}") if _lane_id(from_lane) else None
+            room._alone_since = time.monotonic()
+            self.rooms[room.key] = room
+        # where it branched from: the conversation the window showed (the Recent list hangs it under that one)
+        room.opened_from = (parent if parent is not None else self.route(device)).conversation_id()
+        room._begin(session or None)
+        return {"ok": True, "lane": lane}
+
+    def lane_marks(self, device: str) -> Dict[str, Dict[str, Any]]:
+        """For the list of conversations: ``{conversation id: {lane, working, asking}}`` for each one this device
+        has open, so the window can mark the ones working (or waiting for you) behind the one it shows."""
+        marks: Dict[str, Dict[str, Any]] = {}
+        for lane, front in self.fronts_of(device):
+            found = front.conversation_id()
+            if not found:
+                continue
+            with front._lock:
+                asking = any(r["kind"] != "message" for r in front._pending.values())
+            marks[found] = {"lane": lane, "working": bool(front._working()) or asking, "asking": asking,
+                            "title": front.first_message(),
+                            **({"from": front.opened_from} if lane and front.opened_from != found else {})}
+        return marks
+
+    def first_message(self) -> str:
+        """The first thing typed in this front's conversation, for a list entry before it is saved."""
+        session = getattr(self.app, "session", None)
+        for message in list(getattr(session, "history", None) or []):
+            if isinstance(message, dict) and message.get("role") == "user":
+                text = str(message.get("content") or "")
+                from agentx_dev.cli.routing import typed_text
+                shown = typed_text(text)
+                return _text(shown if shown else text, 200)
+        working = self._in_flight.strip()
+        return _text(working, 200) if working and not command_like(working) else ""
 
     def _begin(self, resume: Optional[str]) -> None:
         """A room: its status thread, and its own app on a thread of its own (the device's conversation)."""
@@ -1829,9 +1954,9 @@ class WebFront:
 
     def _room_ended(self, room: "WebFront") -> None:
         with self._lock:
-            if self.rooms.get(room.device) is room:
-                del self.rooms[room.device]
-            if room.idle:                                   # closed because unused: the device comes back to it
+            if self.rooms.get(room.key or room.device) is room:
+                del self.rooms[room.key or room.device]
+            if room.idle and not room.lane:                 # closed because unused: the device comes back to it
                 path = str(getattr(room.app, "session_path", "") or "")
                 if path:
                     self.last_session[room.device] = Path(path).name      # find_session takes the file name
@@ -2113,6 +2238,14 @@ class WebFront:
                 self._alone_since = None
             elif self._windows == 0:
                 self._alone_since = time.monotonic()
+        top = self.host or self                         # the window agentx opened: open while it shows any of them
+        with top._lock:
+            top._all_windows = max(0, top._all_windows + (1 if on else -1))
+            if on:
+                top._had_window = True
+                top._all_alone_since = None
+            elif top._all_windows == 0:
+                top._all_alone_since = time.monotonic()
         if self.remote and not self._closed:            # feedback in the terminal: someone is (or is no longer) in
             where = ("through Tailscale (" + client[len("tailscale:"):] + ")" if client.startswith("tailscale:")
                      else "from " + client + " (Tailscale)" if is_tailnet_ip(client)
@@ -2136,8 +2269,9 @@ class WebFront:
         with self._lock:
             if self.pane_started is not None and not self._had_window:     # a side whose window never came
                 return time.monotonic() - self.pane_started >= PANE_ORPHAN_SEC
-            return (self._had_window and self._windows == 0 and self._alone_since is not None
-                    and time.monotonic() - self._alone_since >= CLOSE_GRACE_SEC)
+            # a window showing another of its conversations (a lane) is still this window: count them all
+            return (self._had_window and self._all_windows == 0 and self._all_alone_since is not None
+                    and time.monotonic() - self._all_alone_since >= CLOSE_GRACE_SEC)
 
     def quit_for_closed_window(self) -> None:
         """The window was closed: stop what runs (kept as a stopped turn, as with Ctrl+C), then end the app."""
@@ -2251,6 +2385,10 @@ class _Handler(BaseHTTPRequestHandler):
         """The device a request comes from (its window sends the id it keeps); "" from an older page."""
         return _device_id(self.headers.get("X-Agentx-Device") or (query.get("d") or [""])[0])
 
+    def _lane(self, query: Dict[str, List[str]]) -> str:
+        """The lane the window shows (``l1``...), or "" for the device's own conversation."""
+        return _lane_id(self.headers.get("X-Agentx-Lane") or (query.get("l") or [""])[0])
+
     def _token_ok(self, query: Dict[str, List[str]]) -> bool:
         given = self.headers.get("X-Agentx-Token") or (query.get("t") or [""])[0]
         return secrets.compare_digest(str(given), self.front.token)
@@ -2289,7 +2427,8 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._token_ok(query):
             return self._json({"error": "forbidden"}, 403)
         device = self._device(query)
-        front = self.front.route(device)                    # this device's own conversation (or the main one)
+        lane = self._lane(query)
+        front = self.front.route(device, lane)              # the conversation this window shows
         if url.path == "/events":
             after = self.headers.get("Last-Event-ID") or (query.get("after") or ["0"])[0] or "0"
             try:
@@ -2297,9 +2436,21 @@ class _Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return self._events(0, front, device)
         if url.path == "/api/state":
-            return self._json({**front.state(), "live": self.front.live_info(device)})
+            return self._json({**front.state(), "live": self.front.live_info(device),
+                               "lane": front.lane if front.host is not None else ""})
         if url.path == "/api/sessions":
-            return self._json(front.sessions())
+            marks = self.front.lane_marks(device)
+            items = front.sessions()
+            for item in items:
+                mark = marks.pop(item["id"], None)
+                if mark is not None:
+                    item.update({k: v for k, v in mark.items() if k != "title"})
+            # an open conversation not saved yet (its first message is still being worked on) is listed too, so
+            # the window can go back to it
+            current = front.conversation_id()
+            unsaved = [{"id": cid, "title": mark.pop("title") or "New conversation", "updated": "",
+                        "current": cid == current, **mark} for cid, mark in marks.items()]
+            return self._json(unsaved + items)
         if url.path == "/api/history":
             raw = (query.get("upto") or [""])[0]
             return self._json(front.history_payload(int(raw) if raw.isdigit() else None))
@@ -2340,7 +2491,10 @@ class _Handler(BaseHTTPRequestHandler):
         device = self._device(parse_qs(url.query))
         if url.path == "/api/join":                         # open the main conversation, or go back to its own
             return self._json(self.front.join(device, bool(data.get("live")), str(data.get("then") or "")))
-        front = self.front.route(device)
+        if url.path == "/api/lanes":                        # run another conversation beside this one
+            return self._json(self.front.open_lane(device, str(data.get("session") or ""),
+                                                   self._lane(parse_qs(url.query))))
+        front = self.front.route(device, self._lane(parse_qs(url.query)))
         if url.path == "/api/send":
             return self._json({"result": front.send(str(data.get("text", "")))})
         if url.path == "/api/answer":

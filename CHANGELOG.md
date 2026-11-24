@@ -112,6 +112,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   Shell and Python commands that name a skills folder are refused. The skills you already have are recorded as they
   are the first time.
 
+- **Open another conversation while one works.** In the app window, clicking a conversation in Recent (or New
+  conversation) while the agent works shows that one at once, and the first goes on working behind it, instead of
+  queueing `/resume` for when it is done. Recent marks the ones working behind the one you see (amber when one waits
+  for your answer); click one to go back. Recent is now a tree: the folder is the top row and its conversations hang
+  from it on an L-shaped line, a conversation opened while another worked hanging from that one.
+
 ### Changed
 
 - **An empty final answer is not `done`.** A run that called no tool and ended with no text now has the outcome
@@ -131,6 +137,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   you instead. Before, it could ask again straight away.
 
 ### Fixed
+
+- A window reloaded (or switched to a conversation) while the agent worked on a message showed the conversation
+  without that message, or the welcome screen: the events after a conversation change were drawn before its history
+  had loaded, and the load wiped them. They now wait for it, and the message being worked on is shown.
 
 - A question or an approval that waits for you in the app window is readable at once. The large orb stayed at the
   top and the Team panel grew above the message box, so the conversation (and the question in it) was left a strip

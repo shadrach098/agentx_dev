@@ -37,14 +37,28 @@
     } catch (_) { return fresh(); }
   })();
 
+  // -- the conversation this window shows: the device's own, or one it runs beside it (a lane, l1, l2...) --------
+  // Clicking another conversation while one works opens it in a lane and shows it; the first goes on working and
+  // Recent marks it. The lane is kept for this tab only, so a reload shows the same conversation.
+  const LANE = (() => {
+    if (EMBED) return "";
+    try { const lane = sessionStorage.getItem("agentx-lane") || ""; return /^l[0-9]{1,4}$/.test(lane) ? lane : ""; }
+    catch (_) { return ""; }
+  })();
+  function showLane(lane) {
+    try { if (lane) sessionStorage.setItem("agentx-lane", lane); else sessionStorage.removeItem("agentx-lane"); }
+    catch (_) { /* no storage: the window shows the device's own conversation */ }
+    location.reload();
+  }
+
   async function post(path, body) {
     const res = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Agentx-Token": token,
-                                                             "X-Agentx-Device": DEVICE},
+                                                             "X-Agentx-Device": DEVICE, "X-Agentx-Lane": LANE},
                                    body: JSON.stringify(body || {})});
     return res.json().catch(() => ({}));
   }
   async function get(path) {
-    const res = await fetch(path, {headers: {"X-Agentx-Token": token, "X-Agentx-Device": DEVICE}});
+    const res = await fetch(path, {headers: {"X-Agentx-Token": token, "X-Agentx-Device": DEVICE, "X-Agentx-Lane": LANE}});
     if (!res.ok) throw new Error(String(res.status));
     return res.json();
   }
@@ -1054,7 +1068,11 @@
     openMenu(button, modelItems(), pickModel);
     if (opening) loadState().then(() => refreshMenu(button, modelItems()));
   });
-  $("newChat").addEventListener("click", () => { if (live.joined) joinLive(false, "new"); else post("/api/send", {text: "/clear"}); });
+  $("newChat").addEventListener("click", () => {
+    if (live.joined) joinLive(false, "new");
+    else if (busyNow() && !EMBED) openLane("");                    // this one works: start the new one beside it
+    else post("/api/send", {text: "/clear"});
+  });
   // -- the side panel: context, tokens, team work, MCP servers, memory ----------------------------------------------
   const num = (n) => Number(n || 0).toLocaleString();
   let detailsOpen = false, detailsTimer = 0;
@@ -1447,9 +1465,11 @@
   async function loadState() {
     try {
       const s = await get("/api/state");
+      if (LANE && s.lane !== LANE) { showLane(""); return; }     // that conversation was put away: show the own one
       folderName = s.folderName || "";
       $("folderName").textContent = folderName;
       $("folder").title = s.folder || "";
+      if (sessionList.length) drawSessions();                  // the folder row of the list carries its name
       const h = column.querySelector(".welcome h1");
       if (h && folderName) h.textContent = `What should we work on in ${folderName}?`;
       document.title = `agentx · ${s.folderName || ""}`;
@@ -1467,6 +1487,7 @@
   // Each device has its own conversation. The one running on the computer (or in the first window) is listed on
   // top as "Live": opening it shares it with whoever has it; "Your own conversation" goes back.
   let sessionList = [], live = {};
+  let treeOpen = (() => { try { return localStorage.getItem("agentx-tree") !== "closed"; } catch (_) { return true; } })();
   async function loadSessions() {
     try { sessionList = await get("/api/sessions"); } catch (_) { return; }
     drawSessions();
@@ -1481,12 +1502,27 @@
           `<span class="live-dot${live.working ? " working" : ""}" aria-hidden="true"></span>Live on ${esc(live.where || "the computer")}</span>` +
           `<span class="session-sub">${esc(live.title || "The conversation running there")} · open to share it</span></button>`
         : "";
-    const rows = sessionList.map((s) => `<div class="session-row${beside.session === s.id ? " beside-open" : ""}">` +
+    // One row per conversation, hanging from the folder (the main branch) on an L-shaped line; a conversation
+    // opened while another was working hangs from that one. A dot says it works (or waits for you) behind this one.
+    const row = (s) => `<div class="session-row${beside.session === s.id ? " beside-open" : ""}">` +
       `<button type="button" class="session" data-id="${esc(s.id)}" aria-current="${s.current}" draggable="${!s.current && !EMBED}" ` +
-      `title="${esc(String(s.updated).replace("T", " ").slice(0, 16))}${s.current || EMBED ? "" : " · drag onto the chat to open it beside"}"><span class="session-title">${esc(s.title)}</span></button>` +
+      `title="${esc(String(s.updated).replace("T", " ").slice(0, 16))}${s.current || EMBED ? "" : " · drag onto the chat to open it beside"}">` +
+      `<span class="session-title">${typeof s.lane === "string" && !s.current && (s.working || s.asking)
+        ? `<span class="session-run ${s.asking ? "asking" : "working"}" title="${s.asking ? "Waiting for you" : "Working"}" ` +
+          `aria-label="${s.asking ? "waiting for you" : "working"}"></span>` : ""}${esc(s.title)}</span></button>` +
       (s.current || EMBED ? "" : `<button type="button" class="session-beside" data-beside="${esc(s.id)}" title="Open beside this conversation" aria-label="Open ${esc(s.title)} beside this conversation">` +
         `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 3v10" stroke="currentColor" stroke-width="1.3"/></svg></button>`) +
-      `</div>`).join("");
+      `</div>`;
+    const ids = new Set(sessionList.map((s) => s.id));
+    const under = (parent) => sessionList.filter((s) => parent ? s.from === parent : !(s.from && ids.has(s.from) && s.from !== s.id));
+    const branch = (list, depth) => list.length && depth < 6
+      ? `<ul class="tree">${list.map((s) => `<li>${row(s)}${branch(under(s.id), depth + 1)}</li>`).join("")}</ul>` : "";
+    const rows = sessionList.length
+      ? `<button type="button" class="tree-folder" aria-expanded="${treeOpen}" title="${esc($("folder").title || "")}">` +
+        `<svg class="tree-chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>` +
+        `<span class="tree-folder-name">${esc(folderName || "This folder")}</span>` +
+        `<span class="tree-count">${sessionList.length}</span></button>` + (treeOpen ? branch(under(""), 0) : "")
+      : "";
     nav.innerHTML = top + (rows || '<div class="sessions-empty">Conversations in this folder show up here.</div>');
     const current = sessionList.find((s) => s.current);
     if (live.joined) { $("topTitle").textContent = `Shared · ${current ? current.title : "live conversation"}`; $("topTitle").dataset.fixed = "1"; }
@@ -1499,11 +1535,20 @@
     loadSessions();
     if (live.available || live.joined) loadState();
   }, 10000);
+  setInterval(() => {               // a conversation working behind this one: Recent shows when it finishes or asks
+    if (sessionList.some((s) => typeof s.lane === "string" && !s.current)) loadSessions();
+  }, 2500);
   async function joinLive(on, then) {
     await post("/api/join", {live: on, then: then || ""});
     location.reload();
   }
   $("sessions").addEventListener("click", (e) => {
+    if (e.target.closest(".tree-folder")) {                       // fold or unfold the folder's conversations
+      treeOpen = !treeOpen;
+      try { localStorage.setItem("agentx-tree", treeOpen ? "open" : "closed"); } catch (_) { /* no storage */ }
+      drawSessions();
+      return;
+    }
     const l = e.target.closest("[data-live]");
     if (l) { joinLive(l.dataset.live === "join"); return; }
     const side = e.target.closest("[data-beside]");
@@ -1511,11 +1556,20 @@
     const b = e.target.closest("[data-id]");
     if (b && beside.session === b.dataset.id) { $("besideFrame").focus(); return; }   // it is open beside: go there
     if (b && b.getAttribute("aria-current") !== "true") {
-      if (live.joined) joinLive(false, `resume:${b.dataset.id}`);
+      const open = sessionList.find((s) => s.id === b.dataset.id && typeof s.lane === "string");
+      if (open && open.lane !== LANE) showLane(open.lane);          // it runs already: show it
+      else if (live.joined) joinLive(false, `resume:${b.dataset.id}`);
+      else if (busyNow()) openLane(b.dataset.id);                   // this one works: open that one beside it
       else post("/api/send", {text: `/resume ${b.dataset.id}`});
     }
     $("side").classList.remove("open");
   });
+  // Open a conversation (or, with "", a new one) in a lane of its own and show it; the one shown now goes on.
+  async function openLane(session) {
+    const res = await post("/api/lanes", {session});
+    if (res && res.ok && typeof res.lane === "string") { showLane(res.lane); return; }
+    addNotice({level: "error", text: `Could not open it beside this one: ${(res && res.error) || "agentx did not answer"}.`});
+  }
 
   // -- the split view: another conversation beside this one, run by an agentx of its own -------------------------
   // Drag a conversation from Recent onto the chat (or use its button), or open another folder beside. Each side
@@ -1725,6 +1779,15 @@
   // from now on comes as events. The first one keeps what is already shown (startup notices) below its history.
   let knownConversation = null;
   function resetView() { column.innerHTML = ""; cards.clear(); turn = null; group = null; pending = []; lastPrint = null; ready = null; doneAt = 0; doneTook = ""; signingIn = ""; }
+  // Events that waited while a conversation loaded, in order. Another conversation among them loads first: the
+  // events after it wait for that load (handled now, they were drawn and then wiped by it, so a reloaded window lost
+  // the message being worked on).
+  function playLater(later) {
+    for (let n = 0; n < later.length; n++) {
+      if (later[n].type === "conversation") { queue = later.slice(n + 1).concat(queue); handle(later[n]); return; }
+      handle(later[n]);
+    }
+  }
   async function switchConversation(ev) {
     const mine = ++loading;
     let data = null;
@@ -1752,7 +1815,7 @@
       loading = 0;
       const later = queue.filter((q) => q.seq > skipUpTo);
       queue = [];
-      later.forEach(handle);
+      playLater(later);
       // questions still open that were asked before this conversation's event (the rest came above, once each)
       for (const open of (data && data.pending) || []) handle({...open, seq: Infinity});
       if (data && data.status) handle({...data.status, type: "status", seq: Infinity});
@@ -1775,7 +1838,7 @@
       loading = 0;
       const later = queue.filter((ev) => ev.seq > skipUpTo);
       queue = [];
-      later.forEach(handle);
+      playLater(later);
       keepBottom(true);
       loadSessions(); loadState();
     } catch (_) {
@@ -1854,7 +1917,8 @@
         "whole link agentx printed in the terminal, or paste it here.");
       return;
     }
-    const check = await fetch("/api/state", {headers: {"X-Agentx-Token": token, "X-Agentx-Device": DEVICE}}).catch(() => null);
+    const check = await fetch("/api/state", {headers: {"X-Agentx-Token": token, "X-Agentx-Device": DEVICE,
+                                                       "X-Agentx-Lane": LANE}}).catch(() => null);
     if (check && check.status === 403) {
       const why = await check.json().catch(() => ({}));
       if (why.error === "forbidden") {
@@ -1871,7 +1935,8 @@
   // this computer: the window keeps it and picks the stream up where it left off.
   let lastSeen = 0;
   function openStream(after) {
-    const source = new EventSource(`/events?t=${encodeURIComponent(token)}&d=${DEVICE}${after ? `&after=${after}` : ""}`);
+    const source = new EventSource(`/events?t=${encodeURIComponent(token)}&d=${DEVICE}${LANE ? `&l=${LANE}` : ""}` +
+                                   `${after ? `&after=${after}` : ""}`);
     source.onmessage = (m) => {
       if (m.lastEventId) lastSeen = Math.max(lastSeen, Number(m.lastEventId) || 0);
       let ev;

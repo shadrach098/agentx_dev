@@ -121,6 +121,12 @@ svg { width: 16px; height: 16px; flex: none; }
 .main:has(.stage.on) .status.done { display: none; }
 .main:has(.stage.on) .status .status-key { margin-left: auto; }
 .main.empty .stage { display: none; }
+/* Recent: a conversation working behind the one shown (a dot), or waiting for your answer (amber) */
+.session-run { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; vertical-align: 1px; }
+.session-run.working { background: var(--brand); animation: session-run 1.6s ease-in-out infinite; }
+.session-run.asking { background: var(--warn); }
+@keyframes session-run { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .session-run.working { animation: none; } }
 /* a card waits for you: the stage folds to a small orb beside its note, so the card has the room */
 .stage.on.compact .stage-inner { flex-direction: row; justify-content: center; gap: 14px; padding: 10px 24px 8px; }
 .stage.compact .orb-grip { zoom: .3; }
@@ -727,3 +733,18 @@ html.embedded .app, html.embedded .app.side-hidden, html.embedded .app.with-deta
 .app.resizing-details, .app.resizing-details * { cursor: col-resize !important; user-select: none; }
 .app.resizing-details iframe { pointer-events: none; }
 @media (max-width: 860px) { .details-grip { display: none; } }
+
+/* Recent as a tree: the folder agentx opened is the main branch, its conversations hang from it on an L-shaped line,
+   and a conversation opened while another worked hangs from that one */
+.tree-folder { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: none; color: var(--text); padding: 6px 8px; border-radius: 8px; font-size: 13px; font-weight: 600; text-align: left; }
+.tree-folder:hover { background: var(--surface); }
+.tree-chev { width: 12px; height: 12px; flex: none; color: var(--faint); transition: transform .15s var(--ease-out); }
+.tree-folder[aria-expanded="false"] .tree-chev { transform: rotate(-90deg); }
+.tree-folder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-count { margin-left: auto; color: var(--faint); font-weight: 400; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.tree { list-style: none; margin: 0; padding: 0 0 0 14px; }
+.tree > li { position: relative; padding-left: 12px; }
+.tree > li::before { content: ""; position: absolute; left: 0; top: 0; height: 100%; border-left: 1px solid var(--line-strong); }
+.tree > li:last-child::before { height: 15px; }
+.tree > li::after { content: ""; position: absolute; left: 0; top: 15px; width: 9px; border-top: 1px solid var(--line-strong); border-bottom-left-radius: 3px; }
+@media (prefers-reduced-motion: reduce) { .tree-chev { transition: none; } }
