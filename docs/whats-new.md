@@ -45,7 +45,7 @@ The `agentx` app window, reworked around what agentx is doing:
 - **The orb.** A sphere of lime dots in the brand's lime. It sits large under "What should we work on?", then
   moves to the top once you write, with a small note under it naming what it shows: Thinking (sparks of light run
   along it), the step it runs (rings of dots turn on their own axes), Waiting for your answer (it folds into a cube
-  that turns and breathes, a band of light sweeping down it), Done and how long it took, then Ready. Grab it with
+  that turns and breathes, a band of light sweeping down it), Done and how long it took, then Ready (a dot glowing and fading now and then, like a firefly). Grab it with
   the mouse to spin it. The terminal keeps its spinner.
 - **Two conversations side by side.** Drag a conversation from **Recent** onto the chat, or use **Open a folder
   beside…** in the folder menu: it opens on the right half, run by an agentx of its own, with its own history,

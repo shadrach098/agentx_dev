@@ -78,6 +78,23 @@ for (const reduced of [false, true]) {
   for (let i = 0; i < 120; i++) window.AgentxOrb.step(orb, 1 / 60);
   out.noTeamOf = {bad: ctx.bad.slice(0, 5), arcs: ctx.arcs};
 }
+// ready (idle): over a minute, how many dots glow at once; settled first, so no other look is still fading out
+reducedFlag.matches = false;
+out.ready = {};
+for (const size of [220, 32]) {
+  const {canvas} = stubCanvas(size);
+  const orb = window.AgentxOrb.create(canvas, () => "idle", {manual: true});
+  for (let i = 0; i < 120; i++) window.AgentxOrb.step(orb, 1 / 60);
+  let most = 0, framesLit = 0;
+  const glowed = new Set();
+  for (let i = 0; i < 600; i++) {
+    window.AgentxOrb.step(orb, 0.1);
+    let now = 0;
+    for (let j = 0; j < orb.dots.length; j++) if (orb.L[j] > 0.5) { now++; glowed.add(j); }
+    most = Math.max(most, now); if (now) framesLit++;
+  }
+  out.ready[size] = {dots: orb.dots.length, most, framesLit, glowed: glowed.size};
+}
 console.log(JSON.stringify(out));
 """
 
@@ -118,6 +135,17 @@ def test_the_constellation_caps_at_six_with_a_count_for_the_rest(stepped):
         assert texts(32, 20, 0, reduced) == [] and texts(16, 20, 0, reduced) == []
     # no other state draws text
     assert all(not r["texts"] for r in stepped["runs"] if r["state"] != "team")
+
+
+def test_ready_has_fireflies_a_few_at_a_time(stepped):
+    """Ready (idle): now and then a single dot glows softly and fades, never more than a few at once, and not
+    always the same ones."""
+    big = stepped["ready"]["220"]
+    assert big["framesLit"] > 300, big                     # most of the time something glows somewhere
+    assert 1 <= big["most"] <= 12, big                     # but only a few at once, out of hundreds
+    assert big["glowed"] > 20, big                         # different dots each time, over a minute
+    small = stepped["ready"]["32"]
+    assert small["most"] <= 6, small
 
 
 def test_the_count_shows_while_its_cluster_is_at_the_front(stepped):

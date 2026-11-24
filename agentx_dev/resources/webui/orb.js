@@ -10,7 +10,8 @@
 //             the sphere turns with three bright dots circling it on tilted paths instead
 //   success   the shell breathes slowly in and out around a softly shimmering core of light, faint bands drifting up
 //             it (a turn just finished)
-//   idle      a slow turn, glow dimmed
+//   idle      ready: a slow turn, glow dimmed; now and then a single dot glows softly and fades, like a firefly, only
+//             a few at a time
 //   stuck     the dots fold into a cube that turns slowly and breathes, a band of light sweeping down it and its
 //             edges lit: agentx is waiting for you
 // Every look fades in and out of the others. Drawn on a <canvas> with plain 2D maths (no library), one shared
@@ -39,7 +40,20 @@
     foldIntoCube(dots, rows >= 14 ? 7 : rows >= 10 ? 5 : 4);
     synapses(dots, rows);
     constellation(dots, rows);
+    fireflies(dots);
     return dots;
+  }
+
+  // ready: about a third of the dots are fireflies, each glowing once every 12 to 42 s, for FLY seconds, at its
+  // own moment (a fixed hash of its place, so the same orb always twinkles the same way)
+  const FLY = 1.3;
+  function fireflies(dots) {
+    const hash = (v) => { const h = Math.sin(v) * 43758.5453; return h - Math.floor(h); };
+    dots.forEach((d, i) => {
+      d.fly = hash(i * 12.9898);                              // under 0.3: a firefly
+      d.flyEvery = 12 + hash(i * 78.233 + 1.7) * 30;          // its rhythm and its moment are drawn apart, so
+      d.flyAt = hash(i * 39.425 + 4.1);                       // fireflies never line up and glow all at once
+    });
   }
 
   // The cube the dots fold into: an even grid on each face (n dots along an edge). Every grid point gets the dot
@@ -164,7 +178,7 @@
     const n = dots.length + (small ? ORBITS.length * TAIL : 0);
     const orb = {
       canvas, size, rows, stateOf, teamOf, small, dots, rings,
-      t: 0, spin: 0.6, ringAngle: 0, think: 0, work: 0, team: 0, done: 0, cube: 0, glow: 0.4, color: null,
+      t: 0, spin: 0.6, ringAngle: 0, think: 0, work: 0, team: 0, done: 0, ready: 0, cube: 0, glow: 0.4, color: null,
       tilt: REST_TILT, vel: 0, tiltVel: 0, dir: 1, held: false,
       // the constellation's layout, eased: per small orb, how present, how much it runs, where on the circle, its turns
       shown: 1, rest: 0, restN: 0, label: 0, orbit: 0.86, scale: 0.3, hubSpin: 0,
@@ -275,6 +289,7 @@
     orb.work = ease(orb.work, state === "working" ? 1 : 0, fade, rate);
     orb.team = ease(orb.team, state === "team" ? 1 : 0, fade, still ? rate : state === "team" ? 3.5 : 2.4);
     orb.done = ease(orb.done, state === "success" ? 1 : 0, fade, still ? rate : 3);
+    orb.ready = ease(orb.ready, state === "idle" ? 1 : 0, fade, still ? rate : 2);
     orb.cube = ease(orb.cube, state === "stuck" ? 1 : 0, fade, state === "stuck" ? 6 : 4);
     orb.glow = ease(orb.glow, state === "success" ? 0.75 : state === "stuck" ? 0.7 : state === "idle" ? 0.35 : 0.55, fade, 2.5);
     // the constellation's layout, only while it shows: otherwise the last layout stays, to gather back from
@@ -308,7 +323,7 @@
       orb.core.addColorStop(1, `rgba(${r},${g},${b},0)`);
     }
     ctx.clearRect(0, 0, W, H);
-    const {think, work, cube, done, t, tilt, spin} = orb;
+    const {think, work, cube, done, ready, t, tilt, spin} = orb;
     const team = orb.small ? 0 : orb.team, orbiting = orb.small ? orb.team : 0;
     // waiting: the cube breathes (and its glow with it), and a band of light sweeps down it now and then
     const breath = 0.5 - 0.5 * Math.cos(t * TAU / 3.2);                       // 0..1, a breath every 3.2 s
@@ -378,6 +393,16 @@
         const band = Math.max(0, Math.sin(d.lat * 3 - t * 2.2));
         lit = Math.max(lit, band ** 6 * 0.8 * done);
         dim *= 1 - 0.2 * done;
+      }
+      if (ready > 0.001) {                                    // fireflies: now and then one dot glows and fades
+        dim *= 1 - 0.15 * ready;
+        if (d.fly < 0.3) {
+          const on = FLY / d.flyEvery, f = (t / d.flyEvery + d.flyAt) % 1;
+          if (f < on) {
+            const g = Math.sin((f / on) * Math.PI) ** 2 * ready;
+            lift += 0.06 * g; lit = Math.max(lit, 2 * g); dim += (1 - dim) * g;
+          }
+        }
       }
       if (orbiting > 0.001) { grow *= 1 - 0.18 * orbiting; dim *= 1 - 0.4 * orbiting; }
       const m = (1 + lift) * grow;

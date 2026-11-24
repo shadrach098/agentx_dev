@@ -1249,7 +1249,7 @@ on the left and in `/resume`; until then, and for older conversations, the first
   back into one sphere when the job ends; it folds into a cube that turns slowly and breathes, a band of light
   sweeping down it, while it waits for your answer (the pill says "Waiting for your answer"); when the turn ends its
   shell breathes slowly around a shimmering core of light ("Done" and how long it took), then it rests in a slow turn
-  and reads "Ready"; it stays at the top for the rest of the conversation. The line above the message box keeps
+  and reads "Ready", now and then a single dot glowing softly and fading like a firefly, only a few at a time; it stays at the top for the rest of the conversation. The line above the message box keeps
   only "Esc to stop" while the orb is up. Esc stops agentx from anywhere in the window, the message box included (what you
   typed stays); the pill reads "Stopping…" until the turn ends. Grab the large orb with the mouse to spin it; let go and it
   keeps the flick's momentum, then turns slowly the way you threw it.

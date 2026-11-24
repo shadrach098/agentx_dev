@@ -139,7 +139,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   six, the five that matter most, running first, and a cluster marked "+N" for the rest); they gather back into one
   sphere when the job ends. A single agent's step keeps the turning rings. Orbs under 48 px (the status line, the
   "Thinking…" line) show a team job as three bright dots circling the sphere. Done: the shell breathes slowly around
-  a shimmering core of light, faint bands drifting up it. Every look still fades into the next, reduced motion still
+  a shimmering core of light, faint bands drifting up it. Ready: the slow turn now has fireflies, a single dot
+  glowing softly and fading now and then, only a few at a time (each at its own moment, so they never fire
+  together). Every look still fades into the next, reduced motion still
   gets a still frame, and the dots are drawn from buffers made once (no per-dot allocations).
   `AgentxOrb.create(canvas, stateOf, {teamOf})` takes the helper counts (`{running, finished}`).
 - **An empty final answer is not `done`.** A run that called no tool and ended with no text now has the outcome
