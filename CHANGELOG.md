@@ -128,7 +128,7 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   sphere when the job ends. A single agent's step keeps the turning rings. Orbs under 48 px (the status line, the
   "Thinking…" line) show a team job as three bright dots circling the sphere. Done: the shell breathes slowly around
   a shimmering core of light, faint bands drifting up it. Every look still fades into the next, reduced motion still
-  gets a still frame, and the dots are drawn from buffers made once, so a frame makes no garbage.
+  gets a still frame, and the dots are drawn from buffers made once (no per-dot allocations).
   `AgentxOrb.create(canvas, stateOf, {teamOf})` takes the helper counts (`{running, finished}`).
 - **An empty final answer is not `done`.** A run that called no tool and ended with no text now has the outcome
   `no_answer` (`The model gave no answer.`). A run that called tools and then ended with nothing stays `done`, with the

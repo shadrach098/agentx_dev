@@ -59,10 +59,15 @@ for (const reduced of [false, true]) {
       for (const next of window.AgentxOrb.states) { now = next; for (let i = 0; i < 30; i++) window.AgentxOrb.step(orb, 1 / 60); }
       now = state;
       for (let i = 0; i < 180; i++) window.AgentxOrb.step(orb, 1 / 60);
-      ctx.texts.length = 0;                       // settled back into the state: what it draws now
-      for (let i = 0; i < 60; i++) window.AgentxOrb.step(orb, 1 / 60);
+      ctx.texts.length = 0;                       // settled back into the state: what it draws now, over a
+      let labelled = 0;
+      for (let i = 0; i < 60; i++) {                                    // whole turn (the count shows at the front)
+        const before = ctx.texts.length;
+        window.AgentxOrb.step(orb, 0.35);
+        if (ctx.texts.length > before) labelled++;
+      }
       out.runs.push({reduced, size, running, finished, state, bad: ctx.bad.slice(0, 5), arcs: arcsOne,
-                     texts: [...new Set(ctx.texts)]});
+                     texts: [...new Set(ctx.texts)], labelled});
     }
   }
 }
@@ -113,3 +118,13 @@ def test_the_constellation_caps_at_six_with_a_count_for_the_rest(stepped):
         assert texts(32, 20, 0, reduced) == [] and texts(16, 20, 0, reduced) == []
     # no other state draws text
     assert all(not r["texts"] for r in stepped["runs"] if r["state"] != "team")
+
+
+def test_the_count_shows_while_its_cluster_is_at_the_front(stepped):
+    """Drawn last, the "+N" would float over a small orb in front of its cluster: it shows while the cluster is at
+    the front of the turn and fades as it goes round the back; a still frame (reduced motion) keeps it."""
+    def labelled(reduced):
+        return next(r["labelled"] for r in stepped["runs"] if r["state"] == "team" and r["size"] == 220 and
+                    r["running"] == 20 and r["reduced"] == reduced)
+    assert 10 < labelled(False) < 50, labelled(False)
+    assert labelled(True) == 60

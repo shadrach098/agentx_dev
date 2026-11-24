@@ -14,8 +14,8 @@
 //   stuck     the dots fold into a cube that turns slowly and breathes, a band of light sweeping down it and its
 //             edges lit: agentx is waiting for you
 // Every look fades in and out of the others. Drawn on a <canvas> with plain 2D maths (no library), one shared
-// animation loop for every orb on the page; the per-dot work writes into buffers made once, so a frame makes no
-// garbage. A large orb can be grabbed with the mouse (or a finger) and spun; let go and it keeps the flick's
+// animation loop for every orb on the page; the per-dot work writes into buffers made once (no per-dot
+// allocations). A large orb can be grabbed with the mouse (or a finger) and spun; let go and it keeps the flick's
 // momentum, then settles into its slow turn in the direction it was thrown.
 // create(canvas, stateOf, {teamOf}): teamOf, if given, returns {running, finished}, the helper steps of the team job.
 (() => {
@@ -126,10 +126,10 @@
     return picks.map((ring, n) => ({ring, axis: axes[n], speed: (n % 2 ? -1 : 1) * (1.1 + n * 0.35)}));
   }
 
-  // the rotations write into P, so a frame makes no garbage
+  // the rotations write into P, so turning a dot allocates nothing
   const P = new Float64Array(3);
-  function turnAxis(x, y, z, [ax, ay, az], c, s) {           // Rodrigues' rotation about a unit axis
-    const d = (ax * x + ay * y + az * z) * (1 - c);
+  function turnAxis(x, y, z, axis, c, s) {                   // Rodrigues' rotation about a unit axis
+    const ax = axis[0], ay = axis[1], az = axis[2], d = (ax * x + ay * y + az * z) * (1 - c);
     P[0] = x * c + (ay * z - az * y) * s + ax * d;
     P[1] = y * c + (az * x - ax * z) * s + ay * d;
     P[2] = z * c + (ax * y - ay * x) * s + az * d;
@@ -174,7 +174,6 @@
       X: new Float32Array(n), Y: new Float32Array(n), Z: new Float32Array(n), S: new Float32Array(n),
       L: new Float32Array(n), A: new Float32Array(n), F: new Float32Array(n), order: new Uint16Array(n).map((_, i) => i),
     };
-    orb.byDepth = (a, b) => orb.Z[a] - orb.Z[b];
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const pad = size * 0.5;                                   // room for the glow around the dots
     canvas.width = Math.round((size + pad * 2) * dpr);
@@ -233,9 +232,9 @@
   }
 
   // which small orbs the team job shows: the running ones first, then the finished; past six, five and the rest
+  const whole = (v) => Math.max(0, Math.floor(Number(v) || 0));
   function planTeam(orb) {
     const counts = orb.teamOf ? orb.teamOf() : null;
-    const whole = (v) => Math.max(0, Math.floor(Number(v) || 0));
     const running = counts ? whole(counts.running) : 1, total = running + (counts ? whole(counts.finished) : 0);
     orb.shown = Math.min(6, total);
     orb.restN = total > 6 ? total - 5 : 0;
@@ -278,8 +277,11 @@
     orb.done = ease(orb.done, state === "success" ? 1 : 0, fade, still ? rate : 3);
     orb.cube = ease(orb.cube, state === "stuck" ? 1 : 0, fade, state === "stuck" ? 6 : 4);
     orb.glow = ease(orb.glow, state === "success" ? 0.75 : state === "stuck" ? 0.7 : state === "idle" ? 0.35 : 0.55, fade, 2.5);
-    if (state === "team") planTeam(orb);                     // otherwise the last layout stays, to gather back from
-    layTeam(orb, fade, still ? rate : 3, dt);
+    // the constellation's layout, only while it shows: otherwise the last layout stays, to gather back from
+    if (!orb.small && (state === "team" || orb.team > 0.001)) {
+      if (state === "team") planTeam(orb);
+      layTeam(orb, fade, still ? rate : 3, dt);
+    }
     orb.t += dt;
     const turning = state === "working" ? 0.55 : state === "team" ? 0.35 : state === "stuck" ? 0.38
       : state === "success" ? 0.25 : state === "thinking" ? 0.2 : 0.16;   // radians a second
@@ -332,8 +334,11 @@
     const qcY = Math.cos(cubeY + spin), qsY = Math.sin(cubeY + spin);
     const qcX = Math.cos(cubeX + (tilt - REST_TILT) * 0.6), qsX = Math.sin(cubeX + (tilt - REST_TILT) * 0.6);
     const swell = 1 + 0.045 * breath;
-    orb.rings.forEach((ring, n) => { RING_C[n] = Math.cos(orb.ringAngle * ring.speed); RING_S[n] = Math.sin(orb.ringAngle * ring.speed); });
-    SPARKS.forEach((p, n) => { HEADS[n] = ((t * p.speed + p.phase) % TAU) - Math.PI; });
+    for (let n = 0; n < orb.rings.length; n++) {
+      const a = orb.ringAngle * orb.rings[n].speed;
+      RING_C[n] = Math.cos(a); RING_S[n] = Math.sin(a);
+    }
+    for (let n = 0; n < SPARKS.length; n++) HEADS[n] = ((t * SPARKS[n].speed + SPARKS[n].phase) % TAU) - Math.PI;
     const cL = Math.cos(tilt + ORBIT_LEAN), sL = Math.sin(tilt + ORBIT_LEAN);
     if (team > 0.001) {                                       // where each small orb (and the hub) sits this frame
       for (let k = 0; k < 7; k++) {
@@ -416,7 +421,8 @@
     }
     if (orb.small) {                                          // the three bright dots circling a small orb
       let i = dots.length;
-      for (const o of ORBITS) for (let k = 0; k < TAIL; k++, i++) {
+      for (let n = 0; n < ORBITS.length; n++) for (let k = 0; k < TAIL; k++, i++) {
+        const o = ORBITS[n];
         const a = t * o.speed + o.phase - k * 0.11 * Math.sign(o.speed);
         turnAxis(o.u[0] * 1.18, o.u[1] * 1.18, o.u[2] * 1.18, o.axis, Math.cos(a), Math.sin(a));
         view(P[0], P[1], P[2], cS, sS, cT, sT);
@@ -426,11 +432,19 @@
       }
     }
 
-    orb.order.sort(orb.byDepth);                              // far dots first
+    // far dots first: the order barely changes between frames, so an insertion sort in place is quick (and,
+    // unlike a typed array's sort with a comparator, allocates nothing)
+    const {order} = orb;
+    for (let i = 1; i < order.length; i++) {
+      const v = order[i], z = Z[v];
+      let j = i - 1;
+      while (j >= 0 && Z[order[j]] > z) { order[j + 1] = order[j]; j--; }
+      order[j + 1] = v;
+    }
     const base = Math.max(0.55, size / 64) * dpr, flat = 1 - 0.35 * cube;   // the cube keeps a little depth as it turns
     ctx.fillStyle = orb.fill;
-    for (const i of orb.order) {
-      const near = Math.max(0, Math.min(1, (S[i] + 1) / 2)); // 0 at the back, 1 at the front
+    for (let o = 0; o < order.length; o++) {
+      const i = order[o], near = Math.max(0, Math.min(1, (S[i] + 1) / 2)); // 0 at the back, 1 at the front
       const alpha = Math.min(1, (0.12 + 0.88 * near * near) * A[i] + L[i] * 0.3 * Math.min(1, A[i] * 4));
       if (alpha < 0.004) continue;
       const persp = 1 + (3.2 / (3.2 - Z[i]) - 1) * flat;
@@ -439,8 +453,10 @@
       ctx.arc(cx + X[i] * R * persp, cy - Y[i] * R * persp, base * (0.55 + 0.75 * near) * (1 + L[i] * 0.45) * F[i], 0, TAU);
       ctx.fill();
     }
-    // the count of the helpers the sixth cluster stands for
-    const shown = team * orb.pres[5] * orb.rest;
+    // the count of the helpers the sixth cluster stands for, shown while that cluster is at the front (drawn last,
+    // it would float over a neighbour in front of it); a still frame keeps it
+    const front = still ? 1 : Math.max(0, Math.min(1, (CZ[5] + 0.1) / 0.4));
+    const shown = team * orb.pres[5] * orb.rest * front;
     if (shown > 0.02 && orb.label) {
       const persp = 3.2 / (3.2 - CZ[5]), px = cx + (CX[5] + CS[5]) * R * persp + 3 * dpr, py = cy - (CY[5] + CS[5] * 0.6) * R * persp;
       ctx.globalAlpha = 0.9 * shown;
