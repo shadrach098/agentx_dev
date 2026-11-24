@@ -1551,6 +1551,10 @@ class GPT(BaseChatModel):
         defaults (dict): Default parameters for chat completion requests.
         timeout (float): Timeout in seconds for requests.
     """
+    # OpenAI's usage (and that of the local servers that speak its API) counts cached prompt tokens inside
+    # ``prompt_tokens``; the runner's window budget must not add them a second time.
+    input_tokens_include_cached = True
+
     def __init__(
         self,
         api_key: Optional[str] = None,

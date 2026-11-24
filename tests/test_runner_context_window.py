@@ -207,6 +207,27 @@ def test_a_reply_never_loosens_the_budget(per_token, cached):
     assert all(sent_chars(r) <= 0.85 * 2000 * 4 for r in model.tool_calls_made)
 
 
+class CountingOpenAIStyle(Scripted):
+    """Reports usage as OpenAI and Ollama do: ``prompt_tokens`` is the whole prompt, cached tokens included, and the
+    cached part is given again on its own. Four characters a token, almost all of it cached (a warm prefix cache)."""
+    input_tokens_include_cached = True
+
+    def call_with_tools(self, messages, tools, *, force_tool=None):
+        self.tool_calls_made.append(list(messages))
+        tokens = math.ceil((request_chars(messages) + len(json.dumps(tools, default=str))) / 4)
+        self._record_usage_counts(input_tokens=tokens, output_tokens=5, cache_read_tokens=int(tokens * 0.95))
+        return self._tool_script.pop(0)
+
+
+def test_cached_tokens_inside_the_prompt_count_are_not_counted_twice():
+    # Ollama on the user's laptop: 14,640 prompt tokens, 14,397 of them cached. Adding the cached ones again made the
+    # runner believe a 40,960-token window held half of what it does, and a skill read "did not fit".
+    model = CountingOpenAIStyle(five_reads(), context_window=2000)
+    runner = make(model)
+    assert runner.invoke("read five parts").content == "done"
+    assert runner._chars_per_token[id(model)] >= 3.9
+
+
 def test_one_oversized_result_is_cut_to_fit():
     model = Scripted([call("read", "big", "c0"), respond()], script=["notes"] * 3, context_window=4000)
     completion = make(model, size=60_000).invoke("read the big file")

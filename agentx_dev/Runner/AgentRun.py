@@ -2367,9 +2367,11 @@ class AgentRunner(PersistenceMixin):
         if not chars or _usage_calls(self.model) <= calls_before:
             return
         usage = self.model.usage
-        tokens = sum(value for value in (getattr(usage, name, 0) for name in
-                                         ("last_input_tokens", "last_cache_read_tokens", "last_cache_creation_tokens"))
-                     if isinstance(value, int))
+        # OpenAI-style usage (GPT, and local servers through it) counts cached tokens inside the prompt total and
+        # gives them again apart; Anthropic's input count leaves them out. Adding them twice halved the window.
+        parts = (("last_input_tokens",) if getattr(self.model, "input_tokens_include_cached", False) else
+                 ("last_input_tokens", "last_cache_read_tokens", "last_cache_creation_tokens"))
+        tokens = sum(value for value in (getattr(usage, name, 0) for name in parts) if isinstance(value, int))
         if tokens > 0 and chars / tokens >= 1.0:
             self._chars_per_token[id(self.model)] = min(chars / tokens, CHARS_PER_TOKEN)
 
