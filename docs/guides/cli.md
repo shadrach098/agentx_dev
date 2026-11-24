@@ -412,6 +412,15 @@ at once. If the check fails, `agentx` stays on the model you had and says why, i
 A misspelt Claude or GPT name is a local name too, so it fails the same way, with a reminder: `Claude names start
 with claude, GPT names with gpt.`
 
+**A local model that fails at start does not stop `agentx`.** When the model `agentx` starts on is local (from a
+folder's settings file, your own, or `--model`) and fails its check, it starts on the next model that works, tried in
+this order, each only when it is not the one that failed: your own `model` in `~/.agentx/settings.json`, your
+`fallbackModel` (checked the same way), then the usual choice with no name (the first key found). It says so once,
+before the first prompt: `Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Starting
+on gpt-6.2-sol instead; /model qwen3-4b-40k tries it again.`, followed by the settings file that named the model.
+No settings file is changed. Only when none of them works does `agentx` stop, with the reason, as before. A Claude or
+GPT model that cannot be used at start keeps its own path (see [The fallback](#the-fallback)).
+
 **Finding the models.** At start `agentx` asks the local server for its models in the background, with a short
 timeout (a refused connection answers at once). It never waits for the answer before the first prompt, and with no
 server it says nothing. When the list is in, `/model` shows it (`Other models: qwen3:8b (local)`), and the app
@@ -487,8 +496,8 @@ remembered and not asked again.
 | Overloaded, or a timeout or dropped connection that clears within the client's retries | No; once the retries are spent it counts as unreachable |
 | A request the provider refuses, a tool or code error | No: it would fail again |
 
-**Which way.** From Claude or GPT to a local model, only. If the chat model is itself local and fails, nothing else
-is tried: the turn stops with the reason (`The turn stopped: the local server at localhost:11434 is not
+**Which way.** From Claude or GPT to a local model, only. If the chat model is itself local and fails during a
+conversation, nothing else is tried (at start, see [Choosing a local model](#choosing-a-local-model)): the turn stops with the reason (`The turn stopped: the local server at localhost:11434 is not
 answering.`). A local conversation never turns into a cloud one.
 
 **No key at start.** If the saved model's provider has no key, `agentx` first offers the other provider's models as

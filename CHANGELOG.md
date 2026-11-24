@@ -148,6 +148,17 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **agentx: a local model that fails at start no longer stops it.** The app window (and the terminal) exited when the
+  model it started on was local and failed its check (a folder's settings naming a model the server could not load,
+  say). It now starts on the next model that works: your own `model` from `~/.agentx/settings.json`, then your
+  `fallbackModel`, then the usual choice with no name, each when it differs from the one that failed, and says so once
+  (`Could not use <name> (<reason>). Starting on <model> instead; /model <name> tries it again.`). No settings file
+  is rewritten; only when none works does it stop as before. A Claude or GPT model failing at start is unchanged.
+
+- **Tests no longer write your real `~/.agentx/agentx.log`.** The split-view test ran `_run_ui` with the real home,
+  leaving a file handler there that later tests logged their tracebacks through. It now uses a tmp home, and an
+  autouse fixture removes agentx's log handlers after each test and fails a test that set one up in the real home.
+
 - `Honour these project rules? [y/N]` is no longer asked at every start. A yes is remembered for that folder in your
   own `~/.agentx/trusted.json`, so the same rules are used without asking next time; a rule the project adds later is
   asked about again, marked `(new)`. A no is not remembered.

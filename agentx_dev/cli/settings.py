@@ -134,6 +134,19 @@ def write_user_auto_team(home: Path, on: bool) -> Tuple[Optional[Path], str]:
     return _write_key(Path(home), "autoTeam", bool(on), f"autoTeam {'true' if on else 'false'}")
 
 
+def read_user_model(home: Path) -> Optional[str]:
+    """``"model"`` in ~/.agentx/settings.json alone (``load_settings`` lets the folder's file win over it): the
+    user's own default model, or None when that file sets none, sets the placeholder, or cannot be read."""
+    try:
+        data = json.loads(user_settings_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    model = data.get("model") if isinstance(data, dict) else None
+    if not isinstance(model, str) or not model.strip() or model.strip() == PLACEHOLDER_MODEL:
+        return None
+    return model.strip()
+
+
 def write_user_model(home: Path, model: str) -> Tuple[Optional[Path], str]:
     """Save ``model`` as the default model in ``~/.agentx/settings.json``."""
     return _write_key(Path(home), "model", str(model), f"model {model}")

@@ -17,7 +17,7 @@ from agentx_dev.cli.models import (LOCAL_TYPO_HINT, SUGGESTED_MODELS, ModelError
                                    parse_descriptions, parse_team_models, provider_for, runnable_local_names,
                                    team_models_line, usable_team_models)
 from agentx_dev.cli.models import _acceptable_name
-from agentx_dev.cli.settings import (project_settings_path, user_settings_path, write_project_mode,
+from agentx_dev.cli.settings import (project_settings_path, read_user_model, user_settings_path, write_project_mode,
                                      write_project_model,
                                      write_project_team_models, write_user_model, write_user_setting)
 
@@ -53,6 +53,16 @@ def server_name(url: str) -> str:
         port = None
     where = _hostport(str(url or ""))                # never a user:password@ the address may carry
     return {11434: "Ollama", 1234: "LM Studio"}.get(port or 0, f"The local server at {where}")
+
+
+LOCAL_FAILED_START = "Could not use {failed} ({reason}). Starting on {to} instead; /model {failed} tries it again."
+
+
+def _unusable(shown: str, reason: str) -> ModelError:
+    """``Could not use <name>: <reason>``, keeping the reason on its own (``reason``) for the start's notice."""
+    error = ModelError(f"Could not use {shown}: {reason}")
+    error.reason = reason                                          # type: ignore[attr-defined]
+    return error
 
 
 class ModelCommands:
@@ -123,14 +133,13 @@ class ModelCommands:
         finally:
             self.progress.stop()
         if worker.is_alive():
-            raise ModelError(f"Could not use {shown}: the local server did not finish the check in "
-                             f"{CHECK_WAIT_SEC:g}s")
+            raise _unusable(shown, f"the local server did not finish the check in {CHECK_WAIT_SEC:g}s")
         if "error" in box:
-            raise ModelError(f"Could not use {shown}: the check failed ({type(box['error']).__name__})")
+            raise _unusable(shown, f"the check failed ({type(box['error']).__name__})")
         result = box["result"]
         if not result.ok:
             hint = f". {LOCAL_TYPO_HINT}" if shown.lower().startswith(("cl", "gp")) else ""
-            raise ModelError(f"Could not use {shown}: {self._safe(result.reason, 400)}{hint}")
+            raise _unusable(shown, f"{self._safe(result.reason, 400)}{hint}")
         model.context_window = self._window_of(model)      # the runner keeps each request inside it
         self._warn_if_no_room(model)
         return model
@@ -356,6 +365,38 @@ class ModelCommands:
             return ""
         return (f"(on {model_label(self.model)}, fallback from {self.fallback_from.get('model', '')}: "
                 f"{self.fallback_from.get('reason', '')})")
+
+    def model_instead_of_the_local(self, error: Exception) -> Any:
+        """At start, when the model that failed (``error``) is a local one: the next usable model, tried in order
+        with ``_built_model`` (a local one is checked): your own ``model`` from ~/.agentx/settings.json, your
+        ``fallbackModel``, then agentx's usual choice with no name (the first key found). Each is tried only when it
+        differs from the one that failed. The first that works is used and said, in one notice; no settings file is
+        rewritten. None when the failed model is not local (a cloud model keeps its own path) or none works; then
+        nothing has changed. Ctrl+C (and the window's Stop) still interrupts."""
+        failed = str(self.requested_model or "").strip()
+        if not failed or provider_for(failed) != "local":
+            return None
+        own = read_user_model(self.home)
+        names: List[Optional[str]] = []
+        for name in (own, str(self.fallback_name or "").strip()):
+            if name and name.lower() != failed.lower() and name not in names:
+                names.append(name)
+        names.append(None)
+        for name in names:
+            try:
+                model = self._built_model(name)
+            except Exception as candidate_error:            # not KeyboardInterrupt: that still stops the start
+                logging.getLogger(__name__).info("could not start on %s either (%s)", name or "the usual model",
+                                                 type(candidate_error).__name__)
+                continue
+            reason = getattr(error, "reason", None) or str(error)
+            note = self._model_source_note()
+            self.notice(LOCAL_FAILED_START.format(failed=self._safe(failed, 80), reason=self._safe(reason, 400),
+                                                  to=self._safe(model_label(model), 80)) + note)
+            self.requested_model = name                     # what /model, titles and a new key now build
+            self.model_source = user_settings_path(self.home) if name and name == own else None
+            return model
+        return None
 
     def model_from_the_fallback(self) -> Any:
         """At start, after today's offer of the other provider's models came to nothing: when the saved model's

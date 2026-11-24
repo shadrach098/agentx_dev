@@ -516,3 +516,137 @@ def test_a_local_to_cloud_switch_keeps_the_log(tmp_path):
     assert app.start() == 0
     assert app.model is cloud
     assert "Did the earlier thing." in app.addendum and "Did the earlier thing." in app.session.runner.system_addendum
+
+
+# -- a local model that fails at start: agentx starts on the next usable model -----------------------------------
+
+DOWN = "the local server at localhost:11434 is not answering"
+
+
+def stub_checks(monkeypatch, failing):
+    """``Local.check`` fails for the names in ``failing`` (name -> reason) and passes for any other."""
+    checked = []
+
+    def check(self, timeout=120.0):
+        checked.append(self.model)
+        if self.model in failing:
+            return LocalCheck(False, failing[self.model], self.context_window)
+        self.context_window = 32768
+        return LocalCheck(True, "", 32768)
+
+    monkeypatch.setattr(Local, "check", check)
+    return checked
+
+
+def cloud_named(name, *answers):
+    model = MockModel(script=[make_final(a) for a in answers])
+    model.model_name = name
+    return model
+
+
+def startup_factory(clouds):
+    """``clouds`` (name -> model, or None for a name whose key is missing) for Claude/GPT names and for no name;
+    any other name is a real local model on the stubbed server."""
+    from agentx_dev.cli.models import ModelError
+    local = functools.partial(choose_model, local_server=SERVER, local_context=None)
+
+    def factory(name, env):
+        if name in clouds:
+            if clouds[name] is None:
+                raise ModelError(f"No API key for {name}: set the key.")
+            return clouds[name]
+        if not name:
+            raise ModelError("No API key found: set ANTHROPIC_API_KEY (for Claude) or OPENAI_API_KEY (for GPT).")
+        return local(name, env)
+    return factory
+
+
+def folder_and_user_files(tmp_path, folder_model="qwen3-4b-40k", user=None):
+    folder = tmp_path / "proj" / ".agentx" / "settings.json"
+    folder.parent.mkdir(parents=True)
+    folder.write_text(json.dumps({"model": folder_model}), encoding="utf-8")
+    mine = tmp_path / "home" / ".agentx" / "settings.json"
+    mine.parent.mkdir(parents=True)
+    mine.write_text(json.dumps(user if user is not None else {"model": "gpt-6.2-sol",
+                                                              "fallbackModel": "qwen3-agent:latest"}),
+                    encoding="utf-8")
+    return folder, mine
+
+
+def test_a_folder_model_that_fails_its_check_starts_on_your_own_model(tmp_path, monkeypatch):
+    checked = stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN})
+    folder, mine = folder_and_user_files(tmp_path)
+    before = (folder.read_text(encoding="utf-8"), mine.read_text(encoding="utf-8"))
+    cloud = cloud_named("gpt-6.2-sol", "hello from gpt")
+    app, out, _, _ = make_app(tmp_path, Lines("hi", "/exit"), startup_factory({"gpt-6.2-sol": cloud}),
+                              model_name="qwen3-4b-40k", model_source=folder, fallback_model="qwen3-agent:latest")
+    assert app.start() == 0
+    text = out.getvalue()
+    assert ("Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Starting on "
+            "gpt-6.2-sol instead; /model qwen3-4b-40k tries it again.") in text
+    assert text.count("Could not use qwen3-4b-40k") == 1                    # one notice
+    assert text.index("Starting on gpt-6.2-sol") < text.index("hello from gpt")
+    assert app.model is cloud and app.session.runner.model is cloud and checked == ["qwen3-4b-40k"]
+    assert app.requested_model == "gpt-6.2-sol"
+    assert (folder.read_text(encoding="utf-8"), mine.read_text(encoding="utf-8")) == before   # never rewritten
+
+
+def test_your_own_model_failing_too_starts_on_the_fallback(tmp_path, monkeypatch):
+    checked = stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN})
+    folder, _ = folder_and_user_files(tmp_path)
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({"gpt-6.2-sol": None}),
+                              model_name="qwen3-4b-40k", model_source=folder, fallback_model="qwen3-agent:latest")
+    assert app.start() == 0
+    assert ("Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Starting on "
+            "qwen3-agent:latest instead; /model qwen3-4b-40k tries it again.") in out.getvalue()
+    assert isinstance(app.model, Local) and app.model.model == "qwen3-agent:latest"
+    assert checked == ["qwen3-4b-40k", "qwen3-agent:latest"]                # the fallback is checked the same way
+
+
+def test_with_no_other_named_model_agentx_starts_on_its_usual_choice(tmp_path, monkeypatch):
+    stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN})
+    folder, _ = folder_and_user_files(tmp_path, user={"model": "qwen3-4b-40k"})     # the same name: not tried again
+    usual = cloud_named("claude-opus-5-5")
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({None: usual}), model_name="qwen3-4b-40k",
+                              model_source=folder)
+    assert app.start() == 0
+    assert "Starting on claude-opus-5-5 instead; /model qwen3-4b-40k tries it again." in out.getvalue()
+    assert app.model is usual
+
+
+def test_a_local_model_failing_with_nothing_else_usable_still_stops(tmp_path, monkeypatch):
+    checked = stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN, "qwen3-agent:latest": DOWN})
+    folder, _ = folder_and_user_files(tmp_path)
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({"gpt-6.2-sol": None}),
+                              model_name="qwen3-4b-40k", model_source=folder, fallback_model="qwen3-agent:latest")
+    assert app.start() == 1
+    text = out.getvalue()
+    assert (f"Could not use qwen3-4b-40k: {DOWN} The model name 'qwen3-4b-40k' comes from" in text
+            or f"Could not use qwen3-4b-40k: {DOWN}. The model name 'qwen3-4b-40k' comes from" in text)
+    assert "Starting on" not in text and "instead" not in text
+    assert checked == ["qwen3-4b-40k", "qwen3-agent:latest"]
+
+
+def test_a_cloud_model_failing_at_start_does_not_try_your_other_models(tmp_path, monkeypatch):
+    checked = stub_checks(monkeypatch, {})
+    folder, _ = folder_and_user_files(tmp_path, folder_model="claude-opus-5-5",
+                                      user={"model": "qwen3:8b", "fallbackModel": ""})
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({"claude-opus-5-5": None}),
+                              model_name="claude-opus-5-5", model_source=folder, fallback_model="")
+    assert app.start() == 1                                                  # today's behaviour: no key, no fallback
+    assert "Could not use" not in out.getvalue() and "Starting on" not in out.getvalue()
+    assert checked == []
+
+
+def test_ctrl_c_while_trying_the_next_model_still_interrupts(tmp_path, monkeypatch):
+    stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN})
+    folder, _ = folder_and_user_files(tmp_path)
+
+    def factory(name, env):
+        if name == "gpt-6.2-sol":
+            raise KeyboardInterrupt
+        return startup_factory({})(name, env)
+
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), factory, model_name="qwen3-4b-40k", model_source=folder)
+    with pytest.raises(KeyboardInterrupt):
+        app.start()

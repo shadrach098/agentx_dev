@@ -668,9 +668,12 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         try:
             self.model = self._built_model(self.requested_model)       # a local model is checked first
         except ModelError as e:
+            # a local model that failed: start on the next usable one (yours, the fallback, the usual choice)
+            self.model = self.model_instead_of_the_local(e)
             # no key for the saved model: when the other provider's key is set, offer its models instead; when that
             # is not possible or declined, start on the fallback model
-            self.model = self.model_from_the_other_key(e)
+            if self.model is None:
+                self.model = self.model_from_the_other_key(e)
             if self.model is None:
                 self.model = self.model_from_the_fallback()
             if self.model is None:
