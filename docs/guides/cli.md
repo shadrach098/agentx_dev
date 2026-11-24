@@ -1211,10 +1211,14 @@ on the left and in `/resume`; until then, and for older conversations, the first
   **orb**: a sphere of lime dots that shows what agentx is doing ("Starting..." shows until agentx is ready).
 - **Once you write, the orb moves to the top**, large, with a small pill under it naming what it shows now and for
   how long.
-  It bubbles while agentx thinks (dots push out and settle back), lights rings of dots that turn on their own axes
-  while a step runs, folds into a cube that turns slowly and breathes, a band of light sweeping down it, while it waits for your answer (the pill says "Waiting for your
-  answer") and rests in a slow turn with a soft glow when the turn ends ("Done" and how long it took),
-  then reads "Ready"; it stays at the top for the rest of the conversation. The line above the message box keeps
+  While agentx thinks it turns calmly and sparks of light run along a few great circles, leaving short fading trails;
+  it lights rings of dots that turn on their own axes while a step runs; during a team job it splits into a
+  constellation, one small orb per helper step that is running or finished circling a small hub (a running one turns
+  its rings, a finished one glows still; past six, five of them and a cluster marked "+N" for the rest), and gathers
+  back into one sphere when the job ends; it folds into a cube that turns slowly and breathes, a band of light
+  sweeping down it, while it waits for your answer (the pill says "Waiting for your answer"); when the turn ends its
+  shell breathes slowly around a shimmering core of light ("Done" and how long it took), then it rests in a slow turn
+  and reads "Ready"; it stays at the top for the rest of the conversation. The line above the message box keeps
   only "Esc to stop" while the orb is up. Esc stops agentx from anywhere in the window, the message box included (what you
   typed stays); the pill reads "Stopping…" until the turn ends. Grab the large orb with the mouse to spin it; let go and it
   keeps the flick's momentum, then turns slowly the way you threw it.

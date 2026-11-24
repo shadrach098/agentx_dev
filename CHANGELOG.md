@@ -120,6 +120,16 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Changed
 
+- **The orb has new looks for thinking, team work and done** (app window). Thinking: a calm sphere turning slowly,
+  sparks of light running along a few great circles with short fading trails (it used to bubble). A team job has a
+  look of its own, `team`: the sphere splits into a constellation, one small orb per helper step that is running or
+  finished circling a small hub, a running one turning its rings and a finished one glowing still; six at most (past
+  six, the five that matter most, running first, and a cluster marked "+N" for the rest); they gather back into one
+  sphere when the job ends. A single agent's step keeps the turning rings. Orbs under 48 px (the status line, the
+  "Thinking…" line) show a team job as three bright dots circling the sphere. Done: the shell breathes slowly around
+  a shimmering core of light, faint bands drifting up it. Every look still fades into the next, reduced motion still
+  gets a still frame, and the dots are drawn from buffers made once, so a frame makes no garbage.
+  `AgentxOrb.create(canvas, stateOf, {teamOf})` takes the helper counts (`{running, finished}`).
 - **An empty final answer is not `done`.** A run that called no tool and ended with no text now has the outcome
   `no_answer` (`The model gave no answer.`). A run that called tools and then ended with nothing stays `done`, with the
   answer `The model gave no final answer. It called: read_path, write_file (files changed: done.txt).` Every model.

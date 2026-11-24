@@ -704,9 +704,24 @@
   let status = {}, startedAt = 0, sentAt = 0;   // sentAt: a message went off and agentx has not picked it up yet
   let doneAt = 0;                                // a turn just finished: the orb rests with a glow for a moment
   const DONE_MS = 6000;
-  // what the orb shows: stuck on a question or approval, working on a step, thinking, done, or resting
+  // a team job's helper steps, for the orb: counted when a status comes, read by the orb every frame
+  let orbHelpers = {running: 0, finished: 0, waiting: 0};
+  function countHelpers(team) {
+    const n = {running: 0, finished: 0, waiting: 0};
+    for (const r of (team && team.rows) || []) {
+      if (r.state === "running") n.running++;
+      else if (r.state === "waiting") n.waiting++;
+      else if (r.state !== "skipped") n.finished++;         // done, failed, stopped or ended without word
+    }
+    return n;
+  }
+  const orbTeam = () => orbHelpers;
+  // what the orb shows: stuck on a question or approval, a team at work, working on a step, thinking, done, or resting.
+  // A team job shows from its first running helper until none is running or waiting (then it gathers back)
   function orbState() {
     if (liveCard() || signingIn) return "stuck";
+    const h = orbHelpers;
+    if (status.working && (h.running || (h.finished && h.waiting))) return "team";
     if (status.working) return pending.length || !/^thinking/i.test(String(status.label || "")) ? "working" : "thinking";
     if (sentAt) return "thinking";
     return doneAt && Date.now() - doneAt < DONE_MS ? "success" : "idle";
@@ -715,7 +730,7 @@
     if (!window.AgentxOrb) return;
     for (const canvas of root.querySelectorAll("canvas.orb:not([data-on])")) {
       canvas.dataset.on = "1";
-      window.AgentxOrb.create(canvas, stateOf, options);
+      window.AgentxOrb.create(canvas, stateOf, {teamOf: orbTeam, ...options});
     }
   }
   // the stage: once you have written, the orb large at the top, with a small note under it naming what the orb
@@ -773,6 +788,7 @@
     }
     else if (ev.working) doneAt = 0;
     status = ev;
+    orbHelpers = countHelpers(ev.team);
     if (ev.working) sentAt = 0;
     startedAt = ev.working ? ev.startedAt || 0 : 0;
     drawStatus();

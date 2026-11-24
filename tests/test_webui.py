@@ -710,7 +710,7 @@ def test_the_window_opens_like_the_docs_site():
     assert "@keyframes cursor-blink" in css and "@keyframes glyph-in" in css
     orb = (RESOURCES / "orb.js").read_text(encoding="utf-8")
     assert 'class="orb"' in script and "AgentxOrb" in orb               # the working spinner is now the dot orb
-    for state in ("thinking", "working", "success", "idle", "stuck"):
+    for state in ("thinking", "working", "team", "success", "idle", "stuck"):
         assert f'"{state}"' in orb
     assert ".starting .tick" in css and ".starting .dot" not in css     # not the MCP state dots
 
