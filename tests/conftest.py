@@ -8,6 +8,7 @@ scripted per-test.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional
 
 import pytest
@@ -183,3 +184,29 @@ def _forget_learned_endpoints():
     forget_learned_endpoints()
     yield
     forget_learned_endpoints()
+
+
+_REAL_AGENTX = Path.home() / ".agentx"          # the real ~/.agentx, read before any test can patch Path.home
+
+
+@pytest.fixture(autouse=True)
+def _no_log_left_behind():
+    """No test leaves agentx's log handlers behind, and none writes the real ~/.agentx/agentx.log: ``setup_logging``
+    (run by ``main``, ``_run`` and ``_run_ui``) puts a file handler on the ``agentx_dev`` logger that every later test
+    would write its tracebacks through. Handlers added during a test are removed and closed after it; one that
+    pointed into the real ~/.agentx fails the test (give it a tmp home: ``Path.home`` patched, or ``home=``)."""
+    import logging
+    loggers = (logging.getLogger(), logging.getLogger("agentx_dev"))
+    before = [list(logger.handlers) for logger in loggers]
+    yield
+    real = []
+    for logger, handlers in zip(loggers, before):
+        for handler in list(logger.handlers):
+            if handler in handlers or not getattr(handler, "_agentx_cli", False):
+                continue
+            logger.removeHandler(handler)
+            handler.close()
+            name = getattr(handler, "baseFilename", None)
+            if name and _REAL_AGENTX in Path(name).resolve().parents:
+                real.append(name)
+    assert not real, f"the test set up agentx's log in the real home ({real}); give it a tmp home instead"
