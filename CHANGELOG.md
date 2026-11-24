@@ -138,6 +138,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- `Honour these project rules? [y/N]` is no longer asked at every start. A yes is remembered for that folder in your
+  own `~/.agentx/trusted.json`, so the same rules are used without asking next time; a rule the project adds later is
+  asked about again, marked `(new)`. A no is not remembered.
+
 - A window reloaded (or switched to a conversation) while the agent worked on a message showed the conversation
   without that message, or the welcome screen: the events after a conversation change were drawn before its history
   had loaded, and the load wiped them. They now wait for it, and the message being worked on is shown.

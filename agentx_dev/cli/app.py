@@ -497,13 +497,23 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         the project's included, are kept (a deny rule only restricts)."""
         if not self.project_allow:
             return
-        shown = [self._safe(rule, MAX_RULE_CHARS) for rule in self.project_allow[:MAX_RULES_SHOWN]]
+        from agentx_dev.cli.trust import accepted_project_rules, remember_project_rules
+        accepted = set(accepted_project_rules(self.cwd, self.home))
+        new = [rule for rule in self.project_allow if rule not in accepted]
+        if not new:                                          # the same rules you said yes to before
+            self.notice("Using this project's allow rules you accepted before ("
+                        + self._safe(", ".join(self.project_allow), 300) + ").")
+            return
+        shown = [self._safe(rule, MAX_RULE_CHARS) + ("  (new)" if accepted and rule in new else "")
+                 for rule in self.project_allow[:MAX_RULES_SHOWN]]
         lines = ["This project's settings (.agentx/settings.json) allow these actions without asking you:"]
         lines += [f"  {rule}" for rule in shown]
         if len(self.project_allow) > MAX_RULES_SHOWN:
             lines.append(f"  ... and {len(self.project_allow) - MAX_RULES_SHOWN} more")
         self.notice("\n".join(lines))
         if self._yes("Honour these project rules? [y/N] "):
+            if not remember_project_rules(self.cwd, self.home, self.project_allow):
+                self.notice("(Could not save this answer; you will be asked again next time.)")
             return
         # Kept, so that saving the window's Settings (which reloads the rules) does not switch them back on.
         self.declined_project_allow = list(self.project_allow)

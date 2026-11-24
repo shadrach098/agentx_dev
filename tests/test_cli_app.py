@@ -1603,3 +1603,43 @@ def test_continue_after_the_step_limit_picks_up_where_it_stopped(tmp_path):
     assert any("Carry on from its last step" in s for s in sent)               # the "continue" after the stop
     assert _is_carry_on("Continue.") and _is_carry_on("go on please") and not _is_carry_on("continue the docs work but first explain why the tests fail and what you plan to change in every file you touched")
     assert not _is_carry_on("why did it stop?") and CARRY_ON_NOTE.startswith("\n\n[agentx]")
+
+
+def test_project_rules_said_yes_to_are_not_asked_about_again(tmp_path):
+    from agentx_dev.cli.trust import accepted_project_rules, remember_trust, trusted_folders
+    rules = ["write_file:agentx/*"]
+    asked = Lines("y")
+    app, out, cwd, home = make_app(tmp_path, Lines("/exit"), MockModel(script=[]), project_allow=rules,
+                                   read_short=asked)
+    remember_trust(cwd, home)                                  # the folder trust is kept alongside
+    app.start()
+    assert asked.prompts == ["Honour these project rules? [y/N] "]
+    assert accepted_project_rules(cwd, home) == rules and trusted_folders(home)
+    again = Lines()                                            # a second start: no question at all
+    app2, out2, _, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]), allow=rules,
+                                project_allow=rules, read_short=again)    # as a start reads them: allowed too
+    app2.start()
+    assert again.prompts == [] and "allow rules you accepted before" in out2.getvalue()
+    assert "write_file:agentx/*" in app2.gate.allow
+
+
+def test_a_rule_the_project_adds_later_is_asked_about_and_marked_new(tmp_path):
+    first = Lines("y")
+    make_app(tmp_path, Lines("/exit"), MockModel(script=[]), project_allow=["write_file:agentx/*"],
+             read_short=first)[0].start()
+    asked = Lines("n")
+    both = ["write_file:agentx/*", "run_shell"]
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]), allow=both, project_allow=both,
+                              read_short=asked)
+    app.start()
+    text = out.getvalue()
+    assert asked.prompts == ["Honour these project rules? [y/N] "] and "run_shell  (new)" in text
+    assert "run_shell" not in app.gate.allow                    # a no drops them for this session
+
+
+def test_a_no_is_not_remembered(tmp_path):
+    from agentx_dev.cli.trust import accepted_project_rules
+    app, out, cwd, home = make_app(tmp_path, Lines("/exit"), MockModel(script=[]), project_allow=["run_shell"],
+                                   read_short=Lines("n"))
+    app.start()
+    assert accepted_project_rules(cwd, home) == []

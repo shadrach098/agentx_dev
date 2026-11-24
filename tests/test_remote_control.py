@@ -100,7 +100,8 @@ def test_the_window_drives_the_terminal_session(terminal):
     prompt.typed.put("/remote-control")                              # typed in the terminal
     remote = wait_for(lambda: getattr(app, "_remote", None))
     front = remote.front
-    assert "ssh -N -L" in out.getvalue() and "remote-control off" in out.getvalue()
+    # the instructions are printed just after remote use starts: wait for them (a busy machine prints them later)
+    wait_for(lambda: "ssh -N -L" in out.getvalue() and "remote-control off" in out.getvalue())
     # the window has the open message box, and sends a message: it is typed into the terminal's prompt
     wait_for(lambda: any(p["kind"] == "message" for p in front._pending.values()))
     assert request(front, "POST", "/api/send", {"text": "create hello.txt"})["result"] == "sent"

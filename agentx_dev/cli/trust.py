@@ -41,14 +41,36 @@ def _is_anchor(path: Path, home: Path) -> bool:
     return key == _key(home) or Path(key).parent == Path(key)
 
 
-def trusted_folders(home: Path) -> List[str]:
-    """The folders on file, as comparison keys. Never raises: a missing or damaged file is an empty list."""
+def _read(home: Path) -> dict:
+    """The whole trust file, or {} (missing or damaged). Never raises."""
     try:
         data = json.loads(trust_file(home).read_text(encoding="utf-8"))
-        folders = data.get("folders") if isinstance(data, dict) else None
-        return [os.path.normcase(str(f)) for f in folders if isinstance(f, str)] if isinstance(folders, list) else []
     except (OSError, ValueError, RecursionError):
-        return []
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write(home: Path, data: dict) -> bool:
+    """Replace the trust file with ``data`` (every key kept). Best effort: False when it could not be saved."""
+    try:
+        path = trust_file(home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.stem}-{os.getpid()}-{threading.get_ident()}.tmp")
+        temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def trusted_folders(home: Path) -> List[str]:
+    """The folders on file, as comparison keys. Never raises: a missing or damaged file is an empty list."""
+    folders = _read(home).get("folders")
+    return [os.path.normcase(str(f)) for f in folders if isinstance(f, str)] if isinstance(folders, list) else []
 
 
 def is_trusted(cwd: Path, home: Path) -> bool:
@@ -65,23 +87,36 @@ def is_trusted(cwd: Path, home: Path) -> bool:
 
 def remember_trust(cwd: Path, home: Path) -> bool:
     """Write ``cwd`` to the trust file. Best effort: returns False when it could not be saved."""
-    try:
-        folders = trusted_folders(home)
-        key = _key(cwd)
-        if key not in folders:
-            folders.append(key)
-        path = trust_file(home)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f"{path.stem}-{os.getpid()}-{threading.get_ident()}.tmp")
-        temporary.write_text(json.dumps({"folders": folders}, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, path)
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
-        return True
-    except (OSError, ValueError):
-        return False
+    data = _read(home)
+    folders = trusted_folders(home)
+    key = _key(cwd)
+    if key not in folders:
+        folders.append(key)
+    data["folders"] = folders
+    return _write(home, data)
+
+
+# -- a project's allow rules the user said yes to ---------------------------------------------------------------
+# A project's ``.agentx/settings.json`` may list allow rules (actions that then run without a question). They are
+# shown and asked about at start; a yes is kept here, in the user's own file, per folder, so the same rules are not
+# asked about at every start. A rule the project adds later is asked about again; a no is not kept.
+
+def accepted_project_rules(cwd: Path, home: Path) -> List[str]:
+    """The project allow rules the user accepted for ``cwd`` (exactly that folder). Never raises."""
+    found = _read(home).get("projectRules")
+    rules = found.get(_key(cwd)) if isinstance(found, dict) else None
+    return [r for r in rules if isinstance(r, str)] if isinstance(rules, list) else []
+
+
+def remember_project_rules(cwd: Path, home: Path, rules: Sequence[str]) -> bool:
+    """Keep ``rules`` as accepted for ``cwd`` (added to the ones accepted before). Best effort."""
+    data = _read(home)
+    every = data.get("projectRules") if isinstance(data.get("projectRules"), dict) else {}
+    key = _key(cwd)
+    kept = [r for r in every.get(key, []) if isinstance(r, str)]
+    every[key] = kept + [str(r) for r in rules if str(r) not in kept]
+    data["projectRules"] = every
+    return _write(home, data)
 
 
 def ensure_trusted(cwd: Path, home: Path, console: Console,
