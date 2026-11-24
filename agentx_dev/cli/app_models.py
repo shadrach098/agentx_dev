@@ -56,6 +56,8 @@ def server_name(url: str) -> str:
 
 
 LOCAL_FAILED_START = "Could not use {failed} ({reason}). Starting on {to} instead; /model {failed} tries it again."
+LOCAL_TO_CLOUD = ("Could not use {failed} ({reason}). Start on {to} instead? Your messages and the files it reads "
+                  "would go to {company}.")
 
 
 def _unusable(shown: str, reason: str) -> ModelError:
@@ -367,36 +369,67 @@ class ModelCommands:
                 f"{self.fallback_from.get('reason', '')})")
 
     def model_instead_of_the_local(self, error: Exception) -> Any:
-        """At start, when the model that failed (``error``) is a local one: the next usable model, tried in order
-        with ``_built_model`` (a local one is checked): your own ``model`` from ~/.agentx/settings.json, your
-        ``fallbackModel``, then agentx's usual choice with no name (the first key found). Each is tried only when it
-        differs from the one that failed. The first that works is used and said, in one notice; no settings file is
-        rewritten. None when the failed model is not local (a cloud model keeps its own path) or none works; then
+        """At start, when the model that failed (``error``) is a local one: the next usable model. First the local
+        ones, each built with ``_built_model`` (so checked) and used without a question: your own ``model`` from
+        ~/.agentx/settings.json when it is local, then your ``fallbackModel``. A start meant to stay on this computer
+        never moves to Claude or GPT on its own: when no local one works, the cloud one (your own ``model`` when it
+        is Claude or GPT, else the usual choice with no name) is offered in one question, and used only on a yes.
+        Each name is tried only when it differs from the one that failed; no settings file is rewritten. None when
+        the failed model is not local (a cloud model keeps its own path), nothing works, or the answer is no; then
         nothing has changed. Ctrl+C (and the window's Stop) still interrupts."""
         failed = str(self.requested_model or "").strip()
         if not failed or provider_for(failed) != "local":
             return None
         own = read_user_model(self.home)
-        names: List[Optional[str]] = []
+
+        def differs(name: Optional[str]) -> bool:
+            return bool(name) and str(name).lower() != failed.lower()
+
+        locals_: List[str] = []
         for name in (own, str(self.fallback_name or "").strip()):
-            if name and name.lower() != failed.lower() and name not in names:
-                names.append(name)
-        names.append(None)
-        for name in names:
-            try:
-                model = self._built_model(name)
-            except Exception as candidate_error:            # not KeyboardInterrupt: that still stops the start
-                logging.getLogger(__name__).info("could not start on %s either (%s)", name or "the usual model",
-                                                 type(candidate_error).__name__)
-                continue
-            reason = getattr(error, "reason", None) or str(error)
-            note = self._model_source_note()
-            self.notice(LOCAL_FAILED_START.format(failed=self._safe(failed, 80), reason=self._safe(reason, 400),
-                                                  to=self._safe(model_label(model), 80)) + note)
-            self.requested_model = name                     # what /model, titles and a new key now build
-            self.model_source = user_settings_path(self.home) if name and name == own else None
-            return model
+            if differs(name) and provider_for(name or "") == "local" and name not in locals_:
+                locals_.append(str(name))
+        clouds: List[Optional[str]] = [own] if differs(own) and provider_for(own or "") in ("claude", "gpt") else []
+        clouds.append(None)                                  # the usual choice: the first key found
+        reason = self._safe(getattr(error, "reason", None) or str(error), 400)
+        shown = self._safe(failed, 80)
+        for local in (True, False):
+            for name in (locals_ if local else clouds):
+                model = self._candidate(name)
+                if model is None:
+                    continue
+                label = self._safe(model_label(model), 80)
+                provider = provider_for(name or str(model_label(model)))
+                if not local and not self._yes_to_cloud(shown, reason, label, provider):
+                    return None
+                note = self._model_source_note()
+                self.notice(LOCAL_FAILED_START.format(failed=shown, reason=reason, to=label) + note)
+                self.requested_model = name                     # what /model, titles and a new key now build
+                self.model_source = user_settings_path(self.home) if name and name == own else None
+                return model
         return None
+
+    def _candidate(self, name: Optional[str]) -> Any:
+        """``name`` built (and checked, when local) for a start in place of a local model; None when it fails."""
+        try:
+            return self._built_model(name)
+        except Exception as error:                          # not KeyboardInterrupt: that still stops the start
+            logging.getLogger(__name__).info("could not start on %s either (%s)", name or "the usual model",
+                                             type(error).__name__)
+            return None
+
+    def _yes_to_cloud(self, failed: str, reason: str, label: str, provider: Optional[str]) -> bool:
+        """The one question before a start meant for a local model goes to Claude or GPT: the pick list (Quit is the
+        default), or a typed y/N when there is none. No answer, or a list that cannot be shown, is Quit."""
+        company = {"claude": "Anthropic", "gpt": "OpenAI"}.get(provider or "", "Anthropic or OpenAI")
+        self.notice(LOCAL_TO_CLOUD.format(failed=failed, reason=reason, to=label, company=company))
+        if self.select is None:
+            return self._yes(f"Start on {label}? [y/N] ")
+        try:
+            return self.select([f"Start on {label}", "Quit"], 1) == 0
+        except Exception:                                   # a question that cannot be shown is a no
+            logging.getLogger(__name__).debug("the cloud question could not be shown", exc_info=True)
+            return False
 
     def model_from_the_fallback(self) -> Any:
         """At start, after today's offer of the other provider's models came to nothing: when the saved model's

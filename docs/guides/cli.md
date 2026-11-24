@@ -413,13 +413,19 @@ A misspelt Claude or GPT name is a local name too, so it fails the same way, wit
 with claude, GPT names with gpt.`
 
 **A local model that fails at start does not stop `agentx`.** When the model `agentx` starts on is local (from a
-folder's settings file, your own, or `--model`) and fails its check, it starts on the next model that works, tried in
-this order, each only when it is not the one that failed: your own `model` in `~/.agentx/settings.json`, your
-`fallbackModel` (checked the same way), then the usual choice with no name (the first key found). It says so once,
-before the first prompt: `Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Starting
-on gpt-6.2-sol instead; /model qwen3-4b-40k tries it again.`, followed by the settings file that named the model.
-No settings file is changed. Only when none of them works does `agentx` stop, with the reason, as before. A Claude or
-GPT model that cannot be used at start keeps its own path (see [The fallback](#the-fallback)).
+folder's settings file, your own, or `--model`) and fails its check, it tries the other local models you named, each
+only when it is not the one that failed: your own `model` in `~/.agentx/settings.json` when it is local, then your
+`fallbackModel` (both checked the same way). The first that works is used and said once, before the first prompt:
+`Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Starting on qwen3-agent:latest
+instead; /model qwen3-4b-40k tries it again.`, followed by the settings file that named the model.
+
+**It never moves to Claude or GPT on its own.** When no local model works, `agentx` asks once about the cloud one
+(your own `model` when it is a Claude or GPT name, else the usual choice with no name, the first key found): `Could
+not use qwen3-4b-40k (...). Start on gpt-6.2-sol instead? Your messages and the files it reads would go to OpenAI.`,
+with **Start on gpt-6.2-sol** and **Quit** (the default; with no pick list it is a typed `[y/N]`). Only a yes starts
+there, with the notice above. **Quit**, no answer, or no model that works stops `agentx` with the reason, as before.
+No settings file is changed either way. A Claude or GPT model that cannot be used at start keeps its own path (see
+[The fallback](#the-fallback)).
 
 **Finding the models.** At start `agentx` asks the local server for its models in the background, with a short
 timeout (a refused connection answers at once). It never waits for the answer before the first prompt, and with no

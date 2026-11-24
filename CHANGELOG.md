@@ -150,10 +150,13 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 - **agentx: a local model that fails at start no longer stops it.** The app window (and the terminal) exited when the
   model it started on was local and failed its check (a folder's settings naming a model the server could not load,
-  say). It now starts on the next model that works: your own `model` from `~/.agentx/settings.json`, then your
-  `fallbackModel`, then the usual choice with no name, each when it differs from the one that failed, and says so once
-  (`Could not use <name> (<reason>). Starting on <model> instead; /model <name> tries it again.`). No settings file
-  is rewritten; only when none works does it stop as before. A Claude or GPT model failing at start is unchanged.
+  say). It now starts on another local model you named, without a question: your own `model` from
+  `~/.agentx/settings.json` when it is local, then your `fallbackModel`, each when it differs from the one that failed,
+  and says so once (`Could not use <name> (<reason>). Starting on <model> instead; /model <name> tries it again.`).
+  A start meant for a local model never moves to Claude or GPT on its own: when no local one works, it asks once
+  (`Start on gpt-6.2-sol instead? Your messages and the files it reads would go to OpenAI.`, **Start on ...** or
+  **Quit**, the default) and starts there only on a yes. Quit, no answer or nothing usable stops as before. No
+  settings file is rewritten. A Claude or GPT model failing at start is unchanged.
 
 - **Tests no longer write your real `~/.agentx/agentx.log`.** The split-view test ran `_run_ui` with the real home,
   leaving a file handler there that later tests logged their tracebacks through. It now uses a tmp home, and an

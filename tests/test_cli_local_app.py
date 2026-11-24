@@ -573,69 +573,121 @@ def folder_and_user_files(tmp_path, folder_model="qwen3-4b-40k", user=None):
     return folder, mine
 
 
-def test_a_folder_model_that_fails_its_check_starts_on_your_own_model(tmp_path, monkeypatch):
+class Picks:
+    """The app's select question: records each (options, default) and answers from a list (None: not shown)."""
+
+    def __init__(self, *answers):
+        self.answers, self.asked = list(answers), []
+
+    def __call__(self, options, default=0, *args, **kwargs):
+        self.asked.append((list(options), default))
+        return self.answers.pop(0) if self.answers else None
+
+
+def test_a_local_folder_model_that_fails_starts_on_your_own_local_model_without_a_question(tmp_path, monkeypatch):
     checked = stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN})
-    folder, mine = folder_and_user_files(tmp_path)
+    folder, mine = folder_and_user_files(tmp_path, user={"model": "llama3.1:8b", "fallbackModel": "qwen3-agent:latest"})
     before = (folder.read_text(encoding="utf-8"), mine.read_text(encoding="utf-8"))
-    cloud = cloud_named("gpt-6.2-sol", "hello from gpt")
-    app, out, _, _ = make_app(tmp_path, Lines("hi", "/exit"), startup_factory({"gpt-6.2-sol": cloud}),
-                              model_name="qwen3-4b-40k", model_source=folder, fallback_model="qwen3-agent:latest")
+    picks = Picks()
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({}), model_name="qwen3-4b-40k",
+                              model_source=folder, fallback_model="qwen3-agent:latest", select=picks)
     assert app.start() == 0
     text = out.getvalue()
     assert ("Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Starting on "
-            "gpt-6.2-sol instead; /model qwen3-4b-40k tries it again.") in text
+            "llama3.1:8b instead; /model qwen3-4b-40k tries it again.") in text
     assert text.count("Could not use qwen3-4b-40k") == 1                    # one notice
-    assert text.index("Starting on gpt-6.2-sol") < text.index("hello from gpt")
-    assert app.model is cloud and app.session.runner.model is cloud and checked == ["qwen3-4b-40k"]
-    assert app.requested_model == "gpt-6.2-sol"
+    assert isinstance(app.model, Local) and app.model.model == "llama3.1:8b" and app.requested_model == "llama3.1:8b"
+    assert checked == ["qwen3-4b-40k", "llama3.1:8b"] and picks.asked == []
     assert (folder.read_text(encoding="utf-8"), mine.read_text(encoding="utf-8")) == before   # never rewritten
 
 
-def test_your_own_model_failing_too_starts_on_the_fallback(tmp_path, monkeypatch):
+def test_your_own_cloud_model_is_passed_over_for_the_local_fallback_without_a_question(tmp_path, monkeypatch):
     checked = stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN})
-    folder, _ = folder_and_user_files(tmp_path)
-    app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({"gpt-6.2-sol": None}),
-                              model_name="qwen3-4b-40k", model_source=folder, fallback_model="qwen3-agent:latest")
+    folder, _ = folder_and_user_files(tmp_path)               # model gpt-6.2-sol, fallbackModel qwen3-agent:latest
+    cloud = cloud_named("gpt-6.2-sol")
+    picks = Picks(0)
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({"gpt-6.2-sol": cloud}),
+                              model_name="qwen3-4b-40k", model_source=folder, fallback_model="qwen3-agent:latest",
+                              select=picks)
     assert app.start() == 0
     assert ("Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Starting on "
             "qwen3-agent:latest instead; /model qwen3-4b-40k tries it again.") in out.getvalue()
     assert isinstance(app.model, Local) and app.model.model == "qwen3-agent:latest"
-    assert checked == ["qwen3-4b-40k", "qwen3-agent:latest"]                # the fallback is checked the same way
+    assert checked == ["qwen3-4b-40k", "qwen3-agent:latest"] and picks.asked == []
 
 
-def test_with_no_other_named_model_agentx_starts_on_its_usual_choice(tmp_path, monkeypatch):
-    stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN})
-    folder, _ = folder_and_user_files(tmp_path, user={"model": "qwen3-4b-40k"})     # the same name: not tried again
+def _no_local_works(tmp_path, monkeypatch, picks, clouds, user=None, **kw):
+    stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN, "qwen3-agent:latest": DOWN})
+    folder, mine = folder_and_user_files(tmp_path, user=user)
+    before = (folder.read_text(encoding="utf-8"), mine.read_text(encoding="utf-8"))
+    app, out, _, _ = make_app(tmp_path, Lines("hi", "/exit"), startup_factory(clouds), model_name="qwen3-4b-40k",
+                              model_source=folder, fallback_model="qwen3-agent:latest", select=picks, **kw)
+    code = app.start()
+    assert (folder.read_text(encoding="utf-8"), mine.read_text(encoding="utf-8")) == before
+    return app, out.getvalue(), code
+
+
+ASKED_GPT = ("Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Start on gpt-6.2-sol "
+             "instead? Your messages and the files it reads would go to OpenAI.")
+
+
+def test_a_cloud_model_is_used_only_when_you_say_yes(tmp_path, monkeypatch):
+    cloud = cloud_named("gpt-6.2-sol", "hello from gpt")
+    picks = Picks(0)
+    app, text, code = _no_local_works(tmp_path, monkeypatch, picks, {"gpt-6.2-sol": cloud})
+    assert code == 0
+    assert picks.asked == [(["Start on gpt-6.2-sol", "Quit"], 1)]            # Quit is the default
+    assert ASKED_GPT in text
+    assert ("Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Starting on "
+            "gpt-6.2-sol instead; /model qwen3-4b-40k tries it again.") in text
+    assert text.index(ASKED_GPT) < text.index("Starting on gpt-6.2-sol") < text.index("hello from gpt")
+    assert app.model is cloud and app.session.runner.model is cloud and app.requested_model == "gpt-6.2-sol"
+
+
+@pytest.mark.parametrize("answer", [1, None], ids=["quit", "no answer"])
+def test_quit_or_no_answer_to_the_cloud_question_stops_as_before(tmp_path, monkeypatch, answer):
+    picks = Picks(answer)
+    app, text, code = _no_local_works(tmp_path, monkeypatch, picks, {"gpt-6.2-sol": cloud_named("gpt-6.2-sol")})
+    assert code == 1 and len(picks.asked) == 1 and ASKED_GPT in text
+    assert f"Could not use qwen3-4b-40k: {DOWN}" in text                     # today's message
+    assert "Starting on" not in text
+
+
+def test_with_no_pick_list_the_cloud_question_is_typed_and_defaults_to_no(tmp_path, monkeypatch):
+    app, text, code = _no_local_works(tmp_path, monkeypatch, None, {"gpt-6.2-sol": cloud_named("gpt-6.2-sol")},
+                                      read_short=Lines())
+    assert code == 1 and ASKED_GPT in text and "Starting on" not in text
+
+
+def test_the_usual_choice_is_asked_about_and_names_anthropic(tmp_path, monkeypatch):
     usual = cloud_named("claude-opus-5-5")
-    app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({None: usual}), model_name="qwen3-4b-40k",
-                              model_source=folder)
-    assert app.start() == 0
-    assert "Starting on claude-opus-5-5 instead; /model qwen3-4b-40k tries it again." in out.getvalue()
-    assert app.model is usual
+    picks = Picks(0)
+    app, text, code = _no_local_works(tmp_path, monkeypatch, picks, {None: usual},
+                                      user={"model": "qwen3-4b-40k", "fallbackModel": "qwen3-agent:latest"})
+    assert code == 0 and app.model is usual
+    assert picks.asked == [(["Start on claude-opus-5-5", "Quit"], 1)]
+    assert "Start on claude-opus-5-5 instead? Your messages and the files it reads would go to Anthropic." in text
+    assert "Starting on claude-opus-5-5 instead; /model qwen3-4b-40k tries it again." in text
 
 
 def test_a_local_model_failing_with_nothing_else_usable_still_stops(tmp_path, monkeypatch):
-    checked = stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN, "qwen3-agent:latest": DOWN})
-    folder, _ = folder_and_user_files(tmp_path)
-    app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({"gpt-6.2-sol": None}),
-                              model_name="qwen3-4b-40k", model_source=folder, fallback_model="qwen3-agent:latest")
-    assert app.start() == 1
-    text = out.getvalue()
-    assert (f"Could not use qwen3-4b-40k: {DOWN} The model name 'qwen3-4b-40k' comes from" in text
-            or f"Could not use qwen3-4b-40k: {DOWN}. The model name 'qwen3-4b-40k' comes from" in text)
+    picks = Picks(0)
+    app, text, code = _no_local_works(tmp_path, monkeypatch, picks, {"gpt-6.2-sol": None})
+    assert code == 1 and picks.asked == []                                   # nothing to ask about
+    assert f"Could not use qwen3-4b-40k: {DOWN}" in text and "The model name 'qwen3-4b-40k' comes from" in text
     assert "Starting on" not in text and "instead" not in text
-    assert checked == ["qwen3-4b-40k", "qwen3-agent:latest"]
 
 
 def test_a_cloud_model_failing_at_start_does_not_try_your_other_models(tmp_path, monkeypatch):
     checked = stub_checks(monkeypatch, {})
     folder, _ = folder_and_user_files(tmp_path, folder_model="claude-opus-5-5",
                                       user={"model": "qwen3:8b", "fallbackModel": ""})
+    picks = Picks()
     app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({"claude-opus-5-5": None}),
-                              model_name="claude-opus-5-5", model_source=folder, fallback_model="")
+                              model_name="claude-opus-5-5", model_source=folder, fallback_model="", select=picks)
     assert app.start() == 1                                                  # today's behaviour: no key, no fallback
     assert "Could not use" not in out.getvalue() and "Starting on" not in out.getvalue()
-    assert checked == []
+    assert checked == [] and picks.asked == []
 
 
 def test_ctrl_c_while_trying_the_next_model_still_interrupts(tmp_path, monkeypatch):
@@ -643,10 +695,11 @@ def test_ctrl_c_while_trying_the_next_model_still_interrupts(tmp_path, monkeypat
     folder, _ = folder_and_user_files(tmp_path)
 
     def factory(name, env):
-        if name == "gpt-6.2-sol":
+        if name == "qwen3-agent:latest":
             raise KeyboardInterrupt
-        return startup_factory({})(name, env)
+        return startup_factory({"gpt-6.2-sol": cloud_named("gpt-6.2-sol")})(name, env)
 
-    app, _, _, _ = make_app(tmp_path, Lines("/exit"), factory, model_name="qwen3-4b-40k", model_source=folder)
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), factory, model_name="qwen3-4b-40k", model_source=folder,
+                            fallback_model="qwen3-agent:latest", select=Picks(0))
     with pytest.raises(KeyboardInterrupt):
         app.start()
