@@ -380,12 +380,23 @@ svg { width: 16px; height: 16px; flex: none; }
 @media (prefers-reduced-motion: reduce) { .is-running .team-marker { animation: none; } }
 .others { display: flex; align-items: center; gap: 8px; margin: 0 6px 8px; font-size: 12.5px; color: var(--muted); }
 .others::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; animation: breathe 1.4s ease-in-out infinite; }
-.waiting { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 4px; }
-.waiting li { display: flex; gap: 10px; align-items: center; font-size: 13.5px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 5px 6px 5px 12px; }
-.waiting .w-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
-.waiting .w-where { font-size: 12.5px; color: var(--faint); white-space: nowrap; }
-.waiting button { border: 0; background: none; color: var(--faint); border-radius: 6px; width: 24px; height: 24px; display: grid; place-items: center; }
-.waiting button:hover { color: var(--danger); background: var(--hover); }
+/* messages typed while agentx works: they wrap inside the column (a long paste never runs out of the frame), three
+   lines at most until "Show all", and the list scrolls once it is a third of the window */
+.waiting { list-style: none; margin: 0 0 8px; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; max-height: 34vh; overflow-y: auto; overscroll-behavior: contain; }
+.waiting li { display: flex; gap: 10px; align-items: flex-start; min-width: 0; font-size: 13.5px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 7px 6px 7px 12px; }
+.waiting .w-body { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.waiting .w-text { min-width: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.waiting li.open .w-text { display: block; max-height: 28vh; overflow-y: auto; }
+.waiting .w-where { font-size: 12px; color: var(--faint); }
+.waiting .w-more { border: 0; background: none; padding: 0; color: var(--muted); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.waiting .w-acts { display: flex; gap: 4px; flex: none; align-items: center; }
+.waiting .w-acts button { border: 1px solid var(--line); background: none; color: var(--muted); border-radius: 7px; height: 26px; padding: 0 9px; font: inherit; font-size: 12.5px; cursor: pointer; }
+.waiting .w-acts button:hover { color: var(--text); background: var(--hover); }
+.waiting .w-acts .w-now { color: var(--text); border-color: var(--line-strong); }
+.waiting .w-acts .w-remove { border: 0; width: 26px; padding: 0; display: grid; place-items: center; }
+.waiting .w-acts .w-remove:hover { color: var(--danger); }
+.waiting .w-acts button:disabled { opacity: .5; cursor: default; }
+@media (max-width: 600px) { .waiting li { flex-wrap: wrap; } .waiting .w-acts { margin-left: auto; } }
 .status { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--muted); padding: 0 6px 10px; }
 /* "working": the mark's cursor, blinking in the brand lime, as on the docs site */
 .spinner { width: 3px; height: 15px; border-radius: 1px; background: var(--brand); box-shadow: 0 0 8px var(--brand-glow); animation: cursor-blink 1s steps(2, start) infinite; flex: none; margin: 0 5px; }
@@ -707,12 +718,7 @@ svg { width: 16px; height: 16px; flex: none; }
 .session-row { position: relative; }
 .session-row .session { padding-right: 34px; }
 .session-row .session[draggable="true"] { cursor: grab; }
-.session-beside { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--faint); opacity: 0; transition: opacity 0.12s, background 0.12s, color 0.12s; }
-.session-beside svg { width: 15px; height: 15px; }
-.session-row:hover .session-beside, .session-beside:focus-visible { opacity: 1; }
-.session-beside:hover { background: var(--hover); color: var(--text); }
 .session-row.beside-open .session { box-shadow: inset 2px 0 0 var(--brand); color: var(--text); }
-@media (hover: none) { .session-beside { opacity: 1; } }
 /* a side of another window: no sidebar of its own (the window's sidebar is beside it) */
 html.embedded .side, html.embedded .side-toggle, html.embedded .side-close { display: none !important; }
 html.embedded .app, html.embedded .app.side-hidden, html.embedded .app.with-details { grid-template-columns: minmax(0, 1fr); }
@@ -748,3 +754,37 @@ html.embedded .app, html.embedded .app.side-hidden, html.embedded .app.with-deta
 .tree > li:last-child::before { height: 15px; }
 .tree > li::after { content: ""; position: absolute; left: 0; top: 15px; width: 9px; border-top: 1px solid var(--line-strong); border-bottom-left-radius: 3px; }
 @media (prefers-reduced-motion: reduce) { .tree-chev { transition: none; } }
+
+/* the menu on a conversation in Recent */
+.session-more { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--faint); opacity: 0; transition: opacity 0.12s, background 0.12s, color 0.12s; }
+.session-more svg { width: 15px; height: 15px; }
+.session-row:hover .session-more, .session-more:focus-visible, .session-more[aria-expanded="true"] { opacity: 1; }
+.session-more:hover { background: var(--hover); color: var(--text); }
+@media (hover: none) { .session-more { opacity: 1; } }
+.side { position: relative; }
+.row-menu { position: absolute; z-index: 30; min-width: 170px; max-width: 240px; padding: 5px; display: grid; gap: 2px; background: var(--raised); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, .35); }
+.row-menu button { text-align: left; border: 0; background: none; color: var(--text); font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 7px; cursor: pointer; }
+.row-menu button:hover, .row-menu button:focus-visible { background: var(--hover); outline: none; }
+.row-menu button.danger { color: var(--danger); }
+.row-menu button:disabled { opacity: .45; cursor: default; }
+.row-menu-ask { margin: 4px 6px 6px; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.row-menu-ask code { font-size: 11.5px; }
+.row-menu-acts { display: flex; gap: 4px; }
+.rename-field { width: 100%; font: inherit; font-size: 13.5px; color: var(--text); background: var(--bg); border: 1px solid var(--line-strong); border-radius: 6px; padding: 2px 6px; }
+/* a long message typed while it worked, in the conversation: a few lines until it is opened */
+.echo-text.long { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; cursor: pointer; }
+.echo-text.long.open { display: block; cursor: auto; }
+/* a message you sent: Edit on hover, then an editor in place */
+.user { position: relative; }
+.user .u-edit { position: absolute; left: -34px; top: 4px; width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--faint); opacity: 0; transition: opacity 0.12s, color 0.12s, background 0.12s; cursor: pointer; }
+.user .u-edit svg { width: 14px; height: 14px; }
+.user:hover .u-edit, .user .u-edit:focus-visible { opacity: 1; }
+.user .u-edit:hover { color: var(--text); background: var(--hover); }
+@media (hover: none) { .user .u-edit { opacity: .6; } }
+.user.editing { width: min(100%, 680px); display: grid; gap: 8px; white-space: normal; }
+.user .u-field { width: 100%; min-height: 3em; resize: vertical; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line-strong); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; }
+.user .u-note { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.user .u-acts { display: flex; gap: 6px; justify-content: flex-end; }
+.user .u-acts button { font: inherit; font-size: 13px; border-radius: 8px; padding: 5px 12px; border: 1px solid var(--line); background: none; color: var(--text); cursor: pointer; }
+.user .u-acts .u-send { background: var(--text); color: var(--bg); border-color: var(--text); }
+.user .u-acts button:disabled { opacity: .5; cursor: default; }

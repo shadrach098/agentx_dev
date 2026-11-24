@@ -118,6 +118,18 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   for your answer); click one to go back. Recent is now a tree: the folder is the top row and its conversations hang
   from it on an L-shaped line, a conversation opened while another worked hanging from that one.
 
+- **More control in the app window.**
+  - A message you typed while it works now wraps inside the window (three lines, then **Show all**), even a long
+    paste, and has **Send now** (stop the current step, as Esc does, keeping what was done, and make it the next
+    message the agent reads), **Edit** (back into the message box) and ✕.
+  - Each conversation in Recent has a **⋯** menu: **Rename**, **Open beside** and **Delete**. Delete asks first, never
+    deletes an open conversation, and moves the file to a `deleted` folder next to your saved conversations, so it can
+    be put back.
+  - A message you sent can be edited: point at it, press the pencil, change it and press Send. The conversation goes
+    back to just before that message and the new text is sent. The conversation as it was is kept in Recent as
+    "… (before edit)". Files agentx changed stay changed. You can edit only while agentx waits for a message.
+  - A long message typed while it worked shows a few lines in the conversation; click it to see the rest.
+
 ### Changed
 
 - **The orb has new looks for thinking, team work and done** (app window). Thinking: a calm sphere turning slowly,

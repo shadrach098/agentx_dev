@@ -809,6 +809,41 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
             return f"unsent: {self._safe(taken[0], 60)}", True
         return f"unsent {len(taken)} messages", True
 
+    def send_now(self, which: int) -> Tuple[str, bool]:
+        """The window's "Send now" on waiting message ``which`` (1 = the first listed): it goes to the front of the
+        line, so that once the running step is stopped (the caller stops it, as Esc does: what was done is kept) it
+        is the next message the agent gets. A note waiting for a team's helper is taken back from the team first.
+        ``(what happened, whether it is now first in line)``."""
+        with self._typed_lock:
+            waiting = list(self._waiting)
+        if not 1 <= int(which) <= len(waiting):
+            return f"there is no message {which}: {len(waiting)} waiting", False
+        entry = waiting[int(which) - 1]
+        with self._typed_lock:
+            if not any(w is entry for w in self._waiting):
+                return "already read", False
+            kind = entry.get("for")
+            if kind == "team":
+                withdraw = entry.get("withdraw")
+                if withdraw is None or not withdraw():
+                    return "a helper is reading it already", False
+                entry["for"] = "later" if entry["text"].startswith("/") else "agent"
+            elif kind in ("agent", "later"):
+                if entry["text"] not in self._typed:
+                    return "already read", False
+                self._typed.remove(entry["text"])
+            else:
+                return "it is not a message yet", False
+            self._typed.insert(0, entry["text"])
+            self._waiting = [entry] + [w for w in self._waiting if w is not entry]
+        return "sent now", True
+
+    def _waiting_entries(self) -> List[Dict[str, str]]:
+        """For the window: each waiting line, what it waits for, and its kind (agent, team, later, recording...)."""
+        with self._typed_lock:
+            return [{"text": entry["text"], "where": self.WAITING_FOR.get(entry["for"], "waiting"),
+                     "kind": str(entry["for"])} for entry in self._waiting]
+
     def _take_back(self, entry: Dict[str, Any]) -> bool:
         if entry.get("for") == "recording":
             return self.cancel_live_voice()
