@@ -314,7 +314,7 @@ def test_fallback_command_rejects_paid_name(tmp_path):
 
 
 NO_ROOM = ("qwen3:8b's 8,192-token window leaves almost no room for the conversation; a variant with a larger window "
-           "fixes it: a Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create qwen3:8b-16k -f "
+           "fixes it: a Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create qwen3-16k -f "
            "Modelfile.")
 
 
@@ -323,7 +323,8 @@ def test_a_fallback_with_too_small_a_window_is_warned_about_but_set(tmp_path):
     fallback = LocalTools("qwen3:8b")
     fallback.context_window = 8192
     app, out, _, home = make_app(tmp_path, Lines("/fallback qwen3:8b", "/exit"),
-                                 {"claude-opus-5-5": primary, "qwen3:8b": fallback}, model_name="claude-opus-5-5")
+                                 {"claude-opus-5-5": primary, "qwen3:8b": fallback}, model_name="claude-opus-5-5",
+                                 local_tools="all")
     assert app.start() == 0
     assert out.getvalue().count(NO_ROOM) == 1
     assert app.fallback_name == "qwen3:8b"
@@ -332,7 +333,7 @@ def test_a_fallback_with_too_small_a_window_is_warned_about_but_set(tmp_path):
 def test_a_fallback_from_the_settings_with_too_small_a_window_is_warned_about_once(tmp_path):
     primary = paid("claude-opus-5-5")
     app, out, _, _ = started_on_claude(tmp_path, Lines("/clear", "/exit"), primary, LocalTools("qwen3:8b"),
-                                       local_context=8192)
+                                       local_context=8192, local_tools="all")
     assert app.start() == 0
     assert out.getvalue().count(NO_ROOM) == 1
 

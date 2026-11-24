@@ -837,6 +837,28 @@ class TestLocalModelsAndTheFallback:
             assert refused["ok"] is False and key in refused["message"], (key, refused)
         assert not (w.cwd / ".agentx" / "settings.json").exists()
 
+    def test_local_tools_is_shown_and_saved_in_your_own_file_only(self, window):
+        w = window(MockModel())
+        w.ready()
+        view = w.request("GET", "/api/settings")[1]
+        assert view["effective"]["localTools"] == "lean" and view["user"]["values"]["localTools"] is None
+        saved = w.request("POST", "/api/settings", {"scope": "user", "values": {"localTools": "all"}})[1]
+        assert saved["ok"] is True, saved
+        user_file = w.home / ".agentx" / "settings.json"
+        assert json.loads(user_file.read_text(encoding="utf-8"))["localTools"] == "all"
+        assert saved["view"]["user"]["values"]["localTools"] == "all"
+        assert saved["view"]["effective"]["localTools"] == "all"
+        saved = w.request("POST", "/api/settings", {"scope": "user", "values": {"localTools": ""}})[1]
+        assert saved["ok"] is True and "localTools" not in json.loads(user_file.read_text(encoding="utf-8"))
+        refused = w.request("POST", "/api/settings", {"scope": "user", "values": {"localTools": "most"}})[1]
+        assert refused == {"ok": False, "message": 'localTools must be "lean" or "all".'}
+        refused = w.request("POST", "/api/settings", {"scope": "folder", "values": {"localTools": "all"}})[1]
+        assert refused["ok"] is False and "localTools" in refused["message"]
+        assert not (w.cwd / ".agentx" / "settings.json").exists()
+        from agentx_dev.cli.webui import RESOURCES
+        script = (RESOURCES / "app.js").read_text(encoding="utf-8")
+        assert 'name="localTools"' in script and "values.localTools" in script
+
     def test_save_settings_refuses_paid_fallback(self, window):
         w = window(MockModel())
         w.ready()

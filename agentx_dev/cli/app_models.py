@@ -12,7 +12,8 @@ from urllib.parse import urlparse
 
 from agentx_dev.LocalModel import DEFAULT_WINDOW, Local, _hostport
 from agentx_dev.cli.models import (LOCAL_TYPO_HINT, SUGGESTED_MODELS, ModelError, describe_prompt, is_auto_note,
-                                   is_local_name, key_variable, local_copy_name, model_label, other_provider,
+                                   is_local_name, key_variable, larger_window, local_copy_name, model_label,
+                                   other_provider,
                                    parse_descriptions, parse_team_models, provider_for, runnable_local_names,
                                    team_models_line, usable_team_models)
 from agentx_dev.cli.models import _acceptable_name
@@ -32,7 +33,7 @@ FALLBACK_OFFER = ("{server} is running with {names}. Use one as the fallback whe
 NO_KEY = "no key"                     # the reason a conversation started on the fallback
 NO_ROOM = ("{name}'s {window:,}-token window leaves almost no room for the conversation; a variant with a larger "
            "window fixes it: a Modelfile with FROM {name} and PARAMETER num_ctx {target}, then ollama create "
-           "{name}-{k}k -f Modelfile.")
+           "{variant} -f Modelfile.")
 ROOM_SHARE = 0.25                     # below this share of a request left for the conversation, the window is too small
 HOSTED_LISTED = ("{server} lists {names}, but agentx treats names that start with gpt, claude or o and a digit as "
                  "hosted models, so they can't be used as local models. To use one here, give it a local name: "
@@ -134,15 +135,25 @@ class ModelCommands:
         self._warn_if_no_room(model)
         return model
 
+    def _lean_for(self, model: Any) -> bool:
+        """Whether requests to ``model`` are lean: a local model, unless ``localTools`` is "all". A lean request has
+        the core tools only (``lean_tools``: no web or MCP tools) and the short skill index, and names the tools
+        without repeating their descriptions (see ``AgentRunner(compact_prompt=)``)."""
+        return bool(getattr(model, "is_local", False)) and getattr(self, "local_tools", "lean") != "all"
+
     def _fixed_chars(self, model: Any) -> int:
         """The characters each request on ``model`` would carry before the conversation: agentx's base prompt (no
         AGENTX.md or work log), the runner's own prompt for the binding mode ``model`` gets, the skill index, and the
-        tools' specs."""
+        tools' specs; the lean request's when ``model`` gets one."""
         from agentx_dev import AgentRunner, AgentType
         from agentx_dev.cli.context import build_addendum
+        from agentx_dev.cli.tools import lean_tools
         base = build_addendum(self.cwd, self.home, max_context_chars=0, max_log_chars=0)
-        runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=list(self.tools), system_addendum=base,
-                             skills=self.skills, verbose=False, auto_cache=False, strict_tool_dispatch=True)
+        lean = self._lean_for(model)
+        runner = AgentRunner(model=model, agent=AgentType.ReAct,
+                             tools=lean_tools(self.tools) if lean else list(self.tools), system_addendum=base,
+                             skills=self.skills, verbose=False, auto_cache=False, strict_tool_dispatch=True,
+                             compact_prompt=lean)
         return runner.fixed_request_chars()
 
     def _warn_if_no_room(self, model: Any) -> None:
@@ -169,9 +180,9 @@ class ModelCommands:
             if key in self._room_warned:
                 return
             self._room_warned.add(key)
-        target = 16384 if window < 16384 else window * 2
+        target, variant = larger_window(str(model_label(model)), window)
         self._notice_from_any_thread(NO_ROOM.format(name=self._safe(model_label(model), 80), window=window,
-                                                    target=target, k=target // 1024))
+                                                    target=target, variant=self._safe(variant, 90)))
 
     @staticmethod
     def _window_of(model: Any) -> Optional[int]:

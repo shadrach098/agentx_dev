@@ -181,7 +181,7 @@ def test_settings_field_order_ends_with_problems_then_project_allow():
     names = [f.name for f in dataclasses.fields(Settings)]
     assert names == ["model", "mode", "add_dirs", "allow", "deny", "problems", "project_allow", "model_source",
                      "team_models", "team_models_source", "team_model_uses", "token_limit", "max_steps",
-                     "local_server", "fallback_model", "local_context"]
+                     "local_server", "fallback_model", "local_context", "local_tools"]
     assert Settings(None, None, [], [], [], ["p"]).project_allow == []
 
 
@@ -642,6 +642,30 @@ def test_a_bad_local_context_is_ignored_with_a_warning(tmp_path, value):
     s = _load_user(tmp_path, {"localContext": value})
     assert s.local_context is None
     assert any("localContext" in p and "ignored" in p for p in s.problems)
+
+
+def test_local_tools_is_lean_unless_your_file_says_all(tmp_path):
+    assert load_settings(tmp_path / "proj", tmp_path / "home").local_tools == "lean"
+    s = _load_user(tmp_path, {"localTools": "all"})
+    assert s.local_tools == "all" and s.problems == []
+    assert _load_user(tmp_path, {"localTools": "lean"}).local_tools == "lean"
+
+
+@pytest.mark.parametrize("value", ["ALL", "some", "", 1, None, ["all"]])
+def test_a_bad_local_tools_is_ignored_with_a_warning(tmp_path, value):
+    s = _load_user(tmp_path, {"localTools": value})
+    assert s.local_tools == "lean"
+    assert any("'localTools' must be \"lean\" or \"all\"; ignored" in p for p in s.problems), s.problems
+
+
+def test_a_project_file_cannot_set_local_tools(tmp_path):
+    home, project = tmp_path / "home", tmp_path / "proj"
+    put(user_settings_path(home), {"localTools": "lean"})
+    put(project_settings_path(project), {"localTools": "all"})
+    s = load_settings(project, home)
+    assert s.local_tools == "lean"
+    assert (f"localTools in {project_settings_path(project)} is ignored: only your own settings file can set it."
+            in s.problems)
 
 
 def test_a_remote_local_server_is_kept_and_flagged(tmp_path):

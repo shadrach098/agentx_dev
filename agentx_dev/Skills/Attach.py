@@ -89,10 +89,11 @@ class Skills:
         """Everything on disk now (no seeding): what ``/skills`` lists."""
         return SkillStore(self.roots())
 
-    def load(self, tools: Sequence[Any]) -> Loaded:
+    def load(self, tools: Sequence[Any], short: bool = False) -> Loaded:
         """Create the default skills if needed, then pick the skills that apply to ``tools``: a skill that names
         tools is listed only when at least one of them is present; the generated ``custom-tools`` skill covers
-        the tools no skill names."""
+        the tools no skill names. ``short``: the index in its short form (see ``index_block``); every chosen skill
+        can still be opened."""
         if self.dir is not None and self.seed:
             seed_defaults(self.dir)
         store = self.store()
@@ -109,7 +110,7 @@ class Skills:
         generated = custom_tools_skill(tools, {name for s in allowed for name in s.tools})
         if generated is not None and generated.name not in store.skills:
             chosen[generated.name] = generated
-        return Loaded(chosen, index_block([chosen[n] for n in sorted(chosen)]), problems)
+        return Loaded(chosen, index_block([chosen[n] for n in sorted(chosen)], short=short), problems)
 
     def held_back(self, skill: Skill) -> str:
         """Why ``skill`` is not offered ("" when it is): what ``check`` says."""
@@ -169,10 +170,12 @@ def make_use_skill_tool(skills: Dict[str, Skill],
     return tool
 
 
-def attach_skills(skills: Any, tools: Optional[Sequence[Any]], addendum: Optional[str]) -> Tuple[List[Any], Optional[str]]:
+def attach_skills(skills: Any, tools: Optional[Sequence[Any]], addendum: Optional[str],
+                  short: bool = False) -> Tuple[List[Any], Optional[str]]:
     """``(tools, addendum)`` for a runner that was given ``skills=``: the tools plus ``use_skill``, and the addendum
     with the skill index at the end. Unchanged when no skill applies. ``skills`` is ``True`` (the default folder)
-    or a ``Skills``."""
+    or a ``Skills``. ``short``: the index in its short form (at most 20 skills, one short line each); ``use_skill``
+    still opens every skill, listed or not."""
     if skills is True:
         skills = Skills.default()
     if not isinstance(skills, Skills):
@@ -181,7 +184,7 @@ def attach_skills(skills: Any, tools: Optional[Sequence[Any]], addendum: Optiona
     if any(t.name == USE_SKILL for t in tools):
         raise ValueError(f"a tool named {USE_SKILL!r} is already registered; skills= adds it itself")
     try:
-        loaded = skills.load(tools)
+        loaded = skills.load(tools, short=True) if short else skills.load(tools)     # an older load() still works
     except Exception as e:                  # skills are a help: whatever goes wrong, the agent still runs
         logger.warning("Skills could not be loaded (%s: %s); the agent runs without them", type(e).__name__, e)
         return tools, addendum

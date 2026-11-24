@@ -387,6 +387,26 @@ switch at once, as above.
 the fallback model and returns one (so it can read `fallback.context_window`). The sandbox hint and the skill index
 stay; `reset_fallback()` puts the first addendum back.
 
+**A smaller request for the fallback.** `fallback_tools=` gives the tools to use once the run has switched: a list,
+or a function that gets the fallback model and returns one (None: the same tools). At the switch the tools are
+replaced, the skill index is made again for them, and calls in the history to a tool the fallback does not have
+become text (`[earlier step] called web_fetch with ...`). `compact_prompt=` builds requests for a small window: the
+skill index lists at most 20 skills, one line of about 60 characters each, and says how many more there are
+(`use_skill` still opens every one); with native binding the system prompt names the tools without repeating their
+descriptions, which their specs carry. It is `True`, `False` (the default: requests as they always were) or a
+function that gets a model and says whether, asked for the runner's model when it is built and for the fallback at
+a switch:
+
+```python
+runner = AgentRunner(model=Claude(), agent=AgentType.ReAct, tools=tools, skills=True,
+                     fallback_model=Local("qwen3:8b"),
+                     fallback_tools=lambda fallback: [t for t in tools if t.name != "web_fetch"],
+                     compact_prompt=lambda model: getattr(model, "is_local", False))
+```
+
+`reset_fallback()` puts the runner's own tools back. A `fallback_tools` function that raises leaves the tools as
+they were.
+
 **How much of a window is already taken.** `runner.fixed_request_chars(model=None)` is the characters every request
 on that model carries before any conversation: the system prompt for the binding mode it gets and the function specs
 that mode sends. Divide by about 4 for tokens and compare with 85% of the window to see what is left.

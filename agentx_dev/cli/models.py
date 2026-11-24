@@ -186,6 +186,22 @@ def local_copy_name(name: str) -> str:
     return rest if rest and is_local_name(rest) else "local-" + str(name).replace(":", "-")
 
 
+LARGER_WINDOW_FLOOR = 16384      # the smallest window agentx suggests for a variant
+
+
+def larger_window(name: str, window: int) -> Tuple[int, str]:
+    """``(num_ctx, variant name)`` for the advice to make a variant of local model ``name`` with a larger window than
+    ``window``: double it (16,384 at least), named for ``ollama create`` as the name without its ``:tag`` plus
+    ``-<k>k`` (``qwen3-agent:latest`` at 16,384 gives ``(32768, "qwen3-agent-32k")``; a ``:`` in the name is not
+    allowed there)."""
+    target = LARGER_WINDOW_FLOOR if window < LARGER_WINDOW_FLOOR else window * 2
+    base = str(name)
+    head, colon, tag = base.rpartition(":")
+    if colon and head and "/" not in tag:
+        base = head
+    return target, f"{base}-{target // 1024}k"
+
+
 def _shown_name(name: str) -> str:
     """The name as a message shows it: at most 40 characters, repr-escaped so control characters stay visible
     as text and cannot reach the output raw."""

@@ -1762,7 +1762,7 @@ refuses one that cannot fit:
 
 ```text
 qwen3:8b's 8,192-token window is too small for this conversation. A variant with a larger window fixes it: a
-Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create qwen3:8b-16k -f Modelfile.
+Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create qwen3-16k -f Modelfile.
 ```
 
 Make that variant. Write a file named `Modelfile`:
@@ -1777,10 +1777,14 @@ ollama create qwen3-16k -f Modelfile
 agentx --model qwen3-16k
 ```
 
-The new name can be any local name you like (the message suggests `qwen3:8b-16k`; `qwen3-16k` is shorter to
-type). A name that starts with `gpt`, `claude` or `o` and a digit is not one: agentx reads it as a hosted model.
+The new name can be any local name you like; the message suggests the model's name without its `:tag` (Ollama
+does not take a `:` there) and the new size, and double the window the model has (16,384 at least), so
+`qwen3-agent:latest` at 16,384 gets `num_ctx 32768` and `qwen3-agent-32k`. A name that starts with `gpt`, `claude` or
+`o` and a digit is not one: agentx reads it as a hosted model.
 
 - On Ollama agentx reads the window the model is loaded with; on another server add `"localContext": 16384`.
+- agentx's own share of a local model's request is kept small already: the core tools and a short skill list
+  (`localTools`, see the CLI guide's [A lean request](../guides/cli.md#a-lean-request-on-a-local-model)).
 - A bigger window needs more memory. 16,384 is a good start for editing a few files; raise it if you see
   `working with less than the whole conversation` often.
 - The same in code: `Local(model="qwen3-16k")` after `check()`, or `AgentRunner(..., context_window=16384)`. A run

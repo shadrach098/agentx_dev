@@ -31,7 +31,7 @@ from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_
 from agentx_dev.cli.recall import ProjectMemory, auto_block, choose_embeddings, make_recall_tool, worth_a_note
 from agentx_dev.cli.models import (ANTHROPIC_KEY, OPENAI_KEY, ModelError, build_team_models, choose_model)
 from agentx_dev.cli.models import model_label as label_of
-from agentx_dev.cli.models import provider_for
+from agentx_dev.cli.models import larger_window, provider_for
 from agentx_dev.cli.safepaths import safe_location
 from agentx_dev.cli.sessions import (SessionInfo, find_session, latest_session, list_sessions, new_session_path,
                                      sessions_dir)
@@ -43,7 +43,7 @@ from agentx_dev.cli.typeahead import TypeAhead
 from agentx_dev.cli.ui_text import plain
 from agentx_dev.cli.team_record import TeamRecord
 from agentx_dev.cli.routing import ROUTE_THREAD, Route, routed_request
-from agentx_dev.cli.tools import build_tools, gate_tool
+from agentx_dev.cli.tools import build_tools, gate_tool, lean_tools
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker, status_line
 from agentx_dev.cli.app_keys import KeyCommands
@@ -280,7 +280,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
                  team_model_uses: Optional[Mapping[str, str]] = None,
                  token_limit: int = DEFAULT_TOKEN_LIMIT, max_steps: int = DEFAULT_MAX_STEPS,
                  auto_team: Optional[bool] = None, local_server: Optional[str] = None,
-                 fallback_model: Optional[str] = None, local_context: Optional[int] = None) -> None:
+                 fallback_model: Optional[str] = None, local_context: Optional[int] = None,
+                 local_tools: str = "lean") -> None:
         self.cwd = Path(cwd).resolve()
         self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
@@ -427,6 +428,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         self._fallback_unusable: Optional[str] = None   # a fallback name that could not be built: said once, not retried
         self._fallback_window_reader: Optional[threading.Thread] = None   # asks the server the fallback's window
         self.local_context = local_context              # "localContext": the window the user gave local models
+        self.local_tools = local_tools                  # "localTools": "lean" (the core tools only) or "all"
         # Set while the conversation runs on the fallback: {"model": the one that failed, "reason"}.
         self.fallback_from: Optional[Dict[str, str]] = None
         self._rebuild_after_turn = False         # the running turn moved to the fallback: a new runner after it
@@ -593,13 +595,18 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         # A local model's window (``model.context_window``, from its check) keeps each request inside it.
         # Claude or GPT falls back to the local ``fallbackModel`` when it fails for good; the binding mode is left to
         # the runner (no use_function_calling / bind_tools_natively), so it is chosen again for the fallback.
+        # A local model (the chat's, or the fallback's from the switch on) gets the lean request (``_lean_for``).
         if self._fitted_for(model) != self._addendum_for:
             self._build_instructions(model)
-        runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=[self._route_guarded(t) for t in self.tools],
+        tools = [self._route_guarded(t) for t in self.tools]
+        runner = AgentRunner(model=model, agent=AgentType.ReAct,
+                             tools=lean_tools(tools) if self._lean_for(model) else tools,
                              system_addendum=self.addendum,
                              max_iterations=self.max_steps, auto_cache=False, verbose=False, parallel_tool_workers=1,
                              skills=self.skills, trim_results=True, strict_tool_dispatch=True,
-                             fallback_model=self._fallback_for(model), fallback_addendum=self._fitted_addendum)
+                             fallback_model=self._fallback_for(model), fallback_addendum=self._fitted_addendum,
+                             compact_prompt=self._lean_for,
+                             fallback_tools=lambda fallback: lean_tools(tools) if self._lean_for(fallback) else None)
         # The skills THIS conversation's agent can open (what /<skill> and the `/` pop-up offer): taken from the
         # runner itself, so it is exactly what use_skill can read, and it follows /clear, /resume and a new model.
         tool = next((t for t in runner.tools if t.name == "use_skill"), None)
@@ -1021,9 +1028,10 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
 
     def _too_small(self, error: ContextWindowTooSmall) -> str:
         name = self._safe(self.model_label, 80)
+        target, variant = larger_window(str(self.model_label), error.window)
         return (f"{name}'s {error.window:,}-token window is too small for this conversation. A variant with a larger "
-                f"window fixes it: a Modelfile with FROM {name} and PARAMETER num_ctx 16384, then ollama create "
-                f"{name}-16k -f Modelfile.")
+                f"window fixes it: a Modelfile with FROM {name} and PARAMETER num_ctx {target}, then ollama create "
+                f"{self._safe(variant, 90)} -f Modelfile.")
 
     @staticmethod
     def _server_silent(model: Any, error: BaseException) -> str:
@@ -1650,7 +1658,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         self.progress.start("Planning the team job")
         try:
             text = run_team_job(task, model=self.model, tools=[*self.base_tools, *self._mcp_tools],
-                                addendum=self.addendum,
+                                addendum=self.addendum, lean_for=self._lean_for,
                                 notify=self._team_notify, ask_user=self._team_question,
                                 describe_error=self._safe, extra_models=extras,
                                 chat_use=self._use_of(self.model_label), skills=self.skills,
@@ -1838,7 +1846,8 @@ def device_app(template: "ChatApp", room: Any) -> "ChatApp":
                   team_models_source=settings.team_models_source, team_model_uses=settings.team_model_uses,
                   token_limit=settings.token_limit, max_steps=settings.max_steps,
                   model_factory=template.model_factory, env=getattr(template, "_given_env", None),
-                  fallback_model=template.fallback_name, local_context=template.local_context)
+                  fallback_model=template.fallback_name, local_context=template.local_context,
+                  local_tools=template.local_tools)
     app.auto_titles = bool(getattr(template, "auto_titles", False))
     app.local_models = template.local_models               # one list, filled by the main conversation's search
     return app
@@ -1896,7 +1905,7 @@ def _run(args: argparse.Namespace, home: Path, console: Console, read: Callable[
                       model_factory=functools.partial(choose_model, local_server=settings.local_server,
                                                       local_context=settings.local_context),
                       local_server=settings.local_server, fallback_model=settings.fallback_model,
-                      local_context=settings.local_context)
+                      local_context=settings.local_context, local_tools=settings.local_tools)
         app.auto_titles = True                         # a real run: conversations get a short title from the model
         app.remote_at_start = bool(getattr(args, "remote", False)) and not getattr(args, "ui", False)
         if wire is not None:

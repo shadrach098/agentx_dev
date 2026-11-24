@@ -294,10 +294,11 @@ def _fallback_from(app: Any) -> Optional[Dict[str, str]]:
 
 def _local_changes(scope: str, values: Mapping[str, Any]) -> "tuple[Dict[str, Any], str]":
     """The Settings panel's local model keys as changes for the user's file, or the reason they are refused (a
-    folder's file may not set them; a Claude or GPT name is not a fallback). A blank address or window removes the
-    key (the default applies); a blank fallback is ``""``, which turns it off and stops the offer."""
+    folder's file may not set them; a Claude or GPT name is not a fallback). A blank address, window or
+    ``localTools`` removes the key (the default applies); a blank fallback is ``""``, which turns it off and stops
+    the offer."""
     from agentx_dev.cli.models import is_local_name
-    from agentx_dev.cli.settings import LOCAL_SETTING_KEYS, local_server_address
+    from agentx_dev.cli.settings import LOCAL_SETTING_KEYS, LOCAL_TOOLS_CHOICES, local_server_address
 
     given = [key for key in LOCAL_SETTING_KEYS if key in values]
     if given and scope != "user":
@@ -325,6 +326,11 @@ def _local_changes(scope: str, values: Mapping[str, Any]) -> "tuple[Dict[str, An
             if not 1 <= number <= MAX_LOCAL_CONTEXT:
                 return {}, f"localContext must be between 1 and {MAX_LOCAL_CONTEXT:,}."
             changes["localContext"] = number
+    if "localTools" in values:
+        chosen = str(values.get("localTools") or "").strip()
+        if chosen and chosen not in LOCAL_TOOLS_CHOICES:
+            return {}, 'localTools must be "lean" or "all".'
+        changes["localTools"] = chosen or None
     return changes, ""
 
 
@@ -1361,7 +1367,8 @@ class WebFront:
                 "effective": {"model": effective.model, "mode": effective.mode, "allow": effective.allow,
                               "deny": effective.deny, "maxSteps": effective.max_steps,
                               "tokenLimit": effective.token_limit, "localServer": effective.local_server,
-                              "fallbackModel": effective.fallback_model, "localContext": effective.local_context},
+                              "fallbackModel": effective.fallback_model, "localContext": effective.local_context,
+                              "localTools": effective.local_tools},
                 "localModels": _local_models(self.app),
                 "problems": [_text(p, 300) for p in effective.problems], "modes": list(MODES_SHOWN)}
 

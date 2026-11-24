@@ -925,6 +925,11 @@ The instructions and your message alone do not fit the model's window. Make a va
 `Modelfile` with `FROM qwen3:8b` and `PARAMETER num_ctx 16384`, then `ollama create qwen3-16k -f Modelfile` (pattern
 49). For a server that does not report its window, set `"localContext"`. In code this is `ContextWindowTooSmall`.
 
+**A local model does not use the web tools or an MCP server's tools**
+By design: a request to a local model is lean (the core tools and a short skill list) so its window has room for the
+conversation. `"localTools": "all"` in `~/.agentx/settings.json` (or Settings > Local models) sends it everything,
+from the next start.
+
 **`qwen3:8b is working with less than the whole conversation: older tool results were shortened ...`**
 Not an error: the window is nearly full, so agentx stubbed old tool results (or summarised the conversation) to keep
 each request inside it. It says so once per conversation. A bigger window stops it.
@@ -935,7 +940,7 @@ saying so. `agentx` fits what it knows of the window; if it was told 8,192 and t
 `"localContext"` to the real number.
 
 **`localServer in <path> is ignored: only your own settings file can set it.`**
-A project's `.agentx/settings.json` set `localServer`, `fallbackModel` or `localContext`. Those are read from
+A project's `.agentx/settings.json` set `localServer`, `fallbackModel`, `localContext` or `localTools`. Those are read from
 `~/.agentx/settings.json` only, so a cloned project cannot send your conversation to a server it picked.
 
 **`Conversations on local models go to <host>.`**

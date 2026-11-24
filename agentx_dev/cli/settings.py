@@ -41,6 +41,7 @@ class Settings:
     local_server: str = DEFAULT_LOCAL_URL                  # "localServer": where local models run (user file only)
     fallback_model: Optional[str] = None                   # "fallbackModel": None = never set, "" = set to off
     local_context: Optional[int] = None                    # "localContext": the local model's window in tokens
+    local_tools: str = "lean"                              # "localTools": "lean" or "all" (what a local model gets)
 
 
 def user_settings_path(home: Path) -> Path:
@@ -341,7 +342,8 @@ def _read_token_limit(value: Any, path: Path, is_project: bool, settings: Settin
     settings.token_limit = value
 
 
-LOCAL_SETTING_KEYS = ("localServer", "fallbackModel", "localContext")
+LOCAL_SETTING_KEYS = ("localServer", "fallbackModel", "localContext", "localTools")
+LOCAL_TOOLS_CHOICES = ("lean", "all")
 _LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
@@ -358,8 +360,8 @@ def local_server_address(value: str) -> Optional[str]:
 
 
 def _read_local_settings(data: dict, path: Path, is_project: bool, settings: Settings) -> None:
-    """``localServer``, ``fallbackModel`` and ``localContext``: read from the user's own file only, so a cloned
-    project cannot send the conversation to another server."""
+    """``localServer``, ``fallbackModel``, ``localContext`` and ``localTools``: read from the user's own file only,
+    so a cloned project cannot send the conversation to another server."""
     for key in LOCAL_SETTING_KEYS:
         if key in data and is_project:
             settings.problems.append(f"{key} in {path} is ignored: only your own settings file can set it.")
@@ -393,6 +395,12 @@ def _read_local_settings(data: dict, path: Path, is_project: bool, settings: Set
                                      "tokens; ignored")
         else:
             settings.local_context = value
+    if "localTools" in data:
+        value = data["localTools"]
+        if value not in LOCAL_TOOLS_CHOICES:
+            settings.problems.append(f"settings file {path}: 'localTools' must be \"lean\" or \"all\"; ignored")
+        else:
+            settings.local_tools = value
 
 
 def load_settings(cwd: Path, home: Path) -> Settings:

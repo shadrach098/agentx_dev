@@ -57,7 +57,22 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **A local model's window in `agentx`.** On Ollama the check reads the loaded window; elsewhere `localContext`, else
   8,192. `AGENTX.md` and the work log are shortened to a third of it, old tool results are stubbed, the conversation is
   summarised at 60% of the window, one notice says when that happened, and when nothing fits the turn stops with the
-  Modelfile recipe (`PARAMETER num_ctx 16384`).
+  Modelfile recipe: double the window (16,384 at least) and a name Ollama accepts, the model's without its `:tag`
+  (`qwen3-agent:latest` at 16,384 gives `PARAMETER num_ctx 32768` and `ollama create qwen3-agent-32k`).
+- **`agentx --ui` writes `~/.agentx/agentx.log` from the start,** as the terminal does: the log is set up before the
+  window's server starts.
+- **A lean request on a local model in `agentx` (`localTools`).** A chat on a local model, the fallback from the
+  turn that switches to it, and team helpers on a local model or the fallback get the core tools only (file tools,
+  shell, Python, the team tool, `recall`, `use_skill`; no web or MCP tools), a skill list of at most 20 skills with
+  short descriptions (`use_skill` still opens every skill) and the tools named once in the instructions. With 13
+  built-in tools and 52 skills agentx's fixed share of a request goes from 29,600 to about 17,500 characters, from 53%
+  to 31% of a 16,384-token window. `"localTools": "all"` (your own settings file only, also in Settings) sends the
+  whole request; Claude and GPT requests are unchanged. The "almost no room" estimate measures the lean request.
+- **`AgentRunner(fallback_tools=..., compact_prompt=...)`.** The tools once the run has moved to the fallback (a list
+  or a function of the fallback model; the skill index is made again for them and calls to a tool the fallback does
+  not have become text), and requests built for a small window (a short skill index, the tools named once with
+  native binding), for every model or as a function of the model. `index_block(skills, short=True)` and
+  `attach_skills(..., short=True)` give the short index.
 - **Docs:** [Local models](docs/concepts/models.md#local-models), the CLI guide's [Local models and the
   fallback](docs/guides/cli.md#local-models-and-the-fallback), cookbook patterns 46 to 49, the FAQ,
   troubleshooting, What's new and Upgrading.

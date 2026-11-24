@@ -32,6 +32,7 @@ from agentx_dev.Runner.AgentRun import CHARS_PER_TOKEN, REQUEST_SHARE, _FRAMEWOR
 from agentx_dev.Runner.Fallback import FallbackFailed, fails_for_good
 from agentx_dev.cli.models import HelperModel, model_label, provider_for, without_auto_prefix
 from agentx_dev.cli.blind_models import BlindModelRoster
+from agentx_dev.cli.tools import lean_tools
 from agentx_dev.cli.ui import summarize_result
 from agentx_dev.Runner.Trim import TrimPolicy, cut_text
 from agentx_dev._supervisor.steps import _format_results_block
@@ -626,6 +627,9 @@ ROLES: Tuple[Role, ...] = (
 )
 
 
+# Told to a helper on the lean request whose role has the web tools: they are left out (see lean_tools).
+LEAN_NO_WEB = (" On this model web_search and web_fetch are not available: work from the project's files, and say what "
+               "would need looking up online.")
 SKILLS_SENTENCE = ("The supervisor has already planned the work: open a skill only when your step names it or it "
                    "covers exactly this kind of step, not a general one about how to start or plan.")
 NO_TEAM_SENTENCE = ("You cannot start a team job; ignore any instruction above to call start_team_job and do "
@@ -695,10 +699,17 @@ class _HelperRunner(AgentRunner):
         step = _Step(self.helper_name, job, status)
         settings_args, settings = self._settings
         settings = {**settings, "tools": [_step_tool(tool, step) for tool in settings.get("tools") or []]}
+        lean = settings.get("fallback_tools")       # the fallback's own (lean) tools, also each step's own
+        if lean is not None:
+            settings["fallback_tools"] = _step_tools_for(lean, step)
         fallback = settings.get("fallback_model")
         earlier = job.failed_for_good(self.model) if fallback is not None else None
         if earlier is not None:                     # its model failed for good in an earlier step: start on the fallback
             settings["model"], settings["fallback_model"] = fallback, None
+            if lean is not None:
+                own = settings.pop("fallback_tools")(fallback)
+                if own is not None:
+                    settings["tools"] = own
             fitted = settings.get("fallback_addendum")      # with the instructions fitted to its window
             if fitted is not None:
                 try:
@@ -744,12 +755,29 @@ class _HelperRunner(AgentRunner):
         return _partial_if_out_of_steps(completion)
 
 
+def _step_tools_for(tools_for: Callable[[Any], Optional[Sequence[Any]]], step: "_Step") -> Callable[[Any], Any]:
+    """``tools_for`` (a runner's ``fallback_tools``) giving the tools wrapped for ``step``, like its other tools."""
+    def wrapped(model: Any) -> Optional[List[Any]]:
+        tools = tools_for(model)
+        return None if tools is None else [_step_tool(tool, step) for tool in tools]
+    return wrapped
+
+
+def _without_web_note(role: Role, kept: Sequence[Any]) -> str:
+    """The line a lean helper is told when its role's web tools were left out, else ""."""
+    names = {tool.name for tool in kept}
+    return LEAN_NO_WEB if any(tool in role.tools for tool in WEB_TOOLS) and not names & set(WEB_TOOLS) else ""
+
+
 def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
             describe_error: Callable[[BaseException], str], skills: Any = None,
             name: str = "", every_mcp_tool: bool = True, fallback_model: Any = None,
-            addendum_for: Optional[Callable[[Any], str]] = None) -> AgentRunner:
+            addendum_for: Optional[Callable[[Any], str]] = None,
+            lean_for: Optional[Callable[[Any], bool]] = None) -> AgentRunner:
     """One helper. ``addendum_for(model)`` (when given) is the chat's addendum fitted to a local model's window: a
-    helper on a local model gets it, and so does a helper that moves to the fallback."""
+    helper on a local model gets it, and so does a helper that moves to the fallback. ``lean_for(model)`` says when a
+    model gets the lean request (the core tools only, the short skill index: see ``lean_tools``): a helper on such a
+    model, and a helper that moves to such a fallback."""
     chosen = [by_name[tool] for tool in role.tools if tool in by_name]
     if every_mcp_tool:
         # The user's MCP tools go to every built-in helper: what they do is up to the server, and each asks first.
@@ -757,6 +785,16 @@ def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
     # The binding mode is left to the runner (no bind_tools_natively / use_function_calling), so a helper on a local
     # model, or one that moved to the fallback, binds its tools the way that model needs.
     local = getattr(model, "is_local", False)
+
+    def is_lean(candidate: Any) -> bool:
+        try:
+            return lean_for is not None and bool(lean_for(candidate))
+        except Exception:                           # the whole request, as before
+            return False
+
+    def tools_for(candidate: Any) -> List[Any]:
+        return lean_tools(chosen) if is_lean(candidate) else chosen
+
     own = addendum
     if local and addendum_for is not None:
         try:
@@ -766,9 +804,15 @@ def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
     on_fallback = None
     if addendum_for is not None and not local and fallback_model is not None:
         def on_fallback(fallback: Any) -> str:
-            return (addendum_for(fallback) or "") + role_prompt(role)
-    return _HelperRunner(model=model, agent=AgentType.ReAct, tools=chosen,
-                         system_addendum=(own or "") + role_prompt(role), fallback_addendum=on_fallback,
+            return (addendum_for(fallback) or "") + role_prompt(role) + _without_web_note(role, tools_for(fallback))
+    fallback_tools = None
+    if lean_for is not None and not local and fallback_model is not None:
+        def fallback_tools(fallback: Any) -> Optional[List[Any]]:
+            return lean_tools(chosen) if is_lean(fallback) else None
+    tools = tools_for(model)
+    return _HelperRunner(model=model, agent=AgentType.ReAct, tools=tools,
+                         system_addendum=(own or "") + role_prompt(role) + _without_web_note(role, tools),
+                         fallback_addendum=on_fallback, fallback_tools=fallback_tools, compact_prompt=is_lean,
                          max_iterations=HELPER_STEPS, auto_cache=False, verbose=False,
                          parallel_tool_workers=1, describe_error=describe_error, skills=skills,
                          trim_results=HELPER_TRIM, helper_name=name or role.name, strict_tool_dispatch=True,
@@ -780,7 +824,8 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
                   extra_models: Sequence[HelperModel] = (), chat_use: str = "",
                   skills: Any = None, roster: Optional[BlindModelRoster] = None,
                   fallback_model: Any = None,
-                  addendum_for: Optional[Callable[[Any], str]] = None) -> Dict[str, Tuple[str, AgentRunner]]:
+                  addendum_for: Optional[Callable[[Any], str]] = None,
+                  lean_for: Optional[Callable[[Any], bool]] = None) -> Dict[str, Tuple[str, AgentRunner]]:
     """One ``AgentRunner`` per role. Without ``extra_models`` they run on ``model`` and are named ``explorer``,
     ``coder``, ``runner`` with the roles' own descriptions. With extra models every copy names its model, the
     chat's own included (``coder@<model>``), and every description says the same thing apart from the model and
@@ -792,7 +837,7 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
     helper's run raises reaches the Supervisor as ``describe_error(error)`` only. Every helper whose model is not
     local falls back to ``fallback_model`` (a local model, or None) when its model fails for good: the step carries
     on there, and its ``StepStatus.fallback`` says so. ``addendum_for(model)`` fits the addendum to a local model's
-    window (see ``_helper``)."""
+    window, and ``lean_for(model)`` says which models get the lean request (see ``_helper``)."""
     by_name = {tool.name: tool for tool in tools}
     extras = list(extra_models)
     helpers: Dict[str, Tuple[str, AgentRunner]] = {}
@@ -803,7 +848,7 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
                 name = f"{role.name}@{model_id}" if extras else role.name
                 runner = _helper(role, roster.resolve(model_id), by_name, addendum,
                                  describe_error, skills, name, fallback_model=fallback_model,
-                                 addendum_for=addendum_for)
+                                 addendum_for=addendum_for, lean_for=lean_for)
                 runner._blind_errors = True
                 runner.model_id = model_id
                 helpers[name] = (role.description + note, runner)
@@ -812,7 +857,8 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
         for role in ROLES:
             helpers[role.name] = (role.description,
                                   _helper(role, model, by_name, addendum, describe_error, skills, role.name,
-                                          fallback_model=fallback_model, addendum_for=addendum_for))
+                                          fallback_model=fallback_model, addendum_for=addendum_for,
+                                          lean_for=lean_for))
         return helpers
     for helper_model in [HelperModel(model_label(model), model, chat_use), *extras]:
         note = MODEL_NOTE.format(model=helper_model.name,
@@ -822,7 +868,7 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
             name = f"{role.name}@{helper_model.name}"
             helpers[name] = (role.description + note,
                              _helper(role, helper_model.model, by_name, addendum, describe_error, skills, name,
-                                     fallback_model=fallback_model, addendum_for=addendum_for))
+                                     fallback_model=fallback_model, addendum_for=addendum_for, lean_for=lean_for))
     return helpers
 
 
@@ -1540,7 +1586,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                  extra_models: Sequence[HelperModel] = (), chat_use: str = "", skills: Any = None,
                  step_tokens: int = 0, closed: Optional[Callable[[], Any]] = None, record: Any = None,
                  lane: Optional[TeamLane] = None, fallback_model: Any = None,
-                 addendum_for: Optional[Callable[[Any], str]] = None) -> str:
+                 addendum_for: Optional[Callable[[Any], str]] = None,
+                 lean_for: Optional[Callable[[Any], bool]] = None) -> str:
     """Plan ``task``, run the helpers (read-only steps side by side, any other step alone) and return the result
     text. Progress goes to ``notify`` and questions to ``ask_user``, both on the calling thread. ``extra_models``
     adds the roles on other models (see ``build_helpers``); the planner stays on ``model``. ``step_tokens`` is each
@@ -1551,7 +1598,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
     ``"fallback_reason"`` for the screen, and the result text marks the step without naming a model. The planner and
     the summary move to the fallback too (the result's first line says when the summary was written there), and a
     summary that cannot be written leaves the steps' own results. ``addendum_for(model)`` is ``addendum`` fitted to a
-    local model's window, for helpers on a local model and helpers that move to the fallback.
+    local model's window, for helpers on a local model and helpers that move to the fallback; ``lean_for(model)`` says
+    which models' helpers get the lean request (see ``_helper``).
 
     Ctrl+C (``KeyboardInterrupt``) and ``SystemExit`` propagate, with the Supervisor's stream closed; any other
     error becomes a short failure result for the main agent to read."""
@@ -1598,7 +1646,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
         roster = BlindModelRoster(model, extra_models, chat_use=chat_use)
         helpers = build_helpers(model, tools, addendum, describe_error, extra_models=extra_models,
                                 chat_use=chat_use, skills=skills, roster=roster, fallback_model=fallback_model,
-                                addendum_for=addendum_for)
+                                addendum_for=addendum_for, lean_for=lean_for)
         for _, runner in helpers.values():
             runner.job = job
         by_name = {tool.name: tool for tool in tools}
@@ -1610,7 +1658,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             chosen = roster.resolve(model_name)
             shown = f"{name}@{model_label(chosen)}" if extra_models and model_name else name
             runner = _helper(role, chosen, by_name, addendum, describe_error, skills, shown,
-                             every_mcp_tool=False, fallback_model=fallback_model, addendum_for=addendum_for)
+                             every_mcp_tool=False, fallback_model=fallback_model, addendum_for=addendum_for,
+                             lean_for=lean_for)
             runner._blind_errors = True
             runner.model_id = model_name
             runner.job = job

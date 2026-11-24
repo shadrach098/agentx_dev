@@ -262,7 +262,7 @@ Two optional files, both JSON:
   folder `agentx` writes it for you with the model in use, and `/model <name> --folder` changes it (see
   [Project memory](#project-memory)).
 
-**Local models.** `localServer`, `fallbackModel` and `localContext` live in your own file only; see [Local models and the fallback](#local-models-and-the-fallback).
+**Local models.** `localServer`, `fallbackModel`, `localContext` and `localTools` live in your own file only; see [Local models and the fallback](#local-models-and-the-fallback).
 
 **Switching providers.** If the saved model's key is gone but the other provider's key is set (you moved from GPT
 to Claude, say), `agentx` does not just stop: it lists that provider's models (for Claude: `claude-opus-5-5`,
@@ -310,7 +310,7 @@ A repository you just cloned can contain `.agentx/settings.json`. So:
 
 - A project `mode` of `accept-edits` or `auto` is **ignored, with a warning**. Set it in your own settings or with `--mode`. `plan` and `default` from the project are honoured.
 - A project `addDirs` entry that resolves outside the project folder is **ignored, with a warning**. Your own file and `--add-dir` are not restricted.
-- A project `localServer`, `fallbackModel` or `localContext` is **ignored, with a warning** (`localServer in <path> is ignored: only your own settings file can set it.`): it could send your conversation, files included, to a server the project chooses. A project may name a local model as its `model`; a name is harmless.
+- A project `localServer`, `fallbackModel`, `localContext` or `localTools` is **ignored, with a warning** (`localServer in <path> is ignored: only your own settings file can set it.`): it could send your conversation, files included, to a server the project chooses. A project may name a local model as its `model`; a name is harmless.
 - A project `teamModels` list is **announced at startup**, with any notes on what each model is for (`This project's settings let team helpers also use: gpt-5.5 (fast reading), ...`), with no question: it lets team jobs send work to another model or provider. `/team-models clear` turns it off for the session. See [Helper models](#helper-models).
 - Allow rules that come from the project are **listed at startup and you are asked once**: `Honour these project rules? [y/N]`. Only `y` or `yes` keeps them. Bare Enter, Ctrl+D, Ctrl+C or an answer that stays unrecognised after one more try drops them for this session. A repository's `"allow": ["write_file", "edit_file"]` is `accept-edits` under another name, and `"allow": ["run_shell"]` runs every command that is not compound, so they are not taken on trust. Your own allow rules are never affected. The project's **deny** rules are always kept: they only restrict.
 
@@ -430,7 +430,7 @@ is shown as Thinking.
 
 ### Settings
 
-Three keys, read from **your own** `~/.agentx/settings.json` (also in the app window's **Settings**, under **Local
+Four keys, read from **your own** `~/.agentx/settings.json` (also in the app window's **Settings**, under **Local
 models**, in the all-folders settings):
 
 | Key | Default | Meaning |
@@ -438,6 +438,7 @@ models**, in the all-folders settings):
 | `localServer` | `http://localhost:11434/v1` | The OpenAI-compatible address of the local server. `localhost:1234` is read as `http://localhost:1234/v1`. LM Studio is `http://localhost:1234/v1`. |
 | `fallbackModel` | none | The local model to carry on with when Claude or GPT fails for good. Empty turns it off. |
 | `localContext` | what the server says | The local model's context window in tokens, for a server that does not say (see [The context window](#the-context-window-of-a-local-model)). |
+| `localTools` | `"lean"` | What a request to a local model carries: `"lean"`, the core tools and a short skill list (see [A lean request](#a-lean-request-on-a-local-model)), or `"all"`, the whole request Claude and GPT get. |
 
 ```json
 {
@@ -457,8 +458,8 @@ models**, in the all-folders settings):
 - **The fallback must be local.** A `claude*`, `gpt*` or `o<digit>*` name is ignored when read (`fallbackModel must
   be a local model; gpt-6.1-sol is not.`) and refused by `/fallback` (`The fallback must be a local model; ... is
   not.`).
-- `localServer` that is not a web address, and a `localContext` that is not a positive whole number, are ignored
-  with a warning.
+- `localServer` that is not a web address, a `localContext` that is not a positive whole number, and a
+  `localTools` that is not `"lean"` or `"all"`, are ignored with a warning.
 
 ### The fallback
 
@@ -559,14 +560,17 @@ request inside the window, and says when it had to:
 3. The conversation is summarised once it passes about 60% of the window, between two steps of a turn if need be.
 4. If the instructions and your newest message alone do not fit, the request is not sent. The turn stops with
    `qwen3:8b's 8,192-token window is too small for this conversation. A variant with a larger window fixes it: a
-   Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create qwen3:8b-16k -f Modelfile.`
+   Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create qwen3-16k -f Modelfile.` The
+   suggested window is double the one it has (16,384 at least), and the name is the model's without its `:tag`
+   (Ollama does not accept a `:` there): `qwen3-agent:latest` at 16,384 gets `num_ctx 32768` and `qwen3-agent-32k`.
 
 **A window too small to work in.** When a local model is chosen or checked (`/model`, `/fallback`, the
 `fallbackModel` from your settings once its window is known), `agentx` estimates its own share of each request
-(the base prompt and the tool definitions). If less than a quarter of the request would be left for the
-conversation, you get one warning, and the model is still used: `qwen3:8b's 8,192-token window leaves almost no
-room for the conversation; a variant with a larger window fixes it: a Modelfile with FROM qwen3:8b and PARAMETER
-num_ctx 16384, then ollama create qwen3:8b-16k -f Modelfile.`
+(the base prompt, the skill list and the tool definitions, as the [lean request](#a-lean-request-on-a-local-model)
+has them unless `localTools` is `"all"`). If less than a quarter of the request would be left for the conversation,
+you get one warning, and the model is still used: `qwen3:8b's 4,096-token window leaves almost no room for the
+conversation; a variant with a larger window fixes it: a Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384,
+then ollama create qwen3-16k -f Modelfile.`
 
 Once per conversation, when steps 1 to 3 had to act, you get one notice: `qwen3:8b is working with less than the
 whole conversation: older tool results were shortened to fit its 8,192-token window.` (or `the earlier
@@ -588,8 +592,31 @@ PARAMETER num_ctx 16384
 ollama create qwen3-16k -f Modelfile
 ```
 
-(the new name can be any local name: the messages suggest `qwen3:8b-16k`), then `agentx --model qwen3-16k`, and add `"localContext": 16384` if you also want it on a server that does not
+(the new name can be any local name: the messages suggest `qwen3-16k`), then `agentx --model qwen3-16k`, and add `"localContext": 16384` if you also want it on a server that does not
 report it. A larger window needs more memory.
+
+### A lean request on a local model
+
+`agentx`'s own part of every request (its instructions, the skill list and the tool definitions) is about 30,000
+characters with the built-in tools and 50 skills: half of what a 16,384-token window can take, before `AGENTX.md`,
+MCP tools or any conversation. So a request to a local model is lean (`localTools` `"lean"`, the default):
+
+- **The core tools only:** the file tools (`read_path`, `list_directory`, `find_files`, `grep`, `write_file`,
+  `edit_file`, `delete_path`, `move_file`), `run_shell`, `run_python`, the team tool, `recall` and `use_skill`.
+  `web_search` and `web_fetch` are left out (a local model is usually chosen to keep the work on this computer), and
+  so are the MCP servers' tools.
+- **A short skill list:** at most 20 skills, the built-in ones first, then yours, each with the start of its
+  description, and a last line saying how many more there are. `use_skill` still opens every skill by name, listed or
+  not (and still only the ones you approved); a name it does not know gets the list of all of them.
+- **The tools named once:** the instructions name the tools; their descriptions come with the tool definitions, not
+  a second time in the instructions.
+
+With 13 built-in tools and 52 skills that is about 17,500 characters instead of 29,600 (19,400 instead of 32,600
+with the team tool and `recall`), about a third of a 16,384-token window instead of over half. It applies to a chat on a local model, from the turn that moves to the
+fallback on, and to team helpers on a local model or moving to the fallback (a helper whose role searches the web is
+told the web tools are not there). Claude and GPT get the whole request, exactly as before. `"localTools": "all"` gives
+a local model the whole request too, web and MCP tools included; it is saved in Settings and used from the next
+start.
 
 ## MCP servers
 
@@ -703,7 +730,7 @@ Two things to know about the files on disk. The session files hold the full hist
 
 ### The log
 
-When a tool raises an error, the framework logs it with a full traceback. `agentx` keeps those messages off the screen (they can quote text the model chose, escape sequences included) and writes warnings and errors to `~/.agentx/agentx.log` instead: a rotating file, 512 KB with two older copies kept, control characters written out as `\x1b`. It is best effort: if the folder cannot be written there is simply no log. The log can contain tool errors, which quote paths, commands and file names from your project, so treat it like the session files.
+When a tool raises an error, the framework logs it with a full traceback. `agentx` keeps those messages off the screen (they can quote text the model chose, escape sequences included) and writes warnings and errors to `~/.agentx/agentx.log` instead (in the terminal and in the app window, `agentx --ui`, from before the window opens): a rotating file, 512 KB with two older copies kept, control characters written out as `\x1b`. It is best effort: if the folder cannot be written there is simply no log. The log can contain tool errors, which quote paths, commands and file names from your project, so treat it like the session files.
 
 ## Slash commands
 

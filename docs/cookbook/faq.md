@@ -857,7 +857,8 @@ local list and says so once. Give the model a local name and use that: `ollama c
 ## Why does a small local model need a bigger window? *(3.10)*
 
 Ollama loads many models with a window of 8,192 tokens, and agentx's instructions plus its tools already take a good
-part of that. A request longer than the window loses its start, silently, and the start is where the instructions
+part of that (less on a local model: its requests are lean, with the core tools and a short skill list, unless
+`localTools` is `"all"`). A request longer than the window loses its start, silently, and the start is where the instructions
 are. agentx keeps requests inside the window (it shortens `AGENTX.md` and the log, stubs old tool results, summarises
 the conversation) and refuses one that cannot fit. For real work make a variant with `PARAMETER num_ctx 16384`
 (pattern 49); on a server that does not report its window, set `"localContext"`. When a model's window leaves less

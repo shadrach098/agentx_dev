@@ -1702,6 +1702,8 @@ class AgentRunner(PersistenceMixin):
         fallback_model: Optional[BaseChatModel] = None,
         context_window: Optional[int] = None,
         fallback_addendum: Optional[Any] = None,
+        fallback_tools: Optional[Any] = None,
+        compact_prompt: Any = False,
     ):
         """Construct an ``AgentRunner``.
 
@@ -1906,6 +1908,26 @@ class AgentRunner(PersistenceMixin):
                 so it can be fitted to the fallback's window). The
                 sandbox hint and the skill index stay. Default ``None``:
                 the same addendum as before the switch.
+            fallback_tools: The tools to use once the run has moved to
+                ``fallback_model`` (a list, or a function that gets the
+                fallback model and returns one, or None for "the same
+                tools"), so a small model can get a smaller request. At
+                the switch the tools are replaced, the skill index is
+                made again for them, and calls in the history to a tool
+                the fallback does not have become text. One that fails
+                leaves the tools as they were. ``reset_fallback()`` puts
+                the runner's own tools back. Default ``None``: the same
+                tools.
+            compact_prompt: Build requests for a small window: the skill
+                index lists at most 20 skills, one short line each
+                (``use_skill`` still opens every skill), and with native
+                binding the system prompt names the tools without
+                repeating their descriptions (their specs carry them).
+                ``True``, ``False``, or a function that gets a model and
+                says whether, asked for ``model`` when the runner is
+                built and for ``fallback_model`` at a switch, so a
+                fallback can be compact while the main model is not.
+                Default ``False``: requests as they always were.
             context_window: The context window of ``model``, in tokens.
                 Default ``None``: the model's own ``context_window``
                 (a ``Local`` model knows it after ``check()``). After a
@@ -1984,16 +2006,26 @@ class AgentRunner(PersistenceMixin):
         # index after it), so the fallback's own addendum can take its place at a switch.
         caller_addendum = system_addendum
         skill_index: Optional[str] = None
-        if skills is not None and skills is not False:
-            # Once, here: the tool list and the skill index stay the same for the life of the runner.
+        self.compact_prompt = compact_prompt
+        self._compact = self._compact_for(model)
+        self._skills = skills if skills is not None and skills is not False else None
+        self._base_tools = list(tools)          # the tools before use_skill (fallback_tools replaces them)
+        self._added_tools: List[Any] = []       # tools add_tool registered since (kept at a switch)
+        if self._skills is not None:
+            # Once, here: the tool list and the skill index stay the same for the life of the runner (until a switch
+            # to the fallback brings its own tools or prompt form, see fallback_tools and compact_prompt).
             from agentx_dev.Skills import attach_skills
-            tools, skill_index = attach_skills(skills, tools, None)
+            tools, skill_index = attach_skills(skills, tools, None, short=self._compact)
             system_addendum = (f"{system_addendum}\n\n{skill_index}" if system_addendum and skill_index
                                else skill_index or system_addendum)
         self._sandbox_hint = auto_sandbox_hint
         self._skill_index = skill_index
+        self._caller_addendum = caller_addendum
         self.fallback_addendum = fallback_addendum
+        self.fallback_tools = fallback_tools
         self._primary_addendum: Optional[str] = None
+        self._primary_caller: Optional[str] = None
+        self._primary_setup: Optional[Dict[str, Any]] = None   # the tools and prompt form before a switch
 
         self.Query = ""
         self.Agent = Agent
@@ -2348,6 +2380,7 @@ class AgentRunner(PersistenceMixin):
             raise ValueError(f"tool '{tool.name}' is already registered")
         self.registry._register_one(tool)
         self.tools = list(self.tools) + [tool]
+        self._added_tools.append(tool)
         self._tool_prompt_block = self.registry.prompt_block()
         self._tool_names_block = self.registry.names_block()
 
@@ -2355,6 +2388,17 @@ class AgentRunner(PersistenceMixin):
         """Remove a tool by name (a no-op for unknown names)."""
         self.registry.unregister(name)
         self.tools = [t for t in self.tools if t.name != name]
+        self._added_tools = [t for t in self._added_tools if t.name != name]
+        self._tool_prompt_block = self.registry.prompt_block()
+        self._tool_names_block = self.registry.names_block()
+
+    def _set_tools(self, tools: Sequence[Any]) -> None:
+        """Register exactly ``tools`` (in place of the ones registered now), keeping the registry's own settings."""
+        for name in list(self.registry.names):
+            self.registry.unregister(name)
+        for tool in tools:
+            self.registry._register_one(tool)
+        self.tools = list(tools)
         self._tool_prompt_block = self.registry.prompt_block()
         self._tool_names_block = self.registry.names_block()
 
@@ -2407,12 +2451,14 @@ class AgentRunner(PersistenceMixin):
             # native tool interface, and models often produce a garbled
             # mix of both. Use a minimal system prompt instead: brief
             # role, tool list for context, and the caller's addendum.
+            # A compact request (compact_prompt=) names the tools only: their specs carry the descriptions.
+            listed = self._tool_names_block if self._compact else self._tool_prompt_block
             system_prompt = (
                 "You are an autonomous assistant. You have the following "
                 "tools available (called via the platform's native tool "
                 "interface -- do NOT emit JSON with 'action' / "
                 "'action_input' fields; the tools are already bound):\n"
-                f"{self._tool_prompt_block}\n\n"
+                f"{listed}\n\n"
                 "Call the 'respond' tool with your final answer when you "
                 "have enough information."
             )
@@ -2461,6 +2507,7 @@ class AgentRunner(PersistenceMixin):
         self._primary_model = self.model
         self._use_model(self.fallback_model)
         self.fallback_used = used
+        self._use_fallback_tools()
         self._use_fallback_addendum()
         history[0] = {"role": "system", "content": self._system_prompt(user_input)}
         history.append({"role": "user", "content": _FALLBACK_NOTE.format(
@@ -2472,6 +2519,48 @@ class AgentRunner(PersistenceMixin):
         """The whole addendum for a caller's ``addendum``: the sandbox hint, it, then the skill index."""
         parts = [part for part in (self._sandbox_hint, addendum, self._skill_index) if part]
         return "\n\n".join(parts) if parts else addendum
+
+    def _compact_for(self, model: Any) -> bool:
+        """Whether requests on ``model`` are compact (``compact_prompt=``). A function that fails says no."""
+        wanted = self.compact_prompt
+        if not callable(wanted):
+            return bool(wanted)
+        try:
+            return bool(wanted(model))
+        except Exception:
+            logger.warning("compact_prompt could not be asked; the request is the full one", exc_info=True)
+            return False
+
+    def _use_fallback_tools(self) -> None:
+        """At the switch: the tools ``fallback_tools`` gives the fallback, and the prompt form ``compact_prompt`` says
+        for it. The skill index is made again for them; the tools ``add_tool`` registered stay. Nothing changes when
+        neither differs, and a ``fallback_tools`` that fails (or returns None) leaves the tools as they are."""
+        compact = self._compact_for(self.fallback_model)
+        wanted, base = self.fallback_tools, None
+        if wanted is not None:
+            try:
+                base = wanted(self.fallback_model) if callable(wanted) else wanted
+                base = None if base is None else list(base)
+            except Exception:
+                logger.warning("the fallback's tools could not be chosen; the run keeps its own", exc_info=True)
+                base = None
+        if base is None and compact == self._compact:
+            return
+        base = list(self._base_tools) if base is None else base
+        tools, index = base, None
+        if self._skills is not None:
+            from agentx_dev.Skills import attach_skills
+            try:
+                tools, index = attach_skills(self._skills, base, None, short=compact)
+            except Exception:                         # a tool named use_skill among them, say: keep what there is
+                logger.warning("the fallback's tools could not be set up; the run keeps its own", exc_info=True)
+                return
+        self._primary_setup = {"tools": self.tools, "base": self._base_tools, "index": self._skill_index,
+                               "compact": self._compact, "caller": self._caller_addendum,
+                               "addendum": self.system_addendum}
+        self._set_tools([*tools, *self._added_tools])
+        self._base_tools, self._skill_index, self._compact = base, index, compact
+        self.system_addendum = self._compose_addendum(self._caller_addendum)
 
     def _use_fallback_addendum(self) -> None:
         """At the switch: ``fallback_addendum`` (fitted to the fallback, when it is a function) replaces the caller's
@@ -2487,17 +2576,25 @@ class AgentRunner(PersistenceMixin):
         if text is not None and not isinstance(text, str):
             logger.warning("the fallback's addendum is not text (%s); the run keeps its own", type(text).__name__)
             return
-        self._primary_addendum = self.system_addendum
+        if self._primary_setup is None:            # else the switch of tools keeps what was there
+            self._primary_addendum, self._primary_caller = self.system_addendum, self._caller_addendum
+        self._caller_addendum = text
         self.system_addendum = self._compose_addendum(text)
 
     def reset_fallback(self) -> None:
-        """Go back to the model the runner was built with (and its binding mode, and its addendum) after a fallback
-        took over."""
+        """Go back to the model the runner was built with (and its binding mode, its tools and its addendum) after a
+        fallback took over."""
         if self._primary_model is not None:
             self._use_model(self._primary_model)
             self._primary_model = None
+        setup, self._primary_setup = self._primary_setup, None
+        if setup is not None:
+            kept = [t for t in self._added_tools if not any(t is p for p in setup["tools"])]
+            self._set_tools([*setup["tools"], *kept])
+            self._base_tools, self._skill_index, self._compact = setup["base"], setup["index"], setup["compact"]
+            self._caller_addendum, self.system_addendum = setup["caller"], setup["addendum"]
         if self._primary_addendum is not None:
-            self.system_addendum = self._primary_addendum
+            self.system_addendum, self._caller_addendum = self._primary_addendum, self._primary_caller
             self._primary_addendum = None
         self.fallback_used = None
 

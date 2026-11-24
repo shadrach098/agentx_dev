@@ -116,18 +116,24 @@ def test_switch_to_local_runs_check_and_switches(tmp_path, monkeypatch):
 
 SMALL_WINDOW = ("qwen3:8b's 8,192-token window leaves almost no room for the conversation; a variant with a larger "
                 "window fixes it: a Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create "
-                "qwen3:8b-16k -f Modelfile.")
+                "qwen3-16k -f Modelfile.")
 
 
 def test_a_local_model_whose_window_leaves_no_room_is_warned_about_once(tmp_path, monkeypatch):
     stub_check(monkeypatch, window=8192)
     cloud = MockModel(script=[make_final("hi")])
     app, out, _, _ = make_app(tmp_path, Lines("/model qwen3:8b", "/exit"), cloud_then_local(cloud),
-                              model_name="first")
+                              model_name="first", local_tools="all")
     assert app.start() == 0
     text = out.getvalue()
     assert text.count(SMALL_WINDOW) == 1
     assert isinstance(app.model, Local) and app.model.model == "qwen3:8b"       # still allowed
+    # the lean request (the default) leaves room in the same window
+    (tmp_path / "lean").mkdir()
+    app, out, _, _ = make_app(tmp_path / "lean", Lines("/model qwen3:8b", "/exit"),
+                              cloud_then_local(MockModel(script=[])), model_name="first")
+    assert app.start() == 0
+    assert "leaves almost no room" not in out.getvalue()
 
 
 def test_a_window_with_room_left_is_not_warned_about(tmp_path, monkeypatch):
@@ -333,7 +339,7 @@ def test_too_small_message(tmp_path):
     assert app.start() == 0
     text = out.getvalue()
     assert ("qwen3:8b's 300-token window is too small for this conversation. A variant with a larger window fixes "
-            "it: a Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create qwen3:8b-16k -f "
+            "it: a Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create qwen3-16k -f "
             "Modelfile.") in text
     assert "Something went wrong" not in text and model.calls == []
 

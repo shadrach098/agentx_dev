@@ -1279,6 +1279,13 @@
           <input type="number" name="localContext" min="1" value="${esc(v.localContext ?? "")}" placeholder="what the server says">
           <span class="s-hint">Tokens. Set it when the server does not say, or loads models with a larger window.</span></label>
       </div>
+      <label class="s-field"><span class="s-sub">Tools on a local model</span>
+        <select name="localTools">
+          <option value=""${v.localTools !== "lean" && v.localTools !== "all" ? " selected" : ""}>Not set (lean)</option>
+          <option value="lean"${v.localTools === "lean" ? " selected" : ""}>Lean: the core tools and a short skill list</option>
+          <option value="all"${v.localTools === "all" ? " selected" : ""}>All: the web and MCP tools and every skill too</option>
+        </select>
+        <span class="s-hint">Lean leaves room in a small window for the conversation; <code>use_skill</code> still opens every skill.</span></label>
       <datalist id="localModelList">${(settingsData.localModels || []).map((m) => `<option value="${esc(m)}">`).join("")}</datalist>
     </fieldset>`;
   }
@@ -1331,6 +1338,7 @@
     if (scope === "user") {                        // your own file only (see localFields)
       values.localServer = String(f.get("localServer") || "").trim();
       values.localContext = f.get("localContext") || "";
+      values.localTools = f.get("localTools") || "";
       // an empty field turns the fallback off, which also ends the offer: sent only when it was changed
       const before = settingsData.user.values.fallbackModel, now = String(f.get("fallbackModel") || "").trim();
       if (now !== (typeof before === "string" ? before : "")) values.fallbackModel = now;
