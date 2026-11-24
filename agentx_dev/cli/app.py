@@ -1166,6 +1166,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
             self._stopped_turn = False
             if route:
                 self._route = self._decide_route(text, carried_on or _is_carry_on(text))
+                self.progress.start("Thinking")        # the size check stopped it: the turn's first call is work too
             if self._recall_next:                      # the first message of a fresh conversation: add close notes
                 self._recall_next = False
                 if self.project_memory is not None:

@@ -301,3 +301,34 @@ def test_a_late_size_check_never_asks_the_token_limit_question(tmp_path):
     assert asked == [] and not app.gate.closed
     app._check_token_limit()                             # the same check on the agent's own thread does ask
     assert asked
+
+
+def test_the_status_stays_on_from_the_size_check_into_the_turn(tmp_path):
+    # The size check stopped the status when it ended, and the turn's first model call (minutes on a local model)
+    # ran with none: the window's orb said Done, then Ready, while agentx was working.
+    model = routed_model(["write", "final"], assess_reply=DIRECT)
+    app, _, _, _ = make_app(tmp_path, Lines("change the footer text to say hello", "/exit"), model,
+                            mode="auto", auto_team=True)
+    status = {"label": None}
+    real_start, real_stop = app.progress.start, app.progress.stop
+
+    def start(label="Thinking"):
+        real_start(label)                              # it stops the status first: the label comes after
+        status["label"] = label
+
+    def stop():
+        status["label"] = None
+        real_stop()
+
+    app.progress.start, app.progress.stop = start, stop
+    seen, script = [], model._script_fn
+
+    def spy(messages):
+        if ASSESS_MARK not in str(messages[-1]["content"]):
+            seen.append(status["label"])
+        return script(messages)
+
+    model._script_fn = spy
+    assert app.start() == 0
+    assert model.state["assess"] == 1
+    assert seen and seen[0] == "Thinking"
