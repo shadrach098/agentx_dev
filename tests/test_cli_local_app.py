@@ -521,16 +521,21 @@ def test_a_local_to_cloud_switch_keeps_the_log(tmp_path):
 # -- a local model that fails at start: agentx starts on the next usable model -----------------------------------
 
 DOWN = "the local server at localhost:11434 is not answering"
+MISSING = "the local server at localhost:11434 has no model named it; it lists: nothing"
+OTHER_SERVER = "http://127.0.0.1:10/v1"   # a second stubbed server, never contacted
 
 
-def stub_checks(monkeypatch, failing):
-    """``Local.check`` fails for the names in ``failing`` (name -> reason) and passes for any other."""
+def stub_checks(monkeypatch, failing, slow=None):
+    """``Local.check`` fails for the names in ``failing`` (name -> reason; a "not answering" reason is a server that
+    is down) and passes for any other, after ``slow[name]`` seconds."""
     checked = []
 
     def check(self, timeout=120.0):
         checked.append(self.model)
+        time.sleep((slow or {}).get(self.model, 0))
         if self.model in failing:
-            return LocalCheck(False, failing[self.model], self.context_window)
+            reason = failing[self.model]
+            return LocalCheck(False, reason, self.context_window, unreachable="not answering" in reason)
         self.context_window = 32768
         return LocalCheck(True, "", 32768)
 
@@ -544,11 +549,10 @@ def cloud_named(name, *answers):
     return model
 
 
-def startup_factory(clouds):
+def startup_factory(clouds, servers=None):
     """``clouds`` (name -> model, or None for a name whose key is missing) for Claude/GPT names and for no name;
-    any other name is a real local model on the stubbed server."""
+    any other name is a real local model on the stubbed server (``servers[name]`` for another one)."""
     from agentx_dev.cli.models import ModelError
-    local = functools.partial(choose_model, local_server=SERVER, local_context=None)
 
     def factory(name, env):
         if name in clouds:
@@ -557,7 +561,7 @@ def startup_factory(clouds):
             return clouds[name]
         if not name:
             raise ModelError("No API key found: set ANTHROPIC_API_KEY (for Claude) or OPENAI_API_KEY (for GPT).")
-        return local(name, env)
+        return choose_model(name, env, local_server=(servers or {}).get(name, SERVER), local_context=None)
     return factory
 
 
@@ -585,7 +589,7 @@ class Picks:
 
 
 def test_a_local_folder_model_that_fails_starts_on_your_own_local_model_without_a_question(tmp_path, monkeypatch):
-    checked = stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN})
+    checked = stub_checks(monkeypatch, {"qwen3-4b-40k": MISSING})
     folder, mine = folder_and_user_files(tmp_path, user={"model": "llama3.1:8b", "fallbackModel": "qwen3-agent:latest"})
     before = (folder.read_text(encoding="utf-8"), mine.read_text(encoding="utf-8"))
     picks = Picks()
@@ -593,8 +597,8 @@ def test_a_local_folder_model_that_fails_starts_on_your_own_local_model_without_
                               model_source=folder, fallback_model="qwen3-agent:latest", select=picks)
     assert app.start() == 0
     text = out.getvalue()
-    assert ("Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Starting on "
-            "llama3.1:8b instead; /model qwen3-4b-40k tries it again.") in text
+    assert (f"Could not use qwen3-4b-40k ({MISSING}). Starting on llama3.1:8b instead; /model qwen3-4b-40k tries it "
+            "again.") in text
     assert text.count("Could not use qwen3-4b-40k") == 1                    # one notice
     assert isinstance(app.model, Local) and app.model.model == "llama3.1:8b" and app.requested_model == "llama3.1:8b"
     assert checked == ["qwen3-4b-40k", "llama3.1:8b"] and picks.asked == []
@@ -602,7 +606,7 @@ def test_a_local_folder_model_that_fails_starts_on_your_own_local_model_without_
 
 
 def test_your_own_cloud_model_is_passed_over_for_the_local_fallback_without_a_question(tmp_path, monkeypatch):
-    checked = stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN})
+    checked = stub_checks(monkeypatch, {"qwen3-4b-40k": MISSING})
     folder, _ = folder_and_user_files(tmp_path)               # model gpt-6.2-sol, fallbackModel qwen3-agent:latest
     cloud = cloud_named("gpt-6.2-sol")
     picks = Picks(0)
@@ -610,8 +614,8 @@ def test_your_own_cloud_model_is_passed_over_for_the_local_fallback_without_a_qu
                               model_name="qwen3-4b-40k", model_source=folder, fallback_model="qwen3-agent:latest",
                               select=picks)
     assert app.start() == 0
-    assert ("Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Starting on "
-            "qwen3-agent:latest instead; /model qwen3-4b-40k tries it again.") in out.getvalue()
+    assert (f"Could not use qwen3-4b-40k ({MISSING}). Starting on qwen3-agent:latest instead; /model qwen3-4b-40k "
+            "tries it again.") in out.getvalue()
     assert isinstance(app.model, Local) and app.model.model == "qwen3-agent:latest"
     assert checked == ["qwen3-4b-40k", "qwen3-agent:latest"] and picks.asked == []
 
@@ -649,7 +653,8 @@ def test_quit_or_no_answer_to_the_cloud_question_stops_as_before(tmp_path, monke
     picks = Picks(answer)
     app, text, code = _no_local_works(tmp_path, monkeypatch, picks, {"gpt-6.2-sol": cloud_named("gpt-6.2-sol")})
     assert code == 1 and len(picks.asked) == 1 and ASKED_GPT in text
-    assert f"Could not use qwen3-4b-40k: {DOWN}" in text                     # today's message
+    assert text.count("Could not use qwen3-4b-40k") == 1                    # not said again after the question
+    assert text.count("The model name 'qwen3-4b-40k' comes from") == 1
     assert "Starting on" not in text
 
 
@@ -703,3 +708,101 @@ def test_ctrl_c_while_trying_the_next_model_still_interrupts(tmp_path, monkeypat
                             fallback_model="qwen3-agent:latest", select=Picks(0))
     with pytest.raises(KeyboardInterrupt):
         app.start()
+
+
+# -- fix round 2: the same model is not tried twice, a server that is down is not waited on again ------------------
+
+def test_the_model_that_failed_is_not_tried_again_under_another_spelling(tmp_path, monkeypatch):
+    checked = stub_checks(monkeypatch, {"qwen3-agent": MISSING})
+    folder, _ = folder_and_user_files(tmp_path, folder_model="qwen3-agent",
+                                      user={"model": "Qwen3-Agent", "fallbackModel": "qwen3-agent:latest"})
+    picks = Picks(1)
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({None: cloud_named("claude-opus-5-5")}),
+                              model_name="qwen3-agent", model_source=folder, fallback_model="qwen3-agent:latest",
+                              select=picks)
+    assert app.start() == 1
+    assert checked == ["qwen3-agent"] and len(picks.asked) == 1              # straight to the question
+
+
+def test_two_spellings_of_one_candidate_are_tried_once(tmp_path, monkeypatch):
+    checked = stub_checks(monkeypatch, {"qwen3-4b-40k": MISSING, "llama3.1:8b": MISSING})
+    folder, _ = folder_and_user_files(tmp_path, user={"model": "llama3.1:8b", "fallbackModel": "LLAMA3.1:8b:latest"})
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({}), model_name="qwen3-4b-40k",
+                            model_source=folder, fallback_model="LLAMA3.1:8b:latest", select=Picks())
+    assert app.start() == 1
+    assert checked == ["qwen3-4b-40k", "llama3.1:8b"]
+
+
+def test_a_server_that_is_down_is_not_asked_again_for_the_other_local_models(tmp_path, monkeypatch):
+    checked = stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN})
+    folder, _ = folder_and_user_files(tmp_path, user={"model": "llama3.1:8b", "fallbackModel": "qwen3-agent:latest"})
+    picks = Picks(0)
+    usual = cloud_named("claude-opus-5-5")
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({None: usual}), model_name="qwen3-4b-40k",
+                              model_source=folder, fallback_model="qwen3-agent:latest", select=picks)
+    assert app.start() == 0
+    assert checked == ["qwen3-4b-40k"]                                       # the same server: skipped
+    assert len(picks.asked) == 1 and app.model is usual
+
+
+def test_a_local_model_on_another_server_is_still_tried_when_the_first_is_down(tmp_path, monkeypatch):
+    checked = stub_checks(monkeypatch, {"qwen3-4b-40k": DOWN})
+    folder, _ = folder_and_user_files(tmp_path, user={"model": "llama3.1:8b", "fallbackModel": "qwen3-agent:latest"})
+    picks = Picks()
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({}, {"qwen3-agent:latest": OTHER_SERVER}),
+                            model_name="qwen3-4b-40k", model_source=folder, fallback_model="qwen3-agent:latest",
+                            select=picks)
+    assert app.start() == 0
+    assert checked == ["qwen3-4b-40k", "qwen3-agent:latest"] and picks.asked == []
+    assert app.model.model == "qwen3-agent:latest"
+
+
+def test_a_check_that_timed_out_counts_as_a_server_that_is_down(tmp_path, monkeypatch):
+    from agentx_dev.cli import app_models
+    monkeypatch.setattr(app_models, "CHECK_WAIT_SEC", 0.3)
+    checked = stub_checks(monkeypatch, {}, slow={"qwen3-4b-40k": 1.0})
+    folder, _ = folder_and_user_files(tmp_path, user={"model": "llama3.1:8b", "fallbackModel": "qwen3-agent:latest"})
+    picks = Picks(1)
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({None: cloud_named("claude-opus-5-5")}),
+                              model_name="qwen3-4b-40k", model_source=folder, fallback_model="qwen3-agent:latest",
+                              select=picks)
+    assert app.start() == 1
+    assert checked == ["qwen3-4b-40k"] and len(picks.asked) == 1
+    assert "did not finish the check in 0.3s" in out.getvalue()
+
+
+def test_the_other_local_models_share_one_wait_in_all(tmp_path, monkeypatch):
+    from agentx_dev.cli import app_models
+    monkeypatch.setattr(app_models, "CHECK_WAIT_SEC", 0.6)
+    checked = stub_checks(monkeypatch, {"qwen3-4b-40k": MISSING, "llama3.1:8b": MISSING},
+                          slow={"llama3.1:8b": 0.4, "qwen3-agent:latest": 0.4})
+    folder, _ = folder_and_user_files(tmp_path, user={"model": "llama3.1:8b", "fallbackModel": "qwen3-agent:latest"})
+    picks = Picks(1)
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), startup_factory({None: cloud_named("claude-opus-5-5")},
+                                                                       {"qwen3-agent:latest": OTHER_SERVER}),
+                            model_name="qwen3-4b-40k", model_source=folder, fallback_model="qwen3-agent:latest",
+                            select=picks)
+    began = time.monotonic()
+    assert app.start() == 1
+    assert time.monotonic() - began < 1.0                                    # 0.6 s in all, not 0.6 s each
+    assert checked == ["qwen3-4b-40k", "llama3.1:8b", "qwen3-agent:latest"]  # it would pass with its own 0.6 s
+    assert len(picks.asked) == 1
+
+
+def test_a_reason_that_repeats_the_name_is_not_said_twice(tmp_path, monkeypatch):
+    from agentx_dev.cli.models import ModelError
+    stub_checks(monkeypatch, {})
+    folder, _ = folder_and_user_files(tmp_path, user={"model": "llama3.1:8b"})
+    plain = startup_factory({})
+
+    def factory(name, env):
+        if name == "qwen3-4b-40k":
+            raise ModelError("Could not use qwen3-4b-40k: the name is refused")
+        return plain(name, env)
+
+    app, out, _, _ = make_app(tmp_path, Lines("/exit"), factory, model_name="qwen3-4b-40k", model_source=folder,
+                              select=Picks())
+    assert app.start() == 0
+    text = out.getvalue()
+    assert "Could not use qwen3-4b-40k (the name is refused). Starting on llama3.1:8b instead" in text
+    assert "(Could not use" not in text

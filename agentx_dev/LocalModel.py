@@ -26,6 +26,7 @@ class LocalCheck:
     ok: bool
     reason: str
     context_window: Optional[int]
+    unreachable: bool = False            # the server did not answer (or not in time): its other models would fail too
 
 
 def normalise_base_url(url: str) -> str:
@@ -135,7 +136,8 @@ class Local(GPT):
         try:
             names = Local.models(self.base_url, timeout=min(timeout, 5.0))
         except LocalModelError as e:
-            return LocalCheck(False, str(e), self.context_window)
+            down = str(e) == _not_answering(self.base_url)
+            return LocalCheck(False, str(e), self.context_window, unreachable=down)
         if self.model not in names and f"{self.model}:latest" not in names:
             return LocalCheck(False, f"the local server at {_hostport(self.base_url)} has no model named "
                                      f"{self.model}; it lists: {', '.join(names) or 'nothing'}",
@@ -151,7 +153,7 @@ class Local(GPT):
                 messages=[{"role": "user", "content": "Call the ping tool with the text hi."}])
         except Exception as e:
             if type(e).__name__ in ("APIConnectionError", "APITimeoutError"):
-                return LocalCheck(False, _not_answering(self.base_url), self.context_window)
+                return LocalCheck(False, _not_answering(self.base_url), self.context_window, unreachable=True)
             return LocalCheck(False, f"the local server at {_hostport(self.base_url)} refused the test "
                                      f"request: {str(e)[:200]}", self.context_window)
         calls = None

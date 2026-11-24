@@ -186,27 +186,71 @@ def _forget_learned_endpoints():
     forget_learned_endpoints()
 
 
-_REAL_AGENTX = Path.home() / ".agentx"          # the real ~/.agentx, read before any test can patch Path.home
+import logging as _logging
+import os as _os
+import tempfile as _tempfile
+
+# The real home and the temp folder, read before any test can change them (the temp folder is inside the home on
+# Windows: a path under it is a test's own).
+_REAL_HOME = str(Path.home())
+_REAL_HOME_PATH = _os.path.realpath(_REAL_HOME)
+_TEMP_PATH = _os.path.realpath(_tempfile.gettempdir())
+
+
+def _under(path: str, folder: str) -> bool:
+    try:
+        return _os.path.commonpath([_os.path.normcase(path), _os.path.normcase(folder)]) == _os.path.normcase(folder)
+    except ValueError:                                  # another drive
+        return False
+
+
+def _in_real_home(path: str) -> bool:
+    """Whether ``path`` is in the real home (and not in the temp folder)."""
+    real = _os.path.realpath(str(path))
+    return _under(real, _REAL_HOME_PATH) and not _under(real, _TEMP_PATH)
+
+
+def _log_handlers() -> list:
+    """(logger, handler) for the root logger, ``agentx_dev`` and every ``agentx_dev.*`` logger."""
+    names = [""] + [name for name in list(_logging.root.manager.loggerDict)
+                    if name == "agentx_dev" or name.startswith("agentx_dev.")]
+    pairs = []
+    for name in names:
+        logger = _logging.getLogger(name) if name else _logging.getLogger()
+        pairs += [(logger, handler) for handler in list(logger.handlers)]
+    return pairs
+
+
+def _real_home_logs(pairs) -> list:
+    """The paths of the file handlers among ``pairs`` that write in the real home."""
+    return [handler.baseFilename for _, handler in pairs
+            if isinstance(handler, _logging.FileHandler) and _in_real_home(handler.baseFilename)]
+
+
+@pytest.fixture(autouse=True)
+def _tmp_home(monkeypatch, tmp_path_factory):
+    """Each test runs with a home of its own in the temp folder (``HOME``, ``USERPROFILE``, so ``Path.home()`` and
+    ``~``): nothing a test runs writes in the real home. A test that sets its own home (``Path.home`` patched, or
+    ``home=``) wins over this."""
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    yield home
 
 
 @pytest.fixture(autouse=True)
 def _no_log_left_behind():
-    """No test leaves agentx's log handlers behind, and none writes the real ~/.agentx/agentx.log: ``setup_logging``
-    (run by ``main``, ``_run`` and ``_run_ui``) puts a file handler on the ``agentx_dev`` logger that every later test
-    would write its tracebacks through. Handlers added during a test are removed and closed after it; one that
-    pointed into the real ~/.agentx fails the test (give it a tmp home: ``Path.home`` patched, or ``home=``)."""
-    import logging
-    loggers = (logging.getLogger(), logging.getLogger("agentx_dev"))
-    before = [list(logger.handlers) for logger in loggers]
+    """No test leaves agentx's log handlers behind, and none writes a log in the real home: ``setup_logging`` (run by
+    ``main``, ``_run`` and ``_run_ui``) puts a file handler on the ``agentx_dev`` logger that every later test would
+    write its tracebacks through. Handlers agentx added during a test are removed and closed after it; a file handler
+    added on the root logger or an ``agentx_dev`` logger that writes in the real home is removed too and fails the
+    test (give it a tmp home: ``Path.home`` patched, or ``home=``)."""
+    before = {(id(logger), id(handler)) for logger, handler in _log_handlers()}
     yield
-    real = []
-    for logger, handlers in zip(loggers, before):
-        for handler in list(logger.handlers):
-            if handler in handlers or not getattr(handler, "_agentx_cli", False):
-                continue
+    added = [(logger, handler) for logger, handler in _log_handlers() if (id(logger), id(handler)) not in before]
+    real = _real_home_logs(added)
+    for logger, handler in added:
+        if getattr(handler, "_agentx_cli", False) or handler.__dict__.get("baseFilename") in real:
             logger.removeHandler(handler)
             handler.close()
-            name = getattr(handler, "baseFilename", None)
-            if name and _REAL_AGENTX in Path(name).resolve().parents:
-                real.append(name)
-    assert not real, f"the test set up agentx's log in the real home ({real}); give it a tmp home instead"
+    assert not real, f"the test set up a log in the real home ({real}); give it a tmp home instead"

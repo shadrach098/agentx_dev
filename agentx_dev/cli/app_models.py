@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
-from agentx_dev.LocalModel import DEFAULT_WINDOW, Local, _hostport
+from agentx_dev.LocalModel import DEFAULT_WINDOW, Local, _hostport, normalise_base_url
 from agentx_dev.cli.models import (LOCAL_TYPO_HINT, SUGGESTED_MODELS, ModelError, describe_prompt, is_auto_note,
                                    is_local_name, key_variable, larger_window, local_copy_name, model_label,
                                    other_provider,
@@ -60,11 +61,28 @@ LOCAL_TO_CLOUD = ("Could not use {failed} ({reason}). Start on {to} instead? You
                   "would go to {company}.")
 
 
-def _unusable(shown: str, reason: str) -> ModelError:
-    """``Could not use <name>: <reason>``, keeping the reason on its own (``reason``) for the start's notice."""
+def _unusable(shown: str, reason: str, *, unreachable: bool = False, server: Optional[str] = None) -> ModelError:
+    """``Could not use <name>: <reason>``, keeping the reason on its own (``reason``) for the start's notice, and
+    whether the server did not answer (``unreachable``, with its ``server``: its other models would fail too)."""
     error = ModelError(f"Could not use {shown}: {reason}")
     error.reason = reason                                          # type: ignore[attr-defined]
+    error.unreachable = unreachable                                # type: ignore[attr-defined]
+    error.server = server                                          # type: ignore[attr-defined]
     return error
+
+
+def _server_of(model: Any) -> str:
+    """A local model's server, the same for every spelling of its address."""
+    try:
+        return normalise_base_url(str(getattr(model, "base_url", "") or "")).lower()
+    except ValueError:
+        return str(getattr(model, "base_url", "") or "").lower()
+
+
+def same_model_key(name: Optional[str]) -> str:
+    """``name`` as the local server tells models apart: case is ignored and ``:latest`` is the name alone."""
+    key = str(name or "").strip().lower()
+    return key[:-len(":latest")] if key.endswith(":latest") else key
 
 
 class ModelCommands:
@@ -109,12 +127,19 @@ class ModelCommands:
     def _built_model(self, name: Optional[str]) -> Any:
         """The model for ``name`` from the factory. A local one is checked first (the first time, the server loads
         the model, which can take a couple of minutes) and gets 8,192 tokens when its server does not say its window.
-        Raises ``ModelError`` when the model cannot be built or fails the check. The check runs on its own thread
-        and this one waits in short slices, so Ctrl+C (and the window's Stop) ends the wait at once; the check
-        itself is left to finish on its own."""
+        Raises ``ModelError`` when the model cannot be built or fails the check."""
         model = self.model_factory(name, self.env)
         if not getattr(model, "is_local", False):
             return model
+        return self._checked(model, name)
+
+    def _checked(self, model: Any, name: Optional[str], wait: Optional[float] = None) -> Any:
+        """``model`` (a local one) once it passed its check, waited on for ``wait`` seconds at most
+        (``CHECK_WAIT_SEC`` by default). Raises ``ModelError`` when it fails; ``unreachable`` says the server did not
+        answer or not in time. The check runs on its own thread and this one waits in short slices, so Ctrl+C (and
+        the window's Stop) ends the wait at once; the check itself is left to finish on its own."""
+        wait = CHECK_WAIT_SEC if wait is None else max(0.0, wait)
+        server = _server_of(model)
         shown = self._safe(str(name or "").strip() or model_label(model), 80)
         self.progress.start(f"Loading {shown} on the local server")
         box: dict = {}
@@ -128,20 +153,21 @@ class ModelCommands:
         worker = threading.Thread(target=run, name="agentx-local-check", daemon=True)
         try:
             worker.start()
-            waited = 0.0
-            while worker.is_alive() and waited < CHECK_WAIT_SEC:     # short waits: Ctrl+C and Stop reach this thread
+            end = time.monotonic() + wait
+            while worker.is_alive() and time.monotonic() < end:     # short waits: Ctrl+C and Stop reach this thread
                 worker.join(0.1)
-                waited += 0.1
         finally:
             self.progress.stop()
         if worker.is_alive():
-            raise _unusable(shown, f"the local server did not finish the check in {CHECK_WAIT_SEC:g}s")
+            raise _unusable(shown, f"the local server did not finish the check in {round(wait, 1):g}s",
+                            unreachable=True, server=server)
         if "error" in box:
             raise _unusable(shown, f"the check failed ({type(box['error']).__name__})")
         result = box["result"]
         if not result.ok:
             hint = f". {LOCAL_TYPO_HINT}" if shown.lower().startswith(("cl", "gp")) else ""
-            raise _unusable(shown, f"{self._safe(result.reason, 400)}{hint}")
+            raise _unusable(shown, f"{self._safe(result.reason, 400)}{hint}",
+                            unreachable=bool(getattr(result, "unreachable", False)), server=server)
         model.context_window = self._window_of(model)      # the runner keeps each request inside it
         self._warn_if_no_room(model)
         return model
@@ -370,47 +396,85 @@ class ModelCommands:
 
     def model_instead_of_the_local(self, error: Exception) -> Any:
         """At start, when the model that failed (``error``) is a local one: the next usable model. First the local
-        ones, each built with ``_built_model`` (so checked) and used without a question: your own ``model`` from
-        ~/.agentx/settings.json when it is local, then your ``fallbackModel``. A start meant to stay on this computer
-        never moves to Claude or GPT on its own: when no local one works, the cloud one (your own ``model`` when it
-        is Claude or GPT, else the usual choice with no name) is offered in one question, and used only on a yes.
-        Each name is tried only when it differs from the one that failed; no settings file is rewritten. None when
-        the failed model is not local (a cloud model keeps its own path), nothing works, or the answer is no; then
-        nothing has changed. Ctrl+C (and the window's Stop) still interrupts."""
+        ones, checked and used without a question: your own ``model`` from ~/.agentx/settings.json when it is local,
+        then your ``fallbackModel``. A model is never tried twice (``same_model_key``: ``Qwen3`` is ``qwen3`` and
+        ``qwen3:latest``). A server that did not answer (or not in time) is not asked again, and these checks share
+        one ``CHECK_WAIT_SEC`` in all. A start meant to stay on this computer never moves to Claude or GPT on its own:
+        when no local one works, the cloud one (your own ``model`` when it is Claude or GPT, else the usual choice with
+        no name) is offered in one question, and used only on a yes (``_cloud_declined`` records a no). No settings
+        file is rewritten. None when the failed model is not local (a cloud model keeps its own path), nothing works,
+        or the answer is no; then nothing has changed. Ctrl+C (and the window's Stop) still interrupts."""
+        self._cloud_declined = False
         failed = str(self.requested_model or "").strip()
         if not failed or provider_for(failed) != "local":
             return None
         own = read_user_model(self.home)
-
-        def differs(name: Optional[str]) -> bool:
-            return bool(name) and str(name).lower() != failed.lower()
-
+        tried = {same_model_key(failed)}
         locals_: List[str] = []
         for name in (own, str(self.fallback_name or "").strip()):
-            if differs(name) and provider_for(name or "") == "local" and name not in locals_:
-                locals_.append(str(name))
-        clouds: List[Optional[str]] = [own] if differs(own) and provider_for(own or "") in ("claude", "gpt") else []
+            if name and provider_for(name) == "local" and same_model_key(name) not in tried:
+                tried.add(same_model_key(name))
+                locals_.append(name)
+        clouds: List[Optional[str]] = [own] if own and provider_for(own) in ("claude", "gpt") else []
         clouds.append(None)                                  # the usual choice: the first key found
-        reason = self._safe(getattr(error, "reason", None) or str(error), 400)
         shown = self._safe(failed, 80)
-        for local in (True, False):
-            for name in (locals_ if local else clouds):
+        reason = str(getattr(error, "reason", None) or error)
+        prefix = f"could not use {failed.lower()}: "
+        if reason.lower().startswith(prefix):               # the name is said once, before the reason
+            reason = reason[len(prefix):]
+        reason = self._safe(reason, 400)
+        down = {error.server} if getattr(error, "unreachable", False) and getattr(error, "server", None) else set()
+        end = time.monotonic() + CHECK_WAIT_SEC              # the other local models' checks, in all
+        model, name = None, None
+        for name in locals_:
+            model = self._local_candidate(name, down, end - time.monotonic())
+            if model is not None:
+                break
+        if model is None:
+            for name in clouds:
                 model = self._candidate(name)
-                if model is None:
-                    continue
-                label = self._safe(model_label(model), 80)
-                provider = provider_for(name or str(model_label(model)))
-                if not local and not self._yes_to_cloud(shown, reason, label, provider):
-                    return None
-                note = self._model_source_note()
-                self.notice(LOCAL_FAILED_START.format(failed=shown, reason=reason, to=label) + note)
-                self.requested_model = name                     # what /model, titles and a new key now build
-                self.model_source = user_settings_path(self.home) if name and name == own else None
-                return model
-        return None
+                if model is not None:
+                    break
+            if model is None:
+                return None
+            label = self._safe(model_label(model), 80)
+            if not self._yes_to_cloud(shown, reason, label, provider_for(name or str(model_label(model)))):
+                self._cloud_declined = True
+                return None
+        label = self._safe(model_label(model), 80)
+        note = self._model_source_note()
+        self.notice(LOCAL_FAILED_START.format(failed=shown, reason=reason, to=label) + note)
+        self.requested_model = name                         # what /model, titles and a new key now build
+        self.model_source = user_settings_path(self.home) if name and name == own else None
+        return model
+
+    def _local_candidate(self, name: str, down: set, left: float) -> Any:
+        """``name`` built and checked within ``left`` seconds, for a start in place of a local model; None when it
+        fails, when its server is in ``down`` (it did not answer: it is added there when it does not now), or when
+        no time is left."""
+        try:
+            model = self.model_factory(name, self.env)
+        except Exception as error:                          # not KeyboardInterrupt: that still stops the start
+            logging.getLogger(__name__).info("could not start on %s either (%s)", name, type(error).__name__)
+            return None
+        if not getattr(model, "is_local", False):
+            return None
+        server = _server_of(model)
+        if server in down or left <= 0:
+            logging.getLogger(__name__).info("%s not checked: %s", name,
+                                             "its server is not answering" if server in down else "no time left")
+            return None
+        try:
+            return self._checked(model, name, min(CHECK_WAIT_SEC, left))
+        except ModelError as error:
+            if getattr(error, "unreachable", False):
+                down.add(server)
+            logging.getLogger(__name__).info("could not start on %s either (%s)", name, type(error).__name__)
+            return None
 
     def _candidate(self, name: Optional[str]) -> Any:
-        """``name`` built (and checked, when local) for a start in place of a local model; None when it fails."""
+        """``name`` built (a cloud model, or the usual choice) for a start in place of a local model; None when it
+        fails."""
         try:
             return self._built_model(name)
         except Exception as error:                          # not KeyboardInterrupt: that still stops the start
@@ -422,7 +486,8 @@ class ModelCommands:
         """The one question before a start meant for a local model goes to Claude or GPT: the pick list (Quit is the
         default), or a typed y/N when there is none. No answer, or a list that cannot be shown, is Quit."""
         company = {"claude": "Anthropic", "gpt": "OpenAI"}.get(provider or "", "Anthropic or OpenAI")
-        self.notice(LOCAL_TO_CLOUD.format(failed=failed, reason=reason, to=label, company=company))
+        self.notice(LOCAL_TO_CLOUD.format(failed=failed, reason=reason, to=label, company=company)
+                    + self._model_source_note())
         if self.select is None:
             return self._yes(f"Start on {label}? [y/N] ")
         try:

@@ -672,9 +672,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
             self.model = self.model_instead_of_the_local(e)
             # no key for the saved model: when the other provider's key is set, offer its models instead; when that
             # is not possible or declined, start on the fallback model
-            if self.model is None:
+            if self.model is None and not getattr(self, "_cloud_declined", False):   # a no was said: not again
                 self.model = self.model_from_the_other_key(e)
-            if self.model is None:
+            if self.model is None and not getattr(self, "_cloud_declined", False):
                 self.model = self.model_from_the_fallback()
             if self.model is None:
                 self._create_user_settings(None)
