@@ -75,6 +75,19 @@ LAUNCH_CODE_SEC = 120.0             # how long the one-time code the browser is 
 ROOM_IDLE_SEC = 15 * 60            # a device's own conversation no window used for this long is closed (and saved)
 MAX_LANES = 6                       # conversations one device may have running beside its own (see open_lane)
 _LANE = re.compile(r"^l[0-9]{1,4}$")
+TASK_OUTPUT_CHARS = 200_000         # one read of a task's output in the window: the newest this many characters
+TERMINALS_OFF = "terminals are off while remote control is on"
+TAKE_OVER_OFF = "taking over the browser is off while remote control is on"
+
+
+def _browser_problem() -> str:
+    """``NOT_INSTALLED`` when Playwright cannot be imported, else "" (Chromium is not started to find out)."""
+    from agentx_dev.cli.browser import NOT_INSTALLED
+    try:
+        import playwright.sync_api  # noqa: F401
+    except Exception:
+        return NOT_INSTALLED
+    return ""
 
 
 def command_like(text: str) -> bool:
@@ -1867,6 +1880,12 @@ class WebFront:
         except Exception:
             pass
         status["fallback_from"] = _fallback_from(app)          # the model chip says when the fallback carries on
+        manager = getattr(app, "tasks", None)                   # the Tasks button's count (never made from here)
+        if manager is not None:
+            try:
+                status["tasks"] = int(manager.running_count())
+            except Exception:
+                pass
         return status
 
     def _tick(self) -> None:
@@ -1891,6 +1910,197 @@ class WebFront:
             except Exception:
                 pass
             time.sleep(TICK_SEC)
+
+    # -- the Tasks panel: background tasks, terminals and the browser ---------------------------------------------
+
+    def _remote_on(self) -> bool:
+        """Remote control is on (it is turned on and off on the host front; a room keeps the value it was made with)."""
+        return bool((self.host or self).remote)
+
+    def _task_manager(self) -> Any:
+        """The process's ``TaskManager``: the app's (made with the session's permissions), else the shared one."""
+        found = getattr(self.app, "tasks", None)
+        if found is not None:
+            return found
+        from agentx_dev.cli.background import shared
+        return shared(self.home, self.cwd)
+
+    def _owner_titles(self, owners: Sequence[str]) -> Dict[str, str]:
+        if not owners:
+            return {}
+        try:
+            titles = getattr(self.app, "_conversation_titles", None)
+            if titles is not None:
+                return dict(titles(owners))
+            from agentx_dev.cli.sessions import short_id, titles_by_short_id
+            by_short = titles_by_short_id(self.home, self.cwd)
+            return {owner: by_short[short_id(owner)] for owner in owners if short_id(owner) in by_short}
+        except Exception:
+            return {}
+
+    def tasks_payload(self) -> Dict[str, Any]:
+        """``GET /api/tasks``: every task and terminal of this agentx (all conversations share them)."""
+        tasks = self._task_manager().list()
+        titles = self._owner_titles(sorted({task.owner for task in tasks if task.owner}))
+        rows = [{"id": _text(task.id, 40), "kind": task.kind, "name": _text(task.name, 200),
+                 "command": _text(task.command, 2000), "state": task.state, "exitCode": task.exit_code,
+                 "startedAt": round(task.started_at, 2),
+                 "endedAt": round(task.ended_at, 2) if task.ended_at is not None else None,
+                 "owner": _text(task.owner, 120), "ownerTitle": _text(titles.get(task.owner, ""), 200)}
+                for task in tasks]
+        return {"tasks": rows, "terminalsAllowed": not self._remote_on()}
+
+    def task_output(self, ident: str, after: Any) -> Dict[str, Any]:
+        """``GET /api/tasks/output``: what a task wrote after offset ``after`` (an unfinished line once it is quiet,
+        so a prompt shows), and the offset to ask from next."""
+        try:
+            offset = max(0, int(after))
+        except (TypeError, ValueError):
+            offset = 0
+        manager = self._task_manager()
+        task = manager.get(ident)
+        if task is None:
+            return {"text": "", "offset": offset, "state": "", "error": f"there is no task {_text(ident, 40)}"}
+        try:
+            text, offset = manager.read_from(ident, offset, release_idle=True)
+        except KeyError:                                    # cleared meanwhile
+            return {"text": "", "offset": offset, "state": "", "error": f"there is no task {_text(ident, 40)}"}
+        if len(text) > TASK_OUTPUT_CHARS:                   # a first read of a long log: its newest part
+            text = text[-TASK_OUTPUT_CHARS:]
+            text = text[text.find("\n") + 1:] if "\n" in text else text
+        return {"text": _text(text, 10 * TASK_OUTPUT_CHARS), "offset": offset, "state": task.state}
+
+    def task_stop(self, ident: str) -> Dict[str, Any]:
+        """``POST /api/tasks/stop``: the user's own Stop (not gated); a terminal is not closed while remote control
+        is on."""
+        manager = self._task_manager()
+        task = manager.get(ident)
+        if task is None:
+            return {"ok": False, "error": f"there is no task {_text(ident, 40)}"}
+        if task.kind == "terminal" and self._remote_on():
+            return {"ok": False, "error": TERMINALS_OFF}
+        try:
+            manager.stop(ident)
+        except KeyError:
+            return {"ok": False, "error": f"there is no task {_text(ident, 40)}"}
+        return {"ok": True}
+
+    def tasks_clear(self) -> Dict[str, Any]:
+        """``POST /api/tasks/clear``: Clear finished."""
+        return {"ok": True, "cleared": self._task_manager().clear_finished()}
+
+    def _terminal(self, ident: str) -> Tuple[Any, Optional[str]]:
+        """``(manager, None)`` when ``ident`` is a terminal the window may use now, else ``(manager, why not)``."""
+        manager = self._task_manager()
+        if self._remote_on():
+            return manager, TERMINALS_OFF
+        task = manager.get(ident)
+        if task is None:
+            return manager, f"there is no terminal {_text(ident, 40)}"
+        if task.kind != "terminal":
+            return manager, f"{_text(ident, 40)} is not a terminal"
+        return manager, None
+
+    def terminal_open(self) -> Dict[str, Any]:
+        """``POST /api/terminals``: New terminal (the user's shell in the project folder)."""
+        if self._remote_on():
+            return {"ok": False, "error": TERMINALS_OFF}
+        from agentx_dev.cli.background import TaskLimit
+        try:
+            task = self._task_manager().open_terminal()
+        except TaskLimit as error:
+            return {"ok": False, "error": _text(str(error), 500)}
+        if task.state == "failed":
+            return {"ok": False, "id": task.id, "error": "the terminal could not start"}
+        return {"ok": True, "id": task.id}
+
+    def terminal_input(self, ident: str, text: str) -> Dict[str, Any]:
+        """``POST /api/terminals/input``: a line the user typed (theirs: not gated)."""
+        manager, why = self._terminal(ident)
+        if why:
+            return {"ok": False, "error": why}
+        try:
+            manager.send(ident, str(text))
+        except (KeyError, ValueError) as error:
+            return {"ok": False, "error": _text(error.args[0] if error.args else str(error), 500)}
+        return {"ok": True}
+
+    def terminal_interrupt(self, ident: str) -> Dict[str, Any]:
+        """``POST /api/terminals/interrupt``: Ctrl+C stops the running command; the terminal stays open."""
+        manager, why = self._terminal(ident)
+        if why:
+            return {"ok": False, "error": why}
+        try:
+            manager.interrupt(ident)
+        except KeyError:
+            return {"ok": False, "error": f"there is no terminal {_text(ident, 40)}"}
+        return {"ok": True}
+
+    def terminal_close(self, ident: str) -> Dict[str, Any]:
+        """``POST /api/terminals/close``: closing a terminal stops it."""
+        manager, why = self._terminal(ident)
+        if why:
+            return {"ok": False, "error": why}
+        try:
+            manager.stop(ident)
+        except KeyError:
+            return {"ok": False, "error": f"there is no terminal {_text(ident, 40)}"}
+        return {"ok": True}
+
+    def _browser(self) -> Any:
+        found = getattr(self.app, "browser", None)
+        if found is not None:
+            return found
+        from agentx_dev.cli.browser import shared_browser
+        return shared_browser()
+
+    def browser_state(self) -> Dict[str, Any]:
+        """``GET /api/browser/state``: the page of the conversation on screen; never starts the browser."""
+        problem = _browser_problem()
+        state = self._browser().state(self.conversation_id())
+        return {"available": not problem, "open": bool(state.get("open")), "url": _text(state.get("url"), 2000),
+                "title": _text(state.get("title"), 300), "user": bool(state.get("user")),
+                "frame": int(state.get("frame") or 0), "takeAllowed": not self._remote_on(), "error": problem}
+
+    def browser_frame(self) -> Tuple[int, Optional[bytes]]:
+        """``(counter, JPEG or None)`` of the page on screen; never starts the browser."""
+        try:
+            counter, jpeg = self._browser().frame(self.conversation_id())
+        except Exception:                                   # it did not answer in time, or it was closed
+            return 0, None
+        return int(counter or 0), jpeg
+
+    def browser_take(self) -> Dict[str, Any]:
+        """``POST /api/browser/take``: the user has the page; the agent's acting tools wait for Give back."""
+        if self._remote_on():
+            return {"ok": False, "error": TAKE_OVER_OFF}
+        self._browser().take(self.conversation_id())
+        return {"ok": True}
+
+    def browser_give(self) -> Dict[str, Any]:
+        self._browser().give(self.conversation_id())
+        return {"ok": True}
+
+    def browser_input(self, event: Any) -> Dict[str, Any]:
+        """``POST /api/browser/input``: the user's own click, wheel, key, text, navigate, back or reload (theirs:
+        not gated; a navigation is checked like the agent's)."""
+        if self._remote_on():
+            return {"ok": False, "error": TAKE_OVER_OFF}
+        if not isinstance(event, dict):
+            return {"ok": False, "error": "no event"}
+        from agentx_dev.cli.browser import BrowserUnavailable
+        problem = _browser_problem()
+        if problem:
+            return {"ok": False, "error": problem}
+        browser = self._browser()
+        owner = self.conversation_id()
+        if str(event.get("type") or "") != "navigate" and not browser.state(owner).get("open"):
+            return {"ok": False, "error": "agentx has not opened a page"}
+        try:
+            browser.user_event(owner, event)
+        except (ValueError, BrowserUnavailable) as error:
+            return {"ok": False, "error": _text(str(error), 500)}
+        return {"ok": True}
 
     # -- one conversation per device ------------------------------------------------------------------------------
 
@@ -2570,7 +2780,27 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(front.keys_view())
         if url.path == "/api/files":
             return self._json(front.find_files((query.get("q") or [""])[0]))
+        if url.path == "/api/tasks":
+            return self._json(front.tasks_payload())
+        if url.path == "/api/tasks/output":
+            return self._json(front.task_output((query.get("id") or [""])[0], (query.get("after") or ["0"])[0]))
+        if url.path == "/api/browser/state":
+            return self._json(front.browser_state())
+        if url.path == "/api/browser/frame":
+            return self._frame(front, (query.get("since") or [""])[0])
         return self._json({"error": "not found"}, 404)
+
+    def _frame(self, front: WebFront, since: str) -> None:
+        """The page on screen as a JPEG (``X-Frame`` its counter), or 204 when it is the one the window has."""
+        counter, jpeg = front.browser_frame()
+        if jpeg is None or (since.isdigit() and int(since) == counter):
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Frame", str(counter))
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            return
+        self._send(200, jpeg, "image/jpeg", {"X-Frame": str(counter)})
 
     def do_POST(self) -> None:                                      # noqa: N802
         if not self._host_ok():
@@ -2636,6 +2866,25 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/api/keys":
             return self._json(front.change_key(str(data.get("provider", "")),
                                                None if data.get("remove") else data.get("key")))
+        ident = str(data.get("id") or "")
+        if url.path == "/api/tasks/stop":
+            return self._json(front.task_stop(ident))
+        if url.path == "/api/tasks/clear":
+            return self._json(front.tasks_clear())
+        if url.path == "/api/terminals":
+            return self._json(front.terminal_open())
+        if url.path == "/api/terminals/input":
+            return self._json(front.terminal_input(ident, str(data.get("text") or "")))
+        if url.path == "/api/terminals/interrupt":
+            return self._json(front.terminal_interrupt(ident))
+        if url.path == "/api/terminals/close":
+            return self._json(front.terminal_close(ident))
+        if url.path == "/api/browser/take":
+            return self._json(front.browser_take())
+        if url.path == "/api/browser/give":
+            return self._json(front.browser_give())
+        if url.path == "/api/browser/input":
+            return self._json(front.browser_input(data.get("event")))
         return self._json({"error": "not found"}, 404)
 
     def _events(self, after: int, front: Optional[WebFront] = None, device: str = "") -> None:

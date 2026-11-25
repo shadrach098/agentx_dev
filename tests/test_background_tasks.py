@@ -229,6 +229,67 @@ def test_unfinished_last_line_is_released_when_the_task_ends(mgr, tmp_path):
     assert text == "no newline" and off == len(b"no newline")
 
 
+def test_an_idle_unfinished_line_is_released_when_asked(mgr, tmp_path):
+    """A prompt (``Name: ``) waits for its answer with no newline: the window asks for it once it stopped growing."""
+    cmd, go = split_writer(tmp_path, "prompt.py", [b"Name: ", b"alice\n"])
+    task = mgr.start(cmd)
+    assert until(lambda: task.log.exists() and task.log.stat().st_size >= 6)
+    assert mgr.read_from(task.id, 0) == ("", 0)                  # the tools' default: whole lines only
+    assert until(lambda: mgr.read_from(task.id, 0, release_idle=True) == ("Name: ", 6), 5)
+    go(1)
+    got, state = [], {"off": 6}
+
+    def collect():
+        t, state["off"] = mgr.read_from(task.id, state["off"], release_idle=True)
+        got.append(t)
+        return "alice" in "".join(got)
+    assert until(collect)
+    assert "".join(got) == "alice\n"
+
+
+def test_an_unfinished_line_still_growing_is_not_released(mgr, tmp_path, monkeypatch):
+    monkeypatch.setattr(background, "IDLE_RELEASE_SEC", 3600)
+    cmd, _ = split_writer(tmp_path, "grow.py", [b"Name: ", b"x\n"])
+    task = mgr.start(cmd)
+    assert until(lambda: task.log.exists() and task.log.stat().st_size >= 6)
+    assert mgr.read_from(task.id, 0, release_idle=True) == ("", 0)
+
+
+def test_an_idle_release_never_cuts_a_character_or_an_escape(mgr, tmp_path):
+    cmd, go = split_writer(tmp_path, "cut.py", [b"caf\xc3", b"\xa9 \x1b[3", b"1mred\x1b[0m\n"])
+    task = mgr.start(cmd)
+    assert until(lambda: task.log.exists() and task.log.stat().st_size >= 4)
+    assert until(lambda: mgr.read_from(task.id, 0, release_idle=True) == ("caf", 3), 5)
+    go(1)
+    assert until(lambda: task.log.stat().st_size >= 9)
+    assert until(lambda: mgr.read_from(task.id, 3, release_idle=True) == ("é ", 6), 5)
+    go(2)
+    got, state = [], {"off": 6}
+
+    def collect():
+        t, state["off"] = mgr.read_from(task.id, state["off"], release_idle=True)
+        got.append(t)
+        return "red" in "".join(got)
+    assert until(collect)
+    assert "".join(got) == "red\n" and "�" not in "".join(got)
+
+
+def test_releasable_part_of_an_unfinished_line():
+    cut = background._releasable
+    assert cut(b"plain") == b"plain"
+    assert cut(b"ab\x1b") == b"ab"
+    assert cut(b"ab\x1b[1;3") == b"ab"
+    assert cut(b"ab\x1b[1;31mcd") == b"ab\x1b[1;31mcd"
+    assert cut(b"ab\x1b]0;title") == b"ab"
+    assert cut(b"ab\x1b]0;title\x07cd") == b"ab\x1b]0;title\x07cd"
+    assert cut(b"ab\x1b]0;t\x1b\\cd") == b"ab\x1b]0;t\x1b\\cd"
+    assert cut(b"ab\x1b(") == b"ab"
+    assert cut(b"ab\x1b(Bc") == b"ab\x1b(Bc"
+    assert cut(b"x\xe2\x82") == b"x"
+    assert cut(b"x\xe2\x82\xac") == b"x\xe2\x82\xac"
+    assert cut(b"x\xf0\x9f\x98") == b"x"
+
+
 def test_read_from_across_a_trim(mgr, tmp_path, monkeypatch):
     monkeypatch.setattr(background, "LOG_CAP_BYTES", 10 * 1024)
     monkeypatch.setattr(background, "LOG_HEAD_BYTES", 1024)

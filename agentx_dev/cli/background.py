@@ -28,6 +28,7 @@ LOG_CAP_BYTES = 5 * 1024 * 1024      # a log never grows past this ...
 LOG_HEAD_BYTES = 64 * 1024           # ... it keeps its first 64 KB and drops the oldest of the rest
 MAX_TASKS = 8
 MAX_TERMINALS = 4
+IDLE_RELEASE_SEC = 0.2               # read_from(release_idle=True): an unfinished line this quiet is handed out
 
 if sys.platform == "win32":
     TERMINAL_ARGV = ["powershell", "-NoLogo", "-NoProfile", "-Command", "-"]
@@ -72,6 +73,66 @@ def strip_codes(text: str) -> str:
         parts = [p for p in line.split("\r") if p]
         out.append(parts[-1] if parts else "")
     return "\n".join(out)
+
+
+def _escape_end(data: bytes, i: int) -> Optional[int]:
+    """Where the escape sequence starting at ``data[i]`` (ESC) ends, or ``None`` when it is not complete yet."""
+    n = len(data)
+    if i + 1 >= n:
+        return None
+    kind = data[i + 1]
+    if kind == 0x5B:                                   # CSI: parameters, intermediates, one final byte
+        j = i + 2
+        while j < n and 0x30 <= data[j] <= 0x3F:
+            j += 1
+        while j < n and 0x20 <= data[j] <= 0x2F:
+            j += 1
+        return j + 1 if j < n else None
+    if kind == 0x5D:                                   # OSC: up to BEL or ESC \ (another ESC ends it as well)
+        j = i + 2
+        while j < n:
+            if data[j] == 0x07:
+                return j + 1
+            if data[j] == 0x1B:
+                if j + 1 >= n:
+                    return None
+                return j + 2 if data[j + 1] == 0x5C else j
+            j += 1
+        return None
+    if kind in (0x28, 0x29):                           # a character set: ESC ( B
+        return i + 3 if i + 2 < n else None
+    return i + 2
+
+
+def _utf8_end(data: bytes) -> int:
+    """``len(data)``, less a UTF-8 character cut short at its end."""
+    n = len(data)
+    for back in range(1, min(4, n) + 1):
+        byte = data[n - back]
+        if byte & 0xC0 == 0x80:                        # a continuation byte: look further back for its lead
+            continue
+        if byte >= 0xC0:
+            need = 2 if byte < 0xE0 else 3 if byte < 0xF0 else 4
+            return n - back if back < need else n
+        return n
+    return n
+
+
+def _releasable(pending: bytes) -> bytes:
+    """The part of an unfinished line that can be handed out on its own: never into an escape sequence that is not
+    complete yet, never half a UTF-8 character."""
+    end, i = len(pending), 0
+    while i < len(pending):
+        if pending[i] != 0x1B:
+            i += 1
+            continue
+        stop = _escape_end(pending, i)
+        if stop is None:
+            end = i
+            break
+        i = stop
+    head = pending[:end]
+    return head[:_utf8_end(head)]
 
 
 def _new_job(proc: "subprocess.Popen"):
@@ -137,6 +198,7 @@ class _Run:
         self.kill_lock = threading.Lock()
         self.eof = threading.Event()  # the output pipe has closed: nothing more will be written
         self.reader: Optional[threading.Thread] = None
+        self.wrote_at = 0.0           # monotonic time of the last write to the log
 
 
 class TaskManager:
@@ -292,6 +354,7 @@ class TaskManager:
                 fh.seek(0, 2)
                 fh.write(data)
                 fh.flush()
+                run.wrote_at = time.monotonic()
                 size = fh.tell()
                 if size > LOG_CAP_BYTES:
                     self._shrink(run, size)
@@ -358,11 +421,13 @@ class TaskManager:
             text = "\n".join(body[-lines:]) + ("\n" if trailing and body else "")
         return text
 
-    def read_from(self, id: str, offset: int) -> Tuple[str, int]:
+    def read_from(self, id: str, offset: int, release_idle: bool = False) -> Tuple[str, int]:
         """Text written after logical byte ``offset`` and the new offset (offsets survive the log being trimmed).
 
         Only whole lines are returned, so a multi-byte character or an escape sequence is never cut between two
         calls; an unfinished last line waits for the next call unless the task has ended or it passed 64 KB.
+        ``release_idle`` (the window): an unfinished line nothing was written to for ``IDLE_RELEASE_SEC`` (a prompt
+        such as ``Name: ``) is handed out too, up to a whole character and a whole escape sequence.
         """
         run = self._run(id)
         with run.lock:
@@ -371,6 +436,7 @@ class TaskManager:
             except OSError:
                 data = b""
             head_len, marker_len, dropped = run.head_len, run.marker_len, run.dropped
+            quiet = time.monotonic() - run.wrote_at >= IDLE_RELEASE_SEC
         if head_len is None:
             pos = offset
         elif offset < head_len:
@@ -386,10 +452,12 @@ class TaskManager:
         nl = chunk.rfind(b"\n")
         if run.eof.is_set() or len(chunk) - (nl + 1) > 64 * 1024:
             take = chunk
-        elif nl >= 0:
-            take = chunk[:nl + 1]
         else:
-            return "", offset
+            take = chunk[:nl + 1]
+            if release_idle and quiet and len(take) < len(chunk):
+                take += _releasable(chunk[len(take):])
+            if not take:
+                return "", offset
         end = pos + len(take)
         if head_len is None or end <= head_len:
             new_offset = end
