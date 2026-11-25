@@ -204,6 +204,16 @@ HELPER_LOOKS = {"read_path": "read", "list_directory": "list", "find_files": "se
                 "web_search": "web", "web_fetch": "fetch", "recall": "recall", SKILL_TOOL: "skill"}
 
 
+# How the background-task, terminal and browser tools are named in approval cards and step rows.
+NEW_TOOL_LABELS = {
+    "start_background": "Start in the background", "send_to_terminal": "Type in terminal",
+    "browser_open": "Open page", "browser_click": "Click", "browser_type": "Type", "browser_press": "Press",
+    "browser_back": "Go back", "browser_read": "Read page", "browser_screenshot": "Screenshot",
+    "browser_console": "Console", "list_background": "Tasks", "background_output": "Task output",
+    "stop_background": "Stop task", "stop_other_task": "Stop task",
+}
+
+
 STEP_KINDS = {**HELPER_LOOKS, "run_shell": "command", "run_python": "command", "write_file": "write",
               "edit_file": "edit"}
 

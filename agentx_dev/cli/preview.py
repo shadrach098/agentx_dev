@@ -18,6 +18,7 @@ from typing import Any, Mapping, Optional
 
 from agentx_dev.DefaultTools import _maybe_unescape_json_escapes, _plan_edit
 from agentx_dev.cli.approval import move_final_paths
+from agentx_dev.cli.ui_text import NEW_TOOL_LABELS
 
 MAX_PREVIEW_LINES = 200
 MAX_READ_BYTES = 1_000_000        # larger existing files are not read for a preview
@@ -303,6 +304,19 @@ def _build(tool: str, args: Mapping[str, Any], cwd: Path, helper_models: str = "
     if tool == "web_search":
         body, truncated = _whole(str(args.get("query", "")))
         return Preview("Search the web", body, "text", truncated, COMMAND_TOO_LONG if truncated else "")
+    if tool in ("start_background", "send_to_terminal", "stop_other_task"):
+        body, truncated = _whole(str(args.get("text" if tool == "send_to_terminal" else "command", "")))
+        title = NEW_TOOL_LABELS[tool]
+        if tool == "send_to_terminal" and args.get("id"):
+            title += f" {args['id']}"
+        return Preview(title, body, "command", truncated, COMMAND_TOO_LONG if truncated else "")
+    if tool == "browser_open":
+        body, truncated = _whole(str(args.get("url", "")))
+        return Preview(NEW_TOOL_LABELS[tool], body, "text", truncated, COMMAND_TOO_LONG if truncated else "")
+    if tool in ("browser_click", "browser_type", "browser_press", "browser_back"):
+        from agentx_dev.cli.approval import subject_of
+        body, truncated = _whole(subject_of(tool, args))
+        return Preview(NEW_TOOL_LABELS[tool], body, "text", truncated, COMMAND_TOO_LONG if truncated else "")
     return _generic(tool, args)
 
 

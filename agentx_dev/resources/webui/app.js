@@ -290,6 +290,11 @@
     edit_file: ["Edit", "edit"], write_file: ["Write", "write"], delete_path: ["Delete", "remove"], move_file: ["Move", "move"],
     run_shell: ["Run", "run"], run_python: ["Run Python", "run"], web_search: ["Search the web", "web"], web_fetch: ["Fetch", "web"],
     recall: ["Recall notes", "note"], use_skill: ["Use skill", "skill"],
+    start_background: ["Start in the background", "run"], send_to_terminal: ["Type in terminal", "run"],
+    stop_other_task: ["Stop task", "run"], stop_background: ["Stop task", "run"], list_background: ["Tasks", "run"],
+    background_output: ["Task output", "run"], browser_open: ["Open page", "web"], browser_click: ["Click", "web"],
+    browser_type: ["Type", "web"], browser_press: ["Press", "web"], browser_back: ["Go back", "web"],
+    browser_read: ["Read page", "web"], browser_screenshot: ["Screenshot", "web"], browser_console: ["Console", "web"],
   };
   const icon = (kind, cls) => `<svg class="${cls || ""}" viewBox="0 0 16 16" aria-hidden="true">${ICONS[kind] || ICONS.other}</svg>`;
   function toolLook(name) {

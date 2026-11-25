@@ -10,7 +10,7 @@ import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Optional, Union
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Tuple, Union
 
 MODES = ("default", "accept-edits", "plan", "auto")
 # Shift+Tab cycles through these. ``auto`` (nothing is asked except delete / move / unknown tools) is only ever
@@ -24,8 +24,19 @@ TOOL_KINDS = {
     "delete_path": "destructive", "move_file": "destructive",
     "start_team_job": "team",
     "web_search": "web", "web_fetch": "web",
+    # Background tasks and terminals: judged as ``run_shell`` (see ``RULE_AS`` / ``rule_view``).
+    "start_background": "command", "send_to_terminal": "command", "stop_other_task": "command",
+    "background_output": "read", "list_background": "read", "stop_background": "read",
+    # The built-in browser: opening a page is a fetch; acting on a page ("browse") asks when web asks and is
+    # refused in plan mode (a click can submit a form); looking at the page is a read.
+    "browser_open": "web",
+    "browser_click": "browse", "browser_type": "browse", "browser_press": "browse", "browser_back": "browse",
+    "browser_read": "read", "browser_screenshot": "read", "browser_console": "read",
 }
-WEB_GRANT = "all web searches and page fetches this session"
+WEB_GRANT = "all web searches, page fetches and browser actions this session"
+# The tool whose rules, subjects, compound check and "don't ask again" grants apply to these tools.
+RULE_AS = {"start_background": "run_shell", "send_to_terminal": "run_shell", "browser_open": "web_fetch"}
+_WEB_KINDS = ("web", "browse")
 _TWO_WORD_COMMANDS = frozenset({"git", "npm", "pnpm", "yarn", "pip", "cargo", "go", "docker", "make"})
 # Characters that chain, pipe, redirect, substitute or group. Any character outside printable ASCII
 # (control characters, NBSP, Unicode spaces and line breaks) counts as one too; see ``_is_marked``.
@@ -117,6 +128,18 @@ class Answer:
 def kind_of(tool: str) -> str:
     """read / edit / command / destructive / team / web. A tool the gate does not know counts as a command."""
     return TOOL_KINDS.get(tool, "command")
+
+
+def rule_view(tool: str, args: Mapping[str, Any]) -> Tuple[str, Mapping[str, Any]]:
+    """The tool name and arguments the rules and grants see. ``start_background`` (``command``) and
+    ``send_to_terminal`` (``text``, which becomes ``command``; the ``id`` plays no part) look exactly like
+    ``run_shell``, and ``browser_open`` like ``web_fetch``, so a rule or grant written for those applies."""
+    target = RULE_AS.get(tool)
+    if target is None or not isinstance(args, Mapping):
+        return tool, args
+    if tool == "send_to_terminal":
+        return target, {"command": args.get("text")}
+    return target, args
 
 
 def _text(value: Any) -> str:
@@ -258,6 +281,9 @@ def move_final_paths(source: Any, destination: Any, cwd: Optional[Union[str, Pat
 
 def subject_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Path]] = None) -> str:
     """The short text a prompt names (the resolved path, the command, the first line of code)."""
+    if kind_of(tool) == "browse" and tool in TOOL_KINDS:
+        return _browse_subject(tool, args)
+    tool, args = rule_view(tool, args)
     if tool == "move_file":
         destination = args.get("destination", "")
         final = move_final_paths(args.get("source", ""), destination, cwd)    # into a folder: where it lands
@@ -272,6 +298,20 @@ def subject_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Path
     return subjects_of(tool, args, cwd)[0]
 
 
+def _browse_subject(tool: str, args: Mapping[str, Any]) -> str:
+    """``"<page url> :: <target, key or text>"``; the tool layer puts the page's address into ``page_url``."""
+    page = _squash(args.get("page_url", ""))
+    if tool == "browser_type":
+        detail = f"{_squash(args.get('target', ''))} <- {_squash(args.get('text', ''))}"
+    elif tool == "browser_press":
+        detail = _squash(args.get("key", ""))
+    elif tool == "browser_click":
+        detail = _squash(args.get("target", ""))
+    else:
+        detail = "back"
+    return f"{page} :: {detail}"
+
+
 def subjects_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Path]] = None) -> list:
     """Every text a rule is matched against for this call. A deny rule refuses if any matches; an allow
     rule applies only if all do. Never empty.
@@ -281,7 +321,9 @@ def subjects_of(tool: str, args: Mapping[str, Any], cwd: Optional[Union[str, Pat
       destination is an existing folder also of the final path ``destination/<name>``);
     * ``start_team_job``: the task text alone (never the reason or any other key);
     * a tool with a string ``command``: that command alone;
+    * ``start_background`` and ``send_to_terminal``: as ``run_shell``; ``browser_open``: as ``web_fetch``;
     * anything else: every string in the arguments (at most ``_MAX_SUBJECTS``)."""
+    tool, args = rule_view(tool, args)
     if tool == "run_shell":
         return [_squash(args.get("command", ""))]
     if tool == "run_python":
@@ -553,8 +595,10 @@ class Gate:
             return UNSUPPORTED_PATH
         subject = subject_of(tool, args, self.cwd)
         subjects = subjects_of(tool, args, self.cwd)
+        rtool, rargs = rule_view(tool, args)                    # what the rules and grants see (run_shell, web_fetch)
+        page = _squash(args.get("page_url", "")) if kind == "browse" else ""
         for rule in self.deny:                                  # a deny rule refuses if ANY form matches
-            if any(rule_matches(rule, tool, text, cwd=self.cwd) for text in subjects):
+            if any(rule_matches(rule, rtool, text, cwd=self.cwd) for text in subjects)                     or (page and rule_matches(rule, "web_fetch", page, cwd=self.cwd)):
                 return f"Refused: the settings deny rule '{rule}' blocks this."
         if self._mode == "plan" and kind not in ("read", "web"):
             return PLAN_REFUSAL
@@ -562,23 +606,23 @@ class Gate:
             return None
         # Web lookups read, but a URL or a query can carry text out of the project, so the careful modes ask.
         # accept-edits covers them only when the user chose that mode; an "a" at an edit prompt grants edits only.
-        if kind == "web" and (self._mode == "auto" or self.web_allowed
+        if kind in _WEB_KINDS and (self._mode == "auto" or self.web_allowed
                               or (self._mode == "accept-edits" and not self._edits_granted)):
             return None
         if self._mode == "auto" and tool in TOOL_KINDS and kind in ("edit", "command", "team"):
             return None             # auto: only delete / move and tools the gate does not know still ask
-        compound = _is_compound(tool, args)
+        compound = _is_compound(rtool, rargs)
         if kind != "destructive" and not compound:
             # an allow rule applies only if EVERY form matches it
-            if any(all(rule_matches(rule, tool, text, cwd=self.cwd) for text in subjects)
+            if any(all(rule_matches(rule, rtool, text, cwd=self.cwd) for text in subjects)
                    for rule in (*self.allow, *self.extra_allow)) \
-                    or self._granted(tool, subject):
+                    or self._granted(rtool, subject):
                 return None
         if kind == "edit" and self._mode == "accept-edits":
             return None
         if self.ask is None:
             return NO_WAY_TO_ASK
-        grant = self._grant_for(tool, kind, subject, compound)
+        grant = self._grant_for(rtool, kind, subject, compound)
         answer = self.ask(Request(tool=tool, kind=kind, subject=subject, args=dict(args),
                                   remember=grant is not None, grant=grant or ""))
         if not isinstance(answer, Answer):
@@ -613,7 +657,7 @@ class Gate:
         option that runs another program, or ``run_python`` (which approves only that one call)."""
         if kind == "edit":
             return "all edits this session"
-        if kind == "web":
+        if kind in _WEB_KINDS:
             return WEB_GRANT
         if tool == "run_shell" and not compound and not _launches_programs(subject):
             return _grantable_prefix(subject)
@@ -625,7 +669,7 @@ class Gate:
             # can carry text out of the project and the user agreed to edits only.
             self._mode = "accept-edits"
             self._edits_granted = True
-        elif kind == "web":
+        elif kind in _WEB_KINDS:
             self.web_allowed = True
         else:
             self.grants.add(grant)
