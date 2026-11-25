@@ -34,6 +34,7 @@ import ipaddress
 import logging
 import queue
 import re
+import secrets
 import socket
 import threading
 import time
@@ -71,7 +72,8 @@ SCHEME_REFUSAL = "only http and https pages can be opened"
 
 
 class BrowserUnavailable(RuntimeError):
-    """Playwright or its Chromium is missing; the message is ``NOT_INSTALLED``."""
+    """The browser cannot run: ``NOT_INSTALLED`` when Playwright or its Chromium is missing, else
+    ``The browser could not start: <reason>``."""
 
 
 class _Refused(Exception):
@@ -90,15 +92,22 @@ def _forget_lookups() -> None:
         _lookups.clear()
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
 def _address_refusal(host: str, addr: str) -> Optional[str]:
     """None when ``addr`` is public or loopback, else why ``host`` (which resolved to it) is refused."""
     try:
         ip = ipaddress.ip_address(addr.split("%", 1)[0])
     except ValueError:
         return f"{host} is not a public address"
-    mapped = getattr(ip, "ipv4_mapped", None)
-    if mapped is not None:                              # ::ffff:127.0.0.1 is judged as 127.0.0.1
-        ip = mapped
+    if ip.version == 6:                                 # an IPv4 address carried inside IPv6 is judged as IPv4:
+        if ip.ipv4_mapped is not None:                  # ::ffff:127.0.0.1
+            ip = ip.ipv4_mapped
+        elif ip in _NAT64:                              # 64:ff9b::10.0.0.5 (NAT64 reaches the IPv4 address)
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        elif ip.sixtofour is not None:                  # 2002:0a00:0005:: (6to4)
+            ip = ip.sixtofour
     if ip.is_loopback or _is_public(str(ip)):
         return None
     bare = addr.split("%", 1)[0]
@@ -108,8 +117,9 @@ def _address_refusal(host: str, addr: str) -> Optional[str]:
     return f"{host} is not a public address{suffix}"     # 0.0.0.0, multicast, reserved ...
 
 
-def _checked_addresses(host: str) -> List[str]:
-    """The addresses ``host`` resolves to, all public or loopback; raises ``_Refused`` with the reason otherwise."""
+def _checked_addresses(host: str, resolve: bool = True) -> List[str]:
+    """The addresses ``host`` resolves to, all public or loopback; raises ``_Refused`` with the reason otherwise.
+    With ``resolve=False`` a host name is not looked up (``[]`` comes back): only literal addresses are judged."""
     host = (host or "").strip().strip("[]").lower()
     if host.endswith(".") and len(host) > 1:
         host = host[:-1]
@@ -126,6 +136,8 @@ def _checked_addresses(host: str) -> List[str]:
         if reason:
             raise _Refused(reason)
         return [host]
+    if not resolve:
+        return []
     now = time.monotonic()
     with _lookups_lock:
         cached = _lookups.get(host)
@@ -159,6 +171,10 @@ def url_refusal(url: str) -> Optional[str]:
     Allowed: ``about:blank``, and ``http``/``https`` addresses whose host resolves only to public or loopback
     addresses. Everything else (``file:``, ``data:``, ``javascript:``, ``chrome:``, private and link-local hosts...)
     is refused."""
+    return _url_refusal(url, resolve=True)
+
+
+def _url_refusal(url: str, resolve: bool) -> Optional[str]:
     if not isinstance(url, str):
         return SCHEME_REFUSAL
     text = re.sub(r"[\t\n\r]", "", url).strip()         # a browser drops these from an address before reading it
@@ -175,7 +191,7 @@ def url_refusal(url: str) -> Optional[str]:
     except ValueError:
         return "the address is not valid"
     try:
-        _checked_addresses(host or "")
+        _checked_addresses(host or "", resolve=resolve)
     except _Refused as refused:
         return str(refused)
     return None
@@ -186,8 +202,8 @@ def url_refusal(url: str) -> Optional[str]:
 _HOP_HEADERS = (b"proxy-connection", b"proxy-authorization", b"connection", b"keep-alive")
 
 
-def _read_head(conn: socket.socket, limit: int = 64 * 1024) -> Tuple[Optional[bytes], bytes]:
-    data = b""
+def _read_head(conn: socket.socket, data: bytes = b"", limit: int = 64 * 1024) -> Tuple[Optional[bytes], bytes]:
+    """Read up to the blank line that ends an HTTP head: ``(head, bytes read after it)``, or ``(None, b"")``."""
     while b"\r\n\r\n" not in data:
         chunk = conn.recv(8192)
         if not chunk:
@@ -199,20 +215,42 @@ def _read_head(conn: socket.socket, limit: int = 64 * 1024) -> Tuple[Optional[by
     return head, rest
 
 
-def _pipe(src: socket.socket, dst: socket.socket) -> None:
+def _kill(conn: Optional[socket.socket]) -> None:
+    """Shut a socket both ways and close it (shutdown first: on Linux/macOS a close alone does not wake a thread
+    blocked on it)."""
+    if conn is None:
+        return
     try:
-        while True:
-            data = src.recv(65536)
-            if not data:
-                break
-            dst.sendall(data)
+        conn.shutdown(socket.SHUT_RDWR)
     except OSError:
         pass
-    finally:
+    try:
+        conn.close()
+    except OSError:
+        pass
+
+
+def _pipe(src: socket.socket, dst: socket.socket, last: Optional[List[float]] = None, idle: float = 0.0) -> None:
+    """Copy ``src`` to ``dst`` until ``src`` ends or either socket fails. ``last`` (shared by both directions of a
+    connection) holds the time anything last moved; when ``src``'s timeout fires and nothing moved either way for
+    ``idle`` seconds, the connection counts as ended."""
+    while True:
         try:
-            dst.shutdown(socket.SHUT_WR)
+            data = src.recv(65536)
+        except socket.timeout:
+            if last is not None and time.monotonic() - last[0] < idle:
+                continue                                # the other direction is busy (a download, a stream)
+            return
         except OSError:
-            pass
+            return
+        if not data:
+            return
+        if last is not None:
+            last[0] = time.monotonic()
+        try:
+            dst.sendall(data)
+        except OSError:
+            return
 
 
 def _connect(addrs: List[str], port: int) -> socket.socket:
@@ -225,38 +263,77 @@ def _connect(addrs: List[str], port: int) -> socket.socket:
     raise last or OSError("no address")
 
 
+class _BadRequest(Exception):
+    """A request the proxy does not read (answered 400)."""
+
+
+def _port(text: str) -> int:
+    if not text.isdigit() or not 1 <= int(text) <= 65535:
+        raise _BadRequest()
+    return int(text)
+
+
+def _request_line(head: bytes) -> Tuple[str, str, str]:
+    parts = head.split(b"\r\n", 1)[0].decode("latin-1").split(" ")
+    if len(parts) != 3 or not parts[0].isalpha() or not parts[1] or not parts[2].startswith("HTTP/"):
+        raise _BadRequest()
+    return parts[0], parts[1], parts[2]
+
+
+PROXY_IDLE_SEC = 300.0              # a proxied connection silent both ways this long is closed
+PROXY_MAX_CONNECTIONS = 64          # connections served at once; one more waits up to 5 s for a slot, then is closed
+
+
 class _GuardProxy:
     """An HTTP proxy on 127.0.0.1 for Chromium: it refuses hosts ``url_refusal`` would refuse, on every connection.
 
     Plain HTTP requests come in absolute form (``GET http://host/path``) and are sent on with ``Connection: close``
-    (one request per connection, so a reused connection cannot reach a second host unchecked); HTTPS and WebSockets
-    come as ``CONNECT host:port`` and are tunnelled. A refusal answers ``403`` with an ``X-Agentx-Refused`` header
-    and a short page that says why."""
+    (one request per connection, so a reused connection cannot reach a second host unchecked), with any
+    ``X-Agentx-*`` header dropped from the answer; HTTPS and WebSockets come as ``CONNECT host:port`` and are
+    tunnelled. A refusal answers ``403`` with ``X-Agentx-Refused`` (the reason), ``X-Agentx-Nonce`` (a secret made
+    per proxy, so a site cannot fake a refusal: see ``refusal_of``) and a short page that says why. Anything else it
+    cannot read gets ``400``. When either side of a connection ends, or nothing moves either way for
+    ``idle_timeout`` seconds, both sockets are closed."""
 
     def __init__(self) -> None:
-        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._listener.bind(("127.0.0.1", 0))
-        self._listener.listen(64)
-        self.port = self._listener.getsockname()[1]
+        self.nonce = secrets.token_hex(16)
+        self.idle_timeout = PROXY_IDLE_SEC
         self._open: Set[socket.socket] = set()
         self._lock = threading.Lock()
+        self._slots = threading.BoundedSemaphore(PROXY_MAX_CONNECTIONS)
         self._closed = False
         self.refusals: Deque[Tuple[float, str]] = deque(maxlen=20)
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self._listener.bind(("127.0.0.1", 0))
+            self._listener.listen(64)
+        except OSError:
+            self._listener.close()
+            raise
+        self.port = self._listener.getsockname()[1]
         threading.Thread(target=self._accept, name="agentx-browser-proxy", daemon=True).start()
 
-    def _track(self, conn: Optional[socket.socket], add: bool = True) -> None:
+    def refusal_of(self, response) -> Optional[str]:
+        """The reason when ``response`` (a Playwright response) is this proxy's own refusal, else None."""
+        try:
+            headers = response.headers
+            if response.status == 403 and secrets.compare_digest(headers.get("x-agentx-nonce", ""), self.nonce):
+                return headers.get("x-agentx-refused") or "refused"
+        except Exception:
+            pass
+        return None
+
+    def _track(self, conn: Optional[socket.socket]) -> None:
+        if conn is not None:
+            with self._lock:
+                self._open.add(conn)
+
+    def _untrack(self, conn: Optional[socket.socket]) -> None:
         if conn is None:
             return
         with self._lock:
-            if add:
-                self._open.add(conn)
-            else:
-                self._open.discard(conn)
-        if not add:
-            try:
-                conn.close()
-            except OSError:
-                pass
+            self._open.discard(conn)
+        _kill(conn)
 
     def _accept(self) -> None:
         while not self._closed:
@@ -264,20 +341,47 @@ class _GuardProxy:
                 conn, _ = self._listener.accept()
             except OSError:
                 break
+            if not self._slots.acquire(timeout=5):      # too many at once: this one is dropped
+                _kill(conn)
+                continue
             self._track(conn)
-            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+            threading.Thread(target=self._serve_in_slot, args=(conn,), daemon=True).start()
+
+    def _serve_in_slot(self, client: socket.socket) -> None:
+        try:
+            self._serve(client)
+        finally:
+            self._slots.release()
+
+    def _answer(self, client: socket.socket, status: str, extra: str = "", body: bytes = b"") -> None:
+        head = (f"HTTP/1.1 {status}\r\n{extra}Content-Length: {len(body)}\r\nConnection: close\r\n\r\n")
+        try:
+            client.sendall(head.encode("latin-1", "replace") + body)
+        except OSError:
+            pass
 
     def _refuse(self, client: socket.socket, reason: str) -> None:
         reason = re.sub(r"[\r\n]+", " ", reason)
         self.refusals.append((time.monotonic(), reason))
         body = ("<!doctype html><title>Refused by agentx</title><h1>agentx refused this address</h1>"
                 f"<p>{_html_escape(reason)}</p>").encode("utf-8")
-        head = ("HTTP/1.1 403 Forbidden\r\nContent-Type: text/html; charset=utf-8\r\n"
-                f"X-Agentx-Refused: {reason}\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n")
-        try:
-            client.sendall(head.encode("latin-1", "replace") + body)
-        except OSError:
-            pass
+        self._answer(client, "403 Forbidden", "Content-Type: text/html; charset=utf-8\r\n"
+                     f"X-Agentx-Refused: {reason}\r\nX-Agentx-Nonce: {self.nonce}\r\n", body)
+
+    def _forward_head(self, upstream: socket.socket, client: socket.socket) -> Optional[bytes]:
+        """Send the upstream answer's head(s) on without ``X-Agentx-*`` headers; returns the body bytes already
+        read, or None when the upstream ended first. Interim ``1xx`` heads (not ``101``) are followed by another."""
+        buffered = b""
+        while True:
+            head, buffered = _read_head(upstream, buffered)
+            if head is None:
+                return None
+            lines = head.split(b"\r\n")
+            kept = [lines[0]] + [h for h in lines[1:] if not h.lstrip().lower().startswith(b"x-agentx-")]
+            client.sendall(b"\r\n".join(kept) + b"\r\n\r\n")
+            status = lines[0].split(b" ", 2)[1] if lines[0].count(b" ") else b""
+            if not (status.startswith(b"1") and status != b"101"):
+                return buffered
 
     def _serve(self, client: socket.socket) -> None:
         upstream: Optional[socket.socket] = None
@@ -286,64 +390,89 @@ class _GuardProxy:
             head, rest = _read_head(client)
             if head is None:
                 return
-            line, _, header_block = head.partition(b"\r\n")
-            method, target, version = line.decode("latin-1").split(" ", 2)
+            plain = False
             try:
+                method, target, version = _request_line(head)
                 if method.upper() == "CONNECT":
-                    host, _, port = target.rpartition(":")
-                    addrs = _checked_addresses(host)
-                    upstream = _connect(addrs, int(port))
+                    host, sep, port_text = target.rpartition(":")
+                    if not sep or not host:
+                        raise _BadRequest()
+                    port = _port(port_text)
+                    upstream = _connect(_checked_addresses(host), port)
+                    self._track(upstream)
                     client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 else:
                     parts = urllib.parse.urlsplit(target)
-                    if parts.scheme.lower() != "http" or not parts.hostname:
-                        raise _Refused(SCHEME_REFUSAL)
-                    addrs = _checked_addresses(parts.hostname)
-                    upstream = _connect(addrs, parts.port or 80)
-                    headers = [h for h in header_block.split(b"\r\n") if h]
+                    if parts.scheme.lower() != "http" or not parts.hostname:   # origin form is not for a proxy
+                        raise _BadRequest()
+                    try:
+                        port = parts.port or 80
+                    except ValueError:
+                        raise _BadRequest() from None
+                    upstream = _connect(_checked_addresses(parts.hostname), port)
+                    self._track(upstream)
+                    headers = [h for h in head.split(b"\r\n")[1:] if h]
                     upgrade = any(h.split(b":", 1)[0].strip().lower() == b"upgrade" for h in headers)
                     if not upgrade:
                         headers = [h for h in headers if h.split(b":", 1)[0].strip().lower() not in _HOP_HEADERS]
                         headers.append(b"Connection: close")
-                    path = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
+                    path = (parts.path or "/") + ("?" + parts.query if parts.query else "")
                     upstream.sendall(b"\r\n".join([f"{method} {path} {version}".encode("latin-1")] + headers)
                                      + b"\r\n\r\n")
+                    plain = True
+            except _BadRequest:
+                self._answer(client, "400 Bad Request")
+                return
             except _Refused as refused:
                 self._refuse(client, str(refused))
                 return
-            self._track(upstream)
+            idle = self.idle_timeout
+            last = [time.monotonic()]
+            client.settimeout(idle)
+            upstream.settimeout(idle)
             if rest:
                 upstream.sendall(rest)
-            client.settimeout(None)
-            upstream.settimeout(None)
-            back = threading.Thread(target=_pipe, args=(upstream, client), daemon=True)
-            back.start()
-            _pipe(client, upstream)
-            back.join()
-        except (OSError, ValueError):
-            try:
-                if upstream is None:
-                    client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            except OSError:
-                pass
+
+            def back() -> None:
+                try:
+                    if plain:
+                        body = self._forward_head(upstream, client)
+                        if body is None:
+                            return
+                        if body:
+                            client.sendall(body)
+                    _pipe(upstream, client, last, idle)
+                except OSError:
+                    pass
+                finally:                                # either direction ending ends both
+                    _kill(client)
+                    _kill(upstream)
+
+            answer = threading.Thread(target=back, daemon=True)
+            answer.start()
+            _pipe(client, upstream, last, idle)
+            _kill(client)
+            _kill(upstream)
+            answer.join(timeout=5)
+        except OSError:
+            if upstream is None:
+                self._answer(client, "502 Bad Gateway")
         finally:
-            self._track(upstream, add=False)
-            self._track(client, add=False)
+            self._untrack(upstream)
+            self._untrack(client)
+
+    def open_connections(self) -> int:
+        with self._lock:
+            return len(self._open)
 
     def close(self) -> None:
         self._closed = True
-        try:
-            self._listener.close()
-        except OSError:
-            pass
+        _kill(self._listener)
         with self._lock:
             conns = list(self._open)
             self._open.clear()
         for conn in conns:
-            try:
-                conn.close()
-            except OSError:
-                pass
+            _kill(conn)
 
 
 def _html_escape(text: str) -> str:
@@ -599,9 +728,9 @@ class BrowserHost:
             from playwright.sync_api import Error, TimeoutError as PlaywrightTimeout, sync_playwright
         except ImportError:
             raise BrowserUnavailable(NOT_INSTALLED) from None
-        proxy = _GuardProxy()
-        pw = None
+        proxy = pw = None
         try:
+            proxy = _GuardProxy()
             pw = sync_playwright().start()
             self._browser = pw.chromium.launch(
                 headless=True,
@@ -615,9 +744,13 @@ class BrowserHost:
                     pw.stop()
                 except Exception:
                     pass
-            proxy.close()
+            if proxy is not None:
+                proxy.close()
             self._browser = None
-            raise BrowserUnavailable(NOT_INSTALLED) from None
+            text = str(error)
+            if "Executable doesn't exist" in text or "playwright install" in text:   # Chromium was never downloaded
+                raise BrowserUnavailable(NOT_INSTALLED) from None
+            raise BrowserUnavailable(f"The browser could not start: {_first_line(error)}") from None
         self._pw, self._proxy = pw, proxy
         self._Error, self._Timeout = Error, PlaywrightTimeout
 
@@ -727,7 +860,9 @@ class BrowserHost:
             url = request.url
             scheme = url.split(":", 1)[0].lower()
             if scheme in ("http", "https"):
-                reason = url_refusal(url)
+                # Scheme and literal addresses only: a name is resolved (and pinned) by the proxy, so no DNS
+                # lookup ever runs on the worker thread.
+                reason = _url_refusal(url, resolve=False)
             elif request.is_navigation_request() and url.lower() != "about:blank":
                 reason = SCHEME_REFUSAL
             else:
@@ -849,7 +984,7 @@ class BrowserHost:
             if reason:
                 return f"ERROR: agentx refused to open {url}: {reason}"
             return f"ERROR: could not open {url}: {_first_line(error)}"
-        refused = response.headers.get("x-agentx-refused") if response is not None else None
+        refused = self._proxy.refusal_of(response) if (self._proxy is not None and response is not None) else None
         if refused:
             return f"ERROR: agentx refused to open {response.url}: {refused}"
         return ""

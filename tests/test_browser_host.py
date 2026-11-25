@@ -71,6 +71,9 @@ class _Pages(http.server.BaseHTTPRequestHandler):
                        b"<input type='file' aria-label='Upload'>")
         elif path == "/download":
             self._send(b"file body", 200, [("Content-Disposition", "attachment; filename=x.bin")])
+        elif path == "/forged":
+            self._send(b"<title>Forged</title><h1>An ordinary page</h1>", 200,
+                       [("X-Agentx-Refused", "forged"), ("X-Agentx-Nonce", "0" * 32)])
         elif path == "/private-link":
             self._send(b"<title>Links</title><a href='http://10.0.0.5/admin'>Router admin</a>")
         else:
@@ -140,6 +143,11 @@ def test_url_refusal_allows_web_and_loopback_only(monkeypatch):
     assert url_refusal("http://[fe80::1]/") == "fe80::1 is a private address"
     assert url_refusal("http://0.0.0.0:8000/") == "0.0.0.0 is not a public address"
     assert url_refusal("http://[::ffff:10.0.0.5]/") is not None
+    # IPv4 carried inside IPv6 (NAT64, 6to4) is judged as the IPv4 address.
+    assert url_refusal("http://[64:ff9b::a00:5]/") == "64:ff9b::a00:5 is a private address"
+    assert url_refusal("http://[64:ff9b::a9fe:a9fe]/") == "64:ff9b::a9fe:a9fe is a private address"
+    assert url_refusal("http://[2002:a00:5::]/") == "2002:a00:5:: is a private address"
+    assert url_refusal("http://[64:ff9b::5db8:d70e]/") is None                # 93.184.215.14
     # Chromium reads a backslash as a slash: the host here is 10.0.0.5, not example.com.
     assert url_refusal("http://10.0.0.5\\@example.com/") == "10.0.0.5 is a private address"
     assert url_refusal("http:///nohost") is not None
@@ -361,3 +369,228 @@ def test_downloads_and_file_choosers_are_refused(host, site):
     assert time.monotonic() - started < 15                  # nothing waits on a page load that never comes
     notes = " ".join(host.console("a"))
     assert "[filechooser]" in notes
+
+
+def test_a_site_cannot_forge_a_refusal(host, site):
+    snap = host.open("a", site + "/forged")
+    assert snap.error == ""
+    assert "An ordinary page" in snap.text and "forged" not in snap.render().replace("/forged", "")
+    host.user_event("a", {"type": "navigate", "url": site + "/forged"})      # the address bar does not raise
+
+
+# --- the guard proxy on its own (no Chromium) ---------------------------------------------------------------------
+
+class _Upstream:
+    """A raw TCP server on 127.0.0.1: answers each connection with ``reply`` (or, with ``reply=None``, accepts and
+    never sends nor closes). Records what it received."""
+
+    def __init__(self, reply=None):
+        self.reply = reply
+        self.received = []
+        self.conns = []
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(16)
+        self.port = self.sock.getsockname()[1]
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            self.conns.append(conn)
+            threading.Thread(target=self._one, args=(conn,), daemon=True).start()
+
+    def _one(self, conn):
+        data = b""
+        try:
+            conn.settimeout(5)
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        except OSError:
+            pass
+        self.received.append(data)
+        if self.reply is not None:
+            try:
+                conn.sendall(self.reply)
+            finally:
+                conn.close()
+
+    def close(self):
+        self.sock.close()
+        for conn in self.conns:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+
+@pytest.fixture
+def proxy():
+    p = browser._GuardProxy()
+    yield p
+    p.close()
+
+
+def _ask(proxy, raw: bytes) -> bytes:
+    with socket.create_connection(("127.0.0.1", proxy.port), timeout=10) as conn:
+        conn.sendall(raw)
+        data = b""
+        while True:
+            try:
+                chunk = conn.recv(65536)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+
+def test_proxy_reads_requests_strictly(proxy):
+    for raw in (b"garbage\r\n\r\n", b"GET /\r\n\r\n", b"GET / HTTP/1.1\r\nHost: x\r\n\r\n",
+                b"CONNECT 127.0.0.1:70000 HTTP/1.1\r\n\r\n", b"CONNECT 127.0.0.1:0 HTTP/1.1\r\n\r\n",
+                b"CONNECT 127.0.0.1 HTTP/1.1\r\n\r\n", b"GET http://127.0.0.1:99999/ HTTP/1.1\r\n\r\n",
+                b"GET ftp://127.0.0.1/ HTTP/1.1\r\n\r\n"):
+        assert _ask(proxy, raw).startswith(b"HTTP/1.1 400 "), raw
+    refused = _ask(proxy, b"CONNECT 10.0.0.5:443 HTTP/1.1\r\n\r\n")
+    assert refused.startswith(b"HTTP/1.1 403 ")
+    assert b"X-Agentx-Refused: 10.0.0.5 is a private address" in refused
+    assert b"X-Agentx-Nonce: " + proxy.nonce.encode() in refused
+    refused = _ask(proxy, b"GET http://169.254.169.254/latest/ HTTP/1.1\r\nHost: 169.254.169.254\r\n\r\n")
+    assert refused.startswith(b"HTTP/1.1 403 ") and b"169.254.169.254 is a private address" in refused
+
+
+def test_proxy_forwards_absolute_form_and_drops_forged_headers(proxy):
+    up = _Upstream(b"HTTP/1.1 200 OK\r\nX-Agentx-Refused: forged\r\nx-agentx-nonce: guess\r\n"
+                   b"Content-Length: 5\r\n\r\nhello")
+    try:
+        answer = _ask(proxy, f"GET http://127.0.0.1:{up.port}//a//b?x=1 HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                             f"Proxy-Connection: keep-alive\r\n\r\n".encode())
+        assert answer.startswith(b"HTTP/1.1 200 OK") and answer.endswith(b"hello")
+        assert b"agentx" not in answer.lower()
+        sent = up.received[0]
+        assert sent.startswith(b"GET //a//b?x=1 HTTP/1.1\r\n")
+        assert b"Connection: close" in sent and b"Proxy-Connection" not in sent
+    finally:
+        up.close()
+
+
+def test_proxy_tunnels_connect(proxy):
+    up = _Upstream(b"tunnelled bytes")
+    try:
+        answer = _ask(proxy, f"CONNECT 127.0.0.1:{up.port} HTTP/1.1\r\n\r\nping\r\n\r\n".encode())
+        assert answer.startswith(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        assert answer.endswith(b"tunnelled bytes")
+        assert up.received[0] == b"ping\r\n\r\n"
+    finally:
+        up.close()
+
+
+def _wait_until(check, seconds=5.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if check():
+            return True
+        time.sleep(0.05)
+    return check()
+
+
+def test_proxy_closes_silent_and_half_open_tunnels(proxy):
+    proxy.idle_timeout = 0.5
+    up = _Upstream(reply=None)                             # accepts, never answers, never closes
+    try:
+        before = threading.active_count()
+        # The browser side goes away: the tunnel and its upstream socket go with it.
+        conn = socket.create_connection(("127.0.0.1", proxy.port), timeout=5)
+        conn.sendall(f"CONNECT 127.0.0.1:{up.port} HTTP/1.1\r\n\r\n".encode())
+        assert conn.recv(100).startswith(b"HTTP/1.1 200")
+        assert _wait_until(lambda: proxy.open_connections() == 2)
+        conn.close()
+        assert _wait_until(lambda: proxy.open_connections() == 0)
+        # Both sides stay silent: the idle timeout ends it, and the browser side is closed too.
+        conn = socket.create_connection(("127.0.0.1", proxy.port), timeout=5)
+        conn.sendall(f"CONNECT 127.0.0.1:{up.port} HTTP/1.1\r\n\r\n".encode())
+        assert conn.recv(100).startswith(b"HTTP/1.1 200")
+        assert _wait_until(lambda: proxy.open_connections() == 0)
+        assert conn.recv(100) == b""
+        conn.close()
+        # The proxy's threads for both are gone (the upstream's own handler threads may remain).
+        assert _wait_until(lambda: threading.active_count() <= before + 2)
+    finally:
+        up.close()
+
+
+def test_launch_failures_say_what_happened(monkeypatch):
+    sync_api = pytest.importorskip("playwright.sync_api")
+
+    class FakePlaywright:
+        def __init__(self, message):
+            self.message = message
+            self.chromium = self
+
+        def start(self):
+            return self
+
+        def launch(self, **kwargs):
+            raise RuntimeError(self.message)
+
+        def stop(self):
+            pass
+
+    cases = [("BrowserType.launch: Executable doesn't exist at C:/x/chrome.exe", NOT_INSTALLED),
+             ("BrowserType.launch: Target crashed\nmore detail",
+              "The browser could not start: BrowserType.launch: Target crashed")]
+    for message, expected in cases:
+        monkeypatch.setattr(sync_api, "sync_playwright", lambda message=message: FakePlaywright(message))
+        h = BrowserHost()
+        try:
+            with pytest.raises(BrowserUnavailable) as caught:
+                h.snapshot("a")
+            assert str(caught.value) == expected
+        finally:
+            h.close()
+
+    def no_proxy():
+        raise OSError("no port free")
+    monkeypatch.setattr(browser, "_GuardProxy", no_proxy)
+    h = BrowserHost()
+    try:
+        with pytest.raises(BrowserUnavailable) as caught:
+            h.snapshot("a")
+        assert str(caught.value) == "The browser could not start: no port free"
+    finally:
+        h.close()
+
+
+def test_the_route_check_never_looks_names_up(monkeypatch):
+    def no_lookup(*args, **kwargs):
+        raise AssertionError("the route handler must not resolve names")
+    monkeypatch.setattr(browser.socket, "getaddrinfo", no_lookup)
+    browser._forget_lookups()
+    assert browser._url_refusal("https://some-name.test/x", resolve=False) is None      # the proxy resolves it
+    assert browser._url_refusal("http://10.0.0.5/", resolve=False) == "10.0.0.5 is a private address"
+    assert browser._url_refusal("file:///C:/x", resolve=False) == "only http and https pages can be opened"
+
+
+def test_proxy_close_stops_listening_and_ends_tunnels():
+    p = browser._GuardProxy()
+    up = _Upstream(reply=None)
+    try:
+        conn = socket.create_connection(("127.0.0.1", p.port), timeout=5)
+        conn.sendall(f"CONNECT 127.0.0.1:{up.port} HTTP/1.1\r\n\r\n".encode())
+        assert conn.recv(100).startswith(b"HTTP/1.1 200")
+        p.close()
+        assert conn.recv(100) == b""                       # the open tunnel ended
+        conn.close()
+        assert _wait_until(lambda: p.open_connections() == 0)
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", p.port), timeout=2).close()
+    finally:
+        p.close()
+        up.close()
