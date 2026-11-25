@@ -454,12 +454,16 @@ def test_the_window_gives_back_a_held_page_before_it_shows_another(window):
     page.locator("#bwGive").wait_for(state="visible", timeout=10_000)
     assert browser.held_by_user(first)
     gives = len(w.posted("/api/browser/give"))
+    # /clear ends the first conversation, which gives its page back on the server too; so that the window's
+    # state poll cannot learn that before the switch arrives, the polls are held off meanwhile
+    page.route("**/api/browser/state*", lambda route: route.abort())
     w.h.request(LAPTOP, "POST", "/api/send", {"text": "/clear"})
-    page.wait_for_function("document.getElementById('bwGive').hidden", timeout=10_000)
-    for _ in range(100):
+    for _ in range(200):
         if len(w.posted("/api/browser/give")) > gives:
             break
         page.wait_for_timeout(50)
-    assert w.posted("/api/browser/give")[gives:][:1] == [{"owner": _mark(first)}]
+    assert w.posted("/api/browser/give")[gives:] == [{"owner": _mark(first)}]
+    page.unroute("**/api/browser/state*")
+    page.wait_for_function("document.getElementById('bwGive').hidden", timeout=10_000)
     assert not browser.held_by_user(first)
     assert not w.errors
