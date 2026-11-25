@@ -199,3 +199,128 @@ def test_an_edit_keeps_the_earlier_job_of_the_same_task_also_without_call_ids():
     session = types.SimpleNamespace(history=history[:5], metadata={"team_blocks": [first, second]})
     TeamCommands._prune_team_blocks(types.SimpleNamespace(session=session), upto=5)
     assert [r["job"] for r in session.metadata["team_blocks"]] == ["J1"]
+
+
+# -- a stopped turn, a summary, a later run that kept nothing, two calls in one batch ---------------------------
+
+def _stopped_job(tmp_path, monkeypatch, call_id):
+    """A turn whose team job Esc / Ctrl+C stopped: the turn keeps only your message and a short note."""
+    import agentx_dev.cli.app as app_module
+    from tests.subagent_helpers import step
+    from tests.test_cli_app import Lines, make_app
+    from tests.test_cli_team_app import team_model
+
+    def helper(messages, n):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(app_module, "current_tool_call_id", lambda: call_id)
+    app, _, _, _ = make_app(tmp_path, Lines("do the big job", "/exit"), team_model(
+        [step("s1", "explorer", "look around")], helper=helper), mode="auto")
+    app.start()
+    return app
+
+
+def test_a_stopped_turn_keeps_its_job_under_its_note(tmp_path, monkeypatch):
+    from agentx_dev.cli.app_team import TeamCommands
+    for n, call_id in enumerate((None, "call_9")):              # text mode, then function calling
+        (tmp_path / str(n)).mkdir()
+        app = _stopped_job(tmp_path / str(n), monkeypatch, call_id)
+        history, kept = app.session.history, app.session.metadata["team_blocks"]
+        assert [m["role"] for m in history[-2:]] == ["user", "assistant"]
+        assert "stopped before it finished" in history[-1]["content"]
+        assert len(kept) == 1
+        assert shown(history, kept) == ["block:" + kept[0]["job"]]          # a reload draws it again
+        app._prune_team_blocks()                                             # and it is not an orphan
+        assert len(app.session.metadata["team_blocks"]) == 1
+        TeamCommands._prune_team_blocks(app, upto=len(history) - 2)          # an edit of that message drops it
+        assert app.session.metadata["team_blocks"] == []
+
+
+def test_after_a_summary_an_edit_keeps_a_text_mode_job_whose_call_is_still_there(tmp_path, monkeypatch):
+    import agentx_dev.cli.app_usage as app_usage
+    app = _app_job(tmp_path)
+    filler = [m for i in range(3) for m in ({"role": "user", "content": f"more {i}"},
+                                            {"role": "assistant", "content": "fine"})]
+    history = ([{"role": "system", "content": "s"}] + call(1, "A", text_mode=True) + res(1, RAN, text_mode=True)
+               + filler + call(2, "B", text_mode=True) + res(2, RAN, text_mode=True)
+               + [{"role": "user", "content": "go 3"}, {"role": "assistant", "content": "done"}])
+    assert history[11]["content"] == "go 2"
+    job = rec("JB", "B")
+    job["turnAt"] = 11
+    app.session.history, app.session.metadata["team_blocks"] = history, [job]
+    summary = [{"role": "user", "content": "[summary]"}, {"role": "assistant", "content": "ok"}]
+    monkeypatch.setattr(app_usage, "needs_compaction", lambda *a, **k: True)
+    monkeypatch.setattr(app_usage, "compact", lambda h, c, **k: types.SimpleNamespace(
+        status="done", history=h[:1] + summary + h[11:], replaced=10, summary="earlier work"))
+    app._compact_wait = 0
+    app._maybe_compact()
+    assert app.session.history[3]["content"] == "go 2"
+    assert app.session.metadata["team_blocks"][0]["turnAt"] == 3           # re-based with the conversation
+    app._prune_team_blocks(upto=7)                                         # an edit of "go 3"
+    assert [r["job"] for r in app.session.metadata["team_blocks"]] == ["JB"]
+    assert shown(app.session.history[:7], app.session.metadata["team_blocks"]) == ["call", "block:JB", "result(ok)"]
+
+
+def test_a_later_run_of_the_same_task_that_kept_nothing_gets_no_block(tmp_path):
+    """Text mode: the second job's plan made no rows, so it kept no record; the first job's stays under its own
+    call instead of moving to the newest one."""
+    from tests.subagent_helpers import step
+    from tests.test_cli_app import Lines, make_app
+    from tests.test_cli_team_app import team_model
+    plans = []
+
+    def steps(prompt):
+        plans.append(prompt)
+        return [step("s1", "explorer", "look")] if len(plans) == 1 else []
+
+    model = team_model(steps, main=("call", "final", "call", "final"))
+    original = model._script_fn
+    model._script_fn = lambda messages: original(messages).replace(" (batch 3)", "")   # the same task again
+    app, _, _, _ = make_app(tmp_path, Lines("do job", "again", "/exit"), model, mode="auto")
+    app.start()
+    kept = app.session.metadata["team_blocks"]
+    assert len(kept) == 1 and len(plans) >= 2
+    block = "block:" + kept[0]["job"]
+    out = shown(app.session.history, kept)
+    assert out.count("call") == 2 and out.count(block) == 1
+    assert out[out.index("call") + 1] == block                            # under the first call, not the second
+
+
+def test_two_team_calls_in_one_batch_each_keep_their_own_call(tmp_path, monkeypatch):
+    """A natively bound model may send two ``start_team_job`` calls in one parallel batch: the jobs run one after
+    the other (they share the window's live block), and each record is kept under its own call."""
+    import threading
+    import agentx_dev.cli.app as app_module
+    from agentx_dev.Runner.AgentRun import _TOOL_CALL_ID
+    app = _app_job(tmp_path)
+    app.session.metadata["team_blocks"] = []
+    running, most, second_in = [], [0], threading.Event()
+
+    def fake_job(task, *, notify, **kwargs):
+        running.append(task)
+        most[0] = max(most[0], len(running))
+        notify("plan", {"round": 1, "steps": [{"agent": "explorer", "query": task, "step_id": "s1"}]})
+        if task == "job A":
+            second_in.wait(0.5)                 # without the one-at-a-time rule job B starts meanwhile
+        else:
+            second_in.set()
+        running.remove(task)
+        return "Team job finished (outcome: done)."
+
+    monkeypatch.setattr(app_module, "run_team_job", fake_job)
+
+    def run(call_id, task):
+        _TOOL_CALL_ID.set(call_id)
+        app._start_team_job(task, "why")
+
+    app._team_jobs, app._team_stalled = 0, False
+    first = threading.Thread(target=run, args=("cA", "job A"))
+    first.start()
+    while not running:
+        pass
+    second = threading.Thread(target=run, args=("cB", "job B"))
+    second.start()
+    first.join(10)
+    second.join(10)
+    assert most[0] == 1
+    assert {r["task"]: r["call"] for r in app.session.metadata["team_blocks"]} == {"job A": "cA", "job B": "cB"}

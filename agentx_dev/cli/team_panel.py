@@ -20,6 +20,9 @@ _KEPT_CHARS = {"helper": 120, "label": 120, "model": 120, "activity": 300, "stat
 # a step the job ended without word of: Esc stopped it, or how it ended is not known
 _NO_WORD = {"interrupted": ("■", "Stopped", "yellow"), "unknown": ("?", "Ended without word", "dim")}
 _FAILED = ("ERROR", "Error:", "Refused", "The user declined")
+_NOT_RUN = ("Refused", "The user declined")   # a call whose job never started (a job that failed did start)
+# how the note a stopped turn leaves in the conversation begins (app.py): its team jobs are drawn under it
+STOPPED_NOTE = "[agentx] This turn stopped before it finished"
 
 
 def _subject(name: str, args: Any) -> str:
@@ -194,13 +197,19 @@ def _content(message: dict) -> str:
 
 
 def team_calls(messages: Any) -> list[dict]:
-    """The ``start_team_job`` calls of a conversation, in order: ``{"ref", "id", "key", "ok"}``. ``ref`` names the
-    call (its id, or ``@<message index>`` for a text-mode step, which has none); ``ok`` is False when its result
-    says it did not run (declined, refused, an error), None while it has no result."""
+    """The ``start_team_job`` calls of a conversation, in order: ``{"ref", "id", "at", "key", "ok", "ran"}``.
+    ``ref`` names the call (its id, or ``@<message index>`` for a text-mode step, which has none); ``at`` is the
+    index of the message that made it; ``ok`` is False when its result says it did not run or failed (declined,
+    refused, an error), ``ran`` False only when its job never started (declined, refused); both None while it has
+    no result."""
     from agentx_dev.Runner.AgentRun import _FORMAT_NAMES
     calls: list[dict] = []
     by_id: dict[str, dict] = {}
     waiting = None                                   # a text-mode call waits for the next observation
+
+    def settle(entry: dict, result: str) -> None:
+        result = result.lstrip()
+        entry["ok"], entry["ran"] = not result.startswith(_FAILED), not result.startswith(_NOT_RUN)
     for at, message in enumerate(messages if isinstance(messages, list) else []):
         if not isinstance(message, dict):
             continue
@@ -217,43 +226,123 @@ def team_calls(messages: Any) -> list[dict]:
                     name, args = args["action"], args.get("action_input")
                 if name == TEAM_TOOL and isinstance(args, dict):
                     ident = str(call.get("id") or "")
-                    entry = {"ref": ident or f"@{at}", "id": ident, "key": task_key(args.get("task")), "ok": None}
+                    entry = {"ref": ident or f"@{at}", "id": ident, "at": at, "key": task_key(args.get("task")),
+                             "ok": None, "ran": None}
                     calls.append(entry)
                     if ident:
                         by_id[ident] = entry
             step = _text_step(text) if not message.get("tool_calls") else None
             if step is not None and step[0] == TEAM_TOOL and isinstance(step[1], dict):
-                waiting = {"ref": f"@{at}", "id": "", "key": task_key(step[1].get("task")), "ok": None}
+                waiting = {"ref": f"@{at}", "id": "", "at": at, "key": task_key(step[1].get("task")), "ok": None,
+                           "ran": None}
                 calls.append(waiting)
         elif role == "tool":
             entry = by_id.get(str(message.get("tool_call_id") or ""))
             if entry is not None and entry["ok"] is None:
-                entry["ok"] = not text.lstrip().startswith(_FAILED)
+                settle(entry, text)
         elif role == "user" and text.startswith("Observation: ") and waiting is not None:
-            waiting["ok"] = not text[len("Observation: "):].lstrip().startswith(_FAILED)
+            settle(waiting, text[len("Observation: "):])
             waiting = None
     return calls
 
 
+def record_key(record: dict) -> str:
+    """The task fingerprint of a kept record."""
+    return str(record.get("taskKey") or task_key(record.get("task")))
+
+
+def _index(value: Any) -> Any:
+    """A message index kept in a record, or None."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def is_stopped_note(message: Any) -> bool:
+    """The note a stopped turn left (``STOPPED_NOTE``): its team jobs are drawn under it."""
+    return (isinstance(message, dict) and message.get("role") == "assistant" and not message.get("tool_calls")
+            and _content(message).startswith(STOPPED_NOTE))
+
+
 def assign_team_blocks(messages: Any, kept: Any) -> dict[str, dict]:
-    """Which kept job goes under which call (by the call's ``ref``). A record kept under its call's id goes there
-    (and nowhere when that call is gone). One without an id (a text-mode run) goes, newest first, to the newest call
-    of the same task whose result did not fail."""
-    calls = team_calls(messages)
+    """Which kept job goes under which call (by the call's ``ref``; a stopped turn's note is ``@<its index>``).
+
+    A record kept under its call's id goes there (and nowhere when that call is gone). One pinned to a message when
+    its turn ended (``at``: its text-mode call, or with ``stopped`` the note its stopped turn left) goes there while
+    that message is still the same kind of message. One with neither (its turn has not ended yet) goes, newest
+    first, to the newest call of the same task made since its turn began (``turnAt``) whose result did not fail."""
+    msgs = messages if isinstance(messages, list) else []
+    calls = team_calls(msgs)
     records = [r for r in (kept if isinstance(kept, list) else []) if isinstance(r, dict)]
     out: dict[str, dict] = {}
     by_id = {c["id"]: c for c in calls if c["id"]}
+    by_at = {c["at"]: c for c in calls if not c["id"]}
     for record in records:
-        target = by_id.get(str(record.get("call") or ""))
-        if target is not None and target["ref"] not in out:
-            out[target["ref"]] = record
-    loose = [r for r in records if not r.get("call")]
+        at = _index(record.get("at"))
+        if record.get("call"):
+            target = by_id.get(str(record.get("call")))
+            ref = target["ref"] if target is not None else None
+        elif at is not None and record.get("stopped"):
+            ref = f"@{at}" if at < len(msgs) and is_stopped_note(msgs[at]) else None
+        elif at is not None:
+            target = by_at.get(at)
+            ref = target["ref"] if target is not None and target["key"] == record_key(record) else None
+        else:
+            continue
+        if ref is not None and ref not in out:
+            out[ref] = record
+    loose = [r for r in records if not r.get("call") and _index(r.get("at")) is None]
     free = [c for c in calls if c["ref"] not in out and c["ok"] is not False]
-    for key in dict.fromkeys(str(r.get("taskKey") or task_key(r.get("task"))) for r in loose):
-        mine = [r for r in loose if str(r.get("taskKey") or task_key(r.get("task"))) == key]
-        theirs = [c for c in free if c["key"] == key]
-        for record, call in zip(reversed(mine), reversed(theirs)):
-            out[call["ref"]] = record
+    for record in reversed(loose):
+        begun = _index(record.get("turnAt")) or 0
+        target = next((c for c in reversed(free) if c["key"] == record_key(record) and c["at"] >= begun
+                       and c["ref"] not in out), None)
+        if target is not None:
+            out[target["ref"]] = record
+    return out
+
+
+def settle_team_blocks(messages: Any, kept: Any, start: int, stopped_at: Any = None) -> None:
+    """A turn's messages are in the conversation (from index ``start``): pin each job it kept that has no call id
+    (text mode) to its call, the first call of its task since its run began that ran and that no other job has
+    (``at``). ``stopped_at``: the turn stopped and left only a note at that index; a job of the turn whose call is
+    not in the conversation is drawn under that note (``stopped``, its call id dropped: there is no call)."""
+    records = [r for r in (kept if isinstance(kept, list) else []) if isinstance(r, dict)]
+    calls = team_calls(messages)
+    ids = {c["id"] for c in calls if c["id"]}
+    taken = {_index(r.get("at")) for r in records if not r.get("call") and not r.get("stopped")}
+    for record in records:
+        begun = _index(record.get("turnAt")) or 0
+        if begun < start or _index(record.get("at")) is not None or (record.get("call") and
+                                                                      str(record["call"]) in ids):
+            continue                                 # an earlier turn's, pinned already, or its call is there
+        if not record.get("call"):
+            target = next((c for c in calls if not c["id"] and c["at"] >= begun and c["at"] not in taken
+                           and c["key"] == record_key(record) and c["ran"] is not False), None)
+            if target is not None:
+                record["at"] = target["at"]
+                taken.add(target["at"])
+                continue
+        if _index(stopped_at) is not None:
+            record.pop("call", None)
+            record["at"], record["stopped"] = stopped_at, True
+
+
+def rebase_team_blocks(kept: Any, cut: int, shift: int) -> list[dict]:
+    """The kept jobs after a summary replaced the messages before ``cut`` and moved the rest ``shift`` places
+    forward: the message indices they hold move with them; one that pointed into the summarised part keeps none
+    (``turnAt`` goes to where the kept part now begins; a pinned one, whose message is gone, is dropped)."""
+    out = []
+    for record in (kept if isinstance(kept, list) else []):
+        if not isinstance(record, dict):
+            out.append(record)
+            continue
+        at = _index(record.get("at"))
+        if at is not None:
+            if at < cut:
+                continue
+            record["at"] = at - shift
+        if "turnAt" in record:
+            record["turnAt"] = max((_index(record.get("turnAt")) or 0), cut) - shift
+        out.append(record)
     return out
 
 

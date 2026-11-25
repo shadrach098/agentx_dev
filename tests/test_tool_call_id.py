@@ -47,3 +47,27 @@ def test_a_text_mode_run_has_no_call_id():
     runner = AgentRunner(model=model, agent=AgentType.ReAct, tools=[_probe(seen)], verbose=False, max_iterations=4)
     assert runner.invoke("go").content == "done"
     assert seen == [None]
+
+
+def test_a_runner_run_inside_a_tool_call_restores_the_outer_id():
+    seen = []
+
+    def outer(q):
+        seen.append(("before", current_tool_call_id()))
+        inner_model = MockModel(tool_script=[_format_call("i1", "inner_probe", "x"),
+                                             _format_call("i2", "Final_Answer", "inner done")])
+        probe = StandardTool(func=lambda q: seen.append(current_tool_call_id()) or "ok", name="inner_probe",
+                             description="Probe.")
+        inner = AgentRunner(model=inner_model, agent=AgentType.ReAct, tools=[probe], verbose=False,
+                            use_function_calling=True, max_iterations=4)
+        assert inner.invoke("inner").content == "inner done"
+        seen.append(("after", current_tool_call_id()))
+        return "ok"
+
+    model = MockModel(tool_script=[_format_call("o1", "outer", "x"), _format_call("o2", "Final_Answer", "done")])
+    runner = AgentRunner(model=model, agent=AgentType.ReAct,
+                         tools=[StandardTool(func=outer, name="outer", description="Runs a runner.")],
+                         verbose=False, use_function_calling=True, max_iterations=4)
+    assert runner.invoke("go").content == "done"
+    assert seen == [("before", "o1"), "i1", ("after", "o1")]
+    assert current_tool_call_id() is None
