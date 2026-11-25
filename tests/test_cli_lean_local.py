@@ -79,7 +79,8 @@ def test_a_local_chat_sends_the_lean_request(tmp_path):
     runner = app._make_runner(model)
     assert names(runner) == {"read_path", "list_directory", "find_files", "grep", "write_file", "edit_file",
                              "delete_path", "move_file", "run_python", "run_shell", "start_team_job", "recall",
-                             "use_skill"}
+                             "start_background", "background_output", "stop_background", "list_background",
+                             "send_to_terminal", "use_skill"}
     system = runner._system_prompt("")
     assert "read_path, list_directory" in system and "Search FILE CONTENTS" not in system
     assert "Skills: short guides for kinds of work. When one fits" in system

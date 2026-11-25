@@ -1,8 +1,9 @@
 ---
 name: running-code
 description: When and how to run Python and shell commands - one-shot commands, checking a change, what not to run.
-tools: [run_python, run_shell]
-version: 1
+tools: [run_python, run_shell, start_background, background_output, stop_background, list_background,
+  send_to_terminal]
+version: 2
 ---
 # Running code
 
@@ -11,8 +12,11 @@ version: 1
 - `run_python` runs a short script: a calculation, parsing or checking some data, a small experiment. Only what
   the script prints comes back, so print what you want to see. Each call starts fresh unless the tool says it
   keeps state, so put the setup and the analysis in one call.
-- Do not start servers, watchers or anything that keeps running (`npm run dev`, `python -m http.server`): they
-  are stopped at the time limit. Run a one-shot check instead.
+- A server, a watcher or anything else that keeps running (`npm run dev`, `python -m http.server`): start it with
+  `start_background` when you have it, never with `run_shell` and `&` or `nohup`. It returns at once with an id;
+  read it with `background_output`, see them all with `list_background`, and stop it with `stop_background` when
+  you are done, unless the user wants it kept running. `send_to_terminal` types into a terminal the user opened.
+  Without `start_background`, do not start one: `run_shell` stops it at the time limit; run a one-shot check.
 - After changing code, run the project's tests or a quick check, and report what you ran and what it showed,
   including failures.
 - Read the output before the next step. A non-zero exit code means the command failed even if some of the output

@@ -43,7 +43,9 @@ from agentx_dev.cli.typeahead import TypeAhead
 from agentx_dev.cli.ui_text import plain
 from agentx_dev.cli.team_record import TeamRecord
 from agentx_dev.cli.routing import ROUTE_THREAD, Route, routed_request
-from agentx_dev.cli.tools import build_tools, gate_tool, lean_tools
+from agentx_dev.cli.tools import build_tools, gate_tool, lean_tools, make_permissions
+from agentx_dev.cli.background import shared
+from agentx_dev.cli.task_tools import build_task_tools, tasks_command
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker, status_line
 from agentx_dev.cli.app_keys import KeyCommands
@@ -352,7 +354,15 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         self.gate.ask = lambda request: on_main(remembering, request, lane=self.team_lane)
         self.base_tools = build_tools(self.cwd, self.add_dirs, self.gate, observer=self._observe_tool)
         self.screen.cwd = str(self.cwd)
-        self.tools = [*self.base_tools,
+        # Background tasks: one manager per process, shared by every conversation and lane in this folder (made on
+        # the main thread in the terminal app, so its signal handlers are installed). The main agent's tools only:
+        # a team's helpers get ``base_tools``. ``stops_tasks_at_exit``: off for another device's conversation.
+        permissions = make_permissions(self.cwd, self.add_dirs)
+        self.tasks = shared(self.home, self.cwd, permissions)
+        self.stops_tasks_at_exit = True
+        task_tools = build_task_tools(self.tasks, self._conversation_id, permissions, self.gate,
+                                      self._conversation_title)
+        self.tools = [*self.base_tools, *task_tools,
                       self._within_job_limit(gate_tool(make_team_tool(self._start_team_job), self.gate))]
         self._memory_on = is_project_folder(self.cwd, self.home)    # no log or folder settings for home / a drive root
         # The agent's skills: the user's own folder, and (read-only, untrusted) this project's, when it is a real
@@ -562,6 +572,29 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
     def request_exit(self) -> None:
         self._exit = True
 
+    # -- background tasks ----------------------------------------------------------------------------------
+
+    def _conversation_id(self) -> str:
+        """This conversation's id now (it changes with /clear and /resume): the owner of the tasks it starts."""
+        return str(getattr(self.session, "session_id", "") or "")
+
+    def _conversation_title(self, owner: str) -> str:
+        """The title of the saved conversation ``owner``, "" when there is none."""
+        if not owner:
+            return ""
+        try:
+            for info in list_sessions(self.home, self.cwd):
+                if info.session_id == owner:
+                    return info.title
+        except Exception:
+            pass
+        return ""
+
+    def show_tasks(self, arg: str) -> None:
+        """``/tasks``: list, show or stop the background tasks and terminals."""
+        text, ok = tasks_command(self.tasks, arg, self._conversation_id(), self._conversation_title)
+        (self.notice if ok else self.error)(text)
+
     def cycle_mode(self) -> None:
         self.gate.cycle_mode()
         self._mode_before_grant = None            # the user chose this mode
@@ -721,6 +754,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
                 self.progress.typeahead.close()
             if self.mcp is not None:
                 self.mcp.close()
+            if self.stops_tasks_at_exit:          # agentx is ending: every task and terminal goes with it
+                self.tasks.stop_all()
 
     # -- typing while the agent works ----------------------------------------------------------------------
 
@@ -1896,6 +1931,7 @@ def device_app(template: "ChatApp", room: Any) -> "ChatApp":
                   local_tools=template.local_tools)
     app.auto_titles = bool(getattr(template, "auto_titles", False))
     app.local_models = template.local_models               # one list, filled by the main conversation's search
+    app.stops_tasks_at_exit = False                        # its tasks are the process's: they outlive this window
     return app
 
 

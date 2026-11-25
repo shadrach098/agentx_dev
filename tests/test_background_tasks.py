@@ -371,9 +371,17 @@ def test_signal_handler_stops_tasks_then_chains():
     def previous(signum, frame):
         seen.append(("prev", signum))
 
-    handler = background._chained_handler(previous, stop_all=lambda: calls.append("stopped"))
+    import threading
+    threads = []
+
+    def stop_all():
+        threads.append(threading.current_thread())
+        calls.append("stopped")
+
+    handler = background._chained_handler(previous, stop_all=stop_all)
     handler(signal.SIGTERM, None)
     assert calls == ["stopped"] and seen == [("prev", signal.SIGTERM)]
+    assert threads and threads[0] is not threading.current_thread()    # never on the interrupted thread itself
 
     calls.clear()
     handler = background._chained_handler(signal.SIG_IGN, stop_all=lambda: calls.append("stopped"))
@@ -391,3 +399,33 @@ def test_signal_handler_stops_tasks_then_chains():
         os.kill, signal.signal = orig_kill, orig_signal
     assert restored == [(signal.SIGTERM, signal.SIG_DFL)]
     assert sent == [(os.getpid(), signal.SIGTERM)] and calls[-1] == "stopped2"
+
+    sent.clear()
+    restored.clear()
+    try:                                           # None (a handler not set from Python) is treated as SIG_DFL
+        os.kill = lambda pid, sig: sent.append((pid, sig))
+        signal.signal = lambda sig, h: restored.append((sig, h))
+        background._chained_handler(None, stop_all=lambda: calls.append("stopped3"))(signal.SIGHUP, None)
+    finally:
+        os.kill, signal.signal = orig_kill, orig_signal
+    assert restored == [(signal.SIGHUP, signal.SIG_DFL)] and sent == [(os.getpid(), signal.SIGHUP)]
+
+
+def test_a_stop_that_hangs_does_not_hold_the_signal_forever():
+    import threading
+    release = threading.Event()
+    after = []
+    handler = background._chained_handler(lambda signum, frame: after.append(signum),
+                                          stop_all=lambda: release.wait(30), timeout=0.2)
+    began = time.monotonic()
+    handler(15, None)
+    release.set()
+    assert after == [15] and time.monotonic() - began < 5
+
+
+def test_shared_retries_the_signal_handlers_on_each_call(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(background, "_install_signal_handlers", lambda: calls.append(1))
+    first = background.shared(tmp_path / "home", tmp_path)
+    second = background.shared(tmp_path / "home", tmp_path)
+    assert first is second and len(calls) == 2

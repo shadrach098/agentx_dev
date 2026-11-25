@@ -251,6 +251,10 @@ def _usage(ctx: Any, arg: str) -> None:
     ctx.show_usage()
 
 
+def _tasks(ctx: Any, arg: str) -> None:
+    ctx.show_tasks(arg)
+
+
 LIMIT_USAGE = "Usage: /limit [tokens] - for example /limit 200000, /limit 300k, /limit 1m, or /limit 0 for no limit"
 
 
@@ -392,6 +396,7 @@ COMMANDS = (
             _skills),
     Command("memory", "Show the project notes kept for later, or search them: /memory [words]", _memory),
     Command("usage", "Show the tokens used this session, per model, and by the last turn", _usage),
+    Command("tasks", "Background tasks and terminals: /tasks, /tasks show <id>, /tasks stop <id|all>", _tasks),
     Command("mcp", "MCP servers: list, or /mcp add <name> <url>, remove, login, logout <name>, reload", _mcp),
     Command("limit", "Show or set how many tokens one message may use before agentx asks: /limit [tokens]", _limit),
     Command("fullscreen", "Keep the header and input fixed while the conversation scrolls: /fullscreen [on|off]",
@@ -436,6 +441,8 @@ def runs_while_working(line: str) -> bool:
         return not arg or (arg.startswith("tools ") and len(arg.split()) == 2)
     if name == "team":
         return arg == "log"
+    if name == "tasks":
+        return not arg or arg.startswith("show ")
     return False
 
 

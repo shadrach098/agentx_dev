@@ -489,19 +489,35 @@ def _stop_every_manager() -> None:
             pass
 
 
-def _chained_handler(previous, stop_all=_stop_every_manager):
-    """A signal handler that stops every task, then does what the previous handler would have done."""
+SIGNAL_STOP_WAIT_SEC = 10.0
+
+
+def _quietly(stop_all) -> None:
+    try:
+        stop_all()
+    except Exception:
+        pass
+
+
+def _chained_handler(previous, stop_all=_stop_every_manager, timeout: float = SIGNAL_STOP_WAIT_SEC):
+    """A signal handler that stops every task, then does what the previous handler would have done.
+
+    The tasks are stopped on a helper thread, waited for at most ``timeout`` seconds: the handler runs on the main
+    thread between two of its bytecodes, maybe while it holds a task's lock, so stopping them right here could wait
+    on that lock forever."""
     def handler(signum, frame):
+        worker = threading.Thread(target=_quietly, args=(stop_all,), name="agentx-stop-tasks", daemon=True)
         try:
-            stop_all()
+            worker.start()
+            worker.join(timeout)
         except Exception:
             pass
         if callable(previous):
             previous(signum, frame)
-        elif previous == signal.SIG_DFL:
+        elif previous is None or previous == signal.SIG_DFL:   # None: a handler not set from Python; the default
             signal.signal(signum, signal.SIG_DFL)
             os.kill(os.getpid(), signum)
-        # SIG_IGN (or None): the signal was being ignored, so carry on
+        # SIG_IGN: the signal was being ignored, so carry on
     return handler
 
 
@@ -535,5 +551,7 @@ def shared(home: Path, cwd: Path, permissions: Optional[Permissions] = None) -> 
             mgr = TaskManager(Path(home), Path(cwd), permissions=permissions)
             _shared[key] = mgr
             atexit.register(mgr.stop_all)
-            _install_signal_handlers()
+        # Each call from the main thread tries again (the first one may have come from another thread); once they
+        # are installed this returns at once.
+        _install_signal_handlers()
         return mgr
