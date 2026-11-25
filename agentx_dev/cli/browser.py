@@ -647,6 +647,7 @@ class _Owner:
     nav_done_at: float = 0.0                            # ... and when such a request last committed or failed
     nav_finished_at: float = 0.0                        # ... or finished loading (a 204, a refused download)
     nav_hosts: Deque[Tuple[float, str]] = field(default_factory=lambda: deque(maxlen=50))   # hosts it asked for
+    nav_status: Tuple[float, int] = (0.0, 0)            # (when, status) of the main frame's last page answer
 
     def loading(self) -> bool:
         """A main-frame page load asked for and not yet committed. One that finished loading without committing
@@ -870,6 +871,14 @@ class BrowserHost:
         page.on("request", lambda request: main_frame_request(request, "nav_at"))
         page.on("requestfailed", lambda request: main_frame_request(request, "nav_done_at"))
         page.on("requestfinished", lambda request: main_frame_request(request, "nav_finished_at"))
+
+        def main_frame_response(response) -> None:
+            try:
+                if response.request.is_navigation_request() and response.frame == page.main_frame:
+                    rec.nav_status = (time.monotonic(), response.status)
+            except Exception:
+                pass
+        page.on("response", main_frame_response)
         page.on("console", lambda message: rec.note(f"[{message.type}] {message.text}"))
         page.on("pageerror", lambda error: rec.note(f"[pageerror] {error}"))
         page.on("dialog", dialog)
@@ -892,7 +901,9 @@ class BrowserHost:
             else:
                 reason = None                           # data:/blob: images and fonts of a page
             if reason:
-                if request.is_navigation_request():
+                # Only the main frame's own navigation is the page's refusal; a refused frame, image or fetch is a
+                # console note and the page itself still loaded.
+                if request.is_navigation_request() and request.frame.parent_frame is None:
                     rec.refusals.append((time.monotonic(), reason))
                 rec.note(f"[refused] {url}: {reason}")
                 route.abort("blockedbyclient")
@@ -904,10 +915,19 @@ class BrowserHost:
             except Exception:
                 pass
 
+    def _ended_badly(self, rec: _Owner, page, mark: float) -> bool:
+        """Whether the page an action or navigation since ``mark`` led to is not a page that loaded: Chromium's
+        error page (a refused or failed load, a refused tunnel) or a 403 main-frame answer (the proxy refuses plain
+        HTTP with one). A page that loaded is never reported refused, whatever its frames or fetches ran into."""
+        if page.url.startswith("chrome-error:"):
+            return True
+        at, status = rec.nav_status
+        return at >= mark and status == 403
+
     def _refusal_since(self, rec: _Owner, mark: float) -> str:
         """Why a main-frame navigation of this owner was refused after ``mark``: by its route handler, or by the
         proxy for a host the navigation (or one of its redirect hops) asked for. "" when nothing was refused. Only
-        agentx's own records count, never what a response says."""
+        agentx's own records count, never what a response says; callers ask only when the page ended badly."""
         for at, reason in reversed(rec.refusals):
             if at >= mark:
                 return reason
@@ -1007,7 +1027,8 @@ class BrowserHost:
             if reason:
                 return f"ERROR: agentx refused to open {url}: {reason}"
             return f"ERROR: could not open {url}: {_first_line(error)}"
-        reason = self._refusal_since(rec, mark)
+        ended_badly = (response is not None and response.status == 403) or page.url.startswith("chrome-error:")
+        reason = self._refusal_since(rec, mark) if ended_badly else ""
         if reason:
             return f"ERROR: agentx refused to open {url}: {reason}"
         return ""
@@ -1016,7 +1037,8 @@ class BrowserHost:
         rec = self._owner(owner)
         page = self._page(owner)
         self._settle(rec, page, mark)
-        reason = self._refusal_since(rec, mark)
+        page = self._page(owner)
+        reason = self._refusal_since(rec, mark) if self._ended_badly(rec, page, mark) else ""
         return self._snap(owner, f"ERROR: agentx refused to open a page: {reason}" if reason else "")
 
     # -- what the agent calls -------------------------------------------------------------------------------------

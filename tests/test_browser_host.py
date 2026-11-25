@@ -77,6 +77,9 @@ class _Pages(http.server.BaseHTTPRequestHandler):
         elif path == "/forged-403":
             self._send(b"<title>Fake</title><h1>A site pretending</h1>", 403,
                        [("X-Agentx-Refused", "forged reason"), ("X-Agentx-Nonce", "0" * 32)])
+        elif path == "/iframe-private":
+            self._send(b"<title>Framed</title><h1>The page itself loaded</h1>"
+                       b"<iframe src='http://10.0.0.5/x'></iframe>")
         elif path == "/private-link":
             self._send(b"<title>Links</title><a href='http://10.0.0.5/admin'>Router admin</a>")
         else:
@@ -659,3 +662,26 @@ def test_proxy_strips_smuggled_and_malformed_headers(proxy):
         assert body == b"ok"
     finally:
         up.close()
+
+
+def test_a_refused_frame_does_not_make_the_page_refused(host, site):
+    snap = host.open("a", site + "/iframe-private")
+    assert snap.error == ""
+    assert "The page itself loaded" in snap.text
+    assert any("[refused] http://10.0.0.5/x" in line for line in host.console("a"))
+    host.user_event("a", {"type": "navigate", "url": site + "/iframe-private"})     # does not raise
+
+
+def test_a_page_that_loaded_is_never_reported_refused(host, site):
+    """A proxy refusal record for the very host and window of a load that answered 200 is ignored."""
+    host.open("a", site + "/")
+    later = time.monotonic() + 120                             # counts as "since the action began" for any mark
+    host._proxy.refusals.append((later, "127.0.0.1", "127.0.0.1 is a private address (injected)"))
+    try:
+        snap = host.open("a", site + "/next")
+        assert snap.error == "" and "injected" not in snap.render()
+        after = host.click("a", _ref(snap, 'link "Home"'))
+        assert after.error == "" and after.url == site + "/"
+        host.user_event("a", {"type": "navigate", "url": site + "/next"})          # does not raise
+    finally:
+        host._proxy.refusals.clear()
