@@ -321,3 +321,97 @@ class TestBrowser:
         got = h.request(LAPTOP, "POST", "/api/browser/input", {"event": {"type": "click", "x": 5, "y": 5}})
         assert got["ok"] is False and got["error"]
         assert main.app.browser._thread is None
+
+
+# -- fix round 1 ------------------------------------------------------------------------------------------------
+
+class FakePage:
+    """Stands in for a Playwright page: each screenshot is a new picture."""
+    url = "http://127.0.0.1:1/fake"
+
+    def __init__(self):
+        self.shots = 0
+
+    def screenshot(self, **kwargs):
+        self.shots += 1
+        return b"\xff\xd8fake" + bytes([self.shots])
+
+    def title(self):
+        return "Fake"
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+def fake_page_for(browser, owner):
+    from agentx_dev.cli.browser import _Owner
+    page = FakePage()
+    browser._owners[owner] = _Owner(context=None, pages=[page])
+    return page
+
+
+class TestBrowserBusy:
+    def test_frame_polls_do_not_wait_on_a_busy_browser(self, host):
+        h = host()
+        main = h.front_of(LAPTOP)
+        ready(main)
+        browser = main.app.browser = BrowserHost()
+        owner = main.conversation_id()
+        page = fake_page_for(browser, owner)
+        try:
+            status, headers, _ = raw(h, LAPTOP, "GET", "/api/browser/frame?since=0")
+            assert status == 200 and headers["x-frame"] == "1"
+            busy, release = threading.Event(), threading.Event()
+
+            def long_call():                                # the agent's page load that does not finish
+                busy.set()
+                release.wait(30)
+            worker = threading.Thread(target=lambda: browser._call(long_call, timeout=40), daemon=True)
+            worker.start()
+            assert busy.wait(5)
+            browser._owners[owner].dirty = True              # an action ran: a new picture is wanted
+            for _ in range(6):
+                started = time.monotonic()
+                status, headers, body = raw(h, LAPTOP, "GET", "/api/browser/frame?since=1")
+                assert time.monotonic() - started < 2.5
+                assert (status, headers["x-frame"], body) == (204, "1", b"")     # the last counter, never 0
+            assert browser._queue.qsize() == 1                # one picture waits for the worker, not six
+            status, headers, _ = raw(h, LAPTOP, "GET", "/api/browser/frame?since=0")
+            assert status == 200 and headers["x-frame"] == "1"   # the last picture, while it is busy
+            release.set()
+            worker.join(10)
+            until(lambda: browser.frame(owner)[0] == 2)
+            assert page.shots == 2
+        finally:
+            release.set()
+            browser.close()
+
+    def test_typed_text_must_be_text_and_not_too_long(self, host):
+        h = host()
+        main = h.front_of(LAPTOP)
+        ready(main)
+        tid = h.request(LAPTOP, "POST", "/api/terminals", {})["id"]
+        for text in (5, ["echo x"], {"a": 1}, None):
+            got = h.request(LAPTOP, "POST", "/api/terminals/input", {"id": tid, "text": text})
+            assert got["ok"] is False and "not text" in got["error"], text
+        got = h.request(LAPTOP, "POST", "/api/terminals/input", {"id": tid, "text": "x" * (64 * 1024 + 1)})
+        assert got["ok"] is False and "longer" in got["error"]
+        assert h.request(LAPTOP, "POST", "/api/terminals/input", {"id": tid, "text": "echo fine"})["ok"]
+        browser = main.app.browser = BrowserHost()
+        fake_page_for(browser, main.conversation_id())
+        for event in ({"type": "text", "text": 5}, {"type": "text", "text": "y" * (64 * 1024 + 1)},
+                      {"type": "key", "key": ["Enter"]}, {"type": "key", "key": "K" * 65},
+                      {"type": "navigate", "url": 7}, {"type": "navigate", "url": "http://a/" + "b" * 9000}):
+            got = h.request(LAPTOP, "POST", "/api/browser/input", {"event": event})
+            assert got["ok"] is False and got["error"], event
+        assert browser._thread is None                       # refused before the worker was asked
+
+    def test_take_and_input_need_a_conversation(self, tmp_path):
+        from agentx_dev.cli.webui import WebFront
+        front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False)
+        front.app = type("Starting", (), {"browser": BrowserHost(), "session": None})()
+        assert front.conversation_id() == ""
+        assert front.browser_take()["ok"] is False
+        got = front.browser_input({"type": "navigate", "url": "http://127.0.0.1:1/"})
+        assert got["ok"] is False and "not started" in got["error"]
+        assert not front.app.browser.held_by_user("") and front.app.browser._thread is None

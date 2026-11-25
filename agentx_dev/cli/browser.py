@@ -64,6 +64,8 @@ NAME_MAX = 80                       # characters of an element's name or value s
 CONSOLE_MAX = 50                    # console lines kept per owner
 FRAME_CHECK_SEC = 0.3               # frame(): look for a change at most this often (unless an action ran)
 FRAME_QUALITY = 70                  # JPEG quality of the window's frames
+FRAME_CALL_TIMEOUT_SEC = 2.0        # frame(): how long a window's poll waits for a new picture before the last one
+TEXT_MAX = 64 * 1024                # user_event: the most text typed in one event
 PUMP_SEC = 0.05                     # while idle, let Playwright deliver events (routes, console, dialogs) this often
 DNS_TTL_SEC = 30.0                  # url_refusal caches a host's verdict this long
 
@@ -648,6 +650,7 @@ class _Owner:
     nav_finished_at: float = 0.0                        # ... or finished loading (a 204, a refused download)
     nav_hosts: Deque[Tuple[float, str]] = field(default_factory=lambda: deque(maxlen=50))   # hosts it asked for
     nav_status: Tuple[float, int] = (0.0, 0)            # (when, status) of the main frame's last page answer
+    capture: Optional[Future] = None                    # the window's picture being taken (queued or running)
 
     def loading(self) -> bool:
         """A main-frame page load asked for and not yet committed. One that finished loading without committing
@@ -684,8 +687,8 @@ class BrowserHost:
 
     # -- the worker ----------------------------------------------------------------------------------------------
 
-    def _call(self, fn: Callable, *args, timeout: float = ACTION_TIMEOUT_SEC):
-        """Run ``fn(*args)`` on the worker thread and return its result (or raise its exception)."""
+    def _submit(self, fn: Callable, *args) -> Future:
+        """Queue ``fn(*args)`` for the worker thread (run at once when called on it); its future."""
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
                 self._queue = queue.Queue()
@@ -694,10 +697,19 @@ class BrowserHost:
                 self._thread.start()
             work = self._queue
             worker = self._thread
-        if threading.current_thread() is worker:
-            return fn(*args)
         future: Future = Future()
+        if threading.current_thread() is worker:
+            try:
+                future.set_result(fn(*args))
+            except BaseException as error:
+                future.set_exception(error)
+            return future
         work.put((fn, args, future))
+        return future
+
+    def _call(self, fn: Callable, *args, timeout: float = ACTION_TIMEOUT_SEC):
+        """Run ``fn(*args)`` on the worker thread and return its result (or raise its exception)."""
+        future = self._submit(fn, *args)
         try:
             return future.result(timeout=timeout)
         except FutureTimeout:
@@ -1141,10 +1153,16 @@ class BrowserHost:
         """``(counter, JPEG of the viewport)``; the counter rises when the picture changed.
 
         A new picture is taken when an action or navigation ran since the last one, or else at most every
-        ``FRAME_CHECK_SEC``; it counts as changed when its bytes differ. Never starts the browser."""
+        ``FRAME_CHECK_SEC``; it counts as changed when its bytes differ. A window's poll never waits long: while the
+        worker is busy (an agent's page load), the last picture is returned and at most one new one is queued per
+        owner; one that is not ready within ``FRAME_CALL_TIMEOUT_SEC``, or fails, gives the last picture too. Never
+        starts the browser."""
         rec = self._owners.get(owner)
         if rec is None or not rec.pages:
             return (rec.frame_no, rec.frame_jpeg) if rec is not None else (0, None)
+        last = (rec.frame_no, rec.frame_jpeg)
+        if rec.frame_jpeg is not None and not rec.dirty and time.monotonic() - rec.frame_at < FRAME_CHECK_SEC:
+            return last
 
         def work():
             if not rec.pages:
@@ -1165,7 +1183,16 @@ class BrowserHost:
                 except Exception:
                     pass
             return rec.frame_no, rec.frame_jpeg
-        return self._call(work)
+        with rec.lock:
+            pending = rec.capture
+            if pending is None or pending.done():
+                pending = rec.capture = self._submit(work)
+            elif rec.frame_jpeg is not None:            # one is queued or being taken already
+                return last
+        try:
+            return pending.result(timeout=FRAME_CALL_TIMEOUT_SEC)
+        except Exception:                               # not ready in time (the worker is busy), or it failed
+            return rec.frame_no, rec.frame_jpeg
 
     def user_event(self, owner: str, event: dict) -> None:
         """The user's own action on the page (they took it over, or used the address bar); not gated.
@@ -1173,7 +1200,15 @@ class BrowserHost:
         ``{"type": "click", "x", "y"}`` (viewport pixels), ``wheel`` (``dy``, optional ``x``/``y``), ``key`` (a
         Playwright key name), ``text``, ``navigate`` (``url``, refused like ``open``: ``ValueError`` with the reason),
         ``back``, ``reload``."""
-        kind = str((event or {}).get("type") or "")
+        if not isinstance(event, dict):
+            raise ValueError("ERROR: the event is not an object")
+        kind = str(event.get("type") or "")
+        for name, limit in (("url", 8 * 1024), ("key", 64), ("text", TEXT_MAX)):
+            value = event.get(name)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"ERROR: the event's {name} is not text")
+            if value is not None and len(value) > limit:
+                raise ValueError(f"ERROR: the event's {name} is longer than {limit} characters")
         if kind == "navigate":
             url = str(event.get("url") or "").strip()
             reason = url_refusal(url)

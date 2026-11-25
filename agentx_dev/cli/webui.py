@@ -78,6 +78,8 @@ _LANE = re.compile(r"^l[0-9]{1,4}$")
 TASK_OUTPUT_CHARS = 200_000         # one read of a task's output in the window: the newest this many characters
 TERMINALS_OFF = "terminals are off while remote control is on"
 TAKE_OVER_OFF = "taking over the browser is off while remote control is on"
+NO_CONVERSATION_YET = "this conversation has not started yet; try again in a moment"
+TERMINAL_INPUT_MAX = 64 * 1024      # the most text one line typed into a terminal may have
 
 
 def _browser_problem() -> str:
@@ -2014,11 +2016,15 @@ class WebFront:
             return {"ok": False, "id": task.id, "error": "the terminal could not start"}
         return {"ok": True, "id": task.id}
 
-    def terminal_input(self, ident: str, text: str) -> Dict[str, Any]:
+    def terminal_input(self, ident: str, text: Any) -> Dict[str, Any]:
         """``POST /api/terminals/input``: a line the user typed (theirs: not gated)."""
         manager, why = self._terminal(ident)
         if why:
             return {"ok": False, "error": why}
+        if not isinstance(text, str):
+            return {"ok": False, "error": "the text is not text"}
+        if len(text) > TERMINAL_INPUT_MAX:
+            return {"ok": False, "error": f"the text is longer than {TERMINAL_INPUT_MAX} characters"}
         try:
             manager.send(ident, str(text))
         except (KeyError, ValueError) as error:
@@ -2064,17 +2070,22 @@ class WebFront:
 
     def browser_frame(self) -> Tuple[int, Optional[bytes]]:
         """``(counter, JPEG or None)`` of the page on screen; never starts the browser."""
+        browser = self._browser()
+        owner = self.conversation_id()
         try:
-            counter, jpeg = self._browser().frame(self.conversation_id())
-        except Exception:                                   # it did not answer in time, or it was closed
-            return 0, None
+            counter, jpeg = browser.frame(owner)
+        except Exception:                                   # frame() gives the last picture itself; this is a guard
+            return int(browser.state(owner).get("frame") or 0), None
         return int(counter or 0), jpeg
 
     def browser_take(self) -> Dict[str, Any]:
         """``POST /api/browser/take``: the user has the page; the agent's acting tools wait for Give back."""
         if self._remote_on():
             return {"ok": False, "error": TAKE_OVER_OFF}
-        self._browser().take(self.conversation_id())
+        owner = self.conversation_id()
+        if not owner:                                       # a room whose app is still being made
+            return {"ok": False, "error": NO_CONVERSATION_YET}
+        self._browser().take(owner)
         return {"ok": True}
 
     def browser_give(self) -> Dict[str, Any]:
@@ -2089,11 +2100,13 @@ class WebFront:
         if not isinstance(event, dict):
             return {"ok": False, "error": "no event"}
         from agentx_dev.cli.browser import BrowserUnavailable
+        owner = self.conversation_id()
+        if not owner:                                       # a room whose app is still being made
+            return {"ok": False, "error": NO_CONVERSATION_YET}
         problem = _browser_problem()
         if problem:
             return {"ok": False, "error": problem}
         browser = self._browser()
-        owner = self.conversation_id()
         if str(event.get("type") or "") != "navigate" and not browser.state(owner).get("open"):
             return {"ok": False, "error": "agentx has not opened a page"}
         try:
@@ -2874,7 +2887,7 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/api/terminals":
             return self._json(front.terminal_open())
         if url.path == "/api/terminals/input":
-            return self._json(front.terminal_input(ident, str(data.get("text") or "")))
+            return self._json(front.terminal_input(ident, data.get("text", "")))
         if url.path == "/api/terminals/interrupt":
             return self._json(front.terminal_interrupt(ident))
         if url.path == "/api/terminals/close":

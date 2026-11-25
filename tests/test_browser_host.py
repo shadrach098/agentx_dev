@@ -685,3 +685,13 @@ def test_a_page_that_loaded_is_never_reported_refused(host, site):
         host.user_event("a", {"type": "navigate", "url": site + "/next"})          # does not raise
     finally:
         host._proxy.refusals.clear()
+
+
+def test_user_event_fields_must_be_text_and_short():
+    h = BrowserHost()
+    for event in ({"type": "text", "text": 5}, {"type": "text", "text": "y" * (64 * 1024 + 1)},
+                  {"type": "key", "key": 3}, {"type": "navigate", "url": ["http://a/"]}, "click"):
+        with pytest.raises(ValueError) as caught:
+            h.user_event("o", event)
+        assert str(caught.value).startswith("ERROR:"), event
+    assert h._thread is None                            # refused before the worker was started
