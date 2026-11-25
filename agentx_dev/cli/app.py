@@ -1988,21 +1988,31 @@ def _run_ui(args: argparse.Namespace) -> int:
     home = Path.home()
     setup_logging(home)
     handoff = os.environ.pop("AGENTX_PANE_HANDOFF", "")      # started as a side of another window (split view)
-    front = WebFront(cwd=Path.cwd().resolve(), home=home, port=max(0, int(args.port or 0)),
-                     open_it=bool(handoff) or not args.no_open, remote=bool(getattr(args, "remote", False)))
+    cwd = Path.cwd().resolve()
+    remote = bool(getattr(args, "remote", False))
+    front = WebFront(cwd=cwd, home=home, port=max(0, int(args.port or 0)),
+                     open_it=bool(handoff) or not args.no_open, remote=remote)
     if handoff:
         from agentx_dev.cli.webui import pane_handoff_opener
         front.opener = pane_handoff_opener(handoff)
         import time as _time
         front.pane_started = _time.monotonic()
+    # outside a project (the home folder, a drive root) the window opens on a start screen: pick a folder to work in
+    from agentx_dev.cli.webui import wants_start_screen
+    front.start_screen = wants_start_screen(
+        cwd, home, resumed=bool(getattr(args, "continue_", False) or getattr(args, "resume", None)),
+        pane=bool(handoff), remote=remote)
     front.make_device_app = lambda room: device_app(front.app, room)   # each other device: its own conversation
     holder: List[Any] = []
     # The app is built on the window's work thread, where signal handlers cannot be set: set them here, on the main
     # thread (POSIX: SIGHUP / SIGTERM stop the background tasks first). Not ``shared()``: its first call carries the
     # session's permissions.
     install_signal_handlers()
-    return front.run(lambda: _run(args, home, front.console, front.read, front.read_short, front.select, holder,
-                                  front.wire))
+    def work() -> int:
+        if not front.wait_for_start():          # the start screen opened another folder, or the window closed
+            return 0
+        return _run(args, home, front.console, front.read, front.read_short, front.select, holder, front.wire)
+    return front.run(work)
 
 
 def _run(args: argparse.Namespace, home: Path, console: Console, read: Callable[..., str],

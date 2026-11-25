@@ -8,6 +8,11 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **A start screen when the app window opens outside a project.** `agentx --ui` started in the home folder or at
+  the top of a drive shows **Choose a folder to work in**: up to 8 folders you trusted before (still there, newest
+  saved conversation first). Picking one, or **Open a folder…**, starts agentx there in its own window and ends this
+  one a few seconds later; **Chat here anyway** starts the conversation in that folder as before. Nothing happens in
+  the folder before a choice, and not with `--continue`, `--resume` or `--remote`.
 - **Background tasks, a built-in browser and terminals.** The agent keeps commands running, drives a web page
   and reads your terminals; the app window shows all of it in a **Tasks** panel.
   - `start_background`, `background_output`, `stop_background`, `list_background` and `send_to_terminal`. A

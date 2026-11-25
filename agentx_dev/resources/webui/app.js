@@ -228,6 +228,7 @@
   function showWelcome() {
     const splash = column.querySelector(".welcome.splash");
     if (splash) splash.remove();                 // the welcome grows out of the starting screen
+    if (startView && startView.show) { showStartIfAsked(); return; }
     if (!welcome || column.children.length) return;
     const w = el("section", heroShown ? "welcome still" : "welcome");
     const tips = (welcome.tips || []).map((t) => `<li>${esc(t)}</li>`).join("");
@@ -252,8 +253,124 @@
     syncView();
   }
 
+  // -- the start screen: agentx started outside a project (the home folder, a drive root) ------------------------
+  // The server decides (GET /api/start) and keeps the choice, so a reload shows it again until one is made. A folder
+  // picked here gets agentx of its own, in a new window, and this one ends; "Chat here anyway" shows the welcome.
+  let startView = null;
+  async function loadStart() {
+    if (EMBED || LANE) return;                   // only the main window, at start
+    try { startView = await get("/api/start"); } catch (_) { startView = null; }
+  }
+  const FOLDER_EXAMPLE = "for example C:\\Users\\you\\projects\\shop";
+  function middle(text, room) {                  // a long path keeps its start and its end
+    const s = String(text || "");
+    if (s.length <= room) return s;
+    const head = Math.ceil((room - 1) * 0.45);
+    return s.slice(0, head) + "…" + s.slice(s.length - (room - 1 - head));
+  }
+  function showStartIfAsked() {                 // the server holds the app until a choice: nothing else comes first
+    if (!(startView && startView.show) || column.querySelector(".start-screen")) return;
+    const splash = column.querySelector(".welcome.splash");
+    if (splash) splash.remove();
+    showStart();
+  }
+  function showStart() {
+    const s = el("section", "start-screen");
+    s.setAttribute("aria-labelledby", "startTitle");
+    const h = el("h1"); h.id = "startTitle"; h.textContent = "Choose a folder to work in";
+    const why = el("p", "start-why"); why.textContent = startView.line || "";
+    s.append(h, why);
+    const recent = Array.isArray(startView.recent) ? startView.recent : [];
+    if (recent.length) {
+      const list = el("ul", "start-list");
+      list.setAttribute("aria-label", "Recent folders");
+      for (const f of recent) {
+        const li = el("li");
+        const b = el("button", "start-row");
+        b.type = "button";
+        b.title = String(f.path || "");
+        b.dataset.path = String(f.path || "");
+        const name = el("span", "start-name"); name.textContent = String(f.name || f.path || "");
+        const where = el("span", "start-path"); where.dataset.full = String(f.path || "");
+        const ago = el("span", "start-ago"); ago.textContent = String(f.ago || "");
+        b.append(name, where, ago);
+        li.append(b);
+        list.append(li);
+      }
+      s.append(list);
+    } else {
+      const none = el("p", "start-none");
+      none.textContent = "No recent folders yet. Open one to start.";
+      s.append(none);
+    }
+    const acts = el("div", "start-actions");
+    const open = el("button", "btn primary"); open.type = "button"; open.dataset.start = "open"; open.textContent = "Open a folder…";
+    const here = el("button", "btn quiet"); here.type = "button"; here.dataset.start = "here"; here.textContent = "Chat here anyway";
+    acts.append(open, here);
+    const msg = el("p", "start-msg"); msg.setAttribute("role", "status");
+    s.append(acts, msg);
+    s.addEventListener("click", async (e) => {
+      const row = e.target.closest(".start-row"), act = e.target.closest("[data-start]");
+      if (row) chooseFolder(row.dataset.path, s);
+      else if (act && act.dataset.start === "open") {
+        const path = await askText({title: "Open a folder", text: "agentx starts there in a window of its own, and this one closes.",
+                                    placeholder: FOLDER_EXAMPLE, ok: "Open"});
+        if (path) chooseFolder(path, s);
+      } else if (act && act.dataset.start === "here") chatHere(s);
+    });
+    column.append(s);
+    syncView();
+    fitPaths();
+    const first = s.querySelector(".start-row, [data-start]");
+    if (first) first.focus({preventScroll: true});
+  }
+  function fitPaths() {                         // each path as long as its row has room for, cut in the middle
+    for (const n of column.querySelectorAll(".start-screen .start-path")) {
+      const full = n.dataset.full || "";
+      let room = full.length;
+      n.textContent = full;
+      while (room > 12 && n.scrollWidth > n.clientWidth) { room -= 2; n.textContent = middle(full, room); }
+    }
+  }
+  let fitLater = 0;
+  window.addEventListener("resize", () => { clearTimeout(fitLater); fitLater = setTimeout(fitPaths, 80); });
+  async function chooseFolder(path, s) {
+    const msg = s.querySelector(".start-msg");
+    const buttons = [...s.querySelectorAll("button")];
+    buttons.forEach((b) => { b.disabled = true; });
+    msg.textContent = "";
+    let res = {};
+    try { res = await post("/api/start", {action: "open", path}); } catch (_) { res = {}; }
+    if (res.ok) { showHandedOff(res.message || ""); return; }
+    buttons.forEach((b) => { b.disabled = false; });
+    msg.textContent = res.message || "The folder could not be opened.";
+  }
+  async function chatHere(s) {
+    try { await post("/api/start", {action: "here"}); } catch (_) { /* the welcome shows either way */ }
+    if (startView) startView.show = false;
+    const rest = [...column.children].filter((n) => n !== s);   // what came meanwhile stays, under the welcome
+    rest.forEach((n) => n.remove());
+    s.remove();
+    if (welcome) showWelcome();                  // agentx starts here now: its welcome (or trust question) follows
+    else showStarting();
+    rest.forEach((n) => column.append(n));
+    syncView();
+    input.focus();
+  }
+  function showHandedOff(text) {
+    closed = true;
+    const box = $("overlayBox");
+    box.innerHTML = "";
+    const h = el("h2"); h.textContent = "Opened in a new window";
+    const p = el("p"); p.textContent = text;
+    box.append(h, p);
+    $("overlay").hidden = false;
+  }
+
   function addUser(text) {
     dropWelcome();
+    const start = column.querySelector(".start-screen");
+    if (start) { start.remove(); if (startView) startView.show = false; }
     turn = null; group = null; lastPrint = null;
     const command = /^\/\w/.test(text);              // a command (often from a menu) is not a chat message
     const u = el("div", command ? "user command" : "user");
@@ -2688,6 +2805,7 @@
   function syncView() {
     updateLive();
     document.querySelector(".main").classList.toggle("empty", !!column.querySelector(".welcome"));
+    document.querySelector(".main").classList.toggle("choosing", !!column.querySelector(".start-screen"));
     $("jump").hidden = nearBottom();
   }
   log.addEventListener("scroll", () => { $("jump").hidden = nearBottom(); }, {passive: true});
@@ -2731,11 +2849,13 @@
       knownConversation = ev.path;
       if (first) {
         const shown = [...column.childNodes];
+        const focused = column.contains(document.activeElement) ? document.activeElement : null;
         shown.forEach((n) => n.remove());
         turn = null; group = null; lastPrint = null;
         for (const item of data.items) handle({...item, seq: Infinity});
-        if (data.items.length) dropWelcome();
-        shown.forEach((n) => { if (!(data.items.length && n.classList && n.classList.contains("welcome"))) column.append(n); });
+        if (data.items.length) { dropWelcome(); if (startView) startView.show = false; }
+        shown.forEach((n) => { if (!(data.items.length && n.classList && (n.classList.contains("welcome") || n.classList.contains("start-screen")))) column.append(n); });
+        if (focused && focused.isConnected) focused.focus({preventScroll: true});   // moving it took the focus away
         turn = null; group = null;
       } else {
         resetView();
@@ -2783,6 +2903,10 @@
   let closed = false;
   function showClosed(ev) {
     closed = true;
+    if (ev && ev.handedOff) {                  // the start screen opened agentx in another folder; this one ended
+      showHandedOff(`agentx opened ${ev.handedOff} in a new window. You can close this one.`);
+      return;
+    }
     if (ev && ev.keyChanged) {                 // someone used the start link again: agentx made a new key
       try { sessionStorage.removeItem("agentx-token"); } catch (_) { /* no storage */ }
       askForKey("agentx changed its key", "The one-time link this window was opened with was used again, " +
@@ -2888,5 +3012,6 @@
   mountOrbs($("stage"), orbState, {interactive: true});   // and large on the stage while agentx works
   setComposer();
   input.focus();
-  claimLaunch().then(() => { restoreBeside(); loadState(); loadSessions(); connect(); });
+  // the start screen is known before the events come, so the welcome is never drawn first
+  claimLaunch().then(async () => { restoreBeside(); loadState(); loadSessions(); await loadStart(); showStartIfAsked(); connect(); });
 })();

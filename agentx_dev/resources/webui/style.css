@@ -173,6 +173,32 @@ svg { width: 16px; height: 16px; flex: none; }
 .welcome details ul { margin: 10px 0 0; padding-left: 18px; display: grid; gap: 4px; }
 .welcome details h2 { font-size: 13px; font-weight: 600; margin: 14px 0 0; color: var(--muted); }
 
+/* the start screen: agentx started outside a project (the home folder, a drive root) offers the folders trusted
+   before, newest first; the message box is away until a choice is made, so nothing is asked here by accident */
+.start-screen { width: 100%; max-width: 640px; margin: 0 auto; padding: 11vh 0 32px; animation: fade-up 500ms var(--ease-out) both; }
+.start-screen h1 { font-family: var(--display); font-size: 24px; line-height: 1.25; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 6px; text-align: center; text-wrap: balance; }
+.start-why { margin: 0 0 28px; color: var(--muted); font-size: 14px; text-align: center; overflow-wrap: anywhere; }
+.start-list { list-style: none; margin: 0; padding: 4px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); display: grid; gap: 2px; }
+.start-row { width: 100%; display: grid; grid-template-columns: minmax(0, 10.5rem) minmax(0, 1fr) auto; align-items: baseline; gap: 14px; padding: 10px 12px; border: 0; background: none; border-radius: 10px; text-align: left; transition: background 0.12s; }
+.start-row:hover { background: var(--hover); }
+.start-row:focus-visible { outline: 2px solid var(--muted); outline-offset: -2px; background: var(--hover); }
+.start-row:disabled { opacity: 0.5; cursor: default; }
+.start-name { font-weight: 600; font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.start-path { font-family: var(--mono); font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.start-ago { font-size: 12.5px; color: var(--faint); white-space: nowrap; }
+.start-none { margin: 0; padding: 18px; text-align: center; color: var(--muted); border: 1px dashed var(--line-strong); border-radius: 14px; }
+.start-actions { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px; margin-top: 20px; }
+.btn.quiet { border-color: transparent; color: var(--muted); }
+.btn.quiet:hover { color: var(--text); }
+.start-msg { margin: 12px 0 0; text-align: center; color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+.start-msg:empty { display: none; }
+.main.choosing .dock, .main.choosing .stage { display: none; }
+@media (max-width: 600px) {                     /* narrow: the name and when on one line, the path under them */
+  .start-screen { padding-top: 7vh; }
+  .start-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 2px; }
+  .start-path { grid-column: 1 / -1; grid-row: 2; }
+}
+
 /* your message: a bubble on the right */
 .user { align-self: flex-end; max-width: 85%; margin: 26px 0 16px; padding: 9px 16px; background: var(--raised); border-radius: 18px 18px 6px 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .user:first-child { margin-top: 12px; }
@@ -749,7 +775,8 @@ html.embedded .app, html.embedded .app.side-hidden, html.embedded .app.with-deta
 .session-row:hover .session-more, .session-more:focus-visible, .session-more[aria-expanded="true"] { opacity: 1; }
 .session-more:hover { background: var(--hover); color: var(--text); }
 @media (hover: none) { .session-more { opacity: 1; } }
-.side { position: relative; }
+/* the menu's place; below 861px the sidebar stays fixed (it slides over), not a row above the chat */
+@media (min-width: 861px) { .side { position: relative; } }
 .row-menu { position: absolute; z-index: 30; min-width: 170px; max-width: 240px; padding: 5px; display: grid; gap: 2px; background: var(--raised); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, .35); }
 .row-menu button { text-align: left; border: 0; background: none; color: var(--text); font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 7px; cursor: pointer; }
 .row-menu button:hover, .row-menu button:focus-visible { background: var(--hover); outline: none; }

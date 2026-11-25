@@ -1151,6 +1151,16 @@ tabs or address bar) when one is installed, else a tab in your default browser. 
 conversation is saved for `agentx --ui --continue`. Ctrl+C in the terminal it started from quits too. With
 `--no-open` or `--remote`, agentx keeps running when the window closes, so you can open it again.
 
+**Started outside a project.** When `agentx --ui` starts in your home folder or at the top of a drive (a shortcut
+that opens the window without a folder, say), the window opens on **Choose a folder to work in** instead of a new
+conversation. It lists up to 8 folders you trusted before that still exist, the one with the most recent saved
+conversation first, each with its path and how long ago it was used. Click one (or press **Open a folder…** and type
+a path) and agentx starts there in a window of its own, as **Open another folder…** does (asking whether you trust
+the folder, the first time); this window then says so and its agentx ends a few seconds later, as when you close it.
+**Chat here anyway** shows the usual start and the conversation begins in that folder. Nothing happens in the folder
+before you choose (not even the trust question), and a reload shows the same screen until you do. With
+`--continue` or `--resume`, with `--remote`, and in a project folder, the window opens as usual.
+
 Each conversation gets a short title from the model after its first answer (one small request), shown in the list
 on the left and in `/resume`; until then, and for older conversations, the first thing you typed is the title.
 

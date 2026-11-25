@@ -71,6 +71,8 @@ MODES_SHOWN = ("default", "accept-edits", "plan", "auto")
 MAX_LOCAL_CONTEXT = 10_000_000      # tokens the Settings panel accepts as "localContext": more than any local window
 KEEP_ALIVE_SEC = 4.0                # a closed window is noticed when this write fails
 CLOSE_GRACE_SEC = 8.0               # how long the window may be gone (a reload) before agentx quits
+START_RECENT_MAX = 8                # the start screen lists at most this many folders
+HAND_OVER_SEC = 3.0                 # after the start screen opened agentx in another folder, this one ends
 SHARE_CHECK_SEC = 30.0              # remote use: how often agentx checks Tailscale still shares it (after a sleep)
 LAUNCH_CODE_SEC = 120.0             # how long the one-time code the browser is started with can be used
 ROOM_IDLE_SEC = 15 * 60            # a device's own conversation no window used for this long is closed (and saved)
@@ -479,6 +481,76 @@ def open_folder_command(folder: Path, code: str = OPEN_FOLDER_START) -> "tuple[L
     root = _agentx_root()
     flags = ["-P"] if sys.version_info >= (3, 11) else []     # Python 3.11+: never put a folder first on sys.path
     return [sys.executable, *flags, "-c", code, str(folder), root], root
+
+
+# -- the start screen: agentx --ui started outside a project offers the folders trusted before ---------------------
+
+def wants_start_screen(cwd: Path, home: Path, *, resumed: bool = False, pane: bool = False,
+                       remote: bool = False) -> bool:
+    """Whether the window opens on the start screen instead of a new conversation: only in a folder that is not a
+    project (the home folder, a drive root), and not for a resumed conversation (``--continue``/``--resume``), a side
+    of another window or remote use (the window is not on this computer)."""
+    from agentx_dev.cli.settings import is_project_folder
+    return not (resumed or pane or remote) and not is_project_folder(cwd, home)
+
+
+def used_ago(when: Optional[float], now: Optional[float] = None) -> str:
+    """How long ago ``when`` (a file time) was, in words: "2 hours ago", "Yesterday"; "Not used yet" for None."""
+    if when is None:
+        return "Not used yet"
+    seconds = max(0.0, (time.time() if now is None else now) - when)
+    minutes, hours, days = seconds / 60, seconds / 3600, seconds / 86400
+    def plural(count: float, unit: str) -> str:
+        n = int(count)
+        return f"{n} {unit}{'' if n == 1 else 's'} ago"
+    if minutes < 1:
+        return "Just now"
+    if hours < 1:
+        return plural(minutes, "minute")
+    if days < 1:
+        return plural(hours, "hour")
+    if days < 2:
+        return "Yesterday"
+    if days < 14:
+        return plural(days, "day")
+    if days < 60:
+        return plural(days / 7, "week")
+    if days < 730:
+        return plural(days / 30, "month")
+    return plural(days / 365, "year")
+
+
+def recent_folders(home: Path, limit: int = START_RECENT_MAX, now: Optional[float] = None) -> List[Dict[str, Any]]:
+    """The folders the user trusted before, newest use first (when a conversation there was last saved; never-used
+    ones last), at most ``limit``: ``{"name", "path", "ago"}``. Each is spelled as on disk (the trust file keeps
+    lowercased keys on Windows; ``resolve`` restores the real case) and kept only while it is a folder and a project.
+    Nothing is read from a listed folder: only whether it exists and is a directory. Never raises."""
+    from agentx_dev.cli.sessions import sessions_dir
+    from agentx_dev.cli.settings import is_project_folder
+    from agentx_dev.cli.trust import trusted_folders
+    found: List[Tuple[Optional[float], Path]] = []
+    seen: set = set()
+    try:
+        entries = trusted_folders(home)
+    except Exception:
+        return []
+    for entry in entries:
+        try:
+            folder = Path(entry).resolve()
+            key = os.path.normcase(str(folder))
+            if key in seen or not folder.is_dir() or not is_project_folder(folder, home):
+                continue
+            seen.add(key)
+            try:
+                used: Optional[float] = sessions_dir(home, folder).stat().st_mtime
+            except OSError:
+                used = None
+        except (OSError, RuntimeError, ValueError):
+            continue
+        found.append((used, folder))
+    found.sort(key=lambda item: (item[0] is None, -(item[0] or 0.0), str(item[1]).lower()))
+    return [{"name": _text(folder.name or str(folder), 200), "path": _text(str(folder), 2000),
+             "ago": _text(used_ago(used, now), 40)} for used, folder in found[:max(0, limit)]]
 
 
 def _app_window_command(url: str) -> Optional[List[str]]:
@@ -897,6 +969,12 @@ class WebFront:
         self.last_session: Dict[str, str] = {}               # a room closed when unused reopens its conversation
         self.ended = False
         self.idle = False
+        # The start screen (agentx --ui outside a project, see ``wants_start_screen``): offered until a choice is
+        # made, so a reload shows it again. Choosing a folder starts agentx there and ends this one a little later.
+        self.start_screen = False
+        self._start_chosen = False
+        self._hand_over: Optional[Tuple[float, str]] = None   # (when this agentx ends, the folder it opened)
+        self._start_answer = threading.Event()               # set by a choice, or when agentx closes
 
     # -- what the app prints and asks ----------------------------------------------------------------------------
 
@@ -1633,6 +1711,77 @@ class WebFront:
             return {"ok": False, "message": f"agentx could not be started there: {error}"}
         return {"ok": True, "message": f"Opening agentx in {folder}. It asks whether you trust the folder the first time.",
                 "folder": str(folder)}
+
+    # -- the start screen ------------------------------------------------------------------------------------------
+
+    def _start_offered(self) -> bool:
+        """The main window at start, outside a project, before a choice was made and before anything was said."""
+        if not self.start_screen or self.host is not None:
+            return False
+        with self._lock:
+            if self._start_chosen or self._hand_over is not None:
+                return False
+        history = getattr(getattr(self.app, "session", None), "history", None)
+        return not history
+
+    def start_view(self) -> Dict[str, Any]:
+        """What the window shows instead of the welcome: ``{"show": False}``, or the folder, why it is not a project
+        and the recent folders."""
+        if not self._start_offered():
+            return {"show": False}
+        try:
+            at_home = self.cwd.resolve() == self.home.resolve()
+        except OSError:
+            at_home = False
+        why = ("is your home folder, not a project." if at_home else
+               "is the top of a drive, not a project." if os.name == "nt" else "is the root folder, not a project.")
+        return {"show": True, "folder": _text(str(self.cwd), 2000), "line": _text(f"{self.cwd} {why}", 2100),
+                "recent": recent_folders(self.home)}
+
+    def start_choice(self, action: str, path: Any = "") -> Dict[str, Any]:
+        """The start screen's answer: "here" (a conversation in this folder after all, for this run) or "open"
+        (agentx in ``path``, started as "Open another folder" does; this agentx then ends, as when its window is
+        closed, ``HAND_OVER_SEC`` later)."""
+        if not self._start_offered():
+            return {"ok": False, "message": "The start screen is not open."}
+        if action == "here":
+            with self._lock:
+                self._start_chosen = True
+            self._start_answer.set()
+            return {"ok": True}
+        if action != "open":
+            return {"ok": False, "message": "That is not a choice of the start screen."}
+        result = self.open_folder(str(path or ""))
+        if not result.get("ok"):
+            return result
+        folder = str(result.get("folder") or "")
+        with self._lock:
+            self._start_chosen = True
+            self._hand_over = (time.monotonic() + HAND_OVER_SEC, folder)
+        self._start_answer.set()
+        return {"ok": True, "folder": _text(folder, 2000),
+                "message": _text(f"agentx opened {folder} in a new window. You can close this one.", 2200)}
+
+    def handed_over(self) -> bool:
+        """True once the start screen opened agentx in another folder and ``HAND_OVER_SEC`` have passed."""
+        with self._lock:
+            return self._hand_over is not None and time.monotonic() >= self._hand_over[0]
+
+    def wait_for_start(self) -> bool:
+        """Before the app is built (on the work thread): with the start screen offered, wait for its answer, so
+        nothing happens in this folder (not even the trust question) unless the user chose to chat here. True: go
+        on; False: this agentx ends (a folder was chosen and opened, or agentx is closing)."""
+        if not self.start_screen or self.host is not None:
+            return True
+        while True:
+            with self._lock:
+                if self._closed:
+                    return False
+                if self._hand_over is None and self._start_chosen:
+                    return True
+            if self.handed_over():
+                return False
+            self._start_answer.wait(0.2)
 
     def open_pane(self, session: Any = "", raw_folder: Any = "") -> Dict[str, Any]:
         """A conversation beside this one (the split window): ``session`` (an id from Recent) in this folder, or a
@@ -2745,6 +2894,7 @@ class WebFront:
             self._closed = True
             pending = list(self._pending.values())
             rooms = list(self.rooms.values())
+        self._start_answer.set()                         # a start screen still waiting gives up
         for request in pending:
             if not request["future"].done():
                 request["future"].set_exception(EOFError())
@@ -2754,7 +2904,10 @@ class WebFront:
             return
         for room in rooms:
             room.close()
-        self.bus.emit("closed")
+        with self._lock:
+            opened = self._hand_over[1] if self._hand_over is not None else ""
+        # after the start screen opened agentx elsewhere, the window says where instead of "agentx has stopped"
+        self.bus.emit("closed", **({"handedOff": _text(opened, 2000)} if opened else {}))
         self._stop_tailnet()                            # the https link Tailscale served goes away with agentx
         if self._server is not None:
             threading.Timer(1.0, self._server.shutdown).start()
@@ -2785,8 +2938,11 @@ class WebFront:
         try:
             while self._worker.is_alive():
                 self._worker.join(0.5)
-                if self.window_closed():
-                    print("The window was closed, so agentx is quitting. Your conversation is saved; "
+                handed = self.handed_over()
+                if handed or self.window_closed():
+                    print(f"agentx opened {self._hand_over[1] if self._hand_over else ''} in a new window, so this "
+                          "one is quitting." if handed else
+                          "The window was closed, so agentx is quitting. Your conversation is saved; "
                           "agentx --ui --continue picks it up.", flush=True)
                     self.quit_for_closed_window()
                     self._worker.join(10)
@@ -2892,6 +3048,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._events(max(0, int(after)), front, device)
             except ValueError:
                 return self._events(0, front, device)
+        if url.path == "/api/start":                        # the start screen, outside a project
+            return self._json(front.start_view())
         if url.path == "/api/state":
             return self._json({**front.state(), "live": self.front.live_info(device),
                                "lane": front.lane if front.host is not None else ""})
@@ -3002,6 +3160,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(front.save_settings(str(data.get("scope", "")), data.get("values")))
         if url.path == "/api/open-folder":
             return self._json(front.open_folder(str(data.get("path", ""))))
+        if url.path == "/api/start":                        # Chat here anyway, or agentx in a chosen folder
+            return self._json(front.start_choice(str(data.get("action") or ""), str(data.get("path") or "")))
         if url.path == "/api/mcp-signin":
             return self._json(front.finish_signin(str(data.get("url", ""))))
         if url.path == "/api/pane":
