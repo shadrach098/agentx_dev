@@ -148,8 +148,9 @@ class ModelCommands:
         from agentx_dev import AgentRunner, AgentType
         from agentx_dev.cli.context import build_addendum
         from agentx_dev.cli.tools import lean_tools
-        base = build_addendum(self.cwd, self.home, max_context_chars=0, max_log_chars=0)
         lean = self._lean_for(model)
+        base = build_addendum(self.cwd, self.home, max_context_chars=0, max_log_chars=0,
+                              browser=self._browser_for(model))
         runner = AgentRunner(model=model, agent=AgentType.ReAct,
                              tools=lean_tools(self.tools) if lean else list(self.tools), system_addendum=base,
                              skills=self.skills, verbose=False, auto_cache=False, strict_tool_dispatch=True,

@@ -25,7 +25,7 @@ from agentx_dev.Runner.Fallback import (NO_CREDIT_WORDS, UNREACHABLE, ContextWin
 from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
                                      runs_while_working,
                                      shown)
-from agentx_dev.cli.context import MAX_CONTEXT_CHARS, MAX_LOG_CHARS, build_addendum
+from agentx_dev.cli.context import BROWSER_LINE, MAX_CONTEXT_CHARS, MAX_LOG_CHARS, build_addendum
 from agentx_dev.cli.mcp import (MCPManager, windows_system_env, windows_user_env)
 from agentx_dev.cli.memory import append_entry, entry_text, read_recent, record_from_events
 from agentx_dev.cli.recall import ProjectMemory, auto_block, choose_embeddings, make_recall_tool, worth_a_note
@@ -640,7 +640,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         # Claude or GPT falls back to the local ``fallbackModel`` when it fails for good; the binding mode is left to
         # the runner (no use_function_calling / bind_tools_natively), so it is chosen again for the fallback.
         # A local model (the chat's, or the fallback's from the switch on) gets the lean request (``_lean_for``).
-        if self._fitted_for(model) != self._addendum_for:
+        # Built again for another window, or when this model's request has (or lacks) the browser tools.
+        browser = self._browser_for(model)
+        if self._fitted_for(model) != self._addendum_for or (BROWSER_LINE in self.addendum) != browser:
             self._build_instructions(model)
         tools = [self._route_guarded(t) for t in self.tools]
         runner = AgentRunner(model=model, agent=AgentType.ReAct,
@@ -1617,7 +1619,14 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
             if max_context < MAX_CONTEXT_CHARS or max_log < MAX_LOG_CHARS:     # else a cut is the usual cap
                 whose = "this model's" if blind else f"{name}'s"
                 limits["shortened_note"] = f"(shortened to fit {whose} {window:,}-token window)"
-        return build_addendum(self.cwd, self.home, log_text=self._addendum_log, **limits), fitted
+        return (build_addendum(self.cwd, self.home, log_text=self._addendum_log, browser=self._browser_for(model),
+                               **limits), fitted)
+
+    def _browser_for(self, model: Any) -> bool:
+        """Whether requests on ``model`` carry the browser tools (a lean request does not): only then does the
+        prompt say when to use them."""
+        tools = lean_tools(self.tools) if self._lean_for(model) else self.tools
+        return any(getattr(tool, "name", "") == "browser_open" for tool in tools)
 
     def _fitted_addendum(self, model: Any) -> str:
         """The addendum fitted to ``model``'s window: what a runner switching to the fallback, and a team helper on a

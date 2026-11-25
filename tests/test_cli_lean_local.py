@@ -214,3 +214,27 @@ def test_no_room_names_a_valid_variant(tmp_path):
     app._warn_if_no_room(model)
     assert ("a Modelfile with FROM qwen3-agent:latest and PARAMETER num_ctx 16384, then ollama create "
             "qwen3-agent-16k -f Modelfile.") in out.getvalue()
+
+
+# -- the browser line of the prompt ----------------------------------------------------------------------------------
+
+def test_the_browser_line_goes_only_to_requests_that_have_the_browser_tools(tmp_path):
+    from agentx_dev.cli.context import BROWSER_LINE
+    model = local_mock(window=32768)
+    model.prefers_native_tools = True
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), lambda name, env: model, model_name="qwen3:8b")
+    assert app.start() == 0
+    lean = app._make_runner(model)._system_prompt("")
+    assert "browser_open" not in lean and BROWSER_LINE not in lean
+    assert BROWSER_LINE not in app._fitted_addendum(model)          # what a switch to this fallback is given
+    app.local_tools = "all"
+    assert BROWSER_LINE in app._make_runner(model)._system_prompt("")
+
+
+def test_a_cloud_chat_keeps_the_browser_line(tmp_path):
+    from agentx_dev.cli.context import BROWSER_LINE
+    model = MockModel(script=[])
+    model.prefers_native_tools = True
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), lambda name, env: model, model_name="claude-opus-5-5")
+    assert app.start() == 0
+    assert BROWSER_LINE in app._make_runner(model)._system_prompt("")

@@ -47,9 +47,12 @@ How to work:
 - Do not wait inside a command: no sleep, no --watch, no loops that poll until something finishes. A command is stopped after 5 minutes and the user waits the whole time. To see CI checks or a deploy, run the check once (gh pr checks <number>, gh run view <id>, without --watch) and report what it shows; if they are still running, say so and say what to check, instead of waiting for them.
 - For a dev server, a watcher or anything else that does not end by itself, use start_background; never run_shell with & or nohup for that. Read it with background_output.
 - Stop what you started with stop_background when you are done with it, unless the user wants it kept running.
-- To check a web page or a UI you built, use the browser tools: browser_open the dev server's localhost address, browser_read the page before you click (refs change after every action), and browser_screenshot to see how it looks. Never type passwords or payment details into a page.
-- Be brief in your answers: say what you did and what to look at.
+{browser}- Be brief in your answers: say what you did and what to look at.
 - For a large, multi-part job (several files or areas: research, changes and tests together), call start_team_job to hand it to a team of helpers instead of doing it all yourself. Do small and medium jobs yourself. If a team job ends partial and the user's task is not finished, call start_team_job again for what remains (up to {jobs} jobs per message) instead of stopping to ask; then report what is done and what remains.""".replace("{jobs}", str(MAX_TEAM_JOBS_PER_MESSAGE))
+# Only in a request that has the browser tools (a lean request to a local model does not): ``build_addendum(browser=)``.
+BROWSER_LINE = ("- To check a web page or a UI you built, use the browser tools: browser_open the dev server's localhost "
+                "address, browser_read the page before you click (refs change after every action), and "
+                "browser_screenshot to see how it looks. Never type passwords or payment details into a page.")
 
 
 def _resolve(path: Path) -> Path:
@@ -178,16 +181,18 @@ def _log_block(log_text: str, limit: int = MAX_LOG_CHARS) -> str:
 
 def build_addendum(cwd: Path, home: Path, *, system: Optional[str] = None, log_text: str = "",
                    max_context_chars: int = MAX_CONTEXT_CHARS, max_log_chars: int = MAX_LOG_CHARS,
-                   shortened_note: str = "") -> str:
+                   shortened_note: str = "", browser: bool = True) -> str:
     """The base prompt, the user's own instructions, then the project instructions inside explicit markers. Cut at
     ``max_context_chars`` in total: the user's own file gets room first (a cloned repository's file must not push it
     out), then the nearest project files. ``log_text`` (the newest entries of the folder's work log, if any) follows
     in its own marked block, cut to its newest ``max_log_chars``. A model with a small window gets smaller limits
-    and a ``shortened_note``, added as the last line when either part was cut. The base prompt is never cut."""
+    and a ``shortened_note``, added as the last line when either part was cut. The base prompt is never cut.
+    ``browser``: the request has the browser tools, so the base prompt says when to use them."""
     where = _defuse(_clean(cwd))
     if len(where) > MAX_PATH_CHARS:
         where = "..." + where[-MAX_PATH_CHARS:]
-    base = BASE_PROMPT.format(cwd=where, system=_defuse(_clean(system or platform.system() or "unknown")))
+    base = BASE_PROMPT.format(cwd=where, system=_defuse(_clean(system or platform.system() or "unknown")),
+                              browser=BROWSER_LINE + "\n" if browser else "")
     user_key = _resolve(_user_file(home))
     user_section: Optional[str] = None
     project: List[str] = []                                      # nearest first while collecting
