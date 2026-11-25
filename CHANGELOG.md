@@ -68,8 +68,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   provider's models were offered. A local conversation never sends anything to a cloud model on its own.
 - **Local and fallback in team jobs.** A local name in `teamModels` gives local helpers (no key needed). A step whose
   model fails for good runs again on the fallback, told what the attempt did, later steps on that model start there
-  for the rest of the job; the screen reads `Done on <to> (fallback: <from> <reason>)` (also in the Team panel and
-  Details), and the agent is told `done on the fallback model (fallback: <job's model ID> <reason>)` and
+  for the rest of the job; the screen reads `Done on <to> (fallback: <from> <reason>)` (also in the app window's
+  team block and Details), and the agent is told `done on the fallback model (fallback: <job's model ID> <reason>)` and
   `N steps ran on the fallback model; check their work`, never a model name. The approval of a job on a local chat
   model says `Helpers on <names> will see this project's files.` when cloud helpers are listed.
 - **A local model's window in `agentx`.** On Ollama the check reads the loaded window; elsewhere `localContext`, else
@@ -104,12 +104,18 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **Notes you type while a team works go to its supervisor**, not into whichever helper happens to be running. Once
   that helper's step ends, the supervisor reads the note and adds steps for it, or leaves it for the main agent,
   which gets every note the team did not act on with the team's result.
-- **A Team panel in the app window.** One row for every step of the job, which keeps its place from waiting to
-  running to done, failed or skipped, with the helper, its model, what it has done and its tool (`Now · Editing
-  app.js` while it runs, `Last · Read app.js` after). Steps that run in parallel, the same helper twice and a
-  supervisor's new plan each get rows of their own; a step the new plan replaced shows skipped. Esc or Ctrl+C
-  marks open steps interrupted, and a step the job ended without reporting shows unknown, never a made-up failure.
-  It stays after the job and clears when you start or open another conversation.
+- **A team job is one live block in the app window's conversation.** The dark terminal-style block shows the whole
+  job and is updated in place: a head `Team · 2 running · 1 of 4 done`, then one row for every step, which keeps its
+  place and its height. A waiting step reads `○ helper · label  waiting`; a running one
+  `● helper · label  Reading tests/app.py · 18 tools · 1m 12s`; a step that ended turns into the terminal's ended
+  line with the start of its report under it (`✓ … Done (…)`, `✗ … Failed`, `◐ … Partial`, `– … Skipped`,
+  `↺ … Done on <fallback> (…)`), so it is never shown twice. Esc or Ctrl+C marks open steps `■ … Stopped`, and a
+  step the job ended without reporting reads `? … Ended without word`, never a made-up failure. Steps that run in
+  parallel, the same helper twice and a supervisor's new plan each get rows of their own; a step the new plan
+  replaced shows skipped. Click a row for its details (its model, its last calls, its counts, the fallback note);
+  click again to close them. A big team stops growing at about ten rows and scrolls inside the block, keeping the
+  running steps in view. After the job the block stays as its record, in its final form, also in a reloaded window
+  and in a conversation opened again (the final form is kept with the saved conversation). The terminal is unchanged.
 - **agentx decides by itself when a job needs a team.** You no longer need `/team` for a big job: before the agent
   starts on a message, agentx asks the chat model one short question, without tools, whether it is a large,
   multi-part job, and shows the answer (`Handing this to a team: it spans the whole project.` or `Working on this
@@ -150,6 +156,18 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Changed
 
+- **The orb has new looks for thinking, team work and done** (app window). Thinking: a calm sphere turning slowly,
+  sparks of light running along a few great circles with short fading trails (it used to bubble). A team job has a
+  look of its own, `team`: the sphere splits into a constellation, one small orb per helper step that is running or
+  finished circling a small hub, a running one turning its rings and a finished one glowing still; six at most (past
+  six, the five that matter most, running first, and a cluster marked "+N" for the rest); they gather back into one
+  sphere when the job ends. A single agent's step keeps the turning rings. Orbs under 48 px (the status line, the
+  "Thinking…" line) show a team job as three bright dots circling the sphere. Done: the shell breathes slowly around
+  a shimmering core of light, faint bands drifting up it. Ready: the slow turn now has fireflies, a single dot
+  glowing softly and fading now and then, only a few at a time (each at its own moment, so they never fire
+  together). Every look still fades into the next, reduced motion still
+  gets a still frame, and the dots are drawn from buffers made once (no per-dot allocations).
+  `AgentxOrb.create(canvas, stateOf, {teamOf})` takes the helper counts (`{running, finished}`).
 - **An empty final answer is not `done`.** A run that called no tool and ended with no text now has the outcome
   `no_answer` (`The model gave no answer.`). A run that called tools and then ended with nothing stays `done`, with the
   answer `The model gave no final answer. It called: read_path, write_file (files changed: done.txt).` Every model.
@@ -168,6 +186,24 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **agentx: a local model that fails at start no longer stops it.** The app window (and the terminal) exited when the
+  model it started on was local and failed its check (a folder's settings naming a model the server could not load,
+  say). It now starts on another local model you named, without a question: your own `model` from
+  `~/.agentx/settings.json` when it is local, then your `fallbackModel`, each when it differs from the one that failed,
+  and says so once (`Could not use <name> (<reason>). Starting on <model> instead; /model <name> tries it again.`).
+  A start meant for a local model never moves to Claude or GPT on its own: when no local one works, it asks once
+  (`Start on gpt-6.2-sol instead? Your messages and the files it reads would go to OpenAI.`, **Start on ...** or
+  **Quit**, the default) and starts there only on a yes. Quit, no answer or nothing usable stops as before. No
+  settings file is rewritten. A Claude or GPT model failing at start is unchanged. A model is not tried twice under
+  another spelling (case and a trailing `:latest` are ignored), and a server that is not answering, or whose check ran
+  out of time, is not waited on again for the other models on it; those checks share one 150-second wait in total.
+- **`LocalCheck.unreachable`.** `True` when the local server did not answer (the default is `False`), so a caller can
+  tell a server that is down from a model it does not have.
+
+- **Tests no longer write your real `~/.agentx/agentx.log`.** The split-view test ran `_run_ui` with the real home,
+  leaving a file handler there that later tests logged their tracebacks through. It now uses a tmp home, and an
+  autouse fixture removes agentx's log handlers after each test and fails a test that set one up in the real home.
+
 - `Honour these project rules? [y/N]` is no longer asked at every start. A yes is remembered for that folder in your
   own `~/.agentx/trusted.json`, so the same rules are used without asking next time; a rule the project adds later is
   asked about again, marked `(new)`. A no is not remembered.
@@ -177,10 +213,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   had loaded, and the load wiped them. They now wait for it, and the message being worked on is shown.
 
 - A question or an approval that waits for you in the app window is readable at once. The large orb stayed at the
-  top and the Team panel grew above the message box, so the conversation (and the question in it) was left a strip
+  top and a team panel grew above the message box, so the conversation (and the question in it) was left a strip
   a few lines high that only scrolled with the pointer inside it. Now the orb folds to a small one beside its note
-  while a card waits, the Team panel takes at most a third of the window and scrolls on its own, a new card is
-  shown from its top, and the mouse wheel scrolls the conversation wherever the pointer is.
+  while a card waits, the team is a block in the conversation rather than a panel above the message box, a new card
+  is shown from its top, and the mouse wheel scrolls the conversation wherever the pointer is.
 
 - A long team job is no longer declined unseen in the app window. Its task (up to 12,000 characters) was also sent
   as the card's heading, which may hold only 2,000, so a detailed hand-off came back "too long to show in the window

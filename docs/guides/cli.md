@@ -415,6 +415,24 @@ at once. If the check fails, `agentx` stays on the model you had and says why, i
 A misspelt Claude or GPT name is a local name too, so it fails the same way, with a reminder: `Claude names start
 with claude, GPT names with gpt.`
 
+**A local model that fails at start does not stop `agentx`.** When the model `agentx` starts on is local (from a
+folder's settings file, your own, or `--model`) and fails its check, it tries the other local models you named, each
+only when it is not the one that failed: your own `model` in `~/.agentx/settings.json` when it is local, then your
+`fallbackModel` (both checked the same way). The first that works is used and said once, before the first prompt:
+`Could not use qwen3-4b-40k (the local server at localhost:11434 is not answering). Starting on qwen3-agent:latest
+instead; /model qwen3-4b-40k tries it again.`, followed by the settings file that named the model. A model is not
+tried twice under another spelling (`Qwen3-Agent` and `qwen3-agent:latest` are the same one). When the server is not
+answering, or the check ran out of time (a model still loading), the other models on that server are skipped, since
+they would wait the same way; the checks after the first share one 150-second wait in total.
+
+**It never moves to Claude or GPT on its own.** When no local model works, `agentx` asks once about the cloud one
+(your own `model` when it is a Claude or GPT name, else the usual choice with no name, the first key found): `Could
+not use qwen3-4b-40k (...). Start on gpt-6.2-sol instead? Your messages and the files it reads would go to OpenAI.`,
+with **Start on gpt-6.2-sol** and **Quit** (the default; with no pick list it is a typed `[y/N]`). Only a yes starts
+there, with the notice above. **Quit**, no answer, or no model that works stops `agentx` with the reason, as before.
+No settings file is changed either way. A Claude or GPT model that cannot be used at start keeps its own path (see
+[The fallback](#the-fallback)).
+
 **Finding the models.** At start `agentx` asks the local server for its models in the background, with a short
 timeout (a refused connection answers at once). It never waits for the answer before the first prompt, and with no
 server it says nothing. When the list is in, `/model` shows it (`Other models: qwen3:8b (local)`), and the app
@@ -490,8 +508,8 @@ remembered and not asked again.
 | Overloaded, or a timeout or dropped connection that clears within the client's retries | No; once the retries are spent it counts as unreachable |
 | A request the provider refuses, a tool or code error | No: it would fail again |
 
-**Which way.** From Claude or GPT to a local model, only. If the chat model is itself local and fails, nothing else
-is tried: the turn stops with the reason (`The turn stopped: the local server at localhost:11434 is not
+**Which way.** From Claude or GPT to a local model, only. If the chat model is itself local and fails during a
+conversation, nothing else is tried (at start, see [Choosing a local model](#choosing-a-local-model)): the turn stops with the reason (`The turn stopped: the local server at localhost:11434 is not
 answering.`). A local conversation never turns into a cloud one.
 
 **No key at start.** If the saved model's provider has no key, `agentx` first offers the other provider's models as
@@ -539,7 +557,7 @@ a missing one.
   fallback, get `AGENTX.md` and the work log shortened for that model's window (as below), not the chat's.
 - **On the screen** a step that finished on the fallback reads `✓ coder · tests  Done on qwen3:8b (fallback:
   claude-opus-5-5 out of credit)` with a `↺` mark (`*` where the terminal has no `↺`), and the same words are in the
-  app window's Team panel and **Details**.
+  app window's team block and **Details**.
 - **The main agent is told too, without model names** (it must not learn which model is which): the result's first
   line adds `2 steps ran on the fallback model; check their work`, and each such step reads `done on the fallback
   model (fallback: <the job's model ID> out of credit)`. The saved team record says `Status: done on the fallback
@@ -889,7 +907,18 @@ The helpers work in the background: their individual tool calls are not printed.
 - When a step ends, its line is printed for good, with the start of its report (up to 160 characters) under it: `✓ explorer · security audit  Done (20 tool uses · 41k tokens · 1m 30s)`, `◐ ... Partial (ran out of steps)`, `✗ ... Failed` with the error, or `– ... Skipped` (a step whose dependency failed, or one not started because you said to wrap up). An empty report shows `(no report)`.
 - Approvals still appear when a helper needs one, one at a time, with a `Helper:` line naming who asks; the block steps aside for the prompt and comes back after it.
 - You can type while the team works: a note goes to the team's supervisor, which adds steps for it or leaves it for the main agent, and `/skip 3` skips step 3 if it has not started (see "Typing while it works").
-- In the app window (`agentx --ui`), a Team panel above the message box keeps one row for every step of the job: waiting, running (its dot pulses), done, failed, skipped, interrupted (you pressed Esc or Ctrl+C) or unknown (the job ended without saying how that step ended). Each row shows its helper and model, what it has done, and its tool: `Now · Editing app.js` while a tool runs, `Last · Read app.js` once it has finished. A step the supervisor's new plan replaced shows skipped. The panel stays after the job until you start or open another conversation.
+- In the app window (`agentx --ui`), the job is one block in the conversation, drawn like the terminal's and updated in place (the ended lines above are not printed there as well, so a step never shows twice):
+
+  ```text
+  Team · 2 running · 1 of 4 done
+  ✓ positioning-researcher · positioning    Done (4 tool uses · 58k tokens · 16s)
+    ⎿ Initial audience: Python developers building LLM agents who…
+  ● launch-fact-checker · fact check        Reading tests/test_split_refresh.py · 18 tools · 1m 12s
+  ● measurement-planner · measurement       Read 3 files · 6 tools · 16s
+  ○ announcement-editor · edit              waiting
+  ```
+
+  Every step of the job has a row that keeps its place and its height while its text changes: `○ … waiting`, `● …` while it runs (what it is doing now, its tool count and time; the dot pulses), and once it ends the same ended line as the terminal with the start of its report under it. A step the supervisor's new plan replaced shows `– … Skipped`; Esc or Ctrl+C marks open steps `■ … Stopped`, and a step the job ended without reporting reads `? … Ended without word`. Click a row to see its details (its model, its last five calls with their results, its counts, and the fallback note when the fallback finished it); click again to close them. A big team stops growing at about ten rows and scrolls inside the block, keeping the running steps in view. After the job the block stays in the conversation as its record, every row in its ended form; a reloaded window and a conversation opened again (`/resume`, the list) show it too, because that final form is kept with the saved conversation.
 - **`/team log`** lists every call each step of the last team job made, with a one-line result under each (`read_path  src/app.ts` / `⎿ Read 120 lines`). It covers the last job of this session; it is not saved with the conversation.
 
 The planner or a helper may need a fact only you have. It is asked as `Team question: ...` (a long question is cut at 12 lines and 1,500 characters) with `Answer (Enter to skip):`. Enter, Ctrl+D or Ctrl+C at that question skips it, and the team goes on without the answer; at most 3 questions are asked per job.
@@ -1208,7 +1237,7 @@ on the left and in `/resume`; until then, and for older conversations, the first
   is too long to show. The folder trust card highlights **No, exit**, as in the terminal.
 - **Above the message box:** what it is doing, for how long and the tokens this message has used so far (the
   terminal's spinner line), from the moment you send; a soft light runs along the top of the message box while it
-  works. Also the team's running steps, and the messages you typed while it works. Each one wraps inside the window
+  works. Also the messages you typed while it works (a team job's steps are in the conversation, see [Team jobs](#team-jobs)). Each one wraps inside the window
   (three lines, then **Show all**, so a long paste never runs out of the frame) and has **Send now** (stop the current
   step, as Esc does, keeping what was done, so that message is the next one the agent reads), **Edit** (take it back
   into the message box) and ✕ (take it back, `/unsend`). In the conversation, a long message typed while it worked
@@ -1228,10 +1257,14 @@ on the left and in `/resume`; until then, and for older conversations, the first
   **orb**: a sphere of lime dots that shows what agentx is doing ("Starting..." shows until agentx is ready).
 - **Once you write, the orb moves to the top**, large, with a small pill under it naming what it shows now and for
   how long.
-  It bubbles while agentx thinks (dots push out and settle back), lights rings of dots that turn on their own axes
-  while a step runs, folds into a cube that turns slowly and breathes, a band of light sweeping down it, while it waits for your answer (the pill says "Waiting for your
-  answer") and rests in a slow turn with a soft glow when the turn ends ("Done" and how long it took),
-  then reads "Ready"; it stays at the top for the rest of the conversation. The line above the message box keeps
+  While agentx thinks it turns calmly and sparks of light run along a few great circles, leaving short fading trails;
+  it lights rings of dots that turn on their own axes while a step runs; during a team job it splits into a
+  constellation, one small orb per helper step that is running or finished circling a small hub (a running one turns
+  its rings, a finished one glows still; past six, five of them and a cluster marked "+N" for the rest), and gathers
+  back into one sphere when the job ends; it folds into a cube that turns slowly and breathes, a band of light
+  sweeping down it, while it waits for your answer (the pill says "Waiting for your answer"); when the turn ends its
+  shell breathes slowly around a shimmering core of light ("Done" and how long it took), then it rests in a slow turn
+  and reads "Ready", now and then a single dot glowing softly and fading like a firefly, only a few at a time; it stays at the top for the rest of the conversation. The line above the message box keeps
   only "Esc to stop" while the orb is up. Esc stops agentx from anywhere in the window, the message box included (what you
   typed stays); the pill reads "Stopping…" until the turn ends. Grab the large orb with the mouse to spin it; let go and it
   keeps the flick's momentum, then turns slowly the way you threw it.

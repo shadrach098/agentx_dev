@@ -710,7 +710,7 @@ def test_the_window_opens_like_the_docs_site():
     assert "@keyframes cursor-blink" in css and "@keyframes glyph-in" in css
     orb = (RESOURCES / "orb.js").read_text(encoding="utf-8")
     assert 'class="orb"' in script and "AgentxOrb" in orb               # the working spinner is now the dot orb
-    for state in ("thinking", "working", "success", "idle", "stuck"):
+    for state in ("thinking", "working", "team", "success", "idle", "stuck"):
         assert f'"{state}"' in orb
     assert ".starting .tick" in css and ".starting .dot" not in css     # not the MCP state dots
 
@@ -891,3 +891,112 @@ class TestLocalModelsAndTheFallback:
         assert "↺ on ${esc(s.fallback.to)} (fallback" in script
         for name in ("localServer", "fallbackModel", "localContext"):
             assert f'name="{name}"' in script
+
+
+class TestTheTeamBlock:
+    """A team job in the window is one block in the conversation, drawn from the status's rows; the ended lines the
+    terminal prints are not printed here too, and the block's final form is kept with the conversation."""
+
+    def _job(self, window, helper=None):
+        from tests.subagent_helpers import step
+        from tests.test_cli_team_app import team_model
+        w = window(team_model([step("s1", "explorer", "look around"), step("s2", "explorer", "check it")],
+                              helper=helper), mode="auto")
+        w.ready()
+        w.request("POST", "/api/send", {"text": "do the big job"})
+        return w
+
+    @staticmethod
+    def _ended(e):
+        team = e.get("team") if e["type"] == "status" else None
+        return bool(team) and all(r["state"] not in ("waiting", "running") for r in team["rows"])
+
+    def test_the_ended_lines_are_not_printed_and_the_status_names_the_job(self, window):
+        w = self._job(window)
+        wait_for(w.front, lambda e: e["type"] == "final")
+        ended = wait_for(w.front, self._ended)["team"]
+        events = w.front.bus.after(0)
+        printed = "".join(e.get("ansi", "") for e in events if e["type"] == "print")
+        assert "Done (" not in printed and "helper report" not in printed          # the block shows them, once
+        jobs = {e["team"]["job"] for e in events if e["type"] == "status" and e.get("team")}
+        assert jobs == {ended["job"]} and ended["job"]
+        assert [r["word"] for r in ended["rows"]] == ["Done", "Done"]
+        assert [r["report"] for r in ended["rows"]] == ["helper report", "helper report"]
+        assert ended["done"] == ended["total"] == 2
+
+    def test_the_final_block_is_in_the_history_and_survives_reopening_the_conversation(self, window):
+        w = self._job(window)
+        wait_for(w.front, lambda e: e["type"] == "final")
+        job = wait_for(w.front, self._ended)["team"]["job"]
+        w.ready()
+
+        def block_after_the_call(items):
+            at = next(i for i, item in enumerate(items) if item["type"] == "tool_call" and item["name"] == "start_team_job")
+            assert items[at + 1]["type"] == "team_block", [i["type"] for i in items]
+            assert [i["type"] for i in items].count("team_block") == 1
+            return items[at + 1]
+
+        block = block_after_the_call(w.front.history_payload()["items"])
+        assert block["job"] == job and [r["mark"] for r in block["rows"]] == ["✓", "✓"]
+        assert [r["report"] for r in block["rows"]] == ["helper report", "helper report"]
+        seen = w.front.bus.last()
+        w.request("POST", "/api/send", {"text": f"/resume {w.app.session.session_id[:8]}"})
+        wait_for(w.front, lambda e: e["seq"] > seen and e["type"] == "notice" and "Resumed" in e.get("text", ""))
+        assert w.front._status().get("team") is None                    # a reopened conversation: no live job
+        again = block_after_the_call(w.front.history_payload()["items"])
+        assert again["job"] == job and again["rows"] == block["rows"]
+
+    def test_a_window_reloaded_while_the_job_runs_gets_the_live_block(self, window):
+        import threading as _threading
+        from tests.conftest import make_final as _final
+        hold, held = _threading.Event(), _threading.Event()
+
+        def helper(messages, n):
+            held.set()
+            hold.wait(10)
+            return _final("helper report")
+        w = self._job(window, helper=helper)
+        try:
+            assert held.wait(10)
+            items = w.front.history_payload()["items"]
+            assert [i["type"] for i in items][-2:] == ["user", "team_block"]
+            live = items[-1]
+            assert live["job"] and {r["state"] for r in live["rows"]} <= {"waiting", "running"}
+        finally:
+            hold.set()
+        wait_for(w.front, lambda e: e["type"] == "final")
+
+    def test_an_edit_that_removes_the_job_removes_its_record(self, window):
+        w = self._job(window)
+        wait_for(w.front, lambda e: e["type"] == "final")
+        w.ready()
+        assert len(w.app.session.metadata["team_blocks"]) == 1
+        assert w.front.edit_message(1, "do the big job")["ok"] is True
+        assert w.app.session.metadata["team_blocks"] == []
+
+    def test_a_reload_while_the_second_job_runs_shows_the_first_too(self, window):
+        import threading as _threading
+        from tests.conftest import make_final as _final
+        from tests.subagent_helpers import step
+        from tests.test_cli_team_app import team_model
+        hold, held = _threading.Event(), _threading.Event()
+
+        def helper(messages, n):
+            if n >= 2:                                   # the second job's step waits
+                held.set()
+                hold.wait(10)
+            return _final("helper report")
+        w = window(team_model([step("s1", "explorer", "look around")], helper=helper, main=("call", "call", "final")),
+                   mode="auto")
+        w.ready()
+        w.request("POST", "/api/send", {"text": "do the big job"})
+        try:
+            assert held.wait(15)
+            items = w.front.history_payload()["items"]
+            blocks = [i for i in items if i["type"] == "team_block"]
+            assert len(blocks) == 2 and blocks[0]["job"] != blocks[1]["job"], [i["type"] for i in items]
+            assert [r["state"] for r in blocks[0]["rows"]] == ["done"]
+            assert {r["state"] for r in blocks[1]["rows"]} <= {"waiting", "running"}
+        finally:
+            hold.set()
+        wait_for(w.front, lambda e: e["type"] == "final")

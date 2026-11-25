@@ -103,6 +103,7 @@ class TestASideQuitsByItself:
                 seen["front"] = self
                 return 0
         monkeypatch.setattr(webui, "WebFront", Front)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))   # its log is set up there
         monkeypatch.setenv("AGENTX_PANE_HANDOFF", str(tmp_path / "link"))
         args = NS(port=0, no_open=False, remote=False)
         assert app_module._run_ui(args) == 0
@@ -110,6 +111,9 @@ class TestASideQuitsByItself:
         assert seen["open_it"] is True and front.pane_started is not None
         assert front.opener("http://127.0.0.1:1/?c=z") == "pane" and (tmp_path / "link").is_file()
         assert "AGENTX_PANE_HANDOFF" not in os.environ          # never passed on to its tools' shells
+        import logging
+        logs = [Path(h.baseFilename) for h in logging.getLogger("agentx_dev").handlers if hasattr(h, "baseFilename")]
+        assert all(tmp_path in log.parents for log in logs), logs   # the log it set up is never the real one
 
 
 def test_the_window_has_the_split_view():

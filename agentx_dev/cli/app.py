@@ -20,6 +20,7 @@ from rich.text import Text
 from agentx_dev import AgentRunner, AgentType, Session
 from agentx_dev.cli.approval import MODES, Gate
 from agentx_dev.LocalModel import _not_answering
+from agentx_dev.Runner.AgentRun import current_tool_call_id
 from agentx_dev.Runner.Fallback import (NO_CREDIT_WORDS, UNREACHABLE, ContextWindowTooSmall, FallbackFailed,
                                         fails_for_good)
 from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
@@ -719,10 +720,13 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         try:
             self.model = self._built_model(self.requested_model)       # a local model is checked first
         except ModelError as e:
+            # a local model that failed: start on the next usable one (yours, the fallback, the usual choice)
+            self.model = self.model_instead_of_the_local(e)
             # no key for the saved model: when the other provider's key is set, offer its models instead; when that
             # is not possible or declined, start on the fallback model
-            self.model = self.model_from_the_other_key(e)
-            if self.model is None:
+            if self.model is None and not getattr(self, "_cloud_declined", False):   # a no was said: not again
+                self.model = self.model_from_the_other_key(e)
+            if self.model is None and not getattr(self, "_cloud_declined", False):
                 self.model = self.model_from_the_fallback()
             if self.model is None:
                 self._create_user_settings(None)
@@ -1748,6 +1752,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
 
     def _start_team_job(self, task: str, why: str) -> str:
         """The ``start_team_job`` tool: run the team and hand the result text back to the main agent."""
+        self._team_call = current_tool_call_id()   # the call this job runs for: its record is kept under it
         refusal = self._team_refusal()
         if refusal:
             return refusal
@@ -1791,6 +1796,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
             raise
         finally:
             self._team_panel.finish()                # any step still open: how it ended is not known
+            self._keep_team_block(task)               # the job's final form, for the window to draw again
             self._team_running = []
             self._team_rows = {}
             self.progress.stop()

@@ -32,6 +32,7 @@ agentx --model qwen3:8b          # any name that is not Claude or GPT is a local
 | **`/fallback`** | `/fallback qwen3:8b` checks a local model and saves it as the fallback; `/fallback off` turns it off; `/fallback` shows it. The first time `agentx` finds a local server it offers once to use one. |
 | **A fallback that says so** | When Claude or GPT fails for good, `Claude failed: out of credit. This conversation continues on qwen3:8b (local). Choose a model to try Claude again.` The turn goes on, not started again. The app's model chip reads `qwen3:8b · fallback`; the work log notes each turn on the fallback. It stays until you choose a model, goes paid to local only, and a local conversation never sends anything to the cloud on its own. |
 | **Local and fallback in team jobs** | A local name in `/team-models` gives local helpers. A step whose model fails runs again on the fallback, told what the first attempt did, and later steps on that model start there. The step reads `Done on qwen3:8b (fallback: claude-opus-5-5 out of credit)`; the main agent is told `2 steps ran on the fallback model; check their work`. A team job approval on a local chat model warns when cloud helpers will see the project's files. |
+| **The orb at work** | In the app window the orb thinks with sparks of light running along great circles, splits into a constellation while a team job runs (one small orb per helper step, running ones turning their rings, finished ones glowing still, "+N" past six) and gathers back when it ends, and when a turn is done its shell breathes around a shimmering core. |
 | **Small windows, handled** | Ollama's default window (often 8,192 tokens) is small. `agentx` shortens `AGENTX.md` and the log to a third of the window, summarises at 60% and stubs old results, and when nothing fits says so and shows how to make a variant with `PARAMETER num_ctx 16384`. |
 
 See [Local models](concepts/models.md#local-models), [Local models and the fallback](guides/cli.md#local-models-and-the-fallback),
@@ -42,9 +43,9 @@ cookbook patterns 46 to 49 and [Upgrading](guides/upgrading.md).
 The `agentx` app window, reworked around what agentx is doing:
 
 - **The orb.** A sphere of lime dots in the brand's lime. It sits large under "What should we work on?", then
-  moves to the top once you write, with a small note under it naming what it shows: Thinking (its surface
-  bubbles), the step it runs (rings of dots turn on their own axes), Waiting for your answer (it folds into a cube
-  that turns and breathes, a band of light sweeping down it), Done and how long it took, then Ready. Grab it with
+  moves to the top once you write, with a small note under it naming what it shows: Thinking (sparks of light run
+  along it), the step it runs (rings of dots turn on their own axes), Waiting for your answer (it folds into a cube
+  that turns and breathes, a band of light sweeping down it), Done and how long it took, then Ready (a dot glowing and fading now and then, like a firefly). Grab it with
   the mouse to spin it. The terminal keeps its spinner.
 - **Two conversations side by side.** Drag a conversation from **Recent** onto the chat, or use **Open a folder
   beside…** in the folder menu: it opens on the right half, run by an agentx of its own, with its own history,

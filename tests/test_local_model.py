@@ -163,17 +163,19 @@ def test_check_given_window_is_kept(fake):
 def test_check_missing_model(fake):
     r = Local("zzz", base_url=fake(models=["a", "b"]).url).check(timeout=10)
     assert not r.ok and "no model named" in r.reason and "a" in r.reason and "b" in r.reason
+    assert not r.unreachable                                  # the server answered
 
 
 def test_check_text_instead_of_tool(fake):
     r = Local("m", base_url=fake(models=["m"], tool=False).url).check(timeout=10)
-    assert not r.ok and "answered in text instead of calling the tool" in r.reason
+    assert not r.ok and "answered in text instead of calling the tool" in r.reason and not r.unreachable
 
 
 def test_check_server_down():
     url, hostport = _closed_url()
     r = Local("m", base_url=url).check(timeout=2)
     assert not r.ok and "is not answering" in r.reason and hostport in r.reason
+    assert r.unreachable                                      # another model there would fail the same way
 
 
 def test_a_scheme_less_address_gets_http():

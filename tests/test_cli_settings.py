@@ -729,3 +729,19 @@ def test_write_user_setting_reports_a_file_that_is_not_an_object(tmp_path):
     path, message = write_user_setting(home, "localContext", 4096)
     assert path is None and message
     assert user_settings_path(home).read_text(encoding="utf-8") == "[1, 2]"
+
+
+def test_read_user_model_reads_your_own_file_alone(tmp_path):
+    from agentx_dev.cli.settings import PLACEHOLDER_MODEL, read_user_model
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    assert read_user_model(home) is None                                     # no file
+    (home / ".agentx").mkdir(parents=True)
+    (cwd / ".agentx").mkdir(parents=True)
+    (home / ".agentx" / "settings.json").write_text(json.dumps({"model": " gpt-6.2-sol "}), encoding="utf-8")
+    (cwd / ".agentx" / "settings.json").write_text(json.dumps({"model": "qwen3-4b-40k"}), encoding="utf-8")
+    assert load_settings(cwd, home).model == "qwen3-4b-40k"                  # the folder's wins in the merge
+    assert read_user_model(home) == "gpt-6.2-sol"
+    (home / ".agentx" / "settings.json").write_text(json.dumps({"model": PLACEHOLDER_MODEL}), encoding="utf-8")
+    assert read_user_model(home) is None
+    (home / ".agentx" / "settings.json").write_text("not json", encoding="utf-8")
+    assert read_user_model(home) is None

@@ -283,6 +283,14 @@ class WebScreen(Screen):
         self.bus.emit("welcome", **{key: (value if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value)
                                           else _text(value, 400)) for key, value in parts.items()})
 
+    def team_done(self, agent: Any, label: Any, ok: bool, text: Any, *, in_panel: bool = False, **more: Any) -> None:
+        """Not printed in the window when the conversation's team block has the step (its row turns into this ended
+        line, worded the same way), so a step never shows twice; a step the block has no row for is printed."""
+        if in_panel:
+            self.flush_helper(agent)
+            return
+        super().team_done(agent, label, ok, text, **more)
+
     def team_plan(self, steps: Any) -> None:
         shown = []
         for step in steps if isinstance(steps, (list, tuple)) else []:
@@ -1148,10 +1156,20 @@ class WebFront:
             (str(i.get("text", "")).split("\n")[0] for i in shown), "Conversation")
         save_title(self.home, self.cwd, kept.name, f"{_text(str(title), 80)} (before edit)")
         session.history = history[:at]
+        metadata = getattr(session, "metadata", None)
+        blocks = metadata.get("team_blocks") if isinstance(metadata, dict) else None
+        try:                                     # the team jobs it went back before are not drawn again
+            prune = getattr(app, "_prune_team_blocks", None)
+            if callable(prune):
+                prune(upto=at)
+        except Exception:
+            pass
         try:
             session.save(path)
         except OSError as error:
             session.history = history
+            if isinstance(metadata, dict) and blocks is not None:
+                metadata["team_blocks"] = blocks
             return {"ok": False, "error": f"it could not be saved ({type(error).__name__})"}
         # what windows were shown of it before is gone: one reloaded later starts from here, not from old events
         self.bus.emit("conversation", path=str(path), base=len(session.history))
@@ -1718,6 +1736,14 @@ class WebFront:
         from agentx_dev.Runner.AgentRun import _FORMAT_NAMES, INTERJECTION_PREFIX
         from agentx_dev.cli.routing import typed_text
         _ANSWERED = "\x00answered"                 # a format call that carried the final answer: no result row
+        from agentx_dev.cli.team_panel import TEAM_TOOL, assign_team_blocks
+        # each team job kept with the conversation, under the call that ran it (see assign_team_blocks)
+        placed = assign_team_blocks(messages, (getattr(session, "metadata", None) or {}).get("team_blocks")
+                                    if session is not None else None)
+
+        def team_block(name: str, ref: str) -> None:
+            if name == TEAM_TOOL and ref in placed:
+                items.append(self._team_block(placed[ref]))
         for at, message in enumerate(messages):
             if not isinstance(message, dict):
                 continue
@@ -1780,6 +1806,7 @@ class WebFront:
                         subject = ""
                     items.append({"type": "tool_call", "name": name, "subject": _text(subject, 400),
                                   "look": name in HELPER_LOOKS})
+                    team_block(name, str(call.get("id") or "") or f"@{at}")
                 step = _text_mode_step(text) if not message.get("tool_calls") else None
                 if step is not None:                               # a text-mode model's call or answer, as JSON
                     name, args = step
@@ -1798,6 +1825,7 @@ class WebFront:
                             subject = ""
                         items.append({"type": "tool_call", "name": name, "subject": _text(subject, 400),
                                       "look": name in HELPER_LOOKS})
+                        team_block(name, f"@{at}")
                 elif text.strip():
                     items.append({"type": "final", "text": _text(text, 200_000)})
             elif role == "tool":
@@ -1827,7 +1855,64 @@ class WebFront:
             last_user = next((i for i in reversed(items) if i.get("type") == "user"), None)
             if last_user is None or last_user.get("text") != _text(working, 100_000):
                 items.append({"type": "user", "text": _text(working, 100_000)})
+        # the team jobs of that message are not in the conversation yet either: those that ended (kept as this
+        # turn's), then the one running now, as it is now
+        if upto is None and self._working():
+            session = getattr(self.app, "session", None)
+            kept = (getattr(session, "metadata", None) or {}).get("team_blocks") if session is not None else None
+            turn = len(getattr(session, "history", None) or [])
+            jobs = [k for k in (kept if isinstance(kept, list) else [])
+                    if isinstance(k, dict) and k.get("turnAt") == turn]
+            panel = getattr(self.app, "_team_panel", None)
+            if panel is not None and getattr(panel, "rows", None):
+                try:
+                    jobs.append(panel.record(""))
+                except Exception:
+                    pass
+            shown = {item.get("job") for item in items if item.get("type") == "team_block"}
+            for job in jobs:
+                if job.get("job") not in shown:
+                    shown.add(job.get("job"))
+                    items.append(self._team_block(job))
         return {"seq": seq, "items": items, "pending": pending, "status": self._status()}
+
+    def _team_rows(self, rows: Any) -> List[Dict[str, Any]]:
+        """A team job's rows (``TeamPanel.snapshot``, or as kept with the conversation) for the window: every text
+        cut, paths without the project folder in front."""
+        shown = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            out = {key: _text(value, 300) if isinstance(value, str) else value for key, value in row.items()
+                   if key != "actions" and (value is None or isinstance(value, (str, int, float, bool)))}
+            out["path"] = _text(self._in_project(row.get("path")), 300)
+            actions = row.get("actions") if isinstance(row.get("actions"), list) else []
+            out["actions"] = [{"name": _text(a.get("name"), 80),
+                               "subject": _text(self._in_project(a.get("subject")), 200),
+                               "summary": _text(a.get("summary"), 200), "failed": bool(a.get("failed"))}
+                              for a in actions if isinstance(a, dict)]
+            shown.append(out)
+        return shown
+
+    def _team_block(self, kept: Any) -> Dict[str, Any]:
+        """A ``team_block`` item of the conversation: a team job's block in the form it was kept (or has now)."""
+        kept = kept if isinstance(kept, dict) else {}
+        rows = self._team_rows(kept.get("rows"))
+        done = sum(row.get("state") in ("done", "failed", "skipped") for row in rows)
+        return {"type": "team_block", "job": _text(kept.get("job"), 40), "rows": rows, "done": done,
+                "total": len(rows)}
+
+    def _in_project(self, text: Any) -> str:
+        """``text`` with the project folder taken off the front of the paths in it (no disk access: the status
+        asks for this many times a second)."""
+        text = "" if text is None else str(text)
+        root = str(self.cwd).rstrip("\\/")
+        if not root or not text:
+            return text
+        flags = re.IGNORECASE if sys.platform == "win32" else 0
+        for prefix in {root + "\\", root + "/", root.replace("\\", "/") + "/"}:
+            text = re.sub(re.escape(prefix), "", text, flags=flags)
+        return text
 
     def _status(self) -> Dict[str, Any]:
         app = self.app
@@ -1862,16 +1947,16 @@ class WebFront:
                              "activity": _text(helper_activity(step_counts(snapshot)), 300),
                              "stats": _text(step_stats(snapshot), 120)})
             panel = getattr(app, "_team_panel", None)
+            job = ""
             if panel is not None:
-                rows = [{key: _text(value, 300) if isinstance(value, str) else value for key, value in row.items()}
-                        for row in panel.snapshot()]
-                done = sum(row["state"] in ("done", "failed", "skipped") for row in rows)
-                total = len(rows)
+                rows = self._team_rows(panel.snapshot())
+                done, total = panel.counts(rows)
+                job = str(panel.id)
             else:
                 done, total = app._team_steps
                 for index, row in enumerate(rows):
                     row.update(id=f"running-{index}", state="running")
-            status["team"] = {"rows": rows, "done": done, "total": total} if rows else None
+            status["team"] = {"job": job, "rows": rows, "done": done, "total": total} if rows else None
         except Exception:
             status["team"] = None
         try:
