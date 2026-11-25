@@ -1,0 +1,363 @@
+"""The private browser agentx drives (agentx_dev/cli/browser.py), against a small local http.server.
+
+The tests that need a real Chromium are skipped when Playwright or its Chromium is missing (checked once by
+launching it); the address checks, the take-over flags, the snapshot format and the missing-Playwright message are
+tested everywhere.
+"""
+import functools
+import http.server
+import socket
+import sys
+import threading
+import time
+import urllib.parse
+
+import pytest
+
+from agentx_dev.cli import browser
+from agentx_dev.cli.browser import NOT_INSTALLED, BrowserHost, BrowserUnavailable, Snapshot, url_refusal
+from agentx_dev.cli.tools import WEB_CAUTION
+
+FORM_PAGE = b"""<!doctype html><html><head><title>Test form</title></head><body>
+<h1>Welcome to the test form</h1>
+<a href="/next">Next page</a>
+<form action="/echo" method="get">
+  <input name="q" aria-label="Query">
+  <input type="password" name="pw" aria-label="Secret" value="hunter2-secret">
+  <button type="submit">Go</button>
+</form>
+<script>console.log("form page says hi")</script>
+</body></html>"""
+
+
+class _Pages(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _send(self, body: bytes, status=200, headers=()):
+        self.send_response(status)
+        for name, value in headers:
+            self.send_header(name, value)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path, _, query = self.path.partition("?")
+        if path == "/":
+            self._send(FORM_PAGE)
+        elif path == "/next":
+            self._send(b"<title>Next</title><h1>The next page</h1><a href='/'>Home</a>")
+        elif path == "/other":
+            self._send(b"<title>Other</title><h1>Another page entirely</h1>")
+        elif path == "/echo":
+            said = urllib.parse.parse_qs(query).get("q", [""])[0]
+            self._send(f"<title>Echo</title><p>You said: {said}</p>".encode())
+        elif path == "/redirect-metadata":
+            self._send(b"", 302, [("Location", "http://169.254.169.254/latest/meta-data/")])
+        elif path == "/redirect-private":
+            self._send(b"", 302, [("Location", "http://10.0.0.5/")])
+        elif path == "/redirect-private-https":
+            self._send(b"", 302, [("Location", "https://10.0.0.5/")])
+        elif path == "/redirect-file":
+            self._send(b"", 302, [("Location", "file:///C:/Windows/win.ini")])
+        elif path == "/file-frame":
+            self._send(b"<title>Frames</title><h1>Has a file frame</h1>"
+                       b"<iframe src='file:///C:/Windows/win.ini'></iframe>"
+                       b"<iframe src='file:///etc/passwd'></iframe>")
+        elif path == "/files":
+            self._send(b"<title>Files</title><a href='/download'>Get the file</a>"
+                       b"<input type='file' aria-label='Upload'>")
+        elif path == "/download":
+            self._send(b"file body", 200, [("Content-Disposition", "attachment; filename=x.bin")])
+        elif path == "/private-link":
+            self._send(b"<title>Links</title><a href='http://10.0.0.5/admin'>Router admin</a>")
+        else:
+            self._send(b"not found", 404)
+
+
+@pytest.fixture(scope="module")
+def site():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Pages)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+
+
+@functools.lru_cache(maxsize=1)
+def _launch_problem():
+    """Why a real Chromium cannot run here, or "" when it can (tried once per test run)."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as error:                          # pragma: no cover - depends on the machine
+        return f"playwright is not installed: {error}"
+    try:
+        with sync_playwright() as p:
+            p.chromium.launch().close()
+    except Exception as error:                          # pragma: no cover - playwright without its browser
+        return f"no browser for playwright: {error}"
+    return ""
+
+
+@pytest.fixture
+def host():
+    problem = _launch_problem()
+    if problem:
+        pytest.skip(problem)
+    h = BrowserHost()
+    yield h
+    h.close()
+
+
+def _ref(snap: Snapshot, fragment: str) -> str:
+    for line in snap.elements:
+        if fragment in line:
+            return line.split("]", 1)[0].lstrip("[")
+    raise AssertionError(f"no element with {fragment!r} in {snap.elements}")
+
+
+# --- everywhere --------------------------------------------------------------------------------------------------
+
+def test_url_refusal_allows_web_and_loopback_only(monkeypatch):
+    assert url_refusal("about:blank") is None
+    assert url_refusal("http://127.0.0.1:8000/") is None
+    assert url_refusal("http://localhost:3000/app") is None
+    assert url_refusal("http://[::1]:8000/") is None
+    assert url_refusal("http://[::ffff:127.0.0.1]/") is None
+    assert url_refusal("http://93.184.215.14/") is None                       # a public literal needs no DNS
+
+    assert url_refusal("file:///C:/x") == "only http and https pages can be opened"
+    for url in ("data:text/html,hi", "javascript:alert(1)", "chrome://settings", "blob:http://a/b",
+                "ws://127.0.0.1/", "ftp://example.com/", "view-source:http://127.0.0.1/"):
+        assert url_refusal(url) == "only http and https pages can be opened", url
+    assert url_refusal("http://10.0.0.5/") == "10.0.0.5 is a private address"
+    assert url_refusal("http://169.254.169.254/") == "169.254.169.254 is a private address"
+    assert url_refusal("http://192.168.1.1/") == "192.168.1.1 is a private address"
+    assert url_refusal("http://[fe80::1]/") == "fe80::1 is a private address"
+    assert url_refusal("http://0.0.0.0:8000/") == "0.0.0.0 is not a public address"
+    assert url_refusal("http://[::ffff:10.0.0.5]/") is not None
+    # Chromium reads a backslash as a slash: the host here is 10.0.0.5, not example.com.
+    assert url_refusal("http://10.0.0.5\\@example.com/") == "10.0.0.5 is a private address"
+    assert url_refusal("http:///nohost") is not None
+
+    # A name is judged by every address it resolves to.
+    def fake_lookup(host, *args, **kwargs):
+        if host == "mixed.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 0)),
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", 0))]
+        if host == "loop.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+        raise socket.gaierror(11001, "host not found")
+    monkeypatch.setattr(browser.socket, "getaddrinfo", fake_lookup)
+    browser._forget_lookups()
+    try:
+        assert url_refusal("https://mixed.test/") == "mixed.test is a private address (10.1.2.3)"
+        assert url_refusal("http://loop.test:5173/") is None
+        assert url_refusal("https://nowhere.test/") == "nowhere.test could not be found"
+    finally:
+        browser._forget_lookups()
+
+
+def test_public_name_is_allowed_when_there_is_a_network():
+    try:
+        socket.getaddrinfo("example.com", 443)
+    except OSError:
+        pytest.skip("no network")
+    assert url_refusal("https://example.com/") is None
+
+
+def test_user_takes_over():
+    h = BrowserHost()
+    try:
+        assert not h.held_by_user("a")
+        h.take("a")
+        assert h.held_by_user("a") and not h.held_by_user("b")
+        assert h.state("a")["user"] is True
+        h.give("a")
+        assert not h.held_by_user("a")
+        # Nothing here started a browser.
+        assert h.state("a") == {"open": False, "url": "", "title": "", "user": False, "frame": 0}
+        assert h.frame("a") == (0, None)
+    finally:
+        h.close()
+
+
+def test_snapshot_render_format():
+    snap = Snapshot(url="http://127.0.0.1/", title="Home", text="Hello",
+                    elements=['[e1] link "Docs"', '[e2] button "Save"'])
+    assert snap.render() == (WEB_CAUTION + 'Page: Home\nURL: http://127.0.0.1/\n\nHello\n\n'
+                             'Interactive elements:\n[e1] link "Docs"\n[e2] button "Save"')
+    empty = Snapshot(url="about:blank", title="", text="", elements=[])
+    assert empty.render().startswith(WEB_CAUTION)
+    assert empty.render().endswith("Interactive elements:\n(none)")
+    failed = Snapshot(url="about:blank", title="", text="", elements=[], error="ERROR: boom")
+    assert "ERROR: boom" in failed.render()
+
+
+def test_missing_playwright(monkeypatch):
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+    h = BrowserHost()
+    try:
+        with pytest.raises(BrowserUnavailable) as caught:
+            h.open("a", "http://127.0.0.1:9/")
+        assert str(caught.value) == NOT_INSTALLED
+        with pytest.raises(BrowserUnavailable):
+            h.snapshot("a")
+    finally:
+        h.close()
+    assert NOT_INSTALLED == ('The browser needs Playwright: pip install "agentx-dev[browser]" '
+                             'then python -m playwright install chromium')
+
+
+def test_shared_browser_is_one_per_process():
+    assert browser.shared_browser() is browser.shared_browser()
+
+
+# --- with a real Chromium ----------------------------------------------------------------------------------------
+
+def test_open_read_and_click(host, site):
+    snap = host.open("a", site + "/")
+    assert snap.title == "Test form"
+    assert "Welcome to the test form" in snap.text
+    assert snap.elements[0].startswith("[e1] ")
+    assert '[e1] link "Next page"' in snap.elements
+    secret = _ref(snap, 'textbox "Secret"')
+    assert any(line.startswith(f"[{secret}]") and 'value="(hidden)"' in line for line in snap.elements)
+    rendered = snap.render()
+    assert rendered.startswith(WEB_CAUTION)
+    assert "hunter2-secret" not in rendered
+    assert f"URL: {site}/" in rendered and "Interactive elements:" in rendered
+
+    after = host.click("a", _ref(snap, 'link "Next page"'))
+    assert after.url == site + "/next"
+    assert "The next page" in after.text
+
+    back = host.back("a")
+    assert back.url == site + "/"
+    # By visible text, and by a CSS selector.
+    assert host.click("a", "Next page").url == site + "/next"
+    assert host.click("a", "a[href='/']").url == site + "/"
+    with pytest.raises(ValueError) as caught:
+        host.click("a", "e999")
+    assert str(caught.value) == "ERROR: nothing on the page matches 'e999'; read the page again for current refs"
+    with pytest.raises(ValueError):
+        host.click("a", "No such words anywhere on the page")
+    assert any("form page says hi" in line for line in host.console("a"))
+
+
+def test_type_and_submit(host, site):
+    snap = host.open("a", site + "/")
+    result = host.type("a", _ref(snap, 'textbox "Query"'), "hello", submit=True)
+    assert "You said: hello" in result.text
+    assert result.url.startswith(site + "/echo")
+    again = host.open("a", site + "/")
+    host.type("a", _ref(again, 'textbox "Query"'), "typed")
+    assert 'value="typed"' in " ".join(host.snapshot("a").elements)
+    pressed = host.press("a", "Enter")
+    assert "You said: typed" in pressed.text
+
+
+def test_private_and_file_targets_are_refused(host, site):
+    with pytest.raises(ValueError) as caught:
+        host.open("a", "file:///C:/x")
+    assert str(caught.value) == "only http and https pages can be opened"
+    with pytest.raises(ValueError) as caught:
+        host.open("a", "http://10.0.0.5/")
+    assert str(caught.value) == "10.0.0.5 is a private address"
+
+    # A redirect to the cloud metadata address ends on agentx's refusal, not on that page.
+    snap = host.open("a", site + "/redirect-metadata")
+    assert "169.254.169.254 is a private address" in snap.render()
+    assert "meta-data" not in snap.text.replace("169.254.169.254/latest/meta-data/", "")
+    snap = host.open("a", site + "/redirect-private")
+    assert "10.0.0.5 is a private address" in snap.render()
+    snap = host.open("a", site + "/redirect-private-https")      # the proxy refuses the tunnel
+    assert snap.error == ("ERROR: agentx refused to open " + site
+                          + "/redirect-private-https: 10.0.0.5 is a private address")
+
+    # A redirect to file: and a file: frame never load the file.
+    snap = host.open("a", site + "/redirect-file")
+    assert not snap.url.startswith("file:")
+    assert snap.error
+    snap = host.open("a", site + "/file-frame")
+    assert "Has a file frame" in snap.text
+    frames = host._call(lambda: [f.url for f in host._page("a").frames])
+    assert not any(url.startswith("file:") for url in frames), frames
+
+    # A link to a private address: the click is refused and says why.
+    snap = host.open("a", site + "/private-link")
+    after = host.click("a", _ref(snap, 'link "Router admin"'))
+    assert "10.0.0.5 is a private address" in after.render()
+    assert not after.url.startswith("http://10.0.0.5")
+
+    # The user's own address bar goes through the same check.
+    with pytest.raises(ValueError) as caught:
+        host.user_event("a", {"type": "navigate", "url": "http://192.168.0.1/"})
+    assert str(caught.value) == "192.168.0.1 is a private address"
+
+
+def test_each_owner_has_its_own_page(host, site):
+    a = host.open("a", site + "/")
+    b = host.open("b", site + "/other")
+    assert "Another page entirely" in b.text
+    again = host.snapshot("a")
+    assert again.url == site + "/"
+    assert "Welcome to the test form" in again.text
+    # Refs are per page: a's link ref still works after b took a snapshot.
+    assert host.click("a", _ref(a, 'link "Next page"')).url == site + "/next"
+    assert host.snapshot("b").url == site + "/other"
+    assert host.state("a")["url"] == site + "/next" and host.state("b")["url"] == site + "/other"
+    host.close_owner("b")
+    assert host.state("b")["open"] is False
+    assert host.snapshot("a").url == site + "/next"
+
+
+def test_frame_changes_after_navigation(host, site):
+    assert host.frame("a") == (0, None)
+    host.open("a", site + "/")
+    first, jpeg = host.frame("a")
+    assert first > 0 and jpeg[:2] == b"\xff\xd8"
+    assert host.frame("a")[0] == first                       # nothing changed, the counter stays
+    host.open("a", site + "/other")
+    second, jpeg2 = host.frame("a")
+    assert second > first and jpeg2 != jpeg
+    state = host.state("a")
+    assert state["open"] is True and state["url"] == site + "/other" and state["title"] == "Other"
+    assert state["frame"] == second
+    png = host.screenshot("a")
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_user_events_drive_the_page(host, site):
+    host.user_event("a", {"type": "navigate", "url": site + "/"})
+    assert host.state("a")["url"] == site + "/"
+    host.user_event("a", {"type": "navigate", "url": site + "/next"})
+    host.user_event("a", {"type": "back"})
+    assert host.snapshot("a").url == site + "/"
+    host.user_event("a", {"type": "reload"})
+    host.user_event("a", {"type": "wheel", "dy": 200})
+    # Click into the query box by its position, type and press Enter.
+    box = host._call(lambda: host._page("a").locator("input[name=q]").bounding_box())
+    host.user_event("a", {"type": "click", "x": box["x"] + 5, "y": box["y"] + 5})
+    host.user_event("a", {"type": "text", "text": "by hand"})
+    host.user_event("a", {"type": "key", "key": "Enter"})
+    assert "You said: by hand" in host.snapshot("a").text
+    with pytest.raises(ValueError):
+        host.user_event("a", {"type": "teleport"})
+
+
+def test_downloads_and_file_choosers_are_refused(host, site):
+    snap = host.open("a", site + "/files")
+    started = time.monotonic()
+    after = host.click("a", _ref(snap, 'link "Get the file"'))
+    assert after.url == site + "/files"
+    host.click("a", _ref(snap, 'file-input "Upload"'))
+    host.snapshot("a")
+    assert time.monotonic() - started < 15                  # nothing waits on a page load that never comes
+    notes = " ".join(host.console("a"))
+    assert "[filechooser]" in notes
