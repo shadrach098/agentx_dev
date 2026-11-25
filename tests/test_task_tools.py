@@ -249,6 +249,26 @@ def test_send_to_terminal(tmp_path):
         app.tasks.stop_all()
 
 
+def test_send_to_terminal_shows_a_prompt_without_a_newline(tmp_path, monkeypatch):
+    monkeypatch.setattr(task_tools, "SEND_WAIT_SEC", 3.0)    # room for a slow machine; the prompt is idle long before
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="auto")
+    send = tool(app, "send_to_terminal").func
+    asker = tmp_path / "ask.py"
+    asker.write_text("import sys\nsys.stdout.write('Continue? [y/N] ')\nsys.stdout.flush()\nsys.stdin.readline()\n",
+                     encoding="utf-8")
+    path = str(asker).replace("\\", "/")
+    try:
+        term = app.tasks.open_terminal()
+        send(id=term.id, text="echo warmed-up")                # the shell has started before the timed part
+        assert until(lambda: "warmed-up" in app.tasks.output(term.id).replace("$ echo", ""), 15)
+        command = f'& "{PY}" "{path}"' if sys.platform == "win32" else f'"{PY}" "{path}"'
+        result = send(id=term.id, text=command)
+        assert result.splitlines()[-1] == "Continue? [y/N] ", result
+        assert "Continue? [y/N]" in app.tasks.output(term.id)
+    finally:
+        app.tasks.stop_all()
+
+
 def test_make_permissions_is_what_build_tools_uses(tmp_path):
     extra = tmp_path / "extra"
     extra.mkdir()

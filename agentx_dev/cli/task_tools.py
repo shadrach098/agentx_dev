@@ -274,13 +274,13 @@ def build_task_tools(manager: TaskManager, owner: Callable[[], str], permissions
         if manager.get(id) is None:
             return unknown(id)
         try:
-            _, offset = manager.read_from(id, 0)
+            _, offset = manager.read_from(id, 0, release_idle=True)   # past a prompt already shown
             manager.send(id, text)
         except (ValueError, KeyError) as error:
             return f"ERROR: {error.args[0] if error.args else error}"
         time.sleep(SEND_WAIT_SEC)
         try:
-            new, _ = manager.read_from(id, offset)
+            new, _ = manager.read_from(id, offset, release_idle=True)   # a prompt with no newline too
         except KeyError:
             new = ""
         echoed = f"$ {text}\n"
