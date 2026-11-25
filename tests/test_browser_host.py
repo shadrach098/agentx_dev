@@ -658,7 +658,8 @@ def test_proxy_strips_smuggled_and_malformed_headers(proxy):
     try:
         answer = _ask(proxy, f"GET http://127.0.0.1:{up.port}/ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode())
         head, _, body = answer.partition(b"\r\n\r\n")
-        assert head.split(b"\r\n") == [b"HTTP/1.1 200 OK", b"Content-Length: 2"]
+        assert head.split(b"\r\n") == [b"HTTP/1.1 200 OK", b"Content-Length: 2", b"Connection: close",
+                                       b"Proxy-Connection: close"]
         assert body == b"ok"
     finally:
         up.close()
@@ -810,3 +811,29 @@ def test_the_users_own_event_is_not_refused_by_their_take_over(monkeypatch):
         assert seen == [(3.0, 4.0)]
     finally:
         h.close()
+
+
+def test_proxy_answers_close_whatever_the_upstream_says(proxy):
+    """The rest of a plain-HTTP connection is piped to its upstream: a site that answers keep-alive must not get
+    Chromium to reuse that connection for a request to another host."""
+    up = _Upstream(b"HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nKeep-Alive: timeout=60\r\n"
+                   b"Proxy-Connection: keep-alive\r\nContent-Length: 2\r\n\r\nok")
+    try:
+        answer = _ask(proxy, f"GET http://127.0.0.1:{up.port}/ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode())
+        head, _, body = answer.partition(b"\r\n\r\n")
+        assert head.split(b"\r\n") == [b"HTTP/1.1 200 OK", b"Content-Length: 2", b"Connection: close",
+                                       b"Proxy-Connection: close"]
+        assert body == b"ok"
+    finally:
+        up.close()
+
+
+def test_proxy_keeps_the_upgrade_of_a_websocket_answer(proxy):
+    up = _Upstream(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+    try:
+        answer = _ask(proxy, f"GET http://127.0.0.1:{up.port}/ws HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                             f"Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n".encode())
+        head = answer.partition(b"\r\n\r\n")[0].split(b"\r\n")
+        assert head == [b"HTTP/1.1 101 Switching Protocols", b"Upgrade: websocket", b"Connection: Upgrade"]
+    finally:
+        up.close()

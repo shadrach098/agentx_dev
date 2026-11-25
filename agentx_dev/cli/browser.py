@@ -396,7 +396,12 @@ class _GuardProxy:
 
     def _forward_head(self, upstream: socket.socket, client: socket.socket) -> Optional[bytes]:
         """Send the upstream answer's head(s) on without ``X-Agentx-*`` headers; returns the body bytes already
-        read, or None when the upstream ended first. Interim ``1xx`` heads (not ``101``) are followed by another."""
+        read, or None when the upstream ended first. Interim ``1xx`` heads (not ``101``) are followed by another.
+
+        The final answer (not a ``101``, whose ``Connection: Upgrade`` the WebSocket needs) loses the upstream's
+        ``Connection``, ``Keep-Alive`` and ``Proxy-Connection`` headers and says ``Connection: close`` and
+        ``Proxy-Connection: close``: the rest of this connection is piped to that upstream, so a site answering
+        keep-alive must never get Chromium to send it a request meant for another host."""
         buffered = b""
         while True:
             head, buffered = _read_head(upstream, buffered)
@@ -404,9 +409,14 @@ class _GuardProxy:
                 return None
             lines = [line.rstrip(b"\r") for line in head.split(b"\n")]   # a bare LF ends a line too
             kept = [lines[0]] + _clean_header_lines(lines[1:])
-            client.sendall(b"\r\n".join(kept) + b"\r\n\r\n")
             status = lines[0].split(b" ", 2)[1] if lines[0].count(b" ") else b""
-            if not (status.startswith(b"1") and status != b"101"):
+            interim = status.startswith(b"1")
+            if not interim:
+                kept = [kept[0]] + [line for line in kept[1:]
+                                    if line.partition(b":")[0].strip().lower() not in _HOP_HEADERS]
+                kept += [b"Connection: close", b"Proxy-Connection: close"]
+            client.sendall(b"\r\n".join(kept) + b"\r\n\r\n")
+            if not (interim and status != b"101"):
                 return buffered
 
     def _serve(self, client: socket.socket) -> None:
