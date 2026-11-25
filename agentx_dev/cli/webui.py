@@ -263,10 +263,13 @@ class WebScreen(Screen):
         self.bus.emit("welcome", **{key: (value if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value)
                                           else _text(value, 400)) for key, value in parts.items()})
 
-    def team_done(self, agent: Any, label: Any, ok: bool, text: Any, **_: Any) -> None:
-        """Not printed in the window: the step's row in the conversation's team block turns into this ended line
-        (``TeamPanel`` words it the same way), so a step never shows twice."""
-        self.flush_helper(agent)
+    def team_done(self, agent: Any, label: Any, ok: bool, text: Any, *, in_panel: bool = False, **more: Any) -> None:
+        """Not printed in the window when the conversation's team block has the step (its row turns into this ended
+        line, worded the same way), so a step never shows twice; a step the block has no row for is printed."""
+        if in_panel:
+            self.flush_helper(agent)
+            return
+        super().team_done(agent, label, ok, text, **more)
 
     def team_plan(self, steps: Any) -> None:
         shown = []
@@ -1133,10 +1136,20 @@ class WebFront:
             (str(i.get("text", "")).split("\n")[0] for i in shown), "Conversation")
         save_title(self.home, self.cwd, kept.name, f"{_text(str(title), 80)} (before edit)")
         session.history = history[:at]
+        metadata = getattr(session, "metadata", None)
+        blocks = metadata.get("team_blocks") if isinstance(metadata, dict) else None
+        try:                                     # the team jobs it went back before are not drawn again
+            prune = getattr(app, "_prune_team_blocks", None)
+            if callable(prune):
+                prune(upto=at)
+        except Exception:
+            pass
         try:
             session.save(path)
         except OSError as error:
             session.history = history
+            if isinstance(metadata, dict) and blocks is not None:
+                metadata["team_blocks"] = blocks
             return {"ok": False, "error": f"it could not be saved ({type(error).__name__})"}
         # what windows were shown of it before is gone: one reloaded later starts from here, not from old events
         self.bus.emit("conversation", path=str(path), base=len(session.history))
@@ -1703,22 +1716,14 @@ class WebFront:
         from agentx_dev.Runner.AgentRun import _FORMAT_NAMES, INTERJECTION_PREFIX
         from agentx_dev.cli.routing import typed_text
         _ANSWERED = "\x00answered"                 # a format call that carried the final answer: no result row
-        kept = (getattr(session, "metadata", None) or {}).get("team_blocks") if session is not None else None
-        kept = [k for k in kept if isinstance(k, dict)] if isinstance(kept, list) else []
-        next_kept = 0
+        from agentx_dev.cli.team_panel import TEAM_TOOL, assign_team_blocks
+        # each team job kept with the conversation, under the call that ran it (see assign_team_blocks)
+        placed = assign_team_blocks(messages, (getattr(session, "metadata", None) or {}).get("team_blocks")
+                                    if session is not None else None)
 
-        def team_block(name: str, args: Any) -> None:
-            """After a ``start_team_job`` call: its job's block in the final form kept with the conversation (the
-            next kept job of that task; a conversation trimmed at the front simply has fewer calls)."""
-            nonlocal next_kept
-            if name != "start_team_job" or not isinstance(args, dict):
-                return
-            task = str(args.get("task") or "")
-            for at in range(next_kept, len(kept)):
-                if str(kept[at].get("task") or "") == task:
-                    items.append(self._team_block(kept[at]))
-                    next_kept = at + 1
-                    return
+        def team_block(name: str, ref: str) -> None:
+            if name == TEAM_TOOL and ref in placed:
+                items.append(self._team_block(placed[ref]))
         for at, message in enumerate(messages):
             if not isinstance(message, dict):
                 continue
@@ -1781,7 +1786,7 @@ class WebFront:
                         subject = ""
                     items.append({"type": "tool_call", "name": name, "subject": _text(subject, 400),
                                   "look": name in HELPER_LOOKS})
-                    team_block(name, args)
+                    team_block(name, str(call.get("id") or "") or f"@{at}")
                 step = _text_mode_step(text) if not message.get("tool_calls") else None
                 if step is not None:                               # a text-mode model's call or answer, as JSON
                     name, args = step
@@ -1800,7 +1805,7 @@ class WebFront:
                             subject = ""
                         items.append({"type": "tool_call", "name": name, "subject": _text(subject, 400),
                                       "look": name in HELPER_LOOKS})
-                        team_block(name, args)
+                        team_block(name, f"@{at}")
                 elif text.strip():
                     items.append({"type": "final", "text": _text(text, 200_000)})
             elif role == "tool":
@@ -1830,14 +1835,25 @@ class WebFront:
             last_user = next((i for i in reversed(items) if i.get("type") == "user"), None)
             if last_user is None or last_user.get("text") != _text(working, 100_000):
                 items.append({"type": "user", "text": _text(working, 100_000)})
-        # a team job of that message is not in the conversation yet either: its block as it is now
-        panel = getattr(self.app, "_team_panel", None) if upto is None and self._working() else None
-        if panel is not None and getattr(panel, "rows", None) and not any(
-                item.get("type") == "team_block" and item.get("job") == panel.id for item in items):
-            try:
-                items.append(self._team_block(panel.record("")))
-            except Exception:
-                pass
+        # the team jobs of that message are not in the conversation yet either: those that ended (kept as this
+        # turn's), then the one running now, as it is now
+        if upto is None and self._working():
+            session = getattr(self.app, "session", None)
+            kept = (getattr(session, "metadata", None) or {}).get("team_blocks") if session is not None else None
+            turn = len(getattr(session, "history", None) or [])
+            jobs = [k for k in (kept if isinstance(kept, list) else [])
+                    if isinstance(k, dict) and k.get("turnAt") == turn]
+            panel = getattr(self.app, "_team_panel", None)
+            if panel is not None and getattr(panel, "rows", None):
+                try:
+                    jobs.append(panel.record(""))
+                except Exception:
+                    pass
+            shown = {item.get("job") for item in items if item.get("type") == "team_block"}
+            for job in jobs:
+                if job.get("job") not in shown:
+                    shown.add(job.get("job"))
+                    items.append(self._team_block(job))
         return {"seq": seq, "items": items, "pending": pending, "status": self._status()}
 
     def _team_rows(self, rows: Any) -> List[Dict[str, Any]]:

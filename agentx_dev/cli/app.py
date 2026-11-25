@@ -20,6 +20,7 @@ from rich.text import Text
 from agentx_dev import AgentRunner, AgentType, Session
 from agentx_dev.cli.approval import MODES, Gate
 from agentx_dev.LocalModel import _not_answering
+from agentx_dev.Runner.AgentRun import current_tool_call_id
 from agentx_dev.Runner.Fallback import (NO_CREDIT_WORDS, UNREACHABLE, ContextWindowTooSmall, FallbackFailed,
                                         fails_for_good)
 from agentx_dev.cli.commands import (AUTO_NOTICE, command_descriptions, command_names, hide_secrets, run_command,
@@ -1676,6 +1677,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
 
     def _start_team_job(self, task: str, why: str) -> str:
         """The ``start_team_job`` tool: run the team and hand the result text back to the main agent."""
+        self._team_call = current_tool_call_id()   # the call this job runs for: its record is kept under it
         refusal = self._team_refusal()
         if refusal:
             return refusal

@@ -417,11 +417,12 @@ class Screen:
         return Group(*lines)
 
     def team_done(self, agent: Any, label: Any, ok: bool, text: Any, *, partial: bool = False,
-                  skipped: bool = False, status: Any = None, fallback: Any = None) -> None:
+                  skipped: bool = False, status: Any = None, fallback: Any = None, in_panel: bool = False) -> None:
         """A step's permanent line when it ends: ``✓ explorer · security audit  Done (20 tool uses · 41k tokens ·
         1m 30s)``, then the start of its report (or why it failed) under it. A step that finished on the fallback
         model (``fallback``: ``{"to", "from", "reason"}``) is marked ``↺`` and says
-        ``on <to> (fallback: <from> <reason>)``."""
+        ``on <to> (fallback: <from> <reason>)``. ``in_panel``: the app window's team block shows the step (the
+        terminal prints it all the same)."""
         self.flush_helper(agent)
         mark, word, style = ended_look(ok, partial=partial, skipped=skipped, fallback=fallback, utf=self._utf())
         line = Text(f"{mark} ", style=f"bold {style}")

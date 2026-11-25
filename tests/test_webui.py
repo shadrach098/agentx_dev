@@ -965,3 +965,38 @@ class TestTheTeamBlock:
         finally:
             hold.set()
         wait_for(w.front, lambda e: e["type"] == "final")
+
+    def test_an_edit_that_removes_the_job_removes_its_record(self, window):
+        w = self._job(window)
+        wait_for(w.front, lambda e: e["type"] == "final")
+        w.ready()
+        assert len(w.app.session.metadata["team_blocks"]) == 1
+        assert w.front.edit_message(1, "do the big job")["ok"] is True
+        assert w.app.session.metadata["team_blocks"] == []
+
+    def test_a_reload_while_the_second_job_runs_shows_the_first_too(self, window):
+        import threading as _threading
+        from tests.conftest import make_final as _final
+        from tests.subagent_helpers import step
+        from tests.test_cli_team_app import team_model
+        hold, held = _threading.Event(), _threading.Event()
+
+        def helper(messages, n):
+            if n >= 2:                                   # the second job's step waits
+                held.set()
+                hold.wait(10)
+            return _final("helper report")
+        w = window(team_model([step("s1", "explorer", "look around")], helper=helper, main=("call", "call", "final")),
+                   mode="auto")
+        w.ready()
+        w.request("POST", "/api/send", {"text": "do the big job"})
+        try:
+            assert held.wait(15)
+            items = w.front.history_payload()["items"]
+            blocks = [i for i in items if i["type"] == "team_block"]
+            assert len(blocks) == 2 and blocks[0]["job"] != blocks[1]["job"], [i["type"] for i in items]
+            assert [r["state"] for r in blocks[0]["rows"]] == ["done"]
+            assert {r["state"] for r in blocks[1]["rows"]} <= {"waiting", "running"}
+        finally:
+            hold.set()
+        wait_for(w.front, lambda e: e["type"] == "final")

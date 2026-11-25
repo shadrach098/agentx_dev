@@ -173,7 +173,7 @@ class TeamCommands:
 
         if getattr(self, "_team_panel", None) is None:
             self._team_panel = TeamPanel()
-        self._team_panel.notify(kind, data)
+        in_panel = self._team_panel.notify(kind, data)
         self.progress.stop()
         if kind == "plan":
             steps = data.get("steps") or []
@@ -204,7 +204,7 @@ class TeamCommands:
             shown = getattr(status, "helper", "") or agent        # a new helper with its model: name@model
             self.screen.team_done(shown, data.get("label") or agent, bool(data.get("ok")), data.get("text"),
                                   partial=bool(data.get("partial")), skipped=bool(data.get("skipped")),
-                                  status=status,
+                                  status=status, in_panel=in_panel,
                                   fallback={"to": data.get("fallback"), "from": data.get("fallback_from"),
                                             "reason": data.get("fallback_reason")})
             self.progress.start("Team is working")
@@ -225,10 +225,29 @@ class TeamCommands:
         try:
             kept = session.metadata.get(TEAM_BLOCKS)
             kept = kept if isinstance(kept, list) else []
-            kept.append(panel.record(task))
+            record = panel.record(task)
+            call = getattr(self, "_team_call", None)
+            if call:                                # the call that ran it (none in text mode)
+                record["call"] = str(call)
+            # the conversation's length as this turn began: its messages are added when it ends
+            record["turnAt"] = len(session.history or [])
+            kept.append(record)
             session.metadata[TEAM_BLOCKS] = kept[-MAX_TEAM_BLOCKS:]
         except Exception:                           # the record is for the screen only: never fail the job for it
             pass
+
+    def _prune_team_blocks(self, upto: Optional[int] = None) -> None:
+        """Drop the kept jobs whose call is no longer in the conversation (an edit went back before it, a summary
+        replaced it). ``upto``: the conversation was cut there, so a record kept in a later turn goes too."""
+        session = getattr(self, "session", None)
+        kept = (getattr(session, "metadata", None) or {}).get(TEAM_BLOCKS) if session is not None else None
+        if not isinstance(kept, list):
+            return
+        from agentx_dev.cli.team_panel import prune_team_blocks
+        if upto is not None:                        # a record of the cut turn or a later one (its turn began at the
+            kept = [r for r in kept if not isinstance(r, dict) or r.get("call")      # cut message, or just before
+                    or int(r.get("turnAt") or 0) < upto - 1]                         # it in a first turn)
+        session.metadata[TEAM_BLOCKS] = prune_team_blocks(session.history, kept)
 
     def _team_question(self, question: str) -> Optional[str]:
         """The planner or a helper needs a fact: ask in the terminal. Enter, Ctrl+D and Ctrl+C skip it."""

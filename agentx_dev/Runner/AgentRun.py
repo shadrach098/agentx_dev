@@ -596,6 +596,13 @@ _FORMAT_NAMES = frozenset({"React_", "StandardParser", "ChainOfThought", "ZeroSh
 NO_ANSWER_TEXT = "The model gave no answer."
 NO_ANSWER_OUTCOME = "no_answer"
 _CALL_SCHEMA: "contextvars.ContextVar[Any]" = contextvars.ContextVar("agentx_call_schema", default=None)
+_TOOL_CALL_ID: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar("agentx_tool_call_id", default=None)
+
+
+def current_tool_call_id() -> Optional[str]:
+    """The id of the tool call a tool is running for (function calling and native binding), or None (text mode,
+    or outside a tool). A tool that keeps something about its call (agentx's team job) files it under this id."""
+    return _TOOL_CALL_ID.get()
 
 
 def _settle_empty_final(final_answer: Any, output: Any, tool_calls: List[ToolCall]) -> Tuple[Any, Optional[str]]:
@@ -1023,7 +1030,7 @@ class ToolRegistry:
             return fn()
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="tool_timeout") as pool:
-            future = pool.submit(fn)
+            future = pool.submit(contextvars.copy_context().run, fn)     # the call id (and schema) go along
             try:
                 return future.result(timeout=timeout)
             except _FutTimeout as e:
@@ -3002,7 +3009,11 @@ class AgentRunner(PersistenceMixin):
                     args = call["input"]
                     if not self.registry.is_structured(call["name"]) and isinstance(args, dict) and "input" in args:
                         args = args["input"]
-                    return self.registry.dispatch(call["name"], args)
+                    token = _TOOL_CALL_ID.set(call.get("id"))
+                    try:
+                        return self.registry.dispatch(call["name"], args)
+                    finally:
+                        _TOOL_CALL_ID.reset(token)
 
                 # Concurrent dispatch. return_exceptions equivalent via
                 # per-future try/except so one bad tool doesn't kill the turn.
@@ -3465,7 +3476,12 @@ class AgentRunner(PersistenceMixin):
                 print(f"\x1B[3;33m[tool] Invoking '{action}' with args: {action_input}\x1B[0m")
             else:
                 logger.info(f"tool invoke: {action}({action_input})")
-            tool_response = self.Tool_Runner(action, action_input)
+            call_id = getattr(self, "_last_function_call_id", None) if self.use_function_calling else None
+            token = _TOOL_CALL_ID.set(call_id)
+            try:
+                tool_response = self.Tool_Runner(action, action_input)
+            finally:
+                _TOOL_CALL_ID.reset(token)
             is_error = isinstance(tool_response, ToolError)
             yield {"type": "tool_result", "name": action,
                    "result": str(tool_response), "is_error": is_error}

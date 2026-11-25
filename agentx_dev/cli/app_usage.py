@@ -163,6 +163,7 @@ class UsageCommands:
             self.progress.stop()
         if result.status == "done":
             self.session.history = result.history
+            self._prune_team_blocks()           # a team job whose call was summarised away is not drawn again
             self._forget_skill_reads()          # the skill texts went into the summary: they may be read again
             self.notice(f"Summarised {result.replaced} earlier messages to keep the conversation short.")
             self._append_log(summary_entry_text(result.summary, datetime.now(), self._hide))
