@@ -1,9 +1,10 @@
 """The gate and the new tools: background tasks and terminals are judged as run_shell, the browser as web."""
 
+import fnmatch
 from pathlib import Path
 
 from agentx_dev.cli.app import DEFAULT_DENY
-from agentx_dev.cli.approval import PLAN_REFUSAL, WEB_GRANT, Answer, Gate, kind_of, rule_view, subject_of
+from agentx_dev.cli.approval import PLAN_REFUSAL, WEB_GRANT, Answer, Gate, grant_label, kind_of, rule_view, subject_of
 
 
 class Asker:
@@ -51,8 +52,9 @@ def test_shell_deny_rule_blocks_background_and_terminal_input():
 
 def test_default_skills_rules_cover_background():
     g, asker = make(deny=DEFAULT_DENY)
-    assert g.check("start_background", {"command": "cat ~/.agentx/skills/x"}) is not None
-    assert g.check("send_to_terminal", {"id": "t", "text": "cat ~/.agentx/skills/x"}) is not None
+    for tool, args in (("start_background", {"command": "cat ~/.agentx/skills/x"}),
+                       ("send_to_terminal", {"id": "t", "text": "cat ~/.agentx/skills/x"})):
+        assert g.check(tool, args) == "Refused: the settings deny rule 'run_shell:*.agentx*skills*' blocks this."
     assert asker.requests == []
 
 
@@ -99,8 +101,11 @@ def test_plan_mode():
         assert g.check(tool, args) == PLAN_REFUSAL
     assert g.check("browser_read", {}) is None
     assert g.check("background_output", {"id": "t"}) is None
-    assert g.check("browser_open", {"url": "http://x"}) is None      # a fetch, allowed in plan mode as web_fetch is
-    assert asker.requests == [] or [r.tool for r in asker.requests] == ["browser_open"]
+    assert asker.requests == []
+    assert g.check("browser_open", {"url": "http://x"}) is None      # a fetch: allowed in plan mode, asks as web_fetch does
+    assert [r.tool for r in asker.requests] == ["browser_open"]
+    assert g.check("browser_open", {"url": "http://y"}) is None      # the web grant (answered "y" here, so asks again)
+    assert len(asker.requests) == 2
 
 
 def test_auto_mode_runs_commands_and_browse():
@@ -142,3 +147,39 @@ def test_browse_subjects():
     assert subject_of("browser_press", {"page_url": "http://x/", "key": "Enter"}) == "http://x/ :: Enter"
     assert subject_of("browser_back", {"page_url": "http://x/"}) == "http://x/ :: back"
     assert subject_of("send_to_terminal", {"id": "t", "text": "ls  -l"}) == "ls -l"
+
+
+ALIASED = (("start_background", {"command": "ls"}), ("send_to_terminal", {"id": "t", "text": "ls"}),
+           ("browser_open", {"url": "http://x"}))
+
+
+def test_deny_rule_naming_the_new_tool_refuses_in_every_mode():
+    for mode in ("default", "auto", "accept-edits"):
+        for rule in ("start_background", "send_to_terminal", "browser_open", "browser_*",
+                     "start_background:ls", "send_to_terminal:l*", "browser_open:http://*"):
+            g, asker = make(mode=mode, deny=[rule])
+            for tool, args in ALIASED:
+                if fnmatch.fnmatchcase(tool, rule.partition(":")[0]):
+                    assert g.check(tool, args) == f"Refused: the settings deny rule '{rule}' blocks this.", (mode, rule, tool)
+            assert asker.requests == []
+
+
+def test_allow_rule_under_the_new_tool_name_is_honoured_but_deny_wins():
+    g, asker = make(allow=["start_background:npm *", "send_to_terminal:npm *"], deny=["run_shell:npm run evil*"])
+    assert g.check("start_background", {"command": "npm run dev"}) is None
+    assert g.check("send_to_terminal", {"id": "t", "text": "npm test"}) is None
+    assert asker.requests == []
+    assert g.check("start_background", {"command": "npm run evil"}).startswith("Refused")
+    assert g.check("start_background", {"command": "npm run dev & rm x"}) is None     # compound still asks
+    assert len(asker.requests) == 1
+    g2, asker2 = make(allow=["start_background:npm *"])
+    assert g2.check("run_shell", {"command": "npm test"}) is None                      # run_shell is not covered
+    assert len(asker2.requests) == 1
+
+
+def test_grant_label_names_the_real_scope():
+    for tool in ("start_background", "send_to_terminal"):
+        label = grant_label(tool, "npm test")
+        assert "commands starting with 'npm test'" in label and "background" in label and "terminal" in label
+        assert tool not in label
+    assert grant_label("run_shell", "pytest") == "run_shell commands starting with 'pytest'"

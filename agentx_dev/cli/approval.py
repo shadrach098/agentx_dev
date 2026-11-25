@@ -142,6 +142,14 @@ def rule_view(tool: str, args: Mapping[str, Any]) -> Tuple[str, Mapping[str, Any
     return target, args
 
 
+def grant_label(tool: str, grant: str) -> str:
+    """What answering "don't ask again" at a command prompt remembers, worded for the prompt. A grant for a
+    command prefix covers ``run_shell``, ``start_background`` and ``send_to_terminal`` alike."""
+    if tool in RULE_AS and RULE_AS[tool] == "run_shell":
+        return f"commands starting with '{grant}' (run, in the background or typed in a terminal)"
+    return f"{tool} commands starting with '{grant}'"
+
+
 def _text(value: Any) -> str:
     """``str(value)`` that cannot raise on a model-supplied object (a 5000-deep list, say)."""
     if isinstance(value, str):
@@ -597,8 +605,9 @@ class Gate:
         subjects = subjects_of(tool, args, self.cwd)
         rtool, rargs = rule_view(tool, args)                    # what the rules and grants see (run_shell, web_fetch)
         page = _squash(args.get("page_url", "")) if kind == "browse" else ""
+        names = tuple(dict.fromkeys((tool, rtool)))             # a rule may name the tool or what it is judged as
         for rule in self.deny:                                  # a deny rule refuses if ANY form matches
-            if any(rule_matches(rule, rtool, text, cwd=self.cwd) for text in subjects)                     or (page and rule_matches(rule, "web_fetch", page, cwd=self.cwd)):
+            if any(rule_matches(rule, name, text, cwd=self.cwd) for name in names for text in subjects)                     or (page and rule_matches(rule, "web_fetch", page, cwd=self.cwd)):
                 return f"Refused: the settings deny rule '{rule}' blocks this."
         if self._mode == "plan" and kind not in ("read", "web"):
             return PLAN_REFUSAL
@@ -614,8 +623,8 @@ class Gate:
         compound = _is_compound(rtool, rargs)
         if kind != "destructive" and not compound:
             # an allow rule applies only if EVERY form matches it
-            if any(all(rule_matches(rule, rtool, text, cwd=self.cwd) for text in subjects)
-                   for rule in (*self.allow, *self.extra_allow)) \
+            if any(all(rule_matches(rule, name, text, cwd=self.cwd) for text in subjects)
+                   for name in names for rule in (*self.allow, *self.extra_allow)) \
                     or self._granted(rtool, subject):
                 return None
         if kind == "edit" and self._mode == "accept-edits":

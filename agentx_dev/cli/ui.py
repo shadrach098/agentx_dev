@@ -28,7 +28,7 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
-from agentx_dev.cli.approval import Answer, Request, subject_of
+from agentx_dev.cli.approval import Answer, Request, grant_label, subject_of
 from agentx_dev.cli.preview import Preview, preview_for
 from agentx_dev.cli.ui_text import (  # noqa: F401  (re-exported: older code imports these here)
     _CAUTIONS, _command_output, _COUNT, _escape, _ESCAPED, _EXIT, _first_and_more, _JOINERS, _lines, _MARKDOWN,
@@ -961,7 +961,7 @@ def make_asker(console: Console, read_line: Optional[Callable[[str], str]],
         what = ""
         if always:
             if request.kind == "command":
-                what = f"{plain(request.tool)} commands starting with '{plain(request.grant)}'"
+                what = plain(grant_label(request.tool, plain(request.grant)))
             else:
                 what = plain(request.grant)
         if select is not None:

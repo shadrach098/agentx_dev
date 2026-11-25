@@ -37,7 +37,7 @@ from urllib.parse import parse_qs, urlparse
 from rich.console import Console
 
 from agentx_dev import safe_exe
-from agentx_dev.cli.approval import DECLINED, Answer
+from agentx_dev.cli.approval import DECLINED, Answer, grant_label
 from agentx_dev.cli.preview import preview_for
 from agentx_dev.cli.ui import CANCELLED, Screen, plain
 from agentx_dev.cli.ui_text import HELPER_LOOKS, helper_activity, step_counts, step_stats, summarize_result
@@ -975,7 +975,7 @@ class WebFront:
         # "don't ask again" is offered only for a grant shown whole
         always = bool(getattr(request, "remember", False) and getattr(request, "grant", "")) and len(grant) <= 200
         if always and getattr(request, "kind", "") == "command":
-            grant = f"{_text(request.tool, 40)} commands starting with '{grant}'"
+            grant = grant_label(_text(request.tool, 40), grant)
         return {"tool": _text(request.tool, 80), "title": shown["title"], "subject": shown["subject"],
                 "body": shown["body"], "body_kind": str(kind), "helper": _text(helper, 120), "always": always,
                 "grant": grant}
