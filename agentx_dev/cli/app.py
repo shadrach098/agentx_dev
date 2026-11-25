@@ -1719,6 +1719,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
             raise
         finally:
             self._team_panel.finish()                # any step still open: how it ended is not known
+            self._keep_team_block(task)               # the job's final form, for the window to draw again
             self._team_running = []
             self._team_rows = {}
             self.progress.stop()

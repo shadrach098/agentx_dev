@@ -1,15 +1,32 @@
 """Browser-only deployment roster. Never passed to the planner or helper chooser."""
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
-from agentx_dev.cli.ui import helper_activity, step_counts, step_stats
+from agentx_dev.cli.ui import ended_look, helper_activity, report_line, short_time, step_counts, step_stats
+from agentx_dev.cli.ui_text import _short
+
+LAST_ACTIONS = 5                    # what a row's details list of the step's calls
+REPORT_CHARS = 160                  # the start of a report under an ended row, as the terminal prints it
+# a step the job ended without word of: Esc stopped it, or how it ended is not known
+_NO_WORD = {"interrupted": ("■", "Stopped", "yellow"), "unknown": ("?", "Ended without word", "dim")}
+
+
+def _subject(name: str, args: Any) -> str:
+    try:
+        from agentx_dev.cli.approval import subject_of
+        return str(subject_of(name, args if isinstance(args, dict) else {}) or "")
+    except Exception:
+        return ""
 
 
 class TeamPanel:
-    """Keep deployments (not helper names or reusable runtime slots) for one job."""
+    """Keep deployments (not helper names or reusable runtime slots) for one job. ``id`` names the job: the app
+    window draws one block per job and updates it in place."""
 
     def __init__(self) -> None:
+        self.id = uuid.uuid4().hex[:12]
         self.rows: list[dict[str, Any]] = []
         self.round = 0
 
@@ -29,7 +46,7 @@ class TeamPanel:
                                       "query": str(step.get("query") or ""),
                                       "state": "waiting", "status": None,
                                       "fallback": "", "fallbackFrom": "", "fallbackReason": "",
-                                      "termination": "", "inferred": False})
+                                      "termination": "", "inferred": False, "ended": None})
             return
         if kind not in ("dispatch", "result"):
             return
@@ -52,6 +69,13 @@ class TeamPanel:
         row["fallbackFrom"] = str(data.get("fallback_from") or "") if finished_on else ""
         row["fallbackReason"] = str(data.get("fallback_reason") or "") if finished_on else ""
         row["termination"], row["inferred"] = "", False
+        if kind == "result":                        # its ended line, worded as the terminal prints it
+            mark, word, tone = ended_look(bool(data.get("ok")), partial=bool(data.get("partial")),
+                                          skipped=bool(data.get("skipped")),
+                                          fallback={"to": data.get("fallback"), "from": data.get("fallback_from"),
+                                                    "reason": data.get("fallback_reason")})
+            report = _short(report_line(data.get("text")), REPORT_CHARS) or "(no report)"
+            row["ended"] = {"mark": mark, "word": word, "tone": tone, "report": report}
 
     def finish(self, reason: str = "unknown") -> None:
         reason = "interrupted" if reason == "interrupted" else "unknown"
@@ -71,6 +95,13 @@ class TeamPanel:
             if current:
                 action, args = current
                 summary, failed = "", False
+            ended = row["ended"] if row["state"] in ("done", "failed", "skipped") else None
+            if row["state"] in _NO_WORD:
+                mark, word, tone = _NO_WORD[row["state"]]
+                ended = {"mark": mark, "word": word, "tone": tone, "report": ""}
+            elif ended is None and row["state"] == "skipped":          # a new plan dropped it before it ran
+                mark, word, tone = ended_look(True, skipped=True)
+                ended = {"mark": mark, "word": word, "tone": tone, "report": ""}
             rows.append({"id": row["id"], "helper": row["helper"], "label": row["label"],
                          "state": row["state"], "model": str(snap.get("model") or ""),
                          "fallback": row["fallback"], "fallbackFrom": row["fallbackFrom"],
@@ -80,5 +111,23 @@ class TeamPanel:
                          "stats": step_stats(snap) if snap else "",
                          "action": str(action), "path": str(args.get("path") or ""),
                          "summary": str(summary or ""), "actionFailed": bool(failed),
-                         "inFlight": bool(current)})
+                         "inFlight": bool(current),
+                         "toolUses": int(snap.get("tool_uses") or 0),
+                         "time": short_time(snap.get("seconds") or 0) if snap else "",
+                         "actions": [{"name": str(name), "subject": _subject(str(name), call_args),
+                                      "summary": str(said or ""), "failed": bool(bad)}
+                                     for name, call_args, said, bad in calls[-LAST_ACTIONS:]],
+                         **(ended or {"mark": "", "word": "", "tone": "", "report": ""})})
         return rows
+
+    def counts(self, rows: list[dict] | None = None) -> tuple[int, int]:
+        """(steps that ended, steps planned), as the block's head counts them."""
+        rows = self.snapshot() if rows is None else rows
+        return sum(row["state"] in ("done", "failed", "skipped") for row in rows), len(rows)
+
+    def record(self, task: str) -> dict:
+        """The job in its final form, kept with the conversation: a reloaded window or a reopened conversation
+        draws its block from this."""
+        rows = self.snapshot()
+        done, total = self.counts(rows)
+        return {"job": self.id, "task": str(task or ""), "rows": rows, "done": done, "total": total}

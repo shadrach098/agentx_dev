@@ -512,6 +512,127 @@
     if (long) e.querySelector(".echo-text").addEventListener("click", (c) => c.currentTarget.classList.add("open"));
     column.append(e);
   }
+  // A team job, live in the conversation: one block per job, drawn like the terminal's dark block. Each row is
+  // updated in place and keeps its height: one line while it waits or runs (what it does now, its tool count and
+  // time), two once it ended (the terminal's ended line and the start of its report). Click a row for its details.
+  // A big team scrolls inside the block, the running steps kept in view; after the job the block is its record.
+  const teamBlocks = new Map();                    // job -> its block
+  const teamOpen = new Set();                      // "job row" of the rows whose details are open
+  const TEAM_TONES = ["green", "red", "yellow", "dim"];
+  const TEAM_STATES = ["waiting", "running", "done", "failed", "skipped", "interrupted", "unknown"];
+  function teamLine(r) {
+    const who = `${r.helper || ""} · ${r.label || r.helper || ""}`;
+    if (r.mark) return {mark: r.mark, who, rest: `${r.word || ""}${r.stats ? ` (${r.stats})` : ""}`,
+                        tone: TEAM_TONES.includes(r.tone) ? r.tone : "dim"};
+    if (r.state === "running") {
+      const doing = r.inFlight && r.action ? `${DOING[r.action] || toolLook(r.action)[0]}${r.path ? ` ${r.path}` : ""}`
+        : r.activity || "starting";
+      const tools = Number(r.toolUses || 0);
+      return {mark: "●", who, rest: [doing, tools ? `${tools} tool${tools === 1 ? "" : "s"}` : "", r.time].filter(Boolean).join(" · "), tone: "run"};
+    }
+    return {mark: "○", who, rest: "waiting", tone: "wait"};
+  }
+  function teamDetail(r) {
+    const out = [];
+    if (r.model) out.push(`<div class="d">on ${esc(r.model)}</div>`);
+    if (r.inFlight && r.action) out.push(`<div><span class="b">Now · ${esc(DOING[r.action] || toolLook(r.action)[0])}</span>${r.path ? ` ${esc(r.path)}` : ""}</div>`);
+    for (const a of r.actions || []) {
+      out.push(`<div class="${a.failed ? "tb-failed" : ""}"><span class="b">${esc(toolLook(a.name)[0])}</span>${a.subject ? ` ${esc(a.subject)}` : ""}` +
+        `${a.summary ? `<span class="d"> ⎿ ${esc(a.summary)}</span>` : ""}</div>`);
+    }
+    const counts = [r.activity, r.stats].filter(Boolean).join(" · ");
+    if (counts) out.push(`<div class="d">${esc(counts)}</div>`);
+    if (r.fallback) out.push(`<div class="tb-fallback">↺ on ${esc(r.fallback)} (fallback${r.fallbackFrom || r.fallbackReason ? `: ${esc([r.fallbackFrom, r.fallbackReason].filter(Boolean).join(" "))}` : ""})</div>`);
+    return out.join("") || `<div class="d">Nothing yet.</div>`;
+  }
+  function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
+  function teamRow() {
+    const n = el("div", "tb-row", '<div class="tb-line"><span class="tb-mark"></span> <span class="tb-who b"></span>  <span class="tb-rest"></span></div>');
+    n.tabIndex = 0;
+    n.setAttribute("role", "button");
+    n.setAttribute("aria-expanded", "false");
+    return n;
+  }
+  function toggleTeamRow(block, row) {
+    const key = `${block.dataset.job} ${row.dataset.row}`;
+    if (teamOpen.has(key)) teamOpen.delete(key); else teamOpen.add(key);
+    drawTeamRow(block, row, row._data);
+  }
+  function drawTeamRow(block, node, r) {
+    node._data = r;
+    const state = TEAM_STATES.includes(r.state) ? r.state : "unknown";
+    const look = teamLine(r);
+    const cls = `tb-row is-${state} tone-${look.tone}`;
+    if (node.className !== cls) node.className = cls;
+    setText(node.querySelector(".tb-mark"), look.mark);
+    setText(node.querySelector(".tb-who"), look.who);
+    setText(node.querySelector(".tb-rest"), look.rest);
+    node.title = look.rest;
+    let report = node.querySelector(".tb-report");
+    if (r.mark && r.report) {
+      if (!report) { report = el("div", "tb-report"); node.querySelector(".tb-line").after(report); }
+      setText(report, `  ⎿ ${r.report}`);
+    } else if (report) report.remove();
+    const open = teamOpen.has(`${block.dataset.job} ${r.id}`);
+    node.setAttribute("aria-expanded", String(open));
+    let detail = node.querySelector(".tb-detail");
+    if (open) {
+      if (!detail) { detail = el("div", "tb-detail"); node.append(detail); }
+      const html = teamDetail(r);
+      if (detail._html !== html) { detail.innerHTML = html; detail._html = html; }
+    } else if (detail) detail.remove();
+  }
+  function teamBlock(team, live) {
+    const rows = team && Array.isArray(team.rows) ? team.rows.filter((r) => r && typeof r === "object") : [];
+    if (!rows.length) return;
+    const job = String(team.job || "live");
+    const now = rows.filter((r) => r.state === "running").length;
+    const going = now || rows.some((r) => r.state === "waiting");
+    let block = teamBlocks.get(job);
+    if (!block || !block.isConnected) {
+      if (live && !going) return;                 // a job that ended is drawn from the conversation's history
+      block = el("div", "term team-block", '<div class="tb-head"><span class="tb-title b">Team</span><span class="tb-counts d"></span></div><div class="tb-rows"></div>');
+      block.dataset.job = job;
+      block.setAttribute("role", "group");
+      block.setAttribute("aria-label", "Team job");
+      block.addEventListener("click", (e) => {
+        const row = e.target.closest(".tb-row");
+        if (row && !e.target.closest(".tb-detail")) toggleTeamRow(block, row);
+      });
+      block.addEventListener("keydown", (e) => {
+        const row = e.target.closest(".tb-row");
+        if (row && e.target === row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggleTeamRow(block, row); }
+      });
+      const box = block.querySelector(".tb-rows");
+      for (const kind of ["wheel", "touchstart", "pointerdown", "keydown"]) {
+        box.addEventListener(kind, () => { block._touched = Date.now(); }, {passive: true});   // the reader scrolls it
+      }
+      lastPrint = null; turn = null; group = null;
+      column.append(block);
+      teamBlocks.set(job, block);
+    }
+    const done = Number(team.done || 0), total = Number(team.total || rows.length);
+    setText(block.querySelector(".tb-counts"), going ? ` · ${now} running · ${done} of ${total} done` : ` · ${done} of ${total} done`);
+    block.classList.toggle("live", !!going);
+    const box = block.querySelector(".tb-rows");
+    const nodes = new Map([...box.children].map((n) => [n.dataset.row, n]));
+    rows.forEach((r, k) => {
+      const id = String(r.id || `row-${k}`);
+      let node = nodes.get(id);
+      if (!node) { node = teamRow(); node.dataset.row = id; }
+      if (box.children[k] !== node) box.insertBefore(node, box.children[k] || null);
+      drawTeamRow(block, node, {...r, id});
+    });
+    // the running steps stay in view while the block scrolls inside, unless the reader just scrolled it
+    if (now && box.scrollHeight > box.clientHeight + 1 && Date.now() - (block._touched || 0) > 8000) {
+      const running = box.querySelectorAll(".tb-row.is-running");
+      const top = running[0].offsetTop, last = running[running.length - 1];
+      const bottom = last.offsetTop + last.offsetHeight;
+      if (top < box.scrollTop || bottom > box.scrollTop + box.clientHeight) {   // in the middle: done above, waiting below
+        box.scrollTop = bottom - top <= box.clientHeight ? Math.round((top + bottom - box.clientHeight) / 2) : top;
+      }
+    }
+  }
   function addPlan(ev) {
     lastPrint = null; turn = null;
     const p = el("section", "plan");
@@ -802,25 +923,7 @@
     if (ev.working) sentAt = 0;
     startedAt = ev.working ? ev.startedAt || 0 : 0;
     drawStatus();
-    const team = $("team");
-    if (ev.team && ev.team.rows && ev.team.rows.length) {
-      team.hidden = false;
-      const running = ev.team.rows.filter((r) => r.state === "running").length;
-      team.setAttribute("aria-label", "Team progress");
-      team.innerHTML = `<div class="team-head">Team · ${running} running · ${ev.team.done} of ${ev.team.total} finished</div>` +
-        ev.team.rows.map((r) => {
-          const state = ["waiting", "running", "done", "failed", "skipped", "interrupted", "unknown"].includes(r.state) ? r.state : "unknown";
-          // A tool still running says what it is doing now; a finished one is the last thing it did
-          const doing = r.inFlight ? `Now · ${DOING[r.action] || toolLook(r.action)[0]}` : `Last · ${toolLook(r.action)[0]}`;
-          const detail = r.action ? `<span class="tool-action">${esc(doing)}</span>${r.path ? ` <span class="tool-path">${esc(r.path)}</span>` : ""}${r.summary ? `<span class="tool-summary">${esc(r.summary)}</span>` : ""}` : "";
-          return `<div class="team-row is-${state}" data-deployment="${esc(r.id || "")}">` +
-            `<div class="team-identity"><span class="team-marker" aria-hidden="true"></span><strong class="who">${esc(r.label || r.helper)}</strong><span class="team-state">${state}</span>` +
-            `<span class="team-meta">${esc(r.helper)}${r.model ? ` · ${esc(r.model)}` : ""}</span><span class="stats">${esc(r.stats || "")}</span>` +
-            // work the fallback model finished is always marked
-            `${r.fallback ? `<span class="team-fallback">↺ on ${esc(r.fallback)} (fallback${r.fallbackFrom || r.fallbackReason ? `: ${esc([r.fallbackFrom, r.fallbackReason].filter(Boolean).join(" "))}` : ""})</span>` : ""}</div>` +
-            `${detail || r.activity ? `<div class="act${r.actionFailed ? " tool-failed" : ""}">${detail}${r.activity ? `<span class="activity-counts">${esc(r.activity)}</span>` : ""}</div>` : ""}</div>`;
-        }).join("");
-    } else { team.hidden = true; team.innerHTML = ""; }
+    if (ev.team) teamBlock(ev.team, true);           // the team job's block in the conversation
     const others = Number(ev.othersWorking || 0);         // other devices' conversations working in this folder
     $("others").hidden = !others;
     $("others").textContent = others === 1
@@ -1929,6 +2032,7 @@
       case "notice": addNotice(ev); break;
       case "echo": addEcho(ev); break;
       case "team_plan": addPlan(ev); break;
+      case "team_block": teamBlock(ev, false); break;
       case "ask": onAsk(ev); break;
       case "answered": onAnswered(ev); break;
       case "status": onStatus(ev); break;
@@ -1949,7 +2053,7 @@
   log.addEventListener("scroll", () => { $("jump").hidden = nearBottom(); }, {passive: true});
   $("jump").addEventListener("click", () => { log.scrollTop = log.scrollHeight; $("jump").hidden = true; });
   // The wheel scrolls the conversation wherever the pointer is: over the orb, the title, or a part of the bottom
-  // that cannot scroll itself (the team panel, a list or the message box scroll first while they can).
+  // that cannot scroll itself (a list or the message box scroll first while they can).
   document.querySelector(".main").addEventListener("wheel", (e) => {
     if (e.ctrlKey || !e.deltaY || log.contains(e.target)) return;
     for (let n = e.target; n && n !== e.currentTarget; n = n.parentElement) {
@@ -1966,7 +2070,7 @@
   // A conversation opened (start, /resume, /clear): its earlier messages come from /api/history; what happens in it
   // from now on comes as events. The first one keeps what is already shown (startup notices) below its history.
   let knownConversation = null;
-  function resetView() { column.innerHTML = ""; cards.clear(); turn = null; group = null; pending = []; lastPrint = null; ready = null; doneAt = 0; doneTook = ""; signingIn = ""; }
+  function resetView() { column.innerHTML = ""; cards.clear(); teamBlocks.clear(); turn = null; group = null; pending = []; lastPrint = null; ready = null; doneAt = 0; doneTook = ""; signingIn = ""; }
   // Events that waited while a conversation loaded, in order. Another conversation among them loads first: the
   // events after it wait for that load (handled now, they were drawn and then wiped by it, so a reloaded window lost
   // the message being worked on).

@@ -314,6 +314,26 @@ def fallback_words(fallback: Any) -> str:
     return f"on {_short(fallback['to'], 60)} (fallback{': ' + why if why else ''})"
 
 
+def ended_look(ok: bool, *, partial: bool = False, skipped: bool = False, fallback: Any = None,
+               utf: bool = True) -> Tuple[str, str, str]:
+    """``(mark, word, style)`` of a team step's ended line: ``✓ Done``, ``✗ Failed``, ``◐ Partial (ran out of
+    steps)``, ``– Skipped``, or ``↺ Done on <model> (fallback: ...)`` for work the fallback model finished. The
+    terminal prints it (``Screen.team_done``) and the app window's team block shows the same words."""
+    if skipped:
+        mark, word, style = ("–" if utf else "-"), "Skipped", "dim"
+    elif not ok:
+        mark, word, style = ("✗" if utf else "x"), "Failed", "red"
+    elif partial:
+        mark, word, style = ("◐" if utf else "~"), "Partial (ran out of steps)", "yellow"
+    else:
+        mark, word, style = ("✓" if utf else "+"), "Done", "green"
+    on_fallback = fallback_words(fallback)
+    if on_fallback and ok and not skipped:         # work done by the fallback is always marked, with why
+        mark, style = ("↺" if utf else "*"), "yellow"
+        word += f" {on_fallback}"
+    return mark, word, style
+
+
 class Screen:
     """Draws what the agent does. Everything is printed as ``Text``, so square brackets in tool output are
     never read as rich markup.
@@ -403,19 +423,7 @@ class Screen:
         model (``fallback``: ``{"to", "from", "reason"}``) is marked ``↺`` and says
         ``on <to> (fallback: <from> <reason>)``."""
         self.flush_helper(agent)
-        utf = self._utf()
-        if skipped:
-            mark, word, style = ("–" if utf else "-"), "Skipped", "dim"
-        elif not ok:
-            mark, word, style = ("✗" if utf else "x"), "Failed", "red"
-        elif partial:
-            mark, word, style = ("◐" if utf else "~"), "Partial (ran out of steps)", "yellow"
-        else:
-            mark, word, style = ("✓" if utf else "+"), "Done", "green"
-        on_fallback = fallback_words(fallback)
-        if on_fallback and ok and not skipped:         # work done by the fallback is always marked, with why
-            mark, style = ("↺" if utf else "*"), "yellow"
-            word += f" {on_fallback}"
+        mark, word, style = ended_look(ok, partial=partial, skipped=skipped, fallback=fallback, utf=self._utf())
         line = Text(f"{mark} ", style=f"bold {style}")
         line.append(f"{_short(agent, MAX_HELPER_CHARS)} · {_short(label or agent, 40)}", style="bold")
         stats = ""

@@ -263,6 +263,11 @@ class WebScreen(Screen):
         self.bus.emit("welcome", **{key: (value if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value)
                                           else _text(value, 400)) for key, value in parts.items()})
 
+    def team_done(self, agent: Any, label: Any, ok: bool, text: Any, **_: Any) -> None:
+        """Not printed in the window: the step's row in the conversation's team block turns into this ended line
+        (``TeamPanel`` words it the same way), so a step never shows twice."""
+        self.flush_helper(agent)
+
     def team_plan(self, steps: Any) -> None:
         shown = []
         for step in steps if isinstance(steps, (list, tuple)) else []:
@@ -1698,6 +1703,22 @@ class WebFront:
         from agentx_dev.Runner.AgentRun import _FORMAT_NAMES, INTERJECTION_PREFIX
         from agentx_dev.cli.routing import typed_text
         _ANSWERED = "\x00answered"                 # a format call that carried the final answer: no result row
+        kept = (getattr(session, "metadata", None) or {}).get("team_blocks") if session is not None else None
+        kept = [k for k in kept if isinstance(k, dict)] if isinstance(kept, list) else []
+        next_kept = 0
+
+        def team_block(name: str, args: Any) -> None:
+            """After a ``start_team_job`` call: its job's block in the final form kept with the conversation (the
+            next kept job of that task; a conversation trimmed at the front simply has fewer calls)."""
+            nonlocal next_kept
+            if name != "start_team_job" or not isinstance(args, dict):
+                return
+            task = str(args.get("task") or "")
+            for at in range(next_kept, len(kept)):
+                if str(kept[at].get("task") or "") == task:
+                    items.append(self._team_block(kept[at]))
+                    next_kept = at + 1
+                    return
         for at, message in enumerate(messages):
             if not isinstance(message, dict):
                 continue
@@ -1760,6 +1781,7 @@ class WebFront:
                         subject = ""
                     items.append({"type": "tool_call", "name": name, "subject": _text(subject, 400),
                                   "look": name in HELPER_LOOKS})
+                    team_block(name, args)
                 step = _text_mode_step(text) if not message.get("tool_calls") else None
                 if step is not None:                               # a text-mode model's call or answer, as JSON
                     name, args = step
@@ -1778,6 +1800,7 @@ class WebFront:
                             subject = ""
                         items.append({"type": "tool_call", "name": name, "subject": _text(subject, 400),
                                       "look": name in HELPER_LOOKS})
+                        team_block(name, args)
                 elif text.strip():
                     items.append({"type": "final", "text": _text(text, 200_000)})
             elif role == "tool":
@@ -1807,7 +1830,53 @@ class WebFront:
             last_user = next((i for i in reversed(items) if i.get("type") == "user"), None)
             if last_user is None or last_user.get("text") != _text(working, 100_000):
                 items.append({"type": "user", "text": _text(working, 100_000)})
+        # a team job of that message is not in the conversation yet either: its block as it is now
+        panel = getattr(self.app, "_team_panel", None) if upto is None and self._working() else None
+        if panel is not None and getattr(panel, "rows", None) and not any(
+                item.get("type") == "team_block" and item.get("job") == panel.id for item in items):
+            try:
+                items.append(self._team_block(panel.record("")))
+            except Exception:
+                pass
         return {"seq": seq, "items": items, "pending": pending, "status": self._status()}
+
+    def _team_rows(self, rows: Any) -> List[Dict[str, Any]]:
+        """A team job's rows (``TeamPanel.snapshot``, or as kept with the conversation) for the window: every text
+        cut, paths without the project folder in front."""
+        shown = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            out = {key: _text(value, 300) if isinstance(value, str) else value for key, value in row.items()
+                   if key != "actions" and (value is None or isinstance(value, (str, int, float, bool)))}
+            out["path"] = _text(self._in_project(row.get("path")), 300)
+            actions = row.get("actions") if isinstance(row.get("actions"), list) else []
+            out["actions"] = [{"name": _text(a.get("name"), 80),
+                               "subject": _text(self._in_project(a.get("subject")), 200),
+                               "summary": _text(a.get("summary"), 200), "failed": bool(a.get("failed"))}
+                              for a in actions if isinstance(a, dict)]
+            shown.append(out)
+        return shown
+
+    def _team_block(self, kept: Any) -> Dict[str, Any]:
+        """A ``team_block`` item of the conversation: a team job's block in the form it was kept (or has now)."""
+        kept = kept if isinstance(kept, dict) else {}
+        rows = self._team_rows(kept.get("rows"))
+        done = sum(row.get("state") in ("done", "failed", "skipped") for row in rows)
+        return {"type": "team_block", "job": _text(kept.get("job"), 40), "rows": rows, "done": done,
+                "total": len(rows)}
+
+    def _in_project(self, text: Any) -> str:
+        """``text`` with the project folder taken off the front of the paths in it (no disk access: the status
+        asks for this many times a second)."""
+        text = "" if text is None else str(text)
+        root = str(self.cwd).rstrip("\\/")
+        if not root or not text:
+            return text
+        flags = re.IGNORECASE if sys.platform == "win32" else 0
+        for prefix in {root + "\\", root + "/", root.replace("\\", "/") + "/"}:
+            text = re.sub(re.escape(prefix), "", text, flags=flags)
+        return text
 
     def _status(self) -> Dict[str, Any]:
         app = self.app
@@ -1842,16 +1911,16 @@ class WebFront:
                              "activity": _text(helper_activity(step_counts(snapshot)), 300),
                              "stats": _text(step_stats(snapshot), 120)})
             panel = getattr(app, "_team_panel", None)
+            job = ""
             if panel is not None:
-                rows = [{key: _text(value, 300) if isinstance(value, str) else value for key, value in row.items()}
-                        for row in panel.snapshot()]
-                done = sum(row["state"] in ("done", "failed", "skipped") for row in rows)
-                total = len(rows)
+                rows = self._team_rows(panel.snapshot())
+                done, total = panel.counts(rows)
+                job = str(panel.id)
             else:
                 done, total = app._team_steps
                 for index, row in enumerate(rows):
                     row.update(id=f"running-{index}", state="running")
-            status["team"] = {"rows": rows, "done": done, "total": total} if rows else None
+            status["team"] = {"job": job, "rows": rows, "done": done, "total": total} if rows else None
         except Exception:
             status["team"] = None
         try:

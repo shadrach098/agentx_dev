@@ -59,8 +59,8 @@ def test_a_waiting_question_has_room_and_the_wheel_works_everywhere(tmp_path):
             assert box["y"] >= log["y"] - 1 and box["y"] + box["height"] <= log["y"] + log["height"] + 1, (box, log)
             assert page.locator("#stage.compact").count() == 1                       # the orb made room
             assert page.locator("#stage").bounding_box()["height"] < 120
-            team = page.locator("#team").bounding_box()
-            assert team["height"] <= 0.34 * 1000 + 2                                   # a third of the window at most
+            assert page.locator("#team").count() == 0                     # the team is a block in the conversation,
+            assert page.locator("#log .team-block").count() == 1          # not a panel above the message box
             assert log["height"] > 300                                                 # the conversation has room
             page.screenshot(path=str(tmp_path / "waiting-card.png"))
             if os.environ.get("WAITING_CARD_SHOT"):
@@ -73,15 +73,6 @@ def test_a_waiting_question_has_room_and_the_wheel_works_everywhere(tmp_path):
             page.mouse.wheel(0, -400)
             page.wait_for_timeout(200)
             assert page.locator("#log").evaluate("el => el.scrollTop") < before
-            # the team panel scrolls itself first, and only then hands the wheel on
-            panel = page.locator("#team")
-            assert panel.evaluate("el => el.scrollHeight > el.clientHeight")
-            page.mouse.move(team["x"] + 40, team["y"] + team["height"] / 2)
-            log_before = page.locator("#log").evaluate("el => el.scrollTop")
-            page.mouse.wheel(0, 120)
-            page.wait_for_timeout(200)
-            assert panel.evaluate("el => el.scrollTop") > 0
-            assert page.locator("#log").evaluate("el => el.scrollTop") == log_before
             assert not errors
         finally:
             browser.close()

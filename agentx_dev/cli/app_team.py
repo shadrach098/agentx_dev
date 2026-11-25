@@ -17,6 +17,8 @@ TEAM_LIMIT_REACHED = (f"Refused: {MAX_TEAM_JOBS_PER_MESSAGE} team jobs already r
                       "user what is done and what remains, and let them say whether to continue.")
 TEAM_STALLED = ("Refused: no step of the last team job finished, so another job would likely fail the same way. "
                 "Report to the user what happened and what remains, and let them decide.")
+TEAM_BLOCKS = "team_blocks"         # the conversation's metadata key: its team jobs in their final form, for the window
+MAX_TEAM_BLOCKS = 30
 
 
 class TeamCommands:
@@ -213,6 +215,20 @@ class TeamCommands:
             # why the whole job failed, for the person: the agent is told only the kind of failure (the provider's
             # words can name the model its planner must not learn)
             self.error(f"The team job failed: {self._safe(data.get('text') or 'no reason given', 500)}")
+
+    def _keep_team_block(self, task: str) -> None:
+        """Keep the job that just ended, in its final form, with the conversation (its metadata, saved with it): the
+        app window draws it again in a reloaded window or a reopened conversation."""
+        panel, session = getattr(self, "_team_panel", None), getattr(self, "session", None)
+        if panel is None or session is None or not panel.rows:
+            return
+        try:
+            kept = session.metadata.get(TEAM_BLOCKS)
+            kept = kept if isinstance(kept, list) else []
+            kept.append(panel.record(task))
+            session.metadata[TEAM_BLOCKS] = kept[-MAX_TEAM_BLOCKS:]
+        except Exception:                           # the record is for the screen only: never fail the job for it
+            pass
 
     def _team_question(self, question: str) -> Optional[str]:
         """The planner or a helper needs a fact: ask in the terminal. Enter, Ctrl+D and Ctrl+C skip it."""
