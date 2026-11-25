@@ -61,12 +61,18 @@ def unknown(id: str) -> str:
     return f"ERROR: there is no task {id}; list_background shows them"
 
 
+def _with_code(task: Task) -> str:
+    """`` with code 3``; nothing while the code is not known yet (macOS before Python 3.13 learns it only once
+    everything the task left running has ended)."""
+    return f" with code {task.exit_code}" if task.exit_code is not None else ""
+
+
 def header(task: Task) -> str:
     """``t1 (running for 2m 10s): npm run dev``, ``t1 (exited with code 0 after 12s): ...``."""
     if task.state == "running":
         phrase = f"running for {duration(_age(task))}"
     elif task.state == "exited":
-        phrase = f"exited with code {task.exit_code} after {duration(_age(task))}"
+        phrase = f"exited{_with_code(task)} after {duration(_age(task))}"
     elif task.state == "stopped":
         phrase = f"stopped after {duration(_age(task))}"
     else:
@@ -83,7 +89,8 @@ def output_text(manager: TaskManager, task: Task, lines: int = DEFAULT_LINES) ->
 
 def ended_text(task: Task) -> str:
     if task.state == "exited":
-        return f"{task.id} had already ended (exit code {task.exit_code})."
+        return (f"{task.id} had already ended (exit code {task.exit_code})." if task.exit_code is not None
+                else f"{task.id} had already ended.")
     if task.state == "failed":
         return f"{task.id} had already ended (it could not start)."
     return f"{task.id} had already ended (stopped)."
@@ -95,7 +102,9 @@ Titles = Callable[[Sequence[str]], Mapping[str, str]]
 
 def task_line(task: Task, me: str, names: Mapping[str, str]) -> str:
     """``t1  running  2m 10s  npm run dev  (started by: <title>)``; ``names``: conversation titles by id."""
-    state = f"exited (code {task.exit_code})" if task.state == "exited" else task.state
+    state = task.state
+    if task.state == "exited":
+        state = f"exited (code {task.exit_code})" if task.exit_code is not None else "exited"
     what = _one_line(task.command)
     if task.name:
         what += f" [{_one_line(task.name, 60)}]"
@@ -254,7 +263,7 @@ def build_task_tools(manager: TaskManager, owner: Callable[[], str], permissions
         elif task.state == "stopped":                   # stopped elsewhere (/tasks, the panel) during the wait
             lines += [f"{task.id} was stopped while starting.", text or "(no output)"]
         elif task.state != "running":
-            lines += [f"It exited at once with code {task.exit_code}:", text or "(no output)"]
+            lines += [f"It exited at once{_with_code(task)}:", text or "(no output)"]
         else:
             lines += ["Output so far:", text or "(no output yet)"]
         return "\n".join(lines)

@@ -10,6 +10,8 @@ from agentx_dev.cli import background
 from agentx_dev.cli.background import TaskLimit, TaskManager, strip_codes
 
 PY = sys.executable.replace("\\", "/")
+# whether a shell's exit code can be read while it still holds its group (macOS before Python 3.13 cannot)
+CAN_PEEK = sys.platform == "win32" or hasattr(__import__("os"), "waitid")
 
 
 def until(check, timeout=10.0):
@@ -373,7 +375,7 @@ def test_task_whose_child_outlives_the_shell_stays_running_and_stoppable(mgr, tm
     assert until(lambda: pidfile.exists() and pidfile.read_text().strip())
     pid = int(pidfile.read_text())
     # the shell has exited (its code is recorded) but the child holds the output pipe: still running
-    assert until(lambda: task.exit_code is not None)
+    assert until(lambda: task.exit_code is not None) or not CAN_PEEK
     assert task.state == "running" and mgr.running_count() == 1
     # and what the child prints later still lands in the log
     gate.write_text("go")
@@ -389,7 +391,7 @@ def test_stop_all_reaches_a_child_that_outlived_its_shell(mgr, tmp_path):
     task = mgr.start(parent)
     assert until(lambda: pidfile.exists() and pidfile.read_text().strip())
     pid = int(pidfile.read_text())
-    assert until(lambda: task.exit_code is not None)
+    assert until(lambda: task.exit_code is not None) or not CAN_PEEK
     mgr.stop_all()
     assert until(lambda: not pid_alive(pid), 10)
 
@@ -664,3 +666,122 @@ def test_windows_job_is_set_to_kill_on_close(mgr, tmp_path):
     job = mgr._run(task.id).job
     assert job is not None and background._job_kills_on_close(job)
     mgr.stop(task.id)
+
+
+# -- POSIX: the group id is used only while the shell is unreaped, so it can never name someone else's group ----------
+
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+
+
+@posix_only
+def test_a_finished_task_releases_its_group_and_is_never_signalled_again(mgr, tmp_path, monkeypatch):
+    import os
+    task = mgr.start(script(tmp_path, "quick.py", "import sys; sys.exit(3)"))
+    run = mgr._run(task.id)
+    assert until(lambda: task.state == "exited" and run.pgid is None)
+    assert task.exit_code == 3 and run.proc.returncode == 3          # reaped, its code kept
+    sent = []
+    monkeypatch.setattr(background.os, "killpg", lambda pgid, sig: sent.append((pgid, sig)))
+    # as if the id had since been given to an unrelated program leading a group of its own
+    monkeypatch.setattr(background, "_group_has_live", lambda pgid: True)
+    assert mgr.stop(task.id).state == "exited"
+    mgr.stop_all()
+    mgr.interrupt(task.id)
+    assert not mgr.leftovers(task.id)
+    assert sent == []
+
+
+@posix_only
+def test_the_shell_stays_unreaped_while_what_it_left_runs_then_is_reaped(mgr, tmp_path):
+    import os
+    task, pid = started_redirected(mgr, tmp_path, "pin1")
+    run = mgr._run(task.id)
+    shell = run.proc.pid
+    assert run.pgid == shell and run.proc.returncode is None        # the id is still held by the zombie shell
+    assert os.getpgid(pid) == shell
+    if hasattr(os, "waitid"):
+        assert task.exit_code == 0                                   # read without reaping
+    if os.path.isdir("/proc/self"):
+        state = open(f"/proc/{shell}/stat", "rb").read().rsplit(b")", 1)[1].split()[0]
+        assert state == b"Z"
+    mgr.stop(task.id)                                                # kills what it left, through the held group
+    assert until(lambda: not pid_alive(pid), 10)
+    assert until(lambda: run.pgid is None and run.proc.returncode is not None, 10)
+    assert task.state == "exited" and task.exit_code == 0
+
+
+@posix_only
+def test_what_a_task_left_running_ending_by_itself_releases_the_group(mgr, tmp_path):
+    gate = tmp_path / "gate2"
+    pidfile = tmp_path / "self_end.pid"
+    child = tmp_path / "self_end_child.py"
+    child.write_text("import os, time\nopen(%r, 'w').write(str(os.getpid()))\n"
+                     "while not os.path.exists(%r):\n    time.sleep(0.02)\n"
+                     % (str(pidfile), str(gate)), encoding="utf-8")
+    parent = script(tmp_path, "self_end_parent.py",
+                    "import subprocess, sys\n"
+                    "subprocess.Popen([sys.executable, %r], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,"
+                    " stdin=subprocess.DEVNULL)\n" % str(child))
+    task = mgr.start(parent)
+    run = mgr._run(task.id)
+    assert until(lambda: pidfile.exists() and pidfile.read_text().strip())
+    assert until(lambda: task.state == "exited")
+    assert run.pgid is not None and mgr.leftovers(task.id)
+    gate.write_text("go")
+    assert until(lambda: run.pgid is None, 15)                       # the wait thread reaps the shell on its own
+    assert not mgr.leftovers(task.id)
+
+
+@posix_only
+def test_group_has_live_ignores_zombies(tmp_path):
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    try:
+        assert background._group_has_live(proc.pid) is True
+        proc.kill()
+        assert until(lambda: background._group_has_live(proc.pid) is False)    # only the unreaped zombie is left
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+@posix_only
+def test_group_has_live_through_ps(tmp_path, monkeypatch):
+    import os
+    import shutil
+    if not shutil.which("ps"):
+        pytest.skip("no ps here")
+    real_isdir = os.path.isdir
+    monkeypatch.setattr(background.os.path, "isdir", lambda p: False if p == "/proc/self" else real_isdir(p))
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    try:
+        assert background._group_has_live(proc.pid) is True
+        proc.kill()
+        assert until(lambda: background._group_has_live(proc.pid) is False)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+@posix_only
+def test_peek_exit_reads_the_code_without_reaping():
+    import os
+    if not hasattr(os, "waitid"):
+        pytest.skip("os.waitid is missing here")
+    proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(7)"])
+    try:
+        assert until(lambda: background._peek_exit(proc.pid) is not None)
+        assert background._peek_exit(proc.pid) == 7                  # still there to read again: not reaped
+    finally:
+        assert proc.wait(10) == 7
+    with pytest.raises(background._Reaped):
+        background._peek_exit(proc.pid)
+
+
+def test_an_unknown_exit_code_is_left_out_of_the_text():
+    from agentx_dev.cli import task_tools
+    task = background.Task(id="t1", kind="task", command="npm run dev", cwd=".", owner="o", name=None,
+                           started_at=time.time() - 5, ended_at=time.time(), exit_code=None, state="exited",
+                           log=Path("t1.log"))
+    assert task_tools.header(task).startswith("t1 (exited after ")
+    assert task_tools.ended_text(task) == "t1 had already ended."
+    assert "exited" in task_tools.task_line(task, "o", {}) and "None" not in task_tools.task_line(task, "o", {})

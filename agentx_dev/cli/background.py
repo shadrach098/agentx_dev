@@ -259,15 +259,72 @@ def _job_close(job) -> None:
         pass
 
 
-def _group_alive(pgid: int) -> bool:
-    """POSIX: whether a process group ``pgid`` exists that this account may signal."""
+# POSIX: why the shell is not reaped as soon as it exits. A task's shell leads a process group and a session of its
+# own (``start_new_session``), so the group's id is the shell's pid. Once the shell is reaped, that number is free:
+# when the group's last member ends, the system may give it to an unrelated program, which may lead a group of its
+# own with it, and a later ``killpg`` would kill that program. While the shell is an unreaped zombie its pid is
+# still taken, so no other group can have that id, and only the shell's own descendants can be in its session. So
+# the shell is reaped only once nothing in its group runs, and ``killpg`` is sent only before that.
+
+_PS = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
+
+
+def _group_has_live(pgid: int) -> Optional[bool]:
+    """POSIX: whether process group ``pgid`` has a member that still runs (zombies do not count); ``None`` when that
+    cannot be told. Linux reads ``/proc``; elsewhere (macOS) ``ps`` is asked."""
+    if os.path.isdir("/proc/self"):
+        try:
+            names = os.listdir("/proc")
+        except OSError:
+            names = None
+        if names is not None:
+            for name in names:
+                if not name.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{name}/stat", "rb") as f:
+                        data = f.read()
+                except OSError:
+                    continue                    # ended while the list was read
+                fields = data[data.rfind(b")") + 2:].split()     # after "(command)": state, ppid, pgrp, ...
+                try:
+                    if len(fields) >= 3 and int(fields[2]) == pgid and fields[0] not in (b"Z", b"X", b"x"):
+                        return True
+                except ValueError:
+                    continue
+            return False
     try:
-        os.killpg(pgid, 0)
-    except PermissionError:                   # someone else's group: never one of ours
-        return False
-    except OSError:
-        return False
-    return True
+        done = subprocess.run([_PS, "-A", "-o", "pgid=,stat="], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    for line in done.stdout.decode("utf-8", errors="replace").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == str(pgid) and not parts[1].startswith("Z"):
+            return True
+    return False
+
+
+class _Reaped(Exception):
+    """The shell was reaped by something other than its ``Popen`` (its id is no longer held)."""
+
+
+def _peek_exit(pid: int) -> Optional[int]:
+    """POSIX: the exit code of child ``pid`` if it has ended, read without reaping it; ``None`` while it runs or
+    where the system cannot do that (``os.waitid`` is missing: macOS before Python 3.13). Codes follow ``Popen``: a
+    signal is its negative number. Raises ``_Reaped`` when ``pid`` is no longer a child to wait for."""
+    waitid = getattr(os, "waitid", None)
+    if waitid is None:
+        return None
+    try:
+        info = waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except ChildProcessError:
+        raise _Reaped()
+    if info is None or info.si_pid == 0:
+        return None
+    return info.si_status if info.si_code == os.CLD_EXITED else -info.si_status
 
 
 class _Run:
@@ -283,7 +340,8 @@ class _Run:
         self.marker_len = 0           # bytes of the "dropped" marker line between head and tail
         self.stopping = False
         self.job = None               # Windows job object holding the whole tree (kept open until agentx exits)
-        self.pgid: Optional[int] = None   # POSIX: the process group this run started (its own session)
+        self.pgid: Optional[int] = None   # POSIX: the process group this run started, while its id is still held
+                                          # (the shell not yet reaped); None once it is not (see _group_has_live)
         self.kill_lock = threading.Lock()
         self.eof = threading.Event()  # the output pipe has closed: nothing more will be written
         self.reader: Optional[threading.Thread] = None
@@ -400,11 +458,17 @@ class TaskManager:
                 pass
 
     def _wait(self, run: _Run) -> None:
-        code = run.proc.wait()
-        with run.lock:
-            run.task.exit_code = code        # the shell's own code; the task stays running while anything holds the pipe
+        if sys.platform == "win32":
+            code: Optional[int] = run.proc.wait()
+        else:
+            code = self._wait_unreaped(run)
+        if code is not None:
+            with run.lock:
+                run.task.exit_code = code    # the shell's own code; the task stays running while anything holds the pipe
         if run.reader:
             run.reader.join()                # a descendant (``cmd &``) may keep the pipe, and the task, alive
+        if sys.platform != "win32":
+            self._reap_if_done(run)          # the usual case: nothing is left, the shell is reaped now
         with run.lock:
             if run.task.ended_at is None:
                 run.task.ended_at = time.time()
@@ -421,20 +485,72 @@ class TaskManager:
             if run.fh is not None:
                 run.fh.close()
                 run.fh = None
+        if sys.platform != "win32":
+            delay = 0.1                      # a program the task left running (``> dev.log &``): reap once it ends
+            while not self._reap_if_done(run):
+                time.sleep(delay)
+                delay = min(delay * 2, 5.0)
+
+    def _wait_unreaped(self, run: _Run) -> Optional[int]:
+        """POSIX: wait for the shell to exit without reaping it, so its id (the group's) stays held; its exit code,
+        or ``None`` where it cannot be read without reaping (then it is set when the shell is reaped)."""
+        delay = 0.02
+        while True:
+            with run.kill_lock:
+                if run.proc.returncode is not None:      # reaped already (by _reap_if_done, or a caller's poll())
+                    return run.proc.returncode
+                if run.pgid is None:
+                    return None
+                try:
+                    code = _peek_exit(run.proc.pid)
+                except _Reaped:
+                    run.pgid = None                      # reaped behind Popen's back: the id is no longer ours
+                    return None
+            if code is not None:
+                return code
+            if getattr(os, "waitid", None) is None:
+                return None                              # cannot tell without reaping: _reap_if_done does it later
+            time.sleep(delay)
+            delay = min(delay * 1.5, 0.5)
+
+    def _reap_if_done(self, run: _Run) -> bool:
+        """POSIX: reap the shell once nothing in its group runs any more, and stop treating the group id as ours;
+        whether that has happened (``True``: nothing of the tree is left)."""
+        proc = run.proc
+        if proc is None:
+            return True
+        with run.kill_lock:
+            if run.pgid is None:
+                return True
+            if proc.returncode is not None:              # someone else reaped it: the id is no longer held
+                run.pgid = None
+            else:
+                if _group_has_live(run.pgid):
+                    return False
+                # Nothing in the group runs (or that cannot be read): poll() reaps a finished shell, and leaves one
+                # that still runs alone (only possible when the group could not be read).
+                if proc.poll() is None:
+                    return False
+                run.pgid = None
+        with run.lock:
+            if run.task.exit_code is None:
+                run.task.exit_code = proc.returncode
+        return True
 
     def _kill(self, run: _Run) -> None:
         """Kill the whole tree, whether or not the shell is still there. Windows: the job object (and ``taskkill
-        /T`` while the shell runs, for a tree that has no job). POSIX: the shell's process group, while the shell
-        runs or, once it has exited, while that group still exists (see ``_alive``)."""
+        /T`` while the shell runs, for a tree that has no job). POSIX: the shell's process group, as long as the
+        shell is not reaped (so the group id cannot belong to anything else)."""
         proc = run.proc
         if proc is None:
             return
         with run.kill_lock:
-            if run.job is not None:
-                _job_terminate(run.job)
-            if proc.poll() is None:
-                _kill_tree(proc)
-            elif sys.platform != "win32" and run.pgid and _group_alive(run.pgid):
+            if sys.platform == "win32":
+                if run.job is not None:
+                    _job_terminate(run.job)
+                if proc.poll() is None:
+                    _kill_tree(proc)
+            elif run.pgid is not None and proc.returncode is None:
                 try:
                     os.killpg(run.pgid, signal.SIGKILL)
                 except OSError:
@@ -442,21 +558,16 @@ class TaskManager:
 
     def _alive(self, run: _Run) -> bool:
         """Whether anything of ``run``'s tree still runs: the shell, or (Windows) a process in its job, or (POSIX) a
-        member of the group the shell led.
-
-        POSIX residual risk: once the shell has exited and been reaped, its id stays reserved only while its group
-        has members. If the whole group is gone and the id was reused by an unrelated program that leads a group of
-        its own, that group would be taken for this one. Only groups this manager started in this run are looked
-        at, and only until agentx exits, so the window is small; it is accepted."""
+        member of the group the shell led. POSIX: a tree found gone has its shell reaped here."""
         proc = run.proc
         if proc is None:
             return False
+        if sys.platform != "win32":
+            return not self._reap_if_done(run)
         if proc.poll() is None:
             return True
         if run.job is not None:
             return _job_active(run.job) > 0
-        if sys.platform != "win32" and run.pgid:
-            return _group_alive(run.pgid)
         return False
 
     def _kill_and_wait(self, run: _Run) -> bool:
@@ -611,8 +722,9 @@ class TaskManager:
                 import signal
                 run.proc.send_signal(signal.CTRL_BREAK_EVENT)
             else:
-                import signal
-                os.killpg(run.proc.pid, signal.SIGINT)
+                with run.kill_lock:                   # only while the group id is still held (see _group_has_live)
+                    if run.pgid is not None and run.proc.returncode is None:
+                        os.killpg(run.pgid, signal.SIGINT)
         except Exception:
             pass
 
