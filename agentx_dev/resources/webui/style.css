@@ -788,3 +788,98 @@ html.embedded .app, html.embedded .app.side-hidden, html.embedded .app.with-deta
 .user .u-acts button { font: inherit; font-size: 13px; border-radius: 8px; padding: 5px 12px; border: 1px solid var(--line); background: none; color: var(--text); cursor: pointer; }
 .user .u-acts .u-send { background: var(--text); color: var(--bg); border-color: var(--text); }
 .user .u-acts button:disabled { opacity: .5; cursor: default; }
+
+/* The Tasks panel: background tasks, the page agentx has open, and terminals. The same kind of right-hand panel as
+   Details (it is a .details too, so it takes the same column, slides over the chat below a wide window, and has the
+   same grip); its own width is --tasks-w. */
+.app.with-tasks { --details-w: var(--tasks-w, 420px); }
+.top-badge { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: -2px; border-radius: 9px; background: var(--text); color: var(--ink); font-size: 11px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+.tp-head { gap: 8px; padding: 0 10px 0 12px; }
+.tp-tabs { display: flex; gap: 2px; padding: 3px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.tp-tabs [role="tab"] { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; border-radius: 7px; padding: 3px 11px; font-size: 13px; color: var(--muted); white-space: nowrap; transition: background 0.12s, color 0.12s; }
+.tp-tabs [role="tab"]:hover { color: var(--text); }
+.tp-tabs [role="tab"][aria-selected="true"] { background: var(--raised); color: var(--text); }
+.tp-count { display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--line-strong); color: var(--text); font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tp-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 4px 14px 14px; overflow: hidden; }
+.tp-body > * { min-width: 0; }
+.tp-empty { display: block; margin: 0; padding: 14px 4px; color: var(--muted); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+.tp-note { margin: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--muted); font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+
+/* Tasks: Running and Finished */
+.tp-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; margin: 0 -6px; padding: 0 6px; }
+.tp-group { padding: 6px 0 10px; }
+.tp-group + .tp-group { border-top: 1px solid var(--line); padding-top: 12px; }
+.tp-group-head { display: flex; align-items: center; gap: 7px; margin: 0 0 6px; padding: 0 6px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.tp-n { color: var(--faint); font-weight: 500; font-variant-numeric: tabular-nums; }
+.tp-clear { margin-left: auto; font-weight: 400; }
+.tp-none { display: block; padding: 2px 6px 4px; color: var(--faint); font-size: 12.5px; }
+.tp-row { display: flex; align-items: center; gap: 4px; min-width: 0; border-radius: 10px; transition: background 0.12s; }
+.tp-row:hover { background: var(--hover); }
+.tp-open { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 10px; border: 0; background: none; color: var(--text); text-align: left; padding: 8px 6px 8px 8px; border-radius: 10px; }
+.tp-dot { width: 8px; height: 8px; margin-top: 7px; border-radius: 50%; flex: none; background: var(--faint); }
+.is-running > .tp-open .tp-dot, .term-tab .tp-dot { background: var(--info); animation: breathe 1.4s ease-in-out infinite; }
+.term-tab.ended .tp-dot { background: var(--faint); animation: none; }
+.is-exited > .tp-open .tp-dot { background: var(--ok); }
+.is-bad > .tp-open .tp-dot { background: var(--danger); }
+.tp-main { flex: 1; min-width: 0; display: grid; gap: 1px; line-height: 1.4; }
+.tp-name { min-width: 0; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-name.mono, .tp-cmd { font-family: var(--mono); }
+.tp-name.mono { font-size: 12.5px; }
+.tp-cmd { min-width: 0; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-sub { min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-sub.bad { color: var(--danger); }
+.tp-time { flex: none; margin-top: 1px; color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tp-row .tp-stop { flex: none; margin-right: 6px; }
+.tp-stop:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, transparent); }
+.is-exited .tp-name, .is-stopped .tp-name, .is-failed .tp-name { color: var(--muted); }
+
+/* an output, live */
+.tp-out { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.tp-out-head { display: flex; align-items: center; gap: 6px; min-width: 0; margin-left: -6px; }
+.tp-out-title { flex: 1; min-width: 0; display: grid; line-height: 1.35; }
+.tp-out-name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-out-meta { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tp-pre { flex: 1; min-height: 0; margin: 0; overflow: auto; overscroll-behavior: contain; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--code-bg); color: var(--text); font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
+.tp-pre:empty::before { content: "No output yet."; color: var(--faint); font-family: var(--sans); }
+
+/* Browser: the address bar, Take over / Give back and the live picture */
+#tpBrowser { overflow-y: auto; overscroll-behavior: contain; }
+.bw-bar { display: flex; align-items: center; gap: 2px; margin: 0; flex: none; }
+.bw-bar .icon-btn:disabled { opacity: 0.4; cursor: default; background: none; }
+.bw-url { flex: 1; min-width: 0; margin-left: 4px; background: var(--bg); border: 1px solid var(--line-strong); border-radius: 8px; padding: 5px 10px; outline: none; color: var(--text); font: 12.5px/1.4 var(--mono); }
+.bw-url:focus { border-color: var(--muted); }
+.bw-url:disabled { opacity: 0.6; }
+.bw-status { display: flex; align-items: center; gap: 8px; min-height: 28px; flex: none; }
+.bw-title { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bw-stage { position: relative; flex: none; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--code-bg); transition: box-shadow 0.15s; }
+.bw-stage.taken { border-color: transparent; box-shadow: 0 0 0 2px var(--info); }
+.bw-frame { display: block; width: 100%; height: auto; aspect-ratio: 1280 / 800; object-fit: contain; outline: none; cursor: default; user-select: none; -webkit-user-drag: none; }
+.bw-stage.taken .bw-frame { cursor: pointer; }
+.bw-frame:focus-visible { outline: 2px solid var(--muted); outline-offset: -2px; }
+.bw-empty { padding: 36px 20px; text-align: center; aspect-ratio: 1280 / 800; display: grid; place-items: center; }
+
+/* Terminal: one tab per terminal, the output and the input line */
+.term-bar { display: flex; align-items: center; gap: 8px; flex: none; min-width: 0; }
+.term-tabs { flex: 1; min-width: 0; display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+.term-tab { display: inline-flex; align-items: center; flex: none; border: 1px solid var(--line); border-radius: 8px; transition: background 0.12s, border-color 0.12s; }
+.term-tab.on { background: var(--raised); border-color: var(--line-strong); }
+.term-pick { display: inline-flex; align-items: center; gap: 7px; border: 0; background: none; padding: 4px 9px; border-radius: 7px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.term-tab.on .term-pick, .term-pick:hover { color: var(--text); }
+.term-pick .tp-dot { margin-top: 0; width: 7px; height: 7px; }
+.term-ended { color: var(--faint); font-size: 11.5px; }
+.term-x { display: grid; place-items: center; width: 22px; height: 22px; margin-right: 3px; border: 0; border-radius: 6px; background: none; color: var(--faint); }
+.term-x svg { width: 13px; height: 13px; }
+.term-x:hover { background: var(--hover); color: var(--text); }
+#termNew { flex: none; gap: 6px; }
+#termNew svg { width: 13px; height: 13px; }
+.term-out { min-height: 120px; }
+.term-line { display: flex; align-items: center; gap: 8px; flex: none; margin: 0; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--bg); transition: border-color 0.12s; }
+.term-line:focus-within { border-color: var(--muted); }
+.term-prompt { color: var(--faint); font: 14px var(--mono); }
+.term-line input { flex: 1; min-width: 0; border: 0; background: none; outline: none; padding: 8px 0; color: var(--text); font: 13px/1.4 var(--mono); }
+.term-line input:disabled { cursor: default; }
+.term-line input::placeholder, .bw-url::placeholder { color: var(--faint); font-family: var(--sans); }
+@media (max-width: 860px) {
+  .top-btn #tasksLabel { display: none; }
+  .tp-tabs [role="tab"] { padding: 3px 9px; }
+}

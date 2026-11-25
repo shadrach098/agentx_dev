@@ -57,8 +57,9 @@
                                    body: JSON.stringify(body || {})});
     return res.json().catch(() => ({}));
   }
+  const authHeaders = () => ({"X-Agentx-Token": token, "X-Agentx-Device": DEVICE, "X-Agentx-Lane": LANE});
   async function get(path) {
-    const res = await fetch(path, {headers: {"X-Agentx-Token": token, "X-Agentx-Device": DEVICE, "X-Agentx-Lane": LANE}});
+    const res = await fetch(path, {headers: authHeaders()});
     if (!res.ok) throw new Error(String(res.status));
     return res.json();
   }
@@ -818,6 +819,7 @@
     drawWaiting(ev.waiting || []);
     $("micBtn").classList.toggle("recording", !!ev.recording);
     $("micBtn").setAttribute("aria-label", ev.recording ? "Stop recording" : "Speak instead of typing");
+    setTasksBadge(ev.tasks);
     if (ev.mode) setMode(ev.mode);
     if ("fallback_from" in ev) fallbackFrom = ev.fallback_from || null;
     if (ev.model) setModel(ev.model); else setModel(currentModel);
@@ -1128,11 +1130,14 @@
   // -- the side panel: context, tokens, team work, MCP servers, memory ----------------------------------------------
   const num = (n) => Number(n || 0).toLocaleString();
   let detailsOpen = false, detailsTimer = 0;
+  let tasksOpen = false, tasksWidth = 0;       // the Tasks panel (below) shares the right edge: one of them is open
+  const TASKS_W = 420;                         // its usual width
   function setDetails(open) {
+    if (open && tasksOpen) setTasks(false);
     detailsOpen = open;
     $("details").hidden = !open;
-    $("detailsScrim").hidden = !open;
-    document.querySelector(".app").classList.toggle("with-details", open);
+    $("detailsScrim").hidden = !(open || tasksOpen);
+    document.querySelector(".app").classList.toggle("with-details", open || tasksOpen);
     $("detailsBtn").setAttribute("aria-expanded", String(open));
     placeDetails();
     try { localStorage.setItem("agentx-details", open ? "open" : "closed"); } catch (_) { /* no storage */ }
@@ -1146,13 +1151,15 @@
   // With a side open, a Details panel that lies over the chat lies over this side only, at its right edge (the side
   // beside has its own Details); as a column it sits between this side and the line (see .app.split in the CSS).
   function placeDetails() {
-    const panel = $("details"), scrim = $("detailsScrim");
+    const panel = $(tasksOpen ? "tasksPanel" : "details"), scrim = $("detailsScrim");
+    const other = $(tasksOpen ? "details" : "tasksPanel");
+    other.style.right = other.style.width = "";
     const split = document.querySelector(".app").classList.contains("split") && !matchMedia("(max-width: 860px)").matches;
-    if (split && detailsOpen && detailsOver()) {
+    if (split && (detailsOpen || tasksOpen) && detailsOver()) {
       const main = document.querySelector(".main").getBoundingClientRect();
       const fromRight = Math.max(0, window.innerWidth - main.right);
       panel.style.right = `${fromRight}px`;
-      panel.style.width = `${Math.min(detailsWidth || 360, main.width)}px`;
+      panel.style.width = `${Math.min((tasksOpen ? tasksWidth || TASKS_W : detailsWidth || 360), main.width)}px`;
       scrim.style.right = `${fromRight}px`;
     } else {
       panel.style.right = panel.style.width = scrim.style.right = "";
@@ -1281,6 +1288,569 @@
   setTimeout(() => {
     try { if (localStorage.getItem("agentx-details") === "open" && !detailsOver()) setDetails(true); else loadDetails(); } catch (_) { loadDetails(); }
   }, 0);
+
+  // -- the Tasks panel: background tasks, the page agentx has open, and terminals ---------------------------------
+  // It shares the right edge with Details (opening one closes the other) and lies over the chat on a narrow window
+  // as Details does. Only what is on screen is asked for: the list every 2 s, an output every second, the page's
+  // state every second and its picture about 3 times a second (one request at a time), and nothing while the
+  // panel, its tab or the window is hidden. Names, commands and output are always set as text, never as HTML.
+  const TP_TABS = ["tasks", "browser", "terminal"], TASKS_MIN = 300, MAX_LINES = 2000;
+  const VIEW_W = 1280, VIEW_H = 800;                 // the browser's page size: clicks are scaled to it
+  let tpTab = "tasks";
+  try { const kept = localStorage.getItem("agentx-tasks-tab"); if (TP_TABS.includes(kept)) tpTab = kept; } catch (_) { /* no storage */ }
+  let tpRows = [], terminalsAllowed = true, tpSig = "", termSig = "", termId = "";
+  const tpShown = (tab) => tasksOpen && !document.hidden && (!tab || tpTab === tab);
+  const refused = (r, fallback) => { if (r && r.ok === false) addNotice({level: "error", text: r.error || fallback}); return !r || r.ok === false; };
+
+  function setTasks(open, focus) {
+    if (open && detailsOpen) setDetails(false);
+    tasksOpen = open;
+    $("tasksPanel").hidden = !open;
+    $("detailsScrim").hidden = !(open || detailsOpen);
+    const app = document.querySelector(".app");
+    app.classList.toggle("with-details", open || detailsOpen);
+    app.classList.toggle("with-tasks", open);
+    $("tasksBtn").setAttribute("aria-expanded", String(open));
+    placeDetails();
+    if (open) {
+      showTab(tpTab);
+      if (focus) $("tasksPanel").querySelector('[role="tab"][aria-selected="true"]').focus();
+    } else stopFrames();
+  }
+  $("tasksBtn").addEventListener("click", () => setTasks(!tasksOpen, !tasksOpen));
+  $("tasksClose").addEventListener("click", () => { setTasks(false); $("tasksBtn").focus(); });
+  $("detailsScrim").addEventListener("click", () => { if (tasksOpen) setTasks(false); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !tasksOpen || !detailsOver() || !$("settingsWrap").hidden) return;
+    if (bw.user && document.activeElement === $("bwFrame")) return;      // the page has the keys: Escape is its
+    setTasks(false);
+    $("tasksBtn").focus();
+  });
+  function setTasksBadge(n) {
+    n = Math.max(0, Number(n) || 0);
+    const badge = $("tasksBadge"), count = $("tpCount");
+    badge.hidden = count.hidden = n <= 0;
+    badge.textContent = count.textContent = n > 0 ? String(n) : "";
+    $("tasksBtn").setAttribute("aria-label", n > 0 ? `Tasks, ${n} running` : "Tasks");
+  }
+
+  // the tabs: a click, or the arrow keys with a tab focused
+  function showTab(name) {
+    tpTab = TP_TABS.includes(name) ? name : "tasks";
+    for (const b of $("tasksPanel").querySelectorAll('.tp-tabs [role="tab"]')) {
+      const on = b.dataset.tab === tpTab;
+      b.setAttribute("aria-selected", String(on));
+      b.tabIndex = on ? 0 : -1;
+    }
+    for (const body of $("tasksPanel").querySelectorAll('[role="tabpanel"]')) body.hidden = body.dataset.tab !== tpTab;
+    try { localStorage.setItem("agentx-tasks-tab", tpTab); } catch (_) { /* no storage */ }
+    if (tpTab === "browser") { loadBrowser(); startFrames(); } else { stopFrames(); loadTasks(); }
+  }
+  $("tasksPanel").querySelector(".tp-tabs").addEventListener("click", (e) => {
+    const b = e.target.closest('[role="tab"]');
+    if (b) showTab(b.dataset.tab);
+  });
+  $("tasksPanel").querySelector(".tp-tabs").addEventListener("keydown", (e) => {
+    const step = {ArrowRight: 1, ArrowLeft: -1}[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const next = TP_TABS[(TP_TABS.indexOf(tpTab) + step + TP_TABS.length) % TP_TABS.length];
+    showTab(next);
+    $("tasksPanel").querySelector(`.tp-tabs [data-tab="${next}"]`).focus();
+  });
+  document.addEventListener("visibilitychange", () => { if (tpShown("browser")) { loadBrowser(); startFrames(); } });
+
+  // the panel's width: its left edge, as for Details (kept per window; 0 is the usual width)
+  try { const kept = Number(localStorage.getItem("agentx-tasks-width")); if (kept >= TASKS_MIN) tasksWidth = kept; } catch (_) { /* no storage */ }
+  function setTasksWidth(width, keep) {
+    tasksWidth = width ? Math.round(Math.min(Math.max(TASKS_MIN, window.innerWidth * 0.7), Math.max(TASKS_MIN, width))) : 0;
+    const root = document.documentElement;
+    if (tasksWidth) root.style.setProperty("--tasks-w", `${tasksWidth}px`); else root.style.removeProperty("--tasks-w");
+    placeDetails();
+    if (keep) { try { if (tasksWidth) localStorage.setItem("agentx-tasks-width", String(tasksWidth)); else localStorage.removeItem("agentx-tasks-width"); } catch (_) { /* no storage */ } }
+  }
+  setTasksWidth(tasksWidth, false);
+  $("tasksGrip").addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const grip = $("tasksGrip"), app = document.querySelector(".app");
+    try { grip.setPointerCapture(e.pointerId); } catch (_) { /* moves still come */ }
+    app.classList.add("resizing-details");
+    const startX = e.clientX, startW = $("tasksPanel").getBoundingClientRect().width;
+    const move = (ev) => setTasksWidth(startW + (startX - ev.clientX), false);
+    const up = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      grip.removeEventListener("pointercancel", up);
+      app.classList.remove("resizing-details");
+      setTasksWidth(tasksWidth, true);
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+    grip.addEventListener("pointercancel", up);
+  });
+  $("tasksGrip").addEventListener("dblclick", () => setTasksWidth(0, true));
+  $("tasksGrip").addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    setTasksWidth($("tasksPanel").getBoundingClientRect().width + (e.key === "ArrowLeft" ? 24 : -24), true);
+  });
+
+  // -- Tasks: Running and Finished, each row with its time and Stop; a click opens its output ---------------------
+  const termLabel = (t) => t.name || `Terminal ${String(t.id).replace(/^term/, "")}`;
+  const rowName = (t) => t.kind === "terminal" ? termLabel(t) : t.name || t.command || t.id;
+  function runTime(t) {
+    const end = t.state === "running" || !t.endedAt ? Date.now() / 1000 : t.endedAt;
+    return t.startedAt ? shortTime(end - t.startedAt) : "";
+  }
+  function stateWords(t) {
+    if (t.state === "running") return "";
+    if (t.state === "stopped") return "Stopped";
+    if (t.state === "failed") return t.exitCode != null ? `Failed · exit ${t.exitCode}` : "Failed to start";
+    return t.exitCode != null ? `Exited ${t.exitCode}` : "Exited";
+  }
+  const span = (cls, text) => { const n = el("span", cls); n.textContent = text; return n; };
+  function taskRow(t) {
+    const finishedBad = t.state === "failed" || (t.state === "exited" && t.exitCode);
+    const row = el("div", `tp-row is-${t.state}${finishedBad ? " is-bad" : ""}`);
+    row.dataset.id = t.id;
+    const open = el("button", "tp-open");
+    open.type = "button";
+    open.title = t.command || "";
+    const main = el("span", "tp-main");
+    main.append(span(`tp-name${t.name || t.kind === "terminal" ? "" : " mono"}`, rowName(t)));
+    const meta = [stateWords(t), t.kind === "terminal" ? "Terminal" : t.ownerTitle ? `From ${t.ownerTitle}` : ""].filter(Boolean);
+    if (t.name && t.command && t.kind !== "terminal") main.append(span("tp-cmd", t.command));
+    if (meta.length) main.append(span(`tp-sub${finishedBad ? " bad" : ""}`, meta.join(" · ")));
+    open.append(span("tp-dot", ""), main, span("tp-time", runTime(t)));
+    open.setAttribute("aria-label", `${rowName(t)}${meta.length ? `, ${meta.join(", ")}` : ", running"}. Show its output`);
+    row.append(open);
+    if (t.state === "running" && (t.kind !== "terminal" || terminalsAllowed)) {
+      const stop = el("button", "btn small tp-stop");
+      stop.type = "button";
+      stop.textContent = "Stop";
+      stop.setAttribute("aria-label", `Stop ${rowName(t)}`);
+      row.append(stop);
+    }
+    return row;
+  }
+  function drawTasks() {
+    const list = $("taskList");
+    const sig = JSON.stringify([terminalsAllowed, tpRows.map((t) => [t.id, t.state, t.name, t.command, t.exitCode, t.ownerTitle])]);
+    if (sig !== tpSig) {
+      tpSig = sig;
+      const had = document.activeElement && list.contains(document.activeElement)
+        ? [document.activeElement.closest(".tp-row")?.dataset.id, document.activeElement.classList.contains("tp-stop")] : null;
+      list.textContent = "";
+      const running = tpRows.filter((t) => t.state === "running"), done = tpRows.filter((t) => t.state !== "running");
+      if (!tpRows.length) {
+        list.append(span("tp-empty", "No background tasks. agentx starts one when it runs a server or a watcher."));
+      } else {
+        const group = (cls, title, rows, extra) => {
+          const g = el("section", `tp-group ${cls}`);
+          const h = el("h3", "tp-group-head");
+          h.append(span("", title), span("tp-n", String(rows.length)));
+          if (extra) h.append(extra);
+          g.append(h);
+          if (rows.length) rows.forEach((t) => g.append(taskRow(t)));
+          else g.append(span("tp-none", "Nothing running."));
+          list.append(g);
+        };
+        group("running", "Running", running);
+        if (done.length) {
+          const clear = el("button", "link tp-clear");
+          clear.type = "button";
+          clear.id = "tasksClear";
+          clear.textContent = "Clear finished";
+          group("finished", "Finished", done.reverse(), clear);
+        }
+      }
+      if (had && had[0]) {                          // the list was redrawn under the keyboard: keep its place
+        const row = list.querySelector(`.tp-row[data-id="${CSS.escape(had[0])}"]`);
+        const back = row && ((had[1] && row.querySelector(".tp-stop")) || row.querySelector(".tp-open"));
+        if (back) back.focus();
+      }
+    }
+    tickTasks();
+    drawTaskOut();
+  }
+  function tickTasks() {
+    for (const row of $("taskList").querySelectorAll(".tp-row.is-running")) {
+      const t = tpRows.find((r) => r.id === row.dataset.id);
+      if (t) row.querySelector(".tp-time").textContent = runTime(t);
+    }
+    const t = tpRows.find((r) => r.id === feeds.task.id);
+    if (t && !$("taskOut").hidden) $("taskOutMeta").textContent = [stateWords(t) || "Running", runTime(t)].filter(Boolean).join(" · ");
+  }
+  async function loadTasks() {
+    let d;
+    try { d = await get("/api/tasks"); } catch (_) { return; }
+    tpRows = Array.isArray(d.tasks) ? d.tasks : [];
+    terminalsAllowed = d.terminalsAllowed !== false;
+    setTasksBadge(tpRows.filter((t) => t.state === "running").length);
+    drawTasks();
+    drawTerminals();
+  }
+  async function stopTask(id) {
+    const r = await post("/api/tasks/stop", {id});
+    refused(r, `${id} could not be stopped`);
+    await loadTasks();
+  }
+  $("taskList").addEventListener("click", async (e) => {
+    if (e.target.closest("#tasksClear")) {
+      refused(await post("/api/tasks/clear"), "The finished tasks could not be cleared");
+      await loadTasks();
+      return;
+    }
+    const row = e.target.closest(".tp-row");
+    if (!row) return;
+    const t = tpRows.find((r) => r.id === row.dataset.id);
+    if (e.target.closest(".tp-stop")) { e.target.closest(".tp-stop").disabled = true; stopTask(row.dataset.id); return; }
+    if (!t) return;
+    if (t.kind === "terminal") { termId = t.id; termSig = ""; showTab("terminal"); return; }
+    openTaskOut(t.id);
+  });
+
+  // an output, live: the newest 2,000 lines, kept at the bottom unless you scrolled up to read
+  const feeds = {task: {pre: $("taskOutText"), id: "", offset: 0, text: "", busy: false, gen: 0},
+                 term: {pre: $("termOut"), id: "", offset: 0, text: "", busy: false, gen: 0}};
+  function feedOpen(f, id) {
+    if (f.id === id) return;
+    Object.assign(f, {id, offset: 0, text: "", gen: f.gen + 1});
+    f.pre.textContent = "";
+    if (id) feedPoll(f);
+  }
+  async function feedPoll(f) {
+    if (!f.id || f.busy) return;
+    f.busy = true;
+    const gen = f.gen;
+    try {
+      const d = await get(`/api/tasks/output?id=${encodeURIComponent(f.id)}&after=${f.offset}`);
+      if (gen !== f.gen) return;
+      f.offset = Math.max(f.offset, Number(d.offset) || 0);
+      if (d.text) feedAppend(f, String(d.text));
+    } catch (_) { /* the next second asks again */ } finally { f.busy = false; }
+  }
+  function feedAppend(f, text) {
+    const pre = f.pre;
+    const stick = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 24;
+    let all = f.text + text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const lines = all.split("\n");
+    if (lines.length > MAX_LINES + 1) all = lines.slice(-(MAX_LINES + 1)).join("\n");
+    f.text = all;
+    pre.textContent = all;
+    if (stick) pre.scrollTop = pre.scrollHeight;
+  }
+  setInterval(() => {
+    if (!tpShown()) return;
+    if (tpTab === "tasks" && !$("taskOut").hidden) feedPoll(feeds.task);
+    if (tpTab === "terminal" && termId) feedPoll(feeds.term);
+  }, 1000);
+  setInterval(() => { if (tpShown() && tpTab !== "browser") loadTasks(); }, 2000);
+  setInterval(() => { if (tpShown("tasks")) tickTasks(); }, 1000);
+
+  function openTaskOut(id) {
+    $("taskList").hidden = true;
+    $("taskOut").hidden = false;
+    feedOpen(feeds.task, id);
+    drawTaskOut();
+    $("taskBack").focus();
+  }
+  function closeTaskOut() {
+    feedOpen(feeds.task, "");
+    $("taskOut").hidden = true;
+    $("taskList").hidden = false;
+    const back = $("taskList").querySelector(".tp-open");
+    if (back) back.focus();
+  }
+  function drawTaskOut() {
+    if ($("taskOut").hidden) return;
+    const t = tpRows.find((r) => r.id === feeds.task.id);
+    $("taskOutName").textContent = t ? rowName(t) : feeds.task.id;
+    $("taskOutName").title = t ? t.command || "" : "";
+    $("taskOutStop").hidden = !(t && t.state === "running" && (t.kind !== "terminal" || terminalsAllowed));
+    $("taskOutStop").disabled = false;
+    $("taskOutMeta").textContent = t ? [stateWords(t) || "Running", runTime(t)].filter(Boolean).join(" · ") : "Cleared";
+  }
+  $("taskBack").addEventListener("click", closeTaskOut);
+  $("taskOutStop").addEventListener("click", () => { $("taskOutStop").disabled = true; stopTask(feeds.task.id); });
+
+  // -- Terminal: one tab per terminal, New terminal, the output and an input line ---------------------------------
+  function drawTerminals() {
+    const terms = tpRows.filter((t) => t.kind === "terminal");
+    if (!terms.some((t) => t.id === termId)) termId = ((terms.filter((t) => t.state === "running").pop()) || terms[terms.length - 1] || {}).id || "";
+    const sig = JSON.stringify([terminalsAllowed, termId, terms.map((t) => [t.id, t.state, t.name])]);
+    if (sig !== termSig) {
+      termSig = sig;
+      const tabs = $("termTabs");
+      const focused = document.activeElement && tabs.contains(document.activeElement) ? document.activeElement.closest(".term-tab")?.dataset.id : "";
+      tabs.textContent = "";
+      for (const t of terms) {
+        const on = t.id === termId;
+        const tab = el("div", `term-tab${on ? " on" : ""}${t.state === "running" ? "" : " ended"}`);
+        tab.dataset.id = t.id;
+        const pick = el("button", "term-pick");
+        pick.type = "button";
+        pick.setAttribute("role", "tab");
+        pick.setAttribute("aria-selected", String(on));
+        pick.append(span("tp-dot", ""), span("", termLabel(t)));
+        if (t.state !== "running") pick.append(span("term-ended", "ended"));
+        tab.append(pick);
+        if (t.state === "running" && terminalsAllowed) {
+          const x = el("button", "term-x", `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`);
+          x.type = "button";
+          x.setAttribute("aria-label", `Close ${termLabel(t)}`);
+          x.title = "Close this terminal";
+          tab.append(x);
+        }
+        tabs.append(tab);
+      }
+      if (focused) { const back = tabs.querySelector(`.term-tab[data-id="${CSS.escape(focused)}"] .term-pick`); if (back) back.focus(); }
+    }
+    const t = terms.find((r) => r.id === termId);
+    $("termNew").hidden = !terminalsAllowed;
+    $("termNote").hidden = terminalsAllowed;
+    $("termNote").textContent = "Read only: terminals are off while remote control is on. agentx can still read and use them.";
+    $("termEmpty").hidden = terms.length > 0;
+    $("termEmpty").textContent = terminalsAllowed ? "No terminals. New terminal opens a shell in this folder." : "No terminals.";
+    $("termOut").hidden = !t;
+    $("termLine").hidden = !t || !terminalsAllowed;
+    const live = !!(t && t.state === "running" && terminalsAllowed);
+    const box = $("termInput");
+    box.disabled = !live;
+    box.placeholder = live ? "Type a command and press Enter · Ctrl+C stops it" : t ? "This terminal has ended" : "";
+    feedOpen(feeds.term, termId);
+  }
+  $("termTabs").addEventListener("click", async (e) => {
+    const tab = e.target.closest(".term-tab");
+    if (!tab) return;
+    if (e.target.closest(".term-x")) {
+      refused(await post("/api/terminals/close", {id: tab.dataset.id}), "The terminal could not be closed");
+      await loadTasks();
+      return;
+    }
+    termId = tab.dataset.id;
+    drawTerminals();
+    $("termInput").focus();
+  });
+  $("termNew").addEventListener("click", async () => {
+    $("termNew").disabled = true;
+    try {
+      const r = await post("/api/terminals");
+      if (!refused(r, "The terminal could not start")) termId = r.id;
+      await loadTasks();
+    } finally { $("termNew").disabled = false; }
+    if (!$("termInput").disabled) $("termInput").focus();
+  });
+  // what you type goes in order, one line at a time (an empty line is "", never nothing)
+  let termChain = Promise.resolve(), termHistory = [], termAt = 0;
+  $("termLine").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const box = $("termInput"), id = termId;
+    if (!id || box.disabled) return;
+    const text = String(box.value || "");
+    box.value = "";
+    if (text && termHistory[termHistory.length - 1] !== text) termHistory.push(text);
+    termHistory = termHistory.slice(-100);
+    termAt = termHistory.length;
+    termChain = termChain.then(async () => {
+      refused(await post("/api/terminals/input", {id, text}), "The terminal did not take the line");
+      setTimeout(() => feedPoll(feeds.term), 150);
+    });
+  });
+  $("termInput").addEventListener("keydown", (e) => {
+    const box = $("termInput");
+    if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "c") {   // (Cmd+C stays copy)
+      const selected = box.selectionStart !== box.selectionEnd || String(window.getSelection() || "") !== "";
+      if (selected || !termId) return;                       // copying what is selected
+      e.preventDefault();
+      const id = termId;
+      termChain = termChain.then(async () => {
+        refused(await post("/api/terminals/interrupt", {id}), "The command could not be stopped");
+        setTimeout(() => feedPoll(feeds.term), 200);
+      });
+      return;
+    }
+    if ((e.key === "ArrowUp" || e.key === "ArrowDown") && termHistory.length) {
+      e.preventDefault();
+      termAt = Math.max(0, Math.min(termHistory.length, termAt + (e.key === "ArrowUp" ? -1 : 1)));
+      box.value = termHistory[termAt] || "";
+    }
+  });
+
+  // -- Browser: the page of the conversation on screen, live; Take over sends your clicks and keys to it ----------
+  let bw = {available: true, open: false, url: "", title: "", user: false, frame: 0, takeAllowed: true, error: ""};
+  let bwShown = 0, bwBlob = "", bwBusy = false, frameRun = 0, frameSeq = 0;
+  async function loadBrowser() {
+    let d;
+    try { d = await get("/api/browser/state"); } catch (_) { return; }
+    bw = d || bw;
+    drawBrowser();
+  }
+  setInterval(() => { if (tpShown("browser")) loadBrowser(); }, 1000);
+  function clearFrame() {
+    const img = $("bwFrame");
+    img.hidden = true;
+    img.removeAttribute("src");
+    if (bwBlob) URL.revokeObjectURL(bwBlob);
+    bwBlob = "";
+    bwShown = 0;
+  }
+  function drawBrowser() {
+    const open = !!bw.open && bw.available !== false, mine = !!bw.user, may = bw.takeAllowed !== false;
+    if (!open && bwBlob) clearFrame();
+    $("bwBack").disabled = $("bwReload").disabled = !open || !may;
+    const url = $("bwUrl");
+    url.disabled = !may || bw.available === false;
+    if (document.activeElement !== url) url.value = open ? bw.url || "" : "";
+    url.placeholder = may ? "Type an address and press Enter" : "Watching only";
+    $("bwTitle").parentElement.hidden = !open && !mine;
+    $("bwTitle").textContent = open ? bw.title || bw.url || "" : "";
+    $("bwTitle").title = open ? bw.url || "" : "";
+    $("bwTake").hidden = !open || mine || !may;
+    $("bwGive").hidden = !mine;
+    const note = $("bwNote");
+    note.textContent = bw.available === false ? "" : !may ? "Watching only: taking over the browser is off while remote control is on."
+      : mine ? "You have the page. Clicks, scrolling and keys on it go to the page; agentx waits until you give it back. Shift+Tab leaves it." : "";
+    note.hidden = !note.textContent;
+    $("bwStage").classList.toggle("taken", mine && open);
+    $("bwFrame").hidden = !open || !bwBlob;
+    const empty = $("bwEmpty");
+    empty.hidden = open && !!bwBlob;
+    empty.textContent = bw.available === false ? `The browser is not installed. ${bw.error || ""}`.trim()
+      : open ? "Loading the page…" : may ? "agentx has not opened a page yet. Type an address to open one yourself." : "agentx has not opened a page yet.";
+    if (open && tpShown("browser")) startFrames();
+  }
+  // the picture: one request at a time, about 3 a second, only while the Browser tab is on screen
+  function startFrames() {
+    if (frameRun) return;
+    frameRun = ++frameSeq;
+    loopFrames(frameRun);
+  }
+  function stopFrames() { frameRun = 0; }
+  async function loopFrames(me) {
+    while (frameRun === me && tpShown("browser")) {
+      const started = Date.now();
+      if (bw.open) await fetchFrame();
+      await new Promise((done) => setTimeout(done, Math.max(100, 333 - (Date.now() - started))));
+    }
+    if (frameRun === me) frameRun = 0;
+  }
+  async function fetchFrame() {
+    if (bwBusy) return;
+    bwBusy = true;
+    try {
+      const res = await fetch(`/api/browser/frame?since=${bwShown}`, {headers: authHeaders(), cache: "no-store"});
+      if (res.status !== 200) return;
+      const counter = Number(res.headers.get("X-Frame") || 0);
+      const blob = await res.blob();
+      if (!bw.open) return;
+      const url = URL.createObjectURL(blob), old = bwBlob, img = $("bwFrame");
+      bwBlob = url;
+      img.src = url;
+      if (old) URL.revokeObjectURL(old);
+      bwShown = counter;
+      img.hidden = false;
+      $("bwEmpty").hidden = true;
+    } catch (_) { /* the next one asks again */ } finally { bwBusy = false; }
+  }
+  // what you do on the page goes in order; typed characters and wheel turns are joined while one is on its way
+  const bwQueue = [];
+  let bwPumping = false, wheelDy = 0, wheelAt = null, wheelTimer = 0;
+  function bwSend(ev) {
+    const last = bwQueue[bwQueue.length - 1];
+    if (ev.type === "text" && last && last.type === "text") last.text += ev.text;
+    else if (ev.type === "wheel" && last && last.type === "wheel") { last.dy += ev.dy; last.x = ev.x; last.y = ev.y; }
+    else bwQueue.push(ev);
+    pumpBrowser();
+  }
+  async function pumpBrowser() {
+    if (bwPumping) return;
+    bwPumping = true;
+    try {
+      while (bwQueue.length) {
+        const ev = bwQueue.shift();
+        if (refused(await post("/api/browser/input", {event: ev}), "The page did not take that") && ev.type !== "navigate") bwQueue.length = 0;
+      }
+    } finally { bwPumping = false; }
+    loadBrowser();
+  }
+  function framePoint(e) {
+    const img = $("bwFrame"), r = img.getBoundingClientRect();
+    const nw = img.naturalWidth || VIEW_W, nh = img.naturalHeight || VIEW_H;
+    const scale = Math.min(r.width / nw, r.height / nh);          // object-fit: contain, so allow for the bands
+    if (!scale) return null;
+    const x = (e.clientX - r.left - (r.width - nw * scale) / 2) / scale, y = (e.clientY - r.top - (r.height - nh * scale) / 2) / scale;
+    if (x < 0 || y < 0 || x > nw || y > nh) return null;
+    return {x: Math.round(x * VIEW_W / nw), y: Math.round(y * VIEW_H / nh)};
+  }
+  $("bwFrame").addEventListener("click", (e) => {
+    $("bwFrame").focus();
+    if (!bw.user) return;
+    const at = framePoint(e);
+    if (at) bwSend({type: "click", x: at.x, y: at.y});
+  });
+  $("bwFrame").addEventListener("wheel", (e) => {
+    if (!bw.user) return;
+    e.preventDefault();
+    wheelDy += e.deltaMode === 1 ? e.deltaY * 40 : e.deltaMode === 2 ? e.deltaY * VIEW_H : e.deltaY;
+    wheelAt = framePoint(e) || wheelAt;
+    if (wheelTimer) return;
+    wheelTimer = setTimeout(() => {                   // at most one turn of the wheel every 120 ms
+      wheelTimer = 0;
+      const dy = Math.round(wheelDy);
+      wheelDy = 0;
+      if (dy) bwSend(Object.assign({type: "wheel", dy}, wheelAt || {}));
+    }, 120);
+  }, {passive: false});
+  const KEYS = new Set(["Enter", "Backspace", "Tab", "Escape", "Delete", "Insert", "Home", "End", "PageUp", "PageDown",
+    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"]);
+  $("bwFrame").addEventListener("keydown", (e) => {
+    if (!bw.user || e.isComposing) return;
+    if (e.key === "Tab" && e.shiftKey) return;        // the way out of the page with the keyboard
+    const altGr = e.ctrlKey && e.altKey;                // a character typed with AltGr
+    if (e.key.length === 1 && (altGr || (!e.ctrlKey && !e.metaKey && !e.altKey))) {
+      e.preventDefault(); e.stopPropagation();
+      bwSend({type: "text", text: e.key});
+      return;
+    }
+    const mods = [e.ctrlKey && "Control", e.altKey && "Alt", e.metaKey && "Meta"].filter(Boolean);
+    if (KEYS.has(e.key) || (e.key.length === 1 && mods.length)) {
+      e.preventDefault(); e.stopPropagation();
+      const shift = e.shiftKey && (KEYS.has(e.key) || mods.length) ? ["Shift"] : [];
+      bwSend({type: "key", key: [...mods, ...shift, e.key].join("+")});
+    }
+  });
+  function navTarget(text) {
+    const s = String(text || "").trim();
+    if (!s) return "";
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) || /^(about|data|file|javascript):/i.test(s)) return s;
+    return (/^(localhost|127\.|\[::1\])/i.test(s) ? "http://" : "https://") + s;
+  }
+  $("bwBar").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const url = navTarget($("bwUrl").value);
+    if (!url) return;
+    $("bwUrl").value = url;
+    $("bwUrl").blur();
+    $("bwEmpty").textContent = "Opening the page…";
+    bwSend({type: "navigate", url});
+  });
+  $("bwBack").addEventListener("click", () => bwSend({type: "back"}));
+  $("bwReload").addEventListener("click", () => bwSend({type: "reload"}));
+  $("bwTake").addEventListener("click", async () => {
+    if (refused(await post("/api/browser/take"), "The page could not be taken over")) return;
+    bw.user = true;
+    drawBrowser();
+    $("bwFrame").focus();
+    loadBrowser();
+  });
+  $("bwGive").addEventListener("click", async () => {
+    refused(await post("/api/browser/give"), "The page could not be given back");
+    bw.user = false;
+    drawBrowser();
+    $("bwTake").focus();
+    loadBrowser();
+  });
 
   // -- the Settings sheet: saved to the settings files, for every folder or for this one ----------------------------
   let settingsData = null, scope = "user";
@@ -1850,7 +2420,7 @@
       const left = document.querySelector(".main").getBoundingClientRect().left;
       const right = $("beside").getBoundingClientRect().right;
       // this side's Details, as a column, sits between this side and the line: it is not part of either share
-      const details = detailsOpen && !detailsOver() ? $("details").getBoundingClientRect().width : 0;
+      const details = (detailsOpen || tasksOpen) && !detailsOver() ? $(tasksOpen ? "tasksPanel" : "details").getBoundingClientRect().width : 0;
       const room = right - left - details - handle.getBoundingClientRect().width;
       if (room > 0) setShare((ev.clientX - grab - left - details) / room, false);
     };
