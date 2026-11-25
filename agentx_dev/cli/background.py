@@ -269,9 +269,10 @@ def _job_close(job) -> None:
 _PS = "/bin/ps" if os.path.exists("/bin/ps") else "ps"
 
 
-def _group_has_live(pgid: int) -> Optional[bool]:
-    """POSIX: whether process group ``pgid`` has a member that still runs (zombies do not count); ``None`` when that
-    cannot be told. Linux reads ``/proc``; elsewhere (macOS) ``ps`` is asked."""
+def _group_members(pgid: int) -> Optional[List[int]]:
+    """POSIX: the pids in process group ``pgid`` that still run (zombies do not count); ``None`` when that cannot be
+    told. Linux reads ``/proc``; elsewhere (macOS) ``ps`` is asked."""
+    found: List[int] = []
     if os.path.isdir("/proc/self"):
         try:
             names = os.listdir("/proc")
@@ -289,12 +290,12 @@ def _group_has_live(pgid: int) -> Optional[bool]:
                 fields = data[data.rfind(b")") + 2:].split()     # after "(command)": state, ppid, pgrp, ...
                 try:
                     if len(fields) >= 3 and int(fields[2]) == pgid and fields[0] not in (b"Z", b"X", b"x"):
-                        return True
+                        found.append(int(name))
                 except ValueError:
                     continue
-            return False
+            return found
     try:
-        done = subprocess.run([_PS, "-A", "-o", "pgid=,stat="], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        done = subprocess.run([_PS, "-A", "-o", "pid=,pgid=,stat="], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=subprocess.DEVNULL, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -302,9 +303,15 @@ def _group_has_live(pgid: int) -> Optional[bool]:
         return None
     for line in done.stdout.decode("utf-8", errors="replace").splitlines():
         parts = line.split()
-        if len(parts) >= 2 and parts[0] == str(pgid) and not parts[1].startswith("Z"):
-            return True
-    return False
+        if len(parts) >= 3 and parts[1] == str(pgid) and not parts[2].startswith("Z") and parts[0].isdigit():
+            found.append(int(parts[0]))
+    return found
+
+
+def _group_has_live(pgid: int) -> Optional[bool]:
+    """POSIX: whether process group ``pgid`` has a member that still runs; ``None`` when that cannot be told."""
+    members = _group_members(pgid)
+    return None if members is None else bool(members)
 
 
 class _Reaped(Exception):
@@ -719,12 +726,18 @@ class TaskManager:
             return
         try:
             if sys.platform == "win32":
-                import signal
                 run.proc.send_signal(signal.CTRL_BREAK_EVENT)
             else:
-                with run.kill_lock:                   # only while the group id is still held (see _group_has_live)
+                # To what runs in the terminal, not to its shell: a shell without job control that gets SIGINT
+                # ends, and the terminal with it. Only while the group id is still held (see _group_has_live).
+                with run.kill_lock:
                     if run.pgid is not None and run.proc.returncode is None:
-                        os.killpg(run.pgid, signal.SIGINT)
+                        for pid in _group_members(run.pgid) or []:
+                            if pid != run.proc.pid:
+                                try:
+                                    os.kill(pid, signal.SIGINT)
+                                except OSError:
+                                    pass                  # ended meanwhile
         except Exception:
             pass
 
