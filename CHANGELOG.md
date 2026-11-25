@@ -50,8 +50,8 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   provider's models were offered. A local conversation never sends anything to a cloud model on its own.
 - **Local and fallback in team jobs.** A local name in `teamModels` gives local helpers (no key needed). A step whose
   model fails for good runs again on the fallback, told what the attempt did, later steps on that model start there
-  for the rest of the job; the screen reads `Done on <to> (fallback: <from> <reason>)` (also in the Team panel and
-  Details), and the agent is told `done on the fallback model (fallback: <job's model ID> <reason>)` and
+  for the rest of the job; the screen reads `Done on <to> (fallback: <from> <reason>)` (also in the app window's
+  team block and Details), and the agent is told `done on the fallback model (fallback: <job's model ID> <reason>)` and
   `N steps ran on the fallback model; check their work`, never a model name. The approval of a job on a local chat
   model says `Helpers on <names> will see this project's files.` when cloud helpers are listed.
 - **A local model's window in `agentx`.** On Ollama the check reads the loaded window; elsewhere `localContext`, else
@@ -86,12 +86,18 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 - **Notes you type while a team works go to its supervisor**, not into whichever helper happens to be running. Once
   that helper's step ends, the supervisor reads the note and adds steps for it, or leaves it for the main agent,
   which gets every note the team did not act on with the team's result.
-- **A Team panel in the app window.** One row for every step of the job, which keeps its place from waiting to
-  running to done, failed or skipped, with the helper, its model, what it has done and its tool (`Now · Editing
-  app.js` while it runs, `Last · Read app.js` after). Steps that run in parallel, the same helper twice and a
-  supervisor's new plan each get rows of their own; a step the new plan replaced shows skipped. Esc or Ctrl+C
-  marks open steps interrupted, and a step the job ended without reporting shows unknown, never a made-up failure.
-  It stays after the job and clears when you start or open another conversation.
+- **A team job is one live block in the app window's conversation.** The dark terminal-style block shows the whole
+  job and is updated in place: a head `Team · 2 running · 1 of 4 done`, then one row for every step, which keeps its
+  place and its height. A waiting step reads `○ helper · label  waiting`; a running one
+  `● helper · label  Reading tests/app.py · 18 tools · 1m 12s`; a step that ended turns into the terminal's ended
+  line with the start of its report under it (`✓ … Done (…)`, `✗ … Failed`, `◐ … Partial`, `– … Skipped`,
+  `↺ … Done on <fallback> (…)`), so it is never shown twice. Esc or Ctrl+C marks open steps `■ … Stopped`, and a
+  step the job ended without reporting reads `? … Ended without word`, never a made-up failure. Steps that run in
+  parallel, the same helper twice and a supervisor's new plan each get rows of their own; a step the new plan
+  replaced shows skipped. Click a row for its details (its model, its last calls, its counts, the fallback note);
+  click again to close them. A big team stops growing at about ten rows and scrolls inside the block, keeping the
+  running steps in view. After the job the block stays as its record, in its final form, also in a reloaded window
+  and in a conversation opened again (the final form is kept with the saved conversation). The terminal is unchanged.
 - **agentx decides by itself when a job needs a team.** You no longer need `/team` for a big job: before the agent
   starts on a message, agentx asks the chat model one short question, without tools, whether it is a large,
   multi-part job, and shows the answer (`Handing this to a team: it spans the whole project.` or `Working on this
@@ -189,10 +195,10 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   had loaded, and the load wiped them. They now wait for it, and the message being worked on is shown.
 
 - A question or an approval that waits for you in the app window is readable at once. The large orb stayed at the
-  top and the Team panel grew above the message box, so the conversation (and the question in it) was left a strip
+  top and a team panel grew above the message box, so the conversation (and the question in it) was left a strip
   a few lines high that only scrolled with the pointer inside it. Now the orb folds to a small one beside its note
-  while a card waits, the Team panel takes at most a third of the window and scrolls on its own, a new card is
-  shown from its top, and the mouse wheel scrolls the conversation wherever the pointer is.
+  while a card waits, the team is a block in the conversation rather than a panel above the message box, a new card
+  is shown from its top, and the mouse wheel scrolls the conversation wherever the pointer is.
 
 - A long team job is no longer declined unseen in the app window. Its task (up to 12,000 characters) was also sent
   as the card's heading, which may hold only 2,000, so a detailed hand-off came back "too long to show in the window
