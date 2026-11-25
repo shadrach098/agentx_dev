@@ -10,6 +10,7 @@ from __future__ import annotations
 import atexit
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -73,6 +74,53 @@ def strip_codes(text: str) -> str:
     return "\n".join(out)
 
 
+def _new_job(proc: "subprocess.Popen"):
+    """Windows: a job object holding ``proc`` and everything it starts, so the tree stays reachable after the shell
+    itself has exited (``taskkill /T`` needs the parent alive). ``None`` elsewhere or when it cannot be made."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.CreateJobObjectW.restype = wintypes.HANDLE
+        k.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        k.AssignProcessToJobObject.restype = wintypes.BOOL
+        k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        job = k.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        if not k.AssignProcessToJobObject(job, wintypes.HANDLE(int(proc._handle))):
+            k.CloseHandle(job)
+            return None
+        return job
+    except Exception:
+        return None
+
+
+def _job_terminate(job) -> None:
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        k.TerminateJobObject(job, 1)
+    except Exception:
+        pass
+
+
+def _job_close(job) -> None:
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        k.CloseHandle(job)
+    except Exception:
+        pass
+
+
 class _Run:
     """What the manager keeps beside a ``Task``: the process, its log file and the truncation bookkeeping."""
 
@@ -82,18 +130,25 @@ class _Run:
         self.lock = threading.Lock()
         self.fh = None
         self.dropped = 0              # bytes cut out of the log, so offsets handed out stay valid
+        self.head_len: Optional[int] = None   # set once the log has been trimmed: bytes of the kept head
+        self.marker_len = 0           # bytes of the "dropped" marker line between head and tail
         self.stopping = False
+        self.job = None               # Windows job object holding the whole tree
+        self.kill_lock = threading.Lock()
+        self.eof = threading.Event()  # the output pipe has closed: nothing more will be written
         self.reader: Optional[threading.Thread] = None
 
 
 class TaskManager:
     def __init__(self, home: Path, cwd: Path, env: Optional[dict] = None,
-                 max_tasks: int = MAX_TASKS, max_terminals: int = MAX_TERMINALS):
+                 max_tasks: int = MAX_TASKS, max_terminals: int = MAX_TERMINALS,
+                 permissions: Optional[Permissions] = None):
         self.home = Path(home)
         self.cwd = Path(cwd)
         self.max_tasks = max_tasks
         self.max_terminals = max_terminals
         self._env = env
+        self._permissions = permissions
         self._runs: Dict[str, _Run] = {}
         self._lock = threading.Lock()
         self._counters = {"task": 0, "terminal": 0}
@@ -105,7 +160,8 @@ class TaskManager:
     def _child_env(self) -> dict:
         if self._env is not None:
             return dict(self._env)
-        return _build_child_env(Permissions(execute_shell=True, workspace=str(self.cwd)))
+        perms = self._permissions or Permissions(execute_shell=True, workspace=str(self.cwd))
+        return _build_child_env(perms)
 
     def start(self, command: str, *, cwd: Optional[Path] = None, owner: str = "", name: str = "",
               kind: str = "task") -> Task:
@@ -158,8 +214,14 @@ class TaskManager:
                 if run.fh:
                     run.fh.close()
                     run.fh = None
+            run.eof.set()
             return task
-        run.proc = proc
+        with run.lock:
+            run.proc = proc
+            run.job = _new_job(proc)
+            stopped_already = run.stopping
+        if stopped_already:                  # stop() ran between the registration and the spawn
+            self._kill(run)
         run.reader = threading.Thread(target=self._read, args=(run,), daemon=True)
         run.reader.start()
         threading.Thread(target=self._wait, args=(run,), daemon=True).start()
@@ -176,13 +238,20 @@ class TaskManager:
                 self._append(run, chunk)
         except (OSError, ValueError):
             pass
+        finally:
+            run.eof.set()
+            try:
+                run.proc.stdout.close()
+            except Exception:
+                pass
 
     def _wait(self, run: _Run) -> None:
         code = run.proc.wait()
-        if run.reader:
-            run.reader.join(timeout=2)       # let the last output land; a grandchild may still hold the pipe
         with run.lock:
-            run.task.exit_code = code
+            run.task.exit_code = code        # the shell's own code; the task stays running while anything holds the pipe
+        if run.reader:
+            run.reader.join()                # a descendant (``cmd &``) may keep the pipe, and the task, alive
+        with run.lock:
             if run.task.ended_at is None:
                 run.task.ended_at = time.time()
             if run.task.state == "running":
@@ -192,10 +261,27 @@ class TaskManager:
                 run.proc.stdin.close()
         except Exception:
             pass
+        with run.kill_lock:
+            if run.job is not None:
+                _job_close(run.job)
+                run.job = None
         with run.lock:
             if run.fh is not None:
                 run.fh.close()
                 run.fh = None
+
+    def _kill(self, run: _Run) -> None:
+        """Kill the whole tree. POSIX: the process group (still there while any member lives, even if the shell has
+        exited). Windows: the job object; without one (``start`` can detach a program beyond any job, and
+        ``taskkill /T`` needs the shell alive) only a still-running shell's tree can be reached."""
+        proc = run.proc
+        if proc is None:
+            return
+        with run.kill_lock:
+            if run.job is not None:
+                _job_terminate(run.job)
+            if sys.platform != "win32" or proc.poll() is None:
+                _kill_tree(proc)
 
     def _append(self, run: _Run, data: bytes) -> None:
         with run.lock:
@@ -213,22 +299,37 @@ class TaskManager:
                 pass
 
     def _shrink(self, run: _Run, size: int) -> None:
-        """Keep the head and the newest part of the rest, half the room each way, so it is not redone at once."""
-        head = min(LOG_HEAD_BYTES, LOG_CAP_BYTES // 4)
-        keep_tail = max((LOG_CAP_BYTES - head) // 2, 0)
+        """Keep the head and the newest part of the rest, half the room each way, so it is not redone at once.
+
+        Both cuts fall on line boundaries and a marker line says how much was dropped between them.
+        """
         fh = run.fh
+        if run.head_len is None:
+            fh.seek(0)
+            first = fh.read(self._head())
+            nl = first.rfind(b"\n")
+            run.head_len = nl + 1 if nl >= 0 else len(first)
+            run.marker_len = 0
+        head_len = run.head_len
         fh.seek(0)
-        first = fh.read(head)
-        fh.seek(size - keep_tail)
-        tail = fh.read(keep_tail)
-        # start the kept tail at a line boundary when one is near
-        nl = tail.find(b"\n", 0, 4096)
-        cut = nl + 1 if nl >= 0 else 0
-        tail = tail[cut:]
-        run.dropped += size - head - len(tail)
+        head = fh.read(head_len)
+        region = head_len + run.marker_len          # where the kept tail starts in the file now
+        keep = max((LOG_CAP_BYTES - head_len) // 2, 0)
+        start = max(size - keep, region)
+        fh.seek(start)
+        tail = fh.read()
+        if start > region:                           # begin the tail on a fresh line
+            nl = tail.find(b"\n")
+            cut = nl + 1 if nl >= 0 else 0
+            tail = tail[cut:]
+            start += cut
+        run.dropped += start - region
+        lead = b"" if (not head or head.endswith(b"\n")) else b"\n"
+        marker = lead + f"[... {run.dropped} bytes of older output dropped ...]\n".encode("utf-8")
+        run.marker_len = len(marker)
         fh.seek(0)
         fh.truncate()
-        fh.write(first + tail)
+        fh.write(head + marker + tail)
         fh.flush()
 
     # -- reading ------------------------------------------------------------------------------------------------
@@ -258,22 +359,43 @@ class TaskManager:
         return text
 
     def read_from(self, id: str, offset: int) -> Tuple[str, int]:
-        """Text written after logical byte ``offset`` and the new offset (offsets survive the log being trimmed)."""
+        """Text written after logical byte ``offset`` and the new offset (offsets survive the log being trimmed).
+
+        Only whole lines are returned, so a multi-byte character or an escape sequence is never cut between two
+        calls; an unfinished last line waits for the next call unless the task has ended or it passed 64 KB.
+        """
         run = self._run(id)
         with run.lock:
             try:
                 data = run.task.log.read_bytes()
             except OSError:
                 data = b""
-            dropped = run.dropped
-        head = self._head()
-        pos = offset if offset <= head else offset - dropped
-        if pos < head and offset > head:
-            pos = head                      # the part the caller wanted was dropped
+            head_len, marker_len, dropped = run.head_len, run.marker_len, run.dropped
+        if head_len is None:
+            pos = offset
+        elif offset < head_len:
+            pos = offset
+        elif offset < head_len + dropped:
+            pos = head_len                  # the part wanted was dropped: start at the marker line
+        else:
+            pos = head_len + marker_len + (offset - head_len - dropped)
         pos = max(0, min(pos, len(data)))
         chunk = data[pos:]
-        new_offset = len(data) + (dropped if len(data) >= head else 0)
-        return strip_codes(chunk.decode("utf-8", errors="replace")), new_offset
+        if not chunk:
+            return "", offset
+        nl = chunk.rfind(b"\n")
+        if run.eof.is_set() or len(chunk) - (nl + 1) > 64 * 1024:
+            take = chunk
+        elif nl >= 0:
+            take = chunk[:nl + 1]
+        else:
+            return "", offset
+        end = pos + len(take)
+        if head_len is None or end <= head_len:
+            new_offset = end
+        else:
+            new_offset = end - marker_len + dropped
+        return strip_codes(take.decode("utf-8", errors="replace")), new_offset
 
     # -- acting -------------------------------------------------------------------------------------------------
 
@@ -313,7 +435,7 @@ class TaskManager:
             run.task.ended_at = time.time()
             run.stopping = True
         if run.proc is not None:
-            _kill_tree(run.proc)
+            self._kill(run)
             try:
                 run.proc.wait(timeout=5)
             except Exception:
@@ -356,15 +478,62 @@ class TaskManager:
 
 _shared: Dict[Tuple[str, str], TaskManager] = {}
 _shared_lock = threading.Lock()
+_signals_installed = False
 
 
-def shared(home: Path, cwd: Path) -> TaskManager:
-    """The process-wide manager for this project, made once; its tasks are stopped when agentx exits."""
+def _stop_every_manager() -> None:
+    for mgr in list(_shared.values()):
+        try:
+            mgr.stop_all()
+        except Exception:
+            pass
+
+
+def _chained_handler(previous, stop_all=_stop_every_manager):
+    """A signal handler that stops every task, then does what the previous handler would have done."""
+    def handler(signum, frame):
+        try:
+            stop_all()
+        except Exception:
+            pass
+        if callable(previous):
+            previous(signum, frame)
+        elif previous == signal.SIG_DFL:
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+        # SIG_IGN (or None): the signal was being ignored, so carry on
+    return handler
+
+
+def _install_signal_handlers() -> None:
+    """POSIX: SIGHUP and SIGTERM end the process without ``atexit``, and tasks live in their own sessions, so they
+    would be orphaned. Stop them first. Main thread only (``signal.signal`` refuses elsewhere)."""
+    global _signals_installed
+    if _signals_installed or sys.platform == "win32":
+        return
+    if threading.current_thread() is not threading.main_thread():
+        return
+    try:
+        for name in ("SIGHUP", "SIGTERM"):
+            sig = getattr(signal, name)
+            signal.signal(sig, _chained_handler(signal.getsignal(sig)))
+        _signals_installed = True
+    except (ValueError, OSError):
+        pass
+
+
+def shared(home: Path, cwd: Path, permissions: Optional[Permissions] = None) -> TaskManager:
+    """The process-wide manager for this project, made once; its tasks are stopped when agentx exits.
+
+    ``permissions`` (the session's) shapes the environment tasks get, as for ``run_shell``; it is used when the
+    manager is first created.
+    """
     key = (str(Path(home).resolve()), str(Path(cwd).resolve()))
     with _shared_lock:
         mgr = _shared.get(key)
         if mgr is None:
-            mgr = TaskManager(Path(home), Path(cwd))
+            mgr = TaskManager(Path(home), Path(cwd), permissions=permissions)
             _shared[key] = mgr
             atexit.register(mgr.stop_all)
+            _install_signal_handlers()
         return mgr
