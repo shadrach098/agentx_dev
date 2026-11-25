@@ -1383,9 +1383,13 @@
   }
   $("detailsBtn").addEventListener("click", () => setDetails(!detailsOpen));
   $("detailsClose").addEventListener("click", () => setDetails(false));
-  // below a wide window the panel lies over the chat: tapping beside it, or Escape, closes it
-  // a side of the split view is narrower than a window: its Details is a column there too, unless it is narrow
-  const detailsOver = () => matchMedia(EMBED ? "(max-width: 639px)" : "(max-width: 1199px)").matches;
+  // On a narrow window (860 pixels or less) the panel lies over the chat: tapping beside it, or Escape, closes it.
+  // From 861 to 1199 it is a column of its own and the sidebar folds away while it is open (see the CSS), except in
+  // the split view, where it still lies over this side. A side of the split view is narrower than a window: its
+  // Details is a column there too, unless it is narrow.
+  const detailsOver = () => EMBED ? matchMedia("(max-width: 639px)").matches
+    : matchMedia("(max-width: 860px)").matches
+      || (document.querySelector(".app").classList.contains("split") && matchMedia("(max-width: 1199px)").matches);
   // With a side open, a Details panel that lies over the chat lies over this side only, at its right edge (the side
   // beside has its own Details); as a column it sits between this side and the line (see .app.split in the CSS).
   function placeDetails() {

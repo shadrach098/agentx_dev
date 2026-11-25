@@ -144,7 +144,9 @@ def test_the_sides_can_be_resized_and_details_belongs_to_its_side():
     # a second drag starts where the line is (its Details column and where it was taken are allowed for)
     assert "(ev.clientX - grab - left - details) / room" in script
     # a side's own Details is a column like the left one, not a tinted overlay, unless the side is narrow
-    assert 'matchMedia(EMBED ? "(max-width: 639px)" : "(max-width: 1199px)")' in script
+    assert 'EMBED ? matchMedia("(max-width: 639px)").matches' in script
+    # the window's own Details lies over the chat at 860 px or less, and in the split view up to 1199 px
+    assert 'classList.contains("split") && matchMedia("(max-width: 1199px)").matches' in script
     assert "html.embedded .details { position: relative;" in css and "html.embedded .details-scrim { display: none" in css
 
 

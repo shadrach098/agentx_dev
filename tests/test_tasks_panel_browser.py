@@ -467,3 +467,97 @@ def test_the_window_gives_back_a_held_page_before_it_shows_another(window):
     page.wait_for_function("document.getElementById('bwGive').hidden", timeout=10_000)
     assert not browser.held_by_user(first)
     assert not w.errors
+
+
+# -- a mid-width window (861 to 1199 px): the panel takes a column of its own, the sidebar folds away --------------
+
+_RECTS = """() => {
+  const r = (s) => { const b = document.querySelector(s).getBoundingClientRect();
+                     return {left: b.left, right: b.right, width: b.width}; };
+  return {main: r('.main'), side: r('#side'), tasks: r('#tasksPanel'), details: r('#details'),
+          sideShown: getComputedStyle(document.getElementById('side')).visibility !== 'hidden' && r('#side').width > 100,
+          scrim: getComputedStyle(document.getElementById('detailsScrim')).display !== 'none',
+          sidePref: (() => { try { return localStorage.getItem('agentx-side'); } catch (_) { return 'none'; } })()};
+}"""
+
+
+def _settle(page):
+    page.wait_for_timeout(250)                              # the sidebar's slide, when there is one
+    return page.evaluate(_RECTS)
+
+
+@pytest.mark.parametrize("panel, button", [("tasksPanel", "tasksBtn"), ("details", "detailsBtn")])
+def test_at_mid_width_the_panel_makes_room_beside_the_chat(window, panel, button):
+    w = window(width=1030, height=900)
+    page = w.page
+    before = _settle(page)
+    assert before["sideShown"]
+    page.locator(f"#{button}").click()
+    page.locator(f"#{panel}").wait_for(state="visible")
+    now = _settle(page)
+    key = "tasks" if panel == "tasksPanel" else "details"
+    assert now["main"]["right"] <= now[key]["left"] + 1, now        # beside the chat, not over it
+    assert now["main"]["width"] >= 400, now
+    assert now[key]["right"] <= 1031, now
+    assert not now["sideShown"], now                                # the sidebar folded away
+    assert not now["scrim"], now                                    # nothing tints the chat
+    page.locator(f"#{button}").click()                              # closed: the sidebar is back as it was
+    page.locator(f"#{panel}").wait_for(state="hidden")
+    after = _settle(page)
+    assert after["sideShown"] and abs(after["side"]["width"] - before["side"]["width"]) < 1
+    assert after["sidePref"] == before["sidePref"]                  # the remembered choice is untouched
+    assert not w.errors, w.errors
+
+
+def test_at_mid_width_a_wide_panel_leaves_the_chat_room_and_the_grip_works(window):
+    w = window(width=1030, height=900)
+    page = w.page
+    page.locator("#tasksBtn").click()
+    page.locator("#tasksPanel").wait_for(state="visible")
+    start = _settle(page)
+    grip = page.locator("#tasksGrip").bounding_box()
+    y = grip["y"] + grip["height"] / 2
+    page.mouse.move(grip["x"] + grip["width"] / 2, y)
+    page.mouse.down()
+    page.mouse.move(grip["x"] - 60, y, steps=4)                     # a little wider
+    page.mouse.up()
+    wider = _settle(page)
+    assert wider["tasks"]["width"] > start["tasks"]["width"] + 40, (start, wider)
+    page.mouse.move(wider["tasks"]["left"] + 4, y)
+    page.mouse.down()
+    page.mouse.move(40, y, steps=6)                                 # as wide as it goes
+    page.mouse.up()
+    widest = _settle(page)
+    assert widest["main"]["width"] >= 400 and widest["main"]["right"] <= widest["tasks"]["left"] + 1, widest
+    page.locator("#tasksGrip").dblclick()                           # back to the usual width
+    assert abs(_settle(page)["tasks"]["width"] - 420) < 2
+    assert not w.errors, w.errors
+
+
+def test_below_861_the_panel_still_slides_over_the_chat(window):
+    w = window(width=800, height=900)
+    page = w.page
+    page.locator("#tasksBtn").click()
+    page.locator("#tasksPanel").wait_for(state="visible")
+    now = _settle(page)
+    assert now["tasks"]["left"] < now["main"]["right"] - 100, now  # over the chat
+    assert now["scrim"], now
+    assert not w.errors, w.errors
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_mid_width_screenshots(window, scheme):
+    folder = os.environ.get("MID_WIDTH_SHOTS")
+    if not folder:
+        pytest.skip("set MID_WIDTH_SHOTS=<folder> to take the screenshots")
+    w = window(width=1030, height=900, scheme=scheme)
+    page = w.page
+    page.locator("#tasksBtn").click()
+    page.locator("#tasksPanel").wait_for(state="visible")
+    _settle(page)
+    Path(folder).mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(Path(folder) / f"tasks-1030-{scheme}.png"))
+    page.locator("#detailsBtn").click()
+    page.locator("#details").wait_for(state="visible")
+    _settle(page)
+    page.screenshot(path=str(Path(folder) / f"details-1030-{scheme}.png"))

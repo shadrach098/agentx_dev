@@ -753,6 +753,20 @@ html.embedded .app, html.embedded .app.side-hidden, html.embedded .app.with-deta
 .app.resizing-details, .app.resizing-details * { cursor: col-resize !important; user-select: none; }
 .app.resizing-details iframe { pointer-events: none; }
 @media (max-width: 860px) { .details-grip { display: none; } }
+/* A mid-width window (861 to 1199 pixels): Details or the Tasks panel takes a column of its own and the sidebar folds
+   away while it is open (only on screen: the remembered sidebar choice is kept), so the chat narrows beside the panel
+   instead of being covered. The panel never leaves the chat under 420 pixels. The split view keeps the panel over
+   its left side there (two sides and a panel do not fit), and a side of the split view has its own rules above. */
+@media (min-width: 861px) and (max-width: 1199px) {
+  html:not(.embedded) .app.with-details:not(.split),
+  html:not(.embedded) .app.side-hidden.with-details:not(.split) {
+    grid-template-columns: 0 minmax(0, 1fr) min(var(--details-w, 320px), calc(100vw - 420px));
+  }
+  html:not(.embedded) .app.with-details:not(.split) > .side { visibility: hidden; overflow: hidden; padding: 0; border: 0; }
+  html:not(.embedded) .app.with-details:not(.split) .side-toggle { display: none; }
+  html:not(.embedded) .app.with-details:not(.split) > .details { position: relative; inset: auto; width: auto; z-index: auto; box-shadow: none; }
+  html:not(.embedded) .app.with-details:not(.split) > .details-scrim { display: none; }
+}
 
 /* Recent as a tree: the folder agentx opened is the main branch, its conversations hang from it on an L-shaped line,
    and a conversation opened while another worked hangs from that one */

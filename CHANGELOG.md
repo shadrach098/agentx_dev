@@ -191,6 +191,12 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Fixed
 
+- **The app window's Tasks panel and Details no longer cover the chat on a mid-size window.** From 861 to
+  1199 pixels wide the open panel takes a column of its own and the sidebar folds away until it closes (your
+  sidebar choice is kept); the chat keeps at least 420 pixels. Narrower windows still slide it over the chat;
+  the split view keeps it over its left side. Below 861 pixels the hidden sidebar no longer takes room above the
+  chat.
+
 - **agentx: a local model that fails at start no longer stops it.** The app window (and the terminal) exited when the
   model it started on was local and failed its check (a folder's settings naming a model the server could not load,
   say). It now starts on another local model you named, without a question: your own `model` from

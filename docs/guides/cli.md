@@ -1175,8 +1175,10 @@ on the left and in `/resume`; until then, and for older conversations, the first
   **Tools** and **Sign out** buttons, and the project memory (the `AGENTX.md` files in force, saved notes, team
   reports), and the mode in force with what it allows. MCP servers that need signing in are listed here only (not in
   the conversation): a yellow dot on **Details** says so, and each has its **Sign in** button. On a wide window it
-  is a column on the right; on an iPad, a phone or a half-screen window it slides over the chat, and tapping beside
-  it (or Esc) closes it. Long server names and addresses wrap, so it never scrolls sideways. Drag its left edge
+  is a column on the right. On a mid-size window (861 to 1199 pixels wide, a half-screen window say) it is still a
+  column: the sidebar folds away while it is open and comes back when you close it, and the chat keeps at least 420
+  pixels (in the split view it lies over the left side instead). On a phone or a narrower window it slides over the
+  chat, and tapping beside it (or Esc) closes it. Long server names and addresses wrap, so it never scrolls sideways. Drag its left edge
   to make it wider or narrower (from 260 pixels to 60% of the window; with the edge focused, the arrow keys move it);
   the width is remembered, and a double-click on the edge puts it back.
 - **Settings** edits the settings files, for **All folders** (`~/.agentx/settings.json`) or **This folder**
@@ -1433,7 +1435,7 @@ Without it the browser tools are still there and answer `The browser needs Playw
 
 ### The panel in the app window
 
-The **Tasks** button (top right, beside **Details**) opens a side panel; a count on the button shows what is running. It is the same kind of resizable panel as Details, and opening one closes the other. The tab you were on and the width are remembered.
+The **Tasks** button (top right, beside **Details**) opens a side panel; a count on the button shows what is running. It is the same kind of resizable panel as Details (a column on a mid-size window too, with the sidebar folded away), and opening one closes the other. The tab you were on and the width are remembered.
 
 - **Tasks.** Running and Finished groups. A row shows the name or command, how long it has run and **Stop**, and which conversation started it. Click a row to see its output live. A finished row shows its exit code. **Clear finished** removes them.
 - **Browser.** The page agentx has open, as a picture that refreshes about three times a second, with an address bar, Back and Reload. With no page it says `agentx has not opened a page`, and you can type an address to open one yourself. The tab shows the page of the conversation on screen. **Take over** gives you the page: your clicks, the wheel and typing go to it. While you have it, the agent's browser tools answer `The user is using the browser right now; wait or ask them.` (reading still works). **Give back** returns it; so does showing another conversation, reloading or closing the window, and a page no window has shown for 30 seconds goes back by itself. Your own actions do not ask for approval.
