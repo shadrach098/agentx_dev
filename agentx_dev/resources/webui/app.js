@@ -48,7 +48,8 @@
   function showLane(lane) {
     try { if (lane) sessionStorage.setItem("agentx-lane", lane); else sessionStorage.removeItem("agentx-lane"); }
     catch (_) { /* no storage: the window shows the device's own conversation */ }
-    giveBackHeld();                                   // the page held here is not on screen after the reload
+    // the page held here is not on screen after the reload (before the Browser tab is set up, nothing is held)
+    try { giveBackHeld(); } catch (_) { /* nothing to give back */ }
     location.reload();
   }
 
