@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import io
 import json
 import os
@@ -79,6 +80,7 @@ TASK_OUTPUT_CHARS = 200_000         # one read of a task's output in the window:
 TERMINALS_OFF = "terminals are off while remote control is on"
 TAKE_OVER_OFF = "taking over the browser is off while remote control is on"
 NO_CONVERSATION_YET = "this conversation has not started yet; try again in a moment"
+PAGE_CHANGED = "the conversation on screen changed, so that was not sent to its page; try again"
 TERMINAL_INPUT_MAX = 64 * 1024      # the most text one line typed into a terminal may have
 
 
@@ -2060,23 +2062,32 @@ class WebFront:
         from agentx_dev.cli.browser import shared_browser
         return shared_browser()
 
+    @staticmethod
+    def _owner_token(owner: str) -> str:
+        """A short mark of the conversation whose page the window shows (not its id): the frame and the user's input
+        carry it, so a picture or a click from before a conversation switch is never taken for the new page's."""
+        return hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16] if owner else ""
+
     def browser_state(self) -> Dict[str, Any]:
         """``GET /api/browser/state``: the page of the conversation on screen; never starts the browser."""
         problem = _browser_problem()
-        state = self._browser().state(self.conversation_id())
+        owner = self.conversation_id()
+        state = self._browser().state(owner)
         return {"available": not problem, "open": bool(state.get("open")), "url": _text(state.get("url"), 2000),
                 "title": _text(state.get("title"), 300), "user": bool(state.get("user")),
-                "frame": int(state.get("frame") or 0), "takeAllowed": not self._remote_on(), "error": problem}
+                "frame": int(state.get("frame") or 0), "takeAllowed": not self._remote_on(), "error": problem,
+                "owner": self._owner_token(owner)}
 
-    def browser_frame(self) -> Tuple[int, Optional[bytes]]:
-        """``(counter, JPEG or None)`` of the page on screen; never starts the browser."""
+    def browser_frame(self) -> Tuple[int, Optional[bytes], str]:
+        """``(counter, JPEG or None, owner mark)`` of the page on screen; never starts the browser."""
         browser = self._browser()
         owner = self.conversation_id()
+        token = self._owner_token(owner)
         try:
             counter, jpeg = browser.frame(owner)
         except Exception:                                   # frame() gives the last picture itself; this is a guard
-            return int(browser.state(owner).get("frame") or 0), None
-        return int(counter or 0), jpeg
+            return int(browser.state(owner).get("frame") or 0), None, token
+        return int(counter or 0), jpeg, token
 
     def browser_take(self) -> Dict[str, Any]:
         """``POST /api/browser/take``: the user has the page; the agent's acting tools wait for Give back."""
@@ -2092,9 +2103,10 @@ class WebFront:
         self._browser().give(self.conversation_id())
         return {"ok": True}
 
-    def browser_input(self, event: Any) -> Dict[str, Any]:
+    def browser_input(self, event: Any, mark: Any = None) -> Dict[str, Any]:
         """``POST /api/browser/input``: the user's own click, wheel, key, text, navigate, back or reload (theirs:
-        not gated; a navigation is checked like the agent's)."""
+        not gated; a navigation is checked like the agent's). ``mark``, when the window sends it, is the owner mark of
+        the page it was looking at: an event meant for another conversation's page is refused."""
         if self._remote_on():
             return {"ok": False, "error": TAKE_OVER_OFF}
         if not isinstance(event, dict):
@@ -2103,6 +2115,8 @@ class WebFront:
         owner = self.conversation_id()
         if not owner:                                       # a room whose app is still being made
             return {"ok": False, "error": NO_CONVERSATION_YET}
+        if mark not in (None, "") and mark != self._owner_token(owner):
+            return {"ok": False, "error": PAGE_CHANGED}
         problem = _browser_problem()
         if problem:
             return {"ok": False, "error": problem}
@@ -2800,20 +2814,24 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/api/browser/state":
             return self._json(front.browser_state())
         if url.path == "/api/browser/frame":
-            return self._frame(front, (query.get("since") or [""])[0])
+            return self._frame(front, (query.get("since") or [""])[0], (query.get("owner") or [""])[0])
         return self._json({"error": "not found"}, 404)
 
-    def _frame(self, front: WebFront, since: str) -> None:
-        """The page on screen as a JPEG (``X-Frame`` its counter), or 204 when it is the one the window has."""
-        counter, jpeg = front.browser_frame()
-        if jpeg is None or (since.isdigit() and int(since) == counter):
+    def _frame(self, front: WebFront, since: str, owner: str = "") -> None:
+        """The page on screen as a JPEG (``X-Frame`` its counter, ``X-Frame-Owner`` the mark of the conversation it
+        belongs to), or 204 when it is the one the window has. A window that names another conversation's mark has
+        another page: it gets the picture whatever its counter (each conversation's page counts on its own)."""
+        counter, jpeg, mark = front.browser_frame()
+        same = not owner or owner == mark
+        if jpeg is None or (same and since.isdigit() and int(since) == counter):
             self.send_response(204)
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Frame", str(counter))
+            self.send_header("X-Frame-Owner", mark)
             self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
             return
-        self._send(200, jpeg, "image/jpeg", {"X-Frame": str(counter)})
+        self._send(200, jpeg, "image/jpeg", {"X-Frame": str(counter), "X-Frame-Owner": mark})
 
     def do_POST(self) -> None:                                      # noqa: N802
         if not self._host_ok():
@@ -2897,7 +2915,7 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/api/browser/give":
             return self._json(front.browser_give())
         if url.path == "/api/browser/input":
-            return self._json(front.browser_input(data.get("event")))
+            return self._json(front.browser_input(data.get("event"), data.get("owner")))
         return self._json({"error": "not found"}, 404)
 
     def _events(self, after: int, front: Optional[WebFront] = None, device: str = "") -> None:

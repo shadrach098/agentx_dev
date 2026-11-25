@@ -1332,6 +1332,7 @@
     badge.hidden = count.hidden = n <= 0;
     badge.textContent = count.textContent = n > 0 ? String(n) : "";
     $("tasksBtn").setAttribute("aria-label", n > 0 ? `Tasks, ${n} running` : "Tasks");
+    $("tpTabTasks").setAttribute("aria-label", n > 0 ? `Tasks, ${n} running` : "Tasks");   // read as that, not "Tasks2"
   }
 
   // the tabs: a click, or the arrow keys with a tab focused
@@ -1481,18 +1482,26 @@
     const t = tpRows.find((r) => r.id === feeds.task.id);
     if (t && !$("taskOut").hidden) $("taskOutMeta").textContent = [stateWords(t) || "Running", runTime(t)].filter(Boolean).join(" · ");
   }
+  let tpLoading = false, tpAgain = false;
   async function loadTasks() {
-    let d;
-    try { d = await get("/api/tasks"); } catch (_) { return; }
-    tpRows = Array.isArray(d.tasks) ? d.tasks : [];
-    terminalsAllowed = d.terminalsAllowed !== false;
-    setTasksBadge(tpRows.filter((t) => t.state === "running").length);
-    drawTasks();
-    drawTerminals();
+    if (tpLoading) { tpAgain = true; return; }        // one at a time; a call meanwhile asks again once it is back
+    tpLoading = true;
+    try {
+      do {
+        tpAgain = false;
+        let d;
+        try { d = await get("/api/tasks"); } catch (_) { break; }
+        tpRows = Array.isArray(d.tasks) ? d.tasks : [];
+        terminalsAllowed = d.terminalsAllowed !== false;
+        setTasksBadge(tpRows.filter((t) => t.state === "running").length);
+        drawTasks();
+        drawTerminals();
+      } while (tpAgain);
+    } finally { tpLoading = false; }
   }
-  async function stopTask(id) {
+  async function stopTask(id, button) {
     const r = await post("/api/tasks/stop", {id});
-    refused(r, `${id} could not be stopped`);
+    if (refused(r, `${id} could not be stopped`) && button) button.disabled = false;   // to try again
     await loadTasks();
   }
   $("taskList").addEventListener("click", async (e) => {
@@ -1504,7 +1513,8 @@
     const row = e.target.closest(".tp-row");
     if (!row) return;
     const t = tpRows.find((r) => r.id === row.dataset.id);
-    if (e.target.closest(".tp-stop")) { e.target.closest(".tp-stop").disabled = true; stopTask(row.dataset.id); return; }
+    const stop = e.target.closest(".tp-stop");
+    if (stop) { stop.disabled = true; stopTask(row.dataset.id, stop); return; }
     if (!t) return;
     if (t.kind === "terminal") { termId = t.id; termSig = ""; showTab("terminal"); return; }
     openTaskOut(t.id);
@@ -1572,7 +1582,7 @@
     $("taskOutMeta").textContent = t ? [stateWords(t) || "Running", runTime(t)].filter(Boolean).join(" · ") : "Cleared";
   }
   $("taskBack").addEventListener("click", closeTaskOut);
-  $("taskOutStop").addEventListener("click", () => { $("taskOutStop").disabled = true; stopTask(feeds.task.id); });
+  $("taskOutStop").addEventListener("click", () => { $("taskOutStop").disabled = true; stopTask(feeds.task.id, $("taskOutStop")); });
 
   // -- Terminal: one tab per terminal, New terminal, the output and an input line ---------------------------------
   function drawTerminals() {
@@ -1680,17 +1690,43 @@
   // -- Browser: the page of the conversation on screen, live; Take over sends your clicks and keys to it ----------
   let bw = {available: true, open: false, url: "", title: "", user: false, frame: 0, takeAllowed: true, error: ""};
   let bwShown = 0, bwBlob = "", bwBusy = false, frameRun = 0, frameSeq = 0;
+  // The mark of the conversation whose page is shown (from the state; the frame carries it too). Each conversation's
+  // page counts its pictures on its own, so after a switch the old picture could pass for the new one, and a click
+  // meant for it could land on the other page: a new mark drops the picture, the take-over and what was queued.
+  let bwOwner = null, bwLoading = false, bwAgain = false;
+  function pageChanged(owner) {
+    bwOwner = owner;
+    clearFrame();
+    bwQueue.length = 0;
+    bw = Object.assign({}, bw, {open: false, user: false, url: "", title: "", frame: 0});
+  }
   async function loadBrowser() {
-    let d;
-    try { d = await get("/api/browser/state"); } catch (_) { return; }
-    bw = d || bw;
+    if (bwLoading) { bwAgain = true; return; }        // one at a time, so answers cannot land out of order
+    bwLoading = true;
+    try {
+      do {
+        bwAgain = false;
+        let d;
+        try { d = await get("/api/browser/state"); } catch (_) { break; }
+        if (!d) break;
+        if ((d.owner || "") !== bwOwner) pageChanged(d.owner || "");
+        bw = d;
+        drawBrowser();
+      } while (bwAgain);
+    } finally { bwLoading = false; }
+  }
+  // the conversation on screen changed (a switch, or it was reloaded): forget the page until the state says whose
+  function browserMoved() {
+    pageChanged(null);
     drawBrowser();
+    if (tpShown("browser")) loadBrowser();
   }
   setInterval(() => { if (tpShown("browser")) loadBrowser(); }, 1000);
   function clearFrame() {
     const img = $("bwFrame");
     img.hidden = true;
     img.removeAttribute("src");
+    delete img.dataset.owner;
     if (bwBlob) URL.revokeObjectURL(bwBlob);
     bwBlob = "";
     bwShown = 0;
@@ -1739,14 +1775,22 @@
     if (bwBusy) return;
     bwBusy = true;
     try {
-      const res = await fetch(`/api/browser/frame?since=${bwShown}`, {headers: authHeaders(), cache: "no-store"});
+      const asked = bwOwner;
+      const res = await fetch(`/api/browser/frame?since=${bwShown}&owner=${encodeURIComponent(asked || "")}`,
+                              {headers: authHeaders(), cache: "no-store"});
+      const mark = res.headers.get("X-Frame-Owner") || "";
+      if (asked === null || mark !== asked || bwOwner !== asked) {   // another conversation's page: ask whose it is
+        loadBrowser();
+        return;
+      }
       if (res.status !== 200) return;
       const counter = Number(res.headers.get("X-Frame") || 0);
       const blob = await res.blob();
-      if (!bw.open) return;
+      if (!bw.open || bwOwner !== asked) return;
       const url = URL.createObjectURL(blob), old = bwBlob, img = $("bwFrame");
       bwBlob = url;
       img.src = url;
+      img.dataset.owner = mark;
       if (old) URL.revokeObjectURL(old);
       bwShown = counter;
       img.hidden = false;
@@ -1757,10 +1801,11 @@
   const bwQueue = [];
   let bwPumping = false, wheelDy = 0, wheelAt = null, wheelTimer = 0;
   function bwSend(ev) {
-    const last = bwQueue[bwQueue.length - 1];
-    if (ev.type === "text" && last && last.type === "text") last.text += ev.text;
-    else if (ev.type === "wheel" && last && last.type === "wheel") { last.dy += ev.dy; last.x = ev.x; last.y = ev.y; }
-    else bwQueue.push(ev);
+    const last = bwQueue[bwQueue.length - 1], owner = bwOwner;
+    const same = last && last.owner === owner && last.ev.type === ev.type;
+    if (same && ev.type === "text") last.ev.text += ev.text;
+    else if (same && ev.type === "wheel") Object.assign(last.ev, {dy: last.ev.dy + ev.dy, x: ev.x, y: ev.y});
+    else bwQueue.push({ev: Object.assign({}, ev), owner});
     pumpBrowser();
   }
   async function pumpBrowser() {
@@ -1768,8 +1813,10 @@
     bwPumping = true;
     try {
       while (bwQueue.length) {
-        const ev = bwQueue.shift();
-        if (refused(await post("/api/browser/input", {event: ev}), "The page did not take that") && ev.type !== "navigate") bwQueue.length = 0;
+        const {ev, owner} = bwQueue.shift();
+        if (owner !== bwOwner) continue;              // meant for a page no longer on screen
+        const body = owner ? {event: ev, owner} : {event: ev};
+        if (refused(await post("/api/browser/input", body), "The page did not take that") && ev.type !== "navigate") bwQueue.length = 0;
       }
     } finally { bwPumping = false; }
     loadBrowser();
@@ -2537,6 +2584,7 @@
   }
   async function switchConversation(ev) {
     const mine = ++loading;
+    browserMoved();                                   // the Browser tab shows this conversation's page from now on
     let data = null;
     try {
       data = await get(`/api/history?upto=${Number(ev.base) || 0}`);
@@ -2573,6 +2621,7 @@
 
   async function reloadConversation() {
     const mine = ++loading;
+    browserMoved();
     try {
       const data = await get("/api/history");
       if (mine !== loading) return;

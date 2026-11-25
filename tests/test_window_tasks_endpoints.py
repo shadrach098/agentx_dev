@@ -250,7 +250,7 @@ class TestBrowser:
         monkeypatch.setitem(sys.modules, "playwright", None)
         monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
         state = h.request(LAPTOP, "GET", "/api/browser/state")
-        assert set(state) == {"available", "open", "url", "title", "user", "frame", "takeAllowed", "error"}
+        assert set(state) == {"available", "open", "url", "title", "user", "frame", "takeAllowed", "error", "owner"}
         assert state["available"] is False and state["error"] == NOT_INSTALLED
         assert state["open"] is False and state["takeAllowed"] is True
         status, headers, body = raw(h, LAPTOP, "GET", "/api/browser/frame?since=0")
@@ -405,6 +405,31 @@ class TestBrowserBusy:
             got = h.request(LAPTOP, "POST", "/api/browser/input", {"event": event})
             assert got["ok"] is False and got["error"], event
         assert browser._thread is None                       # refused before the worker was asked
+
+    def test_the_page_carries_the_mark_of_its_conversation(self, host):
+        """The state and the frame name whose page it is; a window that shows another conversation's page gets the
+        picture whatever its counter, and its input for that page is refused."""
+        import hashlib
+        from agentx_dev.cli.browser import _Owner
+        h = host()
+        main = h.front_of(LAPTOP)
+        ready(main)
+        browser = main.app.browser = BrowserHost()
+        owner = main.conversation_id()
+        mark = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
+        browser._owners[owner] = _Owner(context=None, pages=[FakePage()], url="http://a.test/", title="A",
+                                        frame_no=3, frame_jpeg=b"\xff\xd8a", dirty=False,
+                                        frame_at=time.monotonic() + 3600)
+        state = h.request(LAPTOP, "GET", "/api/browser/state")
+        assert state["owner"] == mark and owner not in json.dumps(state)
+        status, headers, _ = raw(h, LAPTOP, "GET", f"/api/browser/frame?since=3&owner={mark}")
+        assert status == 204 and headers["x-frame-owner"] == mark
+        status, headers, body = raw(h, LAPTOP, "GET", "/api/browser/frame?since=3&owner=0123456789abcdef")
+        assert status == 200 and body == b"\xff\xd8a" and headers["x-frame-owner"] == mark
+        got = h.request(LAPTOP, "POST", "/api/browser/input", {"event": {"type": "click", "x": 1, "y": 1},
+                                                               "owner": "0123456789abcdef"})
+        assert got["ok"] is False and "changed" in got["error"]
+        assert browser._thread is None                      # refused before the worker was asked
 
     def test_take_and_input_need_a_conversation(self, tmp_path):
         from agentx_dev.cli.webui import WebFront

@@ -160,6 +160,24 @@ def test_a_task_shows_with_stop_and_moves_to_finished(window, tmp_path):
     assert not w.errors
 
 
+def test_a_refused_stop_can_be_tried_again(window, tmp_path):
+    """A Stop the server refuses says why and leaves its button usable; the Tasks tab reads as "Tasks, 1 running"."""
+    w = window()
+    page = w.page
+    w.tasks.start(script(tmp_path, "srv.py", "import time\ntime.sleep(60)\n"), owner=w.main.conversation_id(),
+                  name="dev server")
+    page.route("**/api/tasks/stop", lambda route: route.fulfill(json={"ok": False, "error": "no stopping today"}))
+    w.open_tab("tasks")
+    stop = page.locator(".tp-group.running .tp-row .tp-stop")
+    stop.wait_for(state="visible", timeout=10_000)
+    page.wait_for_function("document.getElementById('tpTabTasks').getAttribute('aria-label') === 'Tasks, 1 running'",
+                           timeout=10_000)
+    stop.click()
+    page.locator(".notice.error", has_text="no stopping today").wait_for(state="visible", timeout=10_000)
+    page.wait_for_function("!document.querySelector('.tp-group.running .tp-stop').disabled", timeout=5_000)
+    assert not w.errors
+
+
 def test_a_terminal_runs_what_is_typed(window):
     w = window()
     page = w.page
@@ -231,6 +249,92 @@ def test_the_browser_tab_shows_the_page_and_can_be_taken_over(chromium_problem, 
         assert not w.errors
     finally:
         browser.close()
+
+
+class _ShownPage:
+    """Stands in for a Playwright page whose picture is already taken (the window's poll never asks the worker)."""
+
+    def __init__(self, url):
+        self.url = url
+
+
+def _page_for(browser, owner, url, title, jpeg, counter):
+    """Gives ``owner`` a page whose picture is ``jpeg`` with frame counter ``counter``, fresh for an hour."""
+    import time
+    from agentx_dev.cli.browser import _Owner
+    browser._owners[owner] = _Owner(context=None, pages=[_ShownPage(url)], url=url, title=title, frame_no=counter,
+                                    frame_jpeg=jpeg, dirty=False, frame_at=time.monotonic() + 3600)
+
+
+SHOWN_SIZE = ("(() => { const i = document.getElementById('bwFrame');"
+              " return i.hidden || !i.src ? 0 : fetch(i.src).then((r) => r.arrayBuffer()).then((b) => b.byteLength); })()")
+
+
+def _shows(page, size, seconds=10.0):
+    """Waits until the frame on screen is the picture of ``size`` bytes."""
+    seen = None
+    for _ in range(int(seconds * 10)):
+        seen = page.evaluate(SHOWN_SIZE)
+        if seen == size:
+            return
+        page.wait_for_timeout(100)
+    raise AssertionError(f"the frame shown has {seen} bytes, not {size}")
+
+
+def _mark(owner):
+    import hashlib
+    return hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
+
+
+def test_a_conversation_switch_never_shows_or_drives_the_last_page(window):
+    """Each conversation's page counts its pictures on its own: after a switch in the same window, the picture of the
+    page before must not stay up because the new page has the same counter, and a key queued for the page before
+    must not reach the new one."""
+    from agentx_dev.cli.browser import BrowserHost
+    w = window()
+    page = w.page
+    browser = w.main.app.browser = BrowserHost()          # nothing here starts Chromium: the pictures are given
+    first = w.main.conversation_id()
+    jpeg_a, jpeg_b = b"\xff\xd8" + b"A" * 30, b"\xff\xd8" + b"B" * 70
+    _page_for(browser, first, "http://a.test/one", "Page A", jpeg_a, 3)
+    w.open_tab("browser")
+    _shows(page, len(jpeg_a))
+    assert page.locator("#bwFrame").get_attribute("data-owner") == _mark(first)
+    page.locator("#bwTake").click()
+    page.locator("#bwGive").wait_for(state="visible", timeout=10_000)
+    held = []
+
+    def hold(route):                                   # the first input stays on its way, so the next one queues
+        if not held:
+            held.append(route)
+        else:
+            route.continue_()
+    page.route("**/api/browser/input", hold)
+    box = page.locator("#bwFrame").bounding_box()
+    page.mouse.click(box["x"] + 20, box["y"] + 20)
+    page.wait_for_timeout(300)
+    page.keyboard.type("x")                            # queued behind the click
+    assert len(held) == 1
+    # another conversation, in this same window; its page has the same counter
+    w.h.request(LAPTOP, "POST", "/api/send", {"text": "/clear"})
+    for _ in range(200):
+        if w.main.conversation_id() not in ("", first):
+            break
+        page.wait_for_timeout(50)
+    second = w.main.conversation_id()
+    assert second and second != first
+    _page_for(browser, second, "http://b.test/two", "Page B", jpeg_b, 3)
+    page.wait_for_function("document.getElementById('bwTitle').textContent === 'Page B'", timeout=10_000)
+    _shows(page, len(jpeg_b))                          # the new page's picture, not the last one's
+    assert page.locator("#bwFrame").get_attribute("data-owner") == _mark(second)
+    page.wait_for_function("document.getElementById('bwTitle').textContent === 'Page B'", timeout=10_000)
+    assert page.locator("#bwGive").is_hidden()         # the take-over was of the page before
+    held[0].fulfill(json={"ok": True})
+    page.wait_for_timeout(800)
+    sent = w.posted("/api/browser/input")
+    assert [b["event"]["type"] for b in sent] == ["click"]          # the queued "x" was dropped
+    assert sent[0]["owner"] == _mark(first)
+    assert not w.errors
 
 
 def test_remote_control_makes_the_terminal_read_only(window):
