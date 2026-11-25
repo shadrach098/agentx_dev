@@ -34,7 +34,6 @@ import ipaddress
 import logging
 import queue
 import re
-import secrets
 import socket
 import threading
 import time
@@ -117,6 +116,12 @@ def _address_refusal(host: str, addr: str) -> Optional[str]:
     return f"{host} is not a public address{suffix}"     # 0.0.0.0, multicast, reserved ...
 
 
+def _host_key(host: str) -> str:
+    """A host as the refusal records compare it: lower case, no brackets, no trailing dot."""
+    host = (host or "").strip().strip("[]").lower()
+    return host[:-1] if host.endswith(".") and len(host) > 1 else host
+
+
 def _checked_addresses(host: str, resolve: bool = True) -> List[str]:
     """The addresses ``host`` resolves to, all public or loopback; raises ``_Refused`` with the reason otherwise.
     With ``resolve=False`` a host name is not looked up (``[]`` comes back): only literal addresses are judged."""
@@ -150,8 +155,8 @@ def _checked_addresses(host: str, resolve: bool = True) -> List[str]:
                 addr = info[4][0]
                 if addr not in addrs:
                     addrs.append(addr)
-        except (OSError, UnicodeError):
-            reason = f"{host} could not be found"
+        except (OSError, UnicodeError, ValueError):        # ValueError: a host with a NUL in it
+            reason = f"{host!r} could not be found" if "\x00" in host else f"{host} could not be found"
         if not reason and not addrs:
             reason = f"{host} could not be found"
         for addr in addrs:                              # every address must pass: the connection may use any
@@ -268,13 +273,40 @@ class _BadRequest(Exception):
 
 
 def _port(text: str) -> int:
-    if not text.isdigit() or not 1 <= int(text) <= 65535:
+    if not re.fullmatch(r"[0-9]{1,5}", text) or not 1 <= int(text) <= 65535:
         raise _BadRequest()
     return int(text)
 
 
+_HEADER_NAME = re.compile(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+
+
+def _clean_header_lines(lines: List[bytes]) -> List[bytes]:
+    """Header lines minus any ``X-Agentx-*`` header and any malformed line (no name, a space before the colon, a
+    folded continuation line)."""
+    kept = []
+    for line in lines:
+        name, sep, _ = line.partition(b":")
+        if not sep or not _HEADER_NAME.fullmatch(name) or name.lower().startswith(b"x-agentx-"):
+            continue
+        kept.append(line)
+    return kept
+
+
+def _matching_refusal(refusals: List[Tuple[float, str, str]], navigations: List[Tuple[float, str]],
+                      mark: float) -> str:
+    """The reason of the newest proxy refusal since ``mark`` whose host one of the page's own navigations (or redirect
+    hops) since ``mark`` asked for; "" when there is none. Only the proxy's own record decides: nothing a site sends
+    can make a navigation count as refused, or choose the reason's text."""
+    hosts = {host for at, host in navigations if at >= mark}
+    for at, host, reason in reversed(refusals):
+        if at >= mark and host in hosts:
+            return reason
+    return ""
+
+
 def _request_line(head: bytes) -> Tuple[str, str, str]:
-    parts = head.split(b"\r\n", 1)[0].decode("latin-1").split(" ")
+    parts = head.split(b"\n", 1)[0].rstrip(b"\r").decode("latin-1").split(" ")
     if len(parts) != 3 or not parts[0].isalpha() or not parts[1] or not parts[2].startswith("HTTP/"):
         raise _BadRequest()
     return parts[0], parts[1], parts[2]
@@ -290,19 +322,18 @@ class _GuardProxy:
     Plain HTTP requests come in absolute form (``GET http://host/path``) and are sent on with ``Connection: close``
     (one request per connection, so a reused connection cannot reach a second host unchecked), with any
     ``X-Agentx-*`` header dropped from the answer; HTTPS and WebSockets come as ``CONNECT host:port`` and are
-    tunnelled. A refusal answers ``403`` with ``X-Agentx-Refused`` (the reason), ``X-Agentx-Nonce`` (a secret made
-    per proxy, so a site cannot fake a refusal: see ``refusal_of``) and a short page that says why. Anything else it
-    cannot read gets ``400``. When either side of a connection ends, or nothing moves either way for
-    ``idle_timeout`` seconds, both sockets are closed."""
+    tunnelled. A refusal answers a bare ``403`` ("Blocked by agentx": nothing about the host, the reason or the
+    address, since page scripts can read it) and is written to ``refusals`` as ``(time, host, reason)``: agentx
+    reports a refusal from that record only. Anything else it cannot read gets ``400``. When either side of a
+    connection ends, or nothing moves either way for ``idle_timeout`` seconds, both sockets are closed."""
 
     def __init__(self) -> None:
-        self.nonce = secrets.token_hex(16)
         self.idle_timeout = PROXY_IDLE_SEC
         self._open: Set[socket.socket] = set()
         self._lock = threading.Lock()
         self._slots = threading.BoundedSemaphore(PROXY_MAX_CONNECTIONS)
         self._closed = False
-        self.refusals: Deque[Tuple[float, str]] = deque(maxlen=20)
+        self.refusals: Deque[Tuple[float, str, str]] = deque(maxlen=100)
         self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             self._listener.bind(("127.0.0.1", 0))
@@ -312,16 +343,6 @@ class _GuardProxy:
             raise
         self.port = self._listener.getsockname()[1]
         threading.Thread(target=self._accept, name="agentx-browser-proxy", daemon=True).start()
-
-    def refusal_of(self, response) -> Optional[str]:
-        """The reason when ``response`` (a Playwright response) is this proxy's own refusal, else None."""
-        try:
-            headers = response.headers
-            if response.status == 403 and secrets.compare_digest(headers.get("x-agentx-nonce", ""), self.nonce):
-                return headers.get("x-agentx-refused") or "refused"
-        except Exception:
-            pass
-        return None
 
     def _track(self, conn: Optional[socket.socket]) -> None:
         if conn is not None:
@@ -360,13 +381,9 @@ class _GuardProxy:
         except OSError:
             pass
 
-    def _refuse(self, client: socket.socket, reason: str) -> None:
-        reason = re.sub(r"[\r\n]+", " ", reason)
-        self.refusals.append((time.monotonic(), reason))
-        body = ("<!doctype html><title>Refused by agentx</title><h1>agentx refused this address</h1>"
-                f"<p>{_html_escape(reason)}</p>").encode("utf-8")
-        self._answer(client, "403 Forbidden", "Content-Type: text/html; charset=utf-8\r\n"
-                     f"X-Agentx-Refused: {reason}\r\nX-Agentx-Nonce: {self.nonce}\r\n", body)
+    def _refuse(self, client: socket.socket, host: str, reason: str) -> None:
+        self.refusals.append((time.monotonic(), _host_key(host), reason))
+        self._answer(client, "403 Forbidden", "Content-Type: text/html; charset=utf-8\r\n", _BLOCKED_PAGE)
 
     def _forward_head(self, upstream: socket.socket, client: socket.socket) -> Optional[bytes]:
         """Send the upstream answer's head(s) on without ``X-Agentx-*`` headers; returns the body bytes already
@@ -376,8 +393,8 @@ class _GuardProxy:
             head, buffered = _read_head(upstream, buffered)
             if head is None:
                 return None
-            lines = head.split(b"\r\n")
-            kept = [lines[0]] + [h for h in lines[1:] if not h.lstrip().lower().startswith(b"x-agentx-")]
+            lines = [line.rstrip(b"\r") for line in head.split(b"\n")]   # a bare LF ends a line too
+            kept = [lines[0]] + _clean_header_lines(lines[1:])
             client.sendall(b"\r\n".join(kept) + b"\r\n\r\n")
             status = lines[0].split(b" ", 2)[1] if lines[0].count(b" ") else b""
             if not (status.startswith(b"1") and status != b"101"):
@@ -391,6 +408,7 @@ class _GuardProxy:
             if head is None:
                 return
             plain = False
+            asked = ""
             try:
                 method, target, version = _request_line(head)
                 if method.upper() == "CONNECT":
@@ -398,18 +416,21 @@ class _GuardProxy:
                     if not sep or not host:
                         raise _BadRequest()
                     port = _port(port_text)
+                    asked = host
                     upstream = _connect(_checked_addresses(host), port)
                     self._track(upstream)
                     client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 else:
-                    parts = urllib.parse.urlsplit(target)
-                    if parts.scheme.lower() != "http" or not parts.hostname:   # origin form is not for a proxy
-                        raise _BadRequest()
                     try:
+                        parts = urllib.parse.urlsplit(target)
+                        hostname = parts.hostname
                         port = parts.port or 80
-                    except ValueError:
+                    except ValueError:                  # "http://[x/", a bad port
                         raise _BadRequest() from None
-                    upstream = _connect(_checked_addresses(parts.hostname), port)
+                    if parts.scheme.lower() != "http" or not hostname:   # origin form is not for a proxy
+                        raise _BadRequest()
+                    asked = hostname
+                    upstream = _connect(_checked_addresses(hostname), port)
                     self._track(upstream)
                     headers = [h for h in head.split(b"\r\n")[1:] if h]
                     upgrade = any(h.split(b":", 1)[0].strip().lower() == b"upgrade" for h in headers)
@@ -424,7 +445,7 @@ class _GuardProxy:
                 self._answer(client, "400 Bad Request")
                 return
             except _Refused as refused:
-                self._refuse(client, str(refused))
+                self._refuse(client, asked, str(refused))
                 return
             idle = self.idle_timeout
             last = [time.monotonic()]
@@ -475,8 +496,7 @@ class _GuardProxy:
             _kill(conn)
 
 
-def _html_escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+_BLOCKED_PAGE = b"<!doctype html><title>Blocked by agentx</title><h1>Blocked by agentx</h1>"
 
 
 # --- what the agent reads ---------------------------------------------------------------------------------------
@@ -626,6 +646,7 @@ class _Owner:
     nav_at: float = 0.0                                 # when the current page's main frame last asked for a page
     nav_done_at: float = 0.0                            # ... and when such a request last committed or failed
     nav_finished_at: float = 0.0                        # ... or finished loading (a 204, a refused download)
+    nav_hosts: Deque[Tuple[float, str]] = field(default_factory=lambda: deque(maxlen=50))   # hosts it asked for
 
     def loading(self) -> bool:
         """A main-frame page load asked for and not yet committed. One that finished loading without committing
@@ -830,7 +851,10 @@ class BrowserHost:
         def main_frame_request(request, stage: str) -> None:
             try:
                 if request.is_navigation_request() and request.frame == page.main_frame:
-                    setattr(rec, stage, time.monotonic())
+                    now = time.monotonic()
+                    setattr(rec, stage, now)
+                    if stage == "nav_at":               # every hop of a redirect is asked for here too
+                        rec.nav_hosts.append((now, _host_key(urllib.parse.urlsplit(request.url).hostname or "")))
             except Exception:
                 pass
 
@@ -880,16 +904,15 @@ class BrowserHost:
             except Exception:
                 pass
 
-    def _refusal_since(self, rec: _Owner, mark: float, tunnel: bool = False) -> str:
-        """Why a navigation of this owner was refused after ``mark``: by the route handler, or, when the page ended
-        on a failed tunnel (an HTTPS redirect to a refused host), by the proxy. "" when nothing was refused."""
+    def _refusal_since(self, rec: _Owner, mark: float) -> str:
+        """Why a main-frame navigation of this owner was refused after ``mark``: by its route handler, or by the
+        proxy for a host the navigation (or one of its redirect hops) asked for. "" when nothing was refused. Only
+        agentx's own records count, never what a response says."""
         for at, reason in reversed(rec.refusals):
             if at >= mark:
                 return reason
-        if tunnel and self._proxy is not None:
-            for at, reason in reversed(list(self._proxy.refusals)):
-                if at >= mark:
-                    return reason
+        if self._proxy is not None:
+            return _matching_refusal(list(self._proxy.refusals), list(rec.nav_hosts), mark)
         return ""
 
     def _settle(self, rec: _Owner, page, mark: float) -> None:
@@ -980,20 +1003,20 @@ class BrowserHost:
         except self._Timeout:
             return f"ERROR: the page did not finish loading within {NAV_TIMEOUT_MS // 1000} seconds"
         except self._Error as error:
-            reason = self._refusal_since(rec, mark, tunnel="ERR_TUNNEL_CONNECTION_FAILED" in str(error))
+            reason = self._refusal_since(rec, mark)
             if reason:
                 return f"ERROR: agentx refused to open {url}: {reason}"
             return f"ERROR: could not open {url}: {_first_line(error)}"
-        refused = self._proxy.refusal_of(response) if (self._proxy is not None and response is not None) else None
-        if refused:
-            return f"ERROR: agentx refused to open {response.url}: {refused}"
+        reason = self._refusal_since(rec, mark)
+        if reason:
+            return f"ERROR: agentx refused to open {url}: {reason}"
         return ""
 
     def _after_action(self, owner: str, mark: float) -> Snapshot:
         rec = self._owner(owner)
         page = self._page(owner)
         self._settle(rec, page, mark)
-        reason = self._refusal_since(rec, mark, tunnel=page.url.startswith("chrome-error:"))
+        reason = self._refusal_since(rec, mark)
         return self._snap(owner, f"ERROR: agentx refused to open a page: {reason}" if reason else "")
 
     # -- what the agent calls -------------------------------------------------------------------------------------

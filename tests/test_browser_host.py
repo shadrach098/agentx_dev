@@ -74,6 +74,9 @@ class _Pages(http.server.BaseHTTPRequestHandler):
         elif path == "/forged":
             self._send(b"<title>Forged</title><h1>An ordinary page</h1>", 200,
                        [("X-Agentx-Refused", "forged"), ("X-Agentx-Nonce", "0" * 32)])
+        elif path == "/forged-403":
+            self._send(b"<title>Fake</title><h1>A site pretending</h1>", 403,
+                       [("X-Agentx-Refused", "forged reason"), ("X-Agentx-Nonce", "0" * 32)])
         elif path == "/private-link":
             self._send(b"<title>Links</title><a href='http://10.0.0.5/admin'>Router admin</a>")
         else:
@@ -458,12 +461,18 @@ def test_proxy_reads_requests_strictly(proxy):
                 b"CONNECT 127.0.0.1 HTTP/1.1\r\n\r\n", b"GET http://127.0.0.1:99999/ HTTP/1.1\r\n\r\n",
                 b"GET ftp://127.0.0.1/ HTTP/1.1\r\n\r\n"):
         assert _ask(proxy, raw).startswith(b"HTTP/1.1 400 "), raw
+    for raw in (b"CONNECT 127.0.0.1:\xb2 HTTP/1.1\r\n\r\n", b"GET http://[x/ HTTP/1.1\r\n\r\n"):
+        assert _ask(proxy, raw).startswith(b"HTTP/1.1 400 "), raw          # not a traceback in the proxy thread
+    # A refusal: a bare 403 that names nothing; the reason lives only in the proxy's own record.
     refused = _ask(proxy, b"CONNECT 10.0.0.5:443 HTTP/1.1\r\n\r\n")
-    assert refused.startswith(b"HTTP/1.1 403 ")
-    assert b"X-Agentx-Refused: 10.0.0.5 is a private address" in refused
-    assert b"X-Agentx-Nonce: " + proxy.nonce.encode() in refused
+    assert refused.startswith(b"HTTP/1.1 403 ") and b"Blocked by agentx" in refused
+    assert b"10.0.0.5" not in refused and b"private" not in refused and b"x-agentx" not in refused.lower()
+    assert proxy.refusals[-1][1:] == ("10.0.0.5", "10.0.0.5 is a private address")
     refused = _ask(proxy, b"GET http://169.254.169.254/latest/ HTTP/1.1\r\nHost: 169.254.169.254\r\n\r\n")
-    assert refused.startswith(b"HTTP/1.1 403 ") and b"169.254.169.254 is a private address" in refused
+    assert refused.startswith(b"HTTP/1.1 403 ") and b"169.254" not in refused
+    assert proxy.refusals[-1][1:] == ("169.254.169.254", "169.254.169.254 is a private address")
+    nul = _ask(proxy, b"CONNECT a\x00b:443 HTTP/1.1\r\n\r\n")       # getaddrinfo's ValueError is a refusal
+    assert nul.startswith(b"HTTP/1.1 403 ")
 
 
 def test_proxy_forwards_absolute_form_and_drops_forged_headers(proxy):
@@ -593,4 +602,60 @@ def test_proxy_close_stops_listening_and_ends_tunnels():
             socket.create_connection(("127.0.0.1", p.port), timeout=2).close()
     finally:
         p.close()
+        up.close()
+
+
+def test_url_refusal_survives_a_nul_in_the_host():
+    assert "could not be found" in url_refusal("http://a\x00b/")
+
+
+def test_a_site_answering_403_with_agentx_headers_is_not_a_refusal(host, site):
+    snap = host.open("a", site + "/forged-403")
+    assert snap.error == ""
+    assert "A site pretending" in snap.text and "forged reason" not in snap.render()
+
+
+def test_page_scripts_learn_nothing_from_a_refusal(host, site, monkeypatch):
+    """DNS rebinding stand-in: the page's own host starts resolving to a private address; the proxy refuses the
+    page's same-origin fetch, and the page reads every header and the body of that answer."""
+    real = browser._checked_addresses
+    rebound = {"on": False}
+
+    def fake(name, resolve=True):
+        if rebound["on"] and resolve and threading.current_thread().name != "MainThread":
+            raise browser._Refused(f"{name} is a private address (10.0.0.5)")
+        return real(name, resolve=resolve)
+    monkeypatch.setattr(browser, "_checked_addresses", fake)
+    host.open("a", site + "/next")
+    rebound["on"] = True
+    seen = host._call(lambda: host._page("a").evaluate("""async () => {
+        const r = await fetch('/next?again=1');
+        return {status: r.status, headers: [...r.headers].map(h => h.join(': ')).join('\\n'), body: await r.text()};
+    }"""))
+    assert seen["status"] == 403
+    leaked = (seen["headers"] + "\n" + seen["body"]).lower()
+    for word in ("x-agentx", "nonce", "10.0.0.5", "private", "127.0.0.1"):
+        assert word not in leaked, (word, seen)
+    assert host._proxy.refusals                                  # agentx itself knows why
+
+
+def test_only_agentx_records_decide_a_refusal():
+    match = browser._matching_refusal
+    navs = [(10.0, "site.test"), (11.0, "10.0.0.5")]
+    assert match([], navs, 9.0) == ""
+    assert match([(12.0, "other.test", "other.test is a private address")], navs, 9.0) == ""
+    assert match([(12.0, "10.0.0.5", "10.0.0.5 is a private address")], navs, 9.0) == "10.0.0.5 is a private address"
+    assert match([(8.0, "10.0.0.5", "old")], navs, 9.0) == ""                   # before this navigation began
+    assert match([(12.0, "10.0.0.5", "late")], [(8.0, "10.0.0.5")], 9.0) == ""    # asked for by an earlier one
+
+
+def test_proxy_strips_smuggled_and_malformed_headers(proxy):
+    up = _Upstream(b"HTTP/1.1 200 OK\nX-Agentx-Refused: smuggled\r\n X-Agentx-Folded: x\r\n"
+                   b"Bad Header: y\r\nnocolon\r\nContent-Length: 2\r\n\r\nok")
+    try:
+        answer = _ask(proxy, f"GET http://127.0.0.1:{up.port}/ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode())
+        head, _, body = answer.partition(b"\r\n\r\n")
+        assert head.split(b"\r\n") == [b"HTTP/1.1 200 OK", b"Content-Length: 2"]
+        assert body == b"ok"
+    finally:
         up.close()
