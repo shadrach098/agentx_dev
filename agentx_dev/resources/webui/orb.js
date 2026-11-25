@@ -39,7 +39,7 @@
     }
     foldIntoCube(dots, rows >= 14 ? 7 : rows >= 10 ? 5 : 4);
     synapses(dots, rows);
-    constellation(dots, rows);
+    constellation(dots);
     fireflies(dots);
     return dots;
   }
@@ -118,12 +118,25 @@
   // sixth small orb, the one that stands for the rest, can pile its dots into three smaller balls
   const PILE = [[-0.42, -0.24, 0.1], [0.42, -0.2, -0.1], [0, 0.4, 0]];
   const SLOT_AXES = Array.from({length: 6}, (_, k) => unit([Math.sin(k), 0.4, Math.cos(k)]));
-  function constellation(dots, rows) {
+  function constellation(dots) {
+    dots.forEach((d, i) => { d.k = i % 7; });
+    // each small orb is a crisp little sphere: its dots are laid evenly (a Fibonacci sphere), each taking the place
+    // nearest to where it sat on the big sphere, so the split and the gathering back stay smooth
+    for (let k = 0; k < 7; k++) {
+      const mine = dots.filter((d) => d.k === k), m = mine.length, free = new Set(mine);
+      for (let i = 0; i < m; i++) {
+        const y = 1 - ((i + 0.5) / m) * 2, r = Math.sqrt(1 - y * y), a = i * 2.399963;
+        const x = Math.cos(a) * r, z = Math.sin(a) * r;
+        let best = null, score = -2;
+        for (const d of free) { const v = d.sx * x + d.sy * y + d.sz * z; if (v > score) { score = v; best = d; } }
+        free.delete(best);
+        best.mx = x; best.my = y; best.mz = z;
+      }
+    }
     dots.forEach((d, i) => {
-      d.k = i % 7;
-      d.turn = Math.floor((d.ring * 8) / rows) % 3 === 1;    // three bands of it turn while it runs
+      d.turn = Math.floor(((d.my + 1) / 2) * 8) % 3 === 1;   // three bands of it turn while it runs
       const [ox, oy, oz] = PILE[Math.floor(i / 7) % 3];
-      d.qx = ox + d.sx * 0.55; d.qy = oy + d.sy * 0.55; d.qz = oz + d.sz * 0.55;
+      d.qx = ox + d.mx * 0.55; d.qy = oy + d.my * 0.55; d.qz = oz + d.mz * 0.55;
     });
   }
   // small orbs: three bright dots (and short trails) circle the sphere on tilted paths
@@ -181,7 +194,7 @@
       t: 0, spin: 0.6, ringAngle: 0, think: 0, work: 0, team: 0, done: 0, ready: 0, cube: 0, glow: 0.4, color: null,
       tilt: REST_TILT, vel: 0, tiltVel: 0, dir: 1, held: false,
       // the constellation's layout, eased: per small orb, how present, how much it runs, where on the circle, its turns
-      shown: 1, rest: 0, restN: 0, label: 0, orbit: 0.86, scale: 0.3, hubSpin: 0,
+      shown: 1, rest: 0, restN: 0, label: 0, orbit: 0.81, scale: 0.34, hubSpin: 0,
       pres: new Float64Array(6), run: new Float64Array(6), runTo: new Float64Array(6), ang: new Float64Array(6),
       own: new Float64Array(6), turn: new Float64Array(6),
       // what each dot looks like this frame: where, how deep it reads, lit, how strong, how big; drawn far to near
@@ -203,7 +216,7 @@
 
   const ease = (current, target, dt, rate) => current + (target - current) * (1 - Math.exp(-rate * dt));
   const REST_TILT = -0.32;
-  const ORBIT_LEAN = -0.38;                                   // the constellation's circle, seen a little more from the side
+  const ORBIT_LEAN = -0.26;                                   // the constellation's circle, seen a little from above
 
   // Grab and spin: a round handle the size of the orb (its glow stays click-through, so buttons under it work).
   function grip(orb) {
@@ -269,8 +282,8 @@
       orb.turn[k] += dt * (1.4 + k * 0.2) * orb.run[k];         // and its rings
     }
     orb.rest = ease(orb.rest, orb.restN ? 1 : 0, fade, rate);
-    orb.orbit = ease(orb.orbit, shown > 5 ? 0.98 : 0.86, fade, rate);
-    orb.scale = ease(orb.scale, shown > 5 ? 0.25 : 0.3, fade, rate);
+    orb.orbit = ease(orb.orbit, shown > 5 ? 0.94 : 0.81, fade, rate);
+    orb.scale = ease(orb.scale, shown > 5 ? 0.26 : 0.34, fade, rate);
     orb.hubSpin += dt * 0.6;
   }
 
@@ -360,7 +373,7 @@
         const hub = k === 6, p = hub ? 0 : orb.pres[k], a = hub ? 0 : orb.ang[k], far = orb.orbit * p;
         view(Math.cos(a) * far, 0, Math.sin(a) * far, cS, sS, cL, sL);
         CX[k] = P[0]; CY[k] = P[1]; CZ[k] = P[2];
-        CS[k] = (hub ? 0.22 : 0.22 + (orb.scale - 0.22) * p) * (1 + 0.08 * P[2]);
+        CS[k] = (hub ? 0.3 : 0.3 + (orb.scale - 0.3) * p) * (1 + 0.08 * P[2]);
         const own = hub ? orb.hubSpin : orb.own[k] + k;
         SPIN_C[k] = Math.cos(own); SPIN_S[k] = Math.sin(own);
         if (!hub) { TURN_C[k] = Math.cos(orb.turn[k]); TURN_S[k] = Math.sin(orb.turn[k]); }
@@ -411,7 +424,7 @@
       let shade = z, big = 1;
       if (team > 0.001) {                                     // the dot's place in the constellation
         const k = d.k, hub = k === 6;
-        let lx = d.sx, ly = d.sy, lz = d.sz;
+        let lx = d.mx, ly = d.my, lz = d.mz;
         if (k === 5 && orb.rest > 0.001) { lx += (d.qx - lx) * orb.rest; ly += (d.qy - ly) * orb.rest; lz += (d.qz - lz) * orb.rest; }
         const running = hub ? 0 : orb.run[k];
         if (d.turn && running > 0.001) {                      // a running one turns its rings

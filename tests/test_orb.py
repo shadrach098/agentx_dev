@@ -95,6 +95,21 @@ for (const size of [220, 32]) {
   }
   out.ready[size] = {dots: orb.dots.length, most, framesLit, glowed: glowed.size};
 }
+// team: each small orb (and the hub) is a crisp little sphere, its dots evenly spaced, not every seventh dot of the
+// big one (which looks speckled): the closest two dots of a cluster are not much nearer than an even spacing
+{
+  const {canvas} = stubCanvas(220);
+  const orb = window.AgentxOrb.create(canvas, () => "team", {manual: true});
+  out.clusters = [];
+  for (let k = 0; k < 7; k++) {
+    const mine = orb.dots.filter((d) => d.k === k);
+    const pos = mine.map((d) => d.mx === undefined ? [d.sx, d.sy, d.sz] : [d.mx, d.my, d.mz]);
+    let closest = 9;
+    for (let i = 0; i < pos.length; i++) for (let j = i + 1; j < pos.length; j++)
+      closest = Math.min(closest, Math.hypot(pos[i][0] - pos[j][0], pos[i][1] - pos[j][1], pos[i][2] - pos[j][2]));
+    out.clusters.push({n: pos.length, evenness: closest / Math.sqrt(4 * Math.PI / pos.length)});
+  }
+}
 console.log(JSON.stringify(out));
 """
 
@@ -146,6 +161,13 @@ def test_ready_has_fireflies_a_few_at_a_time(stepped):
     assert big["glowed"] > 20, big                         # different dots each time, over a minute
     small = stepped["ready"]["32"]
     assert small["most"] <= 6, small
+
+
+def test_each_small_orb_is_a_crisp_little_sphere(stepped):
+    """As in the approved mockup (M1), each helper's orb is an evenly dotted little sphere, not a speckle."""
+    for cluster in stepped["clusters"]:
+        assert cluster["n"] >= 40, cluster
+        assert cluster["evenness"] > 0.6, cluster
 
 
 def test_the_count_shows_while_its_cluster_is_at_the_front(stepped):
