@@ -308,6 +308,7 @@
     const here = el("button", "btn quiet"); here.type = "button"; here.dataset.start = "here"; here.textContent = "Chat here anyway";
     acts.append(open, here);
     const msg = el("p", "start-msg"); msg.setAttribute("role", "status");
+    msg.textContent = startView.problem || "";
     s.append(acts, msg);
     s.addEventListener("click", async (e) => {
       const row = e.target.closest(".start-row"), act = e.target.closest("[data-start]");
@@ -319,6 +320,9 @@
       } else if (act && act.dataset.start === "here") chatHere(s);
     });
     column.append(s);
+    // nothing of the folder's is used before a choice: the Tasks panel and Details go (Details' choice is kept)
+    if (tasksOpen) setTasks(false);
+    if (detailsOpen) { setDetails(false); try { localStorage.setItem("agentx-details", "open"); } catch (_) { /* no storage */ } }
     syncView();
     fitPaths();
     const first = s.querySelector(".start-row, [data-start]");
@@ -356,6 +360,18 @@
     rest.forEach((n) => column.append(n));
     syncView();
     input.focus();
+  }
+  // the new agentx ended at once (it could not start): this one stays, its start screen back, saying why
+  async function startFailed(ev) {
+    closed = false;
+    $("overlay").hidden = true;
+    if (startView) { startView.show = true; startView.problem = ev.message || ""; }
+    let s = column.querySelector(".start-screen");
+    if (!s) { await loadStart(); showStartIfAsked(); s = column.querySelector(".start-screen"); }
+    if (!s) return;
+    s.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+    s.querySelector(".start-msg").textContent = ev.message || "";
+    syncView();
   }
   function showHandedOff(text) {
     closed = true;
@@ -2375,8 +2391,13 @@
   // the sidebar: slides over on a narrow window, folds away on a wide one (remembered)
   const narrow = () => matchMedia("(max-width: 860px)").matches;
   try { if (localStorage.getItem("agentx-side") === "hidden") document.querySelector(".app").classList.add("side-hidden"); } catch (_) { /* no storage */ }
+  // From 861 to 1199 pixels an open panel folds the sidebar away (CSS): asking for the sidebar then closes the
+  // panel, so it comes back as it was, and the remembered choice is not flipped unseen.
+  const sideFolded = () => !EMBED && !narrow() && matchMedia("(max-width: 1199px)").matches
+    && (detailsOpen || tasksOpen) && !document.querySelector(".app").classList.contains("split");
   function toggleSide() {
     if (narrow()) { $("side").classList.toggle("open"); return; }
+    if (sideFolded()) { if (tasksOpen) setTasks(false); else setDetails(false); return; }
     const hidden = document.querySelector(".app").classList.toggle("side-hidden");
     try { localStorage.setItem("agentx-side", hidden ? "hidden" : "shown"); } catch (_) { /* no storage */ }
   }
@@ -2801,6 +2822,7 @@
       case "conversation": switchConversation(ev); break;
       case "reset": reloadConversation(); break;
       case "closed": showClosed(ev); break;
+      case "start_failed": startFailed(ev); break;
     }
     keepBottom(stick || ev.type === "user" || ev.type === "ask");
     syncView();
@@ -2809,7 +2831,9 @@
   function syncView() {
     updateLive();
     document.querySelector(".main").classList.toggle("empty", !!column.querySelector(".welcome"));
-    document.querySelector(".main").classList.toggle("choosing", !!column.querySelector(".start-screen"));
+    const choosing = !!column.querySelector(".start-screen");
+    document.querySelector(".main").classList.toggle("choosing", choosing);
+    document.querySelector(".app").classList.toggle("choosing", choosing);
     $("jump").hidden = nearBottom();
   }
   log.addEventListener("scroll", () => { $("jump").hidden = nearBottom(); }, {passive: true});

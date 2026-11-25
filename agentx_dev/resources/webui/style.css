@@ -193,6 +193,9 @@ svg { width: 16px; height: 16px; flex: none; }
 .start-msg { margin: 12px 0 0; text-align: center; color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
 .start-msg:empty { display: none; }
 .main.choosing .dock, .main.choosing .stage { display: none; }
+/* nothing of the folder's is offered before a choice: no Tasks, Details, Recent, folder menu or new conversation */
+.app.choosing #tasksBtn, .app.choosing #detailsBtn, .app.choosing #newChat, .app.choosing .side-title,
+.app.choosing #sessions, .app.choosing #folder { display: none; }
 @media (max-width: 600px) {                     /* narrow: the name and when on one line, the path under them */
   .start-screen { padding-top: 7vh; }
   .start-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 2px; }

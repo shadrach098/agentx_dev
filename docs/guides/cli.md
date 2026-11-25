@@ -1157,9 +1157,11 @@ conversation. It lists up to 8 folders you trusted before that still exist, the 
 conversation first, each with its path and how long ago it was used. Click one (or press **Open a folder…** and type
 a path) and agentx starts there in a window of its own, as **Open another folder…** does (asking whether you trust
 the folder, the first time); this window then says so and its agentx ends a few seconds later, as when you close it.
+If the new agentx stops at once instead, this one stays and the screen comes back, saying it could not start there.
 **Chat here anyway** shows the usual start and the conversation begins in that folder. Nothing happens in the folder
-before you choose (not even the trust question), and a reload shows the same screen until you do. With
-`--continue` or `--resume`, with `--remote`, and in a project folder, the window opens as usual.
+before you choose: not even the trust question; no files, tasks, terminals, browser or Details, no other folder and
+no window on another device until then. A reload shows the same screen until you do. With `--continue` or
+`--resume`, with `--remote` or `--no-open`, and in a project folder, the window opens as usual.
 
 Each conversation gets a short title from the model after its first answer (one small request), shown in the list
 on the left and in `/resume`; until then, and for older conversations, the first thing you typed is the title.

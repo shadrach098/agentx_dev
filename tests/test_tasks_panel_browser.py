@@ -534,6 +534,31 @@ def test_at_mid_width_a_wide_panel_leaves_the_chat_room_and_the_grip_works(windo
     assert not w.errors, w.errors
 
 
+def test_at_mid_width_asking_for_the_sidebar_closes_the_panel_and_keeps_the_choice(window):
+    w = window(width=1030, height=900)
+    page = w.page
+    before = _settle(page)
+    page.locator("#tasksBtn").click()
+    page.locator("#tasksPanel").wait_for(state="visible")
+    assert not _settle(page)["sideShown"]
+    page.locator("#input").click()
+    page.keyboard.press("Control+b")
+    page.locator("#tasksPanel").wait_for(state="hidden")
+    after = _settle(page)
+    assert after["sideShown"] and after["sidePref"] == before["sidePref"]
+    page.locator("#detailsBtn").click()
+    page.locator("#details").wait_for(state="visible")
+    page.keyboard.press("Control+b")
+    page.locator("#details").wait_for(state="hidden")
+    after = _settle(page)
+    assert after["sideShown"] and after["sidePref"] == before["sidePref"]
+    page.keyboard.press("Control+b")                                 # no panel: the sidebar folds as before
+    assert not _settle(page)["sideShown"]
+    page.keyboard.press("Control+b")
+    assert _settle(page)["sideShown"]
+    assert not w.errors, w.errors
+
+
 def test_below_861_the_panel_still_slides_over_the_chat(window):
     w = window(width=800, height=900)
     page = w.page

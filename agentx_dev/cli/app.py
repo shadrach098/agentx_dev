@@ -2001,7 +2001,7 @@ def _run_ui(args: argparse.Namespace) -> int:
     from agentx_dev.cli.webui import wants_start_screen
     front.start_screen = wants_start_screen(
         cwd, home, resumed=bool(getattr(args, "continue_", False) or getattr(args, "resume", None)),
-        pane=bool(handoff), remote=remote)
+        pane=bool(handoff), remote=remote, no_open=bool(getattr(args, "no_open", False)))
     front.make_device_app = lambda room: device_app(front.app, room)   # each other device: its own conversation
     holder: List[Any] = []
     # The app is built on the window's work thread, where signal handlers cannot be set: set them here, on the main

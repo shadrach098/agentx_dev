@@ -123,6 +123,7 @@ def test_the_start_screen_is_offered_in_the_home_folder_and_a_root_only(tmp_path
     assert wants_start_screen(home, home, resumed=True) is False     # --continue / --resume
     assert wants_start_screen(home, home, pane=True) is False        # a side of another window
     assert wants_start_screen(home, home, remote=True) is False      # --remote: not this computer's window
+    assert wants_start_screen(home, home, no_open=True) is False     # --no-open: perhaps through a tunnel
 
 
 def _front(tmp_path, home, *, offered=True):
@@ -173,7 +174,7 @@ def test_choosing_a_folder_starts_agentx_there_and_ends_this_one(tmp_path, home,
     project.mkdir()
     started = []
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: started.append((a, k)))
-    monkeypatch.setattr(webui, "HAND_OVER_SEC", 0.2)
+    monkeypatch.setattr(webui, "HAND_OVER_SEC", 1.0)
     front = _front(tmp_path, home)
     result = front.start_choice("open", str(project))
     assert result["ok"] is True
@@ -182,7 +183,7 @@ def test_choosing_a_folder_starts_agentx_there_and_ends_this_one(tmp_path, home,
     assert command == webui.open_folder_command(project.resolve())[0]     # the "Open another folder" start
     assert front.start_view() == {"show": False}
     assert front.handed_over() is False                    # a few seconds later, not at once
-    time.sleep(0.3)
+    time.sleep(1.1)
     assert front.handed_over() is True
 
 
@@ -302,9 +303,11 @@ def test_the_api_shows_it_and_chat_here_hides_it(tmp_path, home):
         front.close()
 
 
-@pytest.mark.parametrize("where, resume, shown", [("home", None, True), ("project", None, False),
-                                                  ("home", "latest", False)])
-def test_agentx_ui_decides_at_start(tmp_path, home, monkeypatch, where, resume, shown):
+@pytest.mark.parametrize("where, resume, no_open, shown", [("home", None, False, True),
+                                                           ("project", None, False, False),
+                                                           ("home", "latest", False, False),
+                                                           ("home", None, True, False)])
+def test_agentx_ui_decides_at_start(tmp_path, home, monkeypatch, where, resume, no_open, shown):
     import argparse
     from agentx_dev.cli import app as app_module
     project = tmp_path / "proj"
@@ -323,6 +326,163 @@ def test_agentx_ui_decides_at_start(tmp_path, home, monkeypatch, where, resume, 
     monkeypatch.setattr(app_module, "install_signal_handlers", lambda: None)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.chdir(home if where == "home" else project)
-    args = argparse.Namespace(port=0, no_open=False, remote=False, continue_=False, resume=resume)
+    args = argparse.Namespace(port=0, no_open=no_open, remote=False, continue_=False, resume=resume)
     assert app_module._run_ui(args) == 0
     assert seen["front"].start_screen is shown
+
+
+
+# -- review fixes ---------------------------------------------------------------------------------------------------
+
+class _Process:
+    """A started agentx, as Popen returns it: ``code`` is what ``poll`` says (None while it runs)."""
+
+    def __init__(self, code=None):
+        self.code = code
+
+    def poll(self):
+        return self.code
+
+
+def test_a_new_agentx_that_ended_at_once_brings_the_screen_back(tmp_path, home, monkeypatch):
+    project = tmp_path / "Shop"
+    project.mkdir()
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Process(1))
+    monkeypatch.setattr(webui, "HAND_OVER_SEC", 0.2)
+    front = _front(tmp_path, home)
+    thread, box = _waiting(front)                          # the app waits, as agentx --ui runs it
+    assert front.start_choice("open", str(project))["ok"] is True
+    time.sleep(0.6)
+    assert front.handed_over() is False                    # it did not start: this agentx stays
+    assert thread.is_alive()
+    view = front.start_view()
+    assert view["show"] is True
+    assert view["problem"] == f"agentx could not start in {project.resolve()} (exit 1)."
+    failed = [e for e in front.bus.after(0) if e["type"] == "start_failed"]
+    assert len(failed) == 1 and failed[0]["message"] == view["problem"]
+    assert front.start_choice("here")["ok"] is True        # and the screen works again
+    thread.join(5)
+    assert box == {"go": True}
+
+
+def test_the_run_stays_when_the_new_agentx_failed(tmp_path, home, monkeypatch):
+    project = tmp_path / "Shop"
+    project.mkdir()
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Process(2))
+    monkeypatch.setattr(webui, "HAND_OVER_SEC", 0.2)
+    front = _front(tmp_path, home)
+    box = {}
+    runner = threading.Thread(target=lambda: box.update(code=front.run(lambda: 7 if front.wait_for_start() else 0)),
+                              daemon=True)
+    runner.start()
+    deadline = time.monotonic() + 10
+    while front._server is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert front.start_choice("open", str(project))["ok"] is True
+    time.sleep(1.5)                                        # past the hand-over and a turn of the run loop
+    assert runner.is_alive()
+    assert not [e for e in front.bus.after(0) if e["type"] == "closed"]
+    front.start_choice("here")
+    runner.join(10)
+    assert box["code"] == 7
+
+
+def test_a_still_running_agentx_is_handed_over(tmp_path, home, monkeypatch):
+    project = tmp_path / "Shop"
+    project.mkdir()
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Process(None))
+    monkeypatch.setattr(webui, "HAND_OVER_SEC", 0.1)
+    front = _front(tmp_path, home)
+    front.start_choice("open", str(project))
+    time.sleep(0.3)
+    assert front.handed_over() is True and front.handed_over() is True
+
+
+def test_two_choices_at_once_start_one_agentx(tmp_path, home, monkeypatch):
+    project = tmp_path / "Shop"
+    project.mkdir()
+    started = []
+
+    def slow(*a, **k):
+        started.append(a)
+        time.sleep(0.3)
+        return _Process(None)
+    monkeypatch.setattr(subprocess, "Popen", slow)
+    front = _front(tmp_path, home)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(front.start_choice("open", str(project))))
+               for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert len(started) == 1
+    assert sorted(r["ok"] for r in results) == [False, True]
+
+
+def test_here_while_a_folder_is_starting_is_refused(tmp_path, home, monkeypatch):
+    project = tmp_path / "Shop"
+    project.mkdir()
+    gate = threading.Event()
+
+    def held(*a, **k):
+        gate.wait(5)
+        return _Process(None)
+    monkeypatch.setattr(subprocess, "Popen", held)
+    front = _front(tmp_path, home)
+    opener = threading.Thread(target=lambda: front.start_choice("open", str(project)))
+    opener.start()
+    time.sleep(0.2)
+    assert front.start_choice("here")["ok"] is False
+    assert front._start_chosen is False
+    gate.set()
+    opener.join(5)
+
+
+def test_while_it_waits_nothing_runs_in_the_folder(tmp_path, home, monkeypatch):
+    from agentx_dev.cli import background
+    started = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: started.append(a))
+    project = tmp_path / "Shop"
+    project.mkdir()
+    front = _front(tmp_path, home)
+
+    def no_room(room):
+        raise AssertionError("no room while it waits")
+    front.make_device_app = no_room
+    before = dict(background._shared)
+    front.start_server()
+    try:
+        port = front._server.server_address[1]
+
+        def call(method, path, body=None, device="aaaaaaaa11"):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
+            headers = {"Host": f"127.0.0.1:{port}", "X-Agentx-Token": front.token, "X-Agentx-Device": device}
+            data = None
+            if body is not None:
+                data = json.dumps(body).encode()
+                headers["Content-Type"] = "application/json"
+            conn.request(method, path, body=data, headers=headers)
+            response = conn.getresponse()
+            out = response.status, json.loads(response.read())
+            conn.close()
+            return out
+        assert call("GET", "/api/start")[0] == 200            # the window's own device
+        assert call("GET", "/api/state")[0] == 200
+        for path in ("/api/tasks", "/api/files?q=x", "/api/browser/state", "/api/details"):
+            assert call("GET", path)[0] == 409, path
+        for path, body in (("/api/terminals", {}), ("/api/open-folder", {"path": str(project)}),
+                           ("/api/pane", {"folder": str(project)}), ("/api/send", {"text": "hi"}),
+                           ("/api/lanes", {}), ("/api/tasks/clear", {})):
+            status, got = call("POST", path, body)
+            assert status == 409 and got["ok"] is False, path
+        assert call("GET", "/api/state", device="bbbbbbbb22")[0] == 409     # another device's window
+        assert not front.rooms and not started
+        assert background._shared == before                 # no task manager made without the app
+        assert call("POST", "/api/start", {"action": "here"})[0] == 200
+        status, got = call("GET", "/api/tasks")              # chosen, but the app is not built yet
+        assert status == 200 and got["tasks"] == [] and got["error"] == webui.NOT_READY
+        assert call("POST", "/api/terminals", {})[1]["ok"] is False
+        assert background._shared == before
+    finally:
+        front.close()

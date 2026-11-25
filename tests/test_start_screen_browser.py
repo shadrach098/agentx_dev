@@ -116,6 +116,8 @@ def test_the_start_screen_lists_the_trusted_projects_and_chat_here_shows_the_wel
     assert rows.nth(1).get_attribute("title") == str(w.projects[0].resolve())
     assert page.locator(".welcome").count() == 0
     assert page.locator("#composer").is_hidden()            # no conversation here by accident
+    for hidden in ("#tasksBtn", "#detailsBtn", "#folder", "#sessions", "#newChat"):   # nothing of the folder's yet
+        assert page.locator(hidden).is_hidden(), hidden
     assert w.thread.is_alive() and not w.front._pending     # the app waits: no trust question, no message box
     # the rows are reached with the keyboard, and show where the focus is
     page.wait_for_function("document.activeElement && document.activeElement.classList.contains('start-row')",
@@ -133,6 +135,7 @@ def test_the_start_screen_lists_the_trusted_projects_and_chat_here_shows_the_wel
     ready(w.front)                                          # agentx started here as usual
     assert page.locator(".start-screen").count() == 0
     assert page.locator("#composer").is_visible()
+    assert page.locator("#tasksBtn").is_visible() and page.locator("#folder").is_visible()
     assert w.front.start_view() == {"show": False}
     page.reload()                                           # the choice holds for this run
     page.locator(".welcome h1").wait_for(state="visible", timeout=10_000)
@@ -147,8 +150,8 @@ def test_choosing_a_folder_says_agentx_opened_it(window):
 
     def opened(raw):                                        # the process start, stubbed
         asked.append(raw)
-        return {"ok": True, "folder": str(raw)}
-    w.front.open_folder = opened
+        return {"ok": True, "folder": str(raw)}, _Process(None)
+    w.front._start_agentx_in = opened
     page.locator(".start-row").first.wait_for(state="visible", timeout=10_000)
     page.locator(".start-row").first.click()
     box = page.locator("#overlayBox")
@@ -175,4 +178,36 @@ def test_the_start_screen_in_both_themes(window, scheme):
     assert page.evaluate("document.querySelector('.start-screen').scrollWidth <= "
                          "document.querySelector('.start-screen').clientWidth + 1")
     _shot(page, f"start-380-{scheme}.png")
+    assert not w.errors, w.errors
+
+
+class _Process:
+    def __init__(self, code):
+        self.code = code
+
+    def poll(self):
+        return self.code
+
+
+def test_a_folder_whose_agentx_fails_brings_the_screen_back(window, monkeypatch):
+    from agentx_dev.cli import webui
+    monkeypatch.setattr(webui, "HAND_OVER_SEC", 0.5)
+    w = window()
+    page = w.page
+    w.front._start_agentx_in = lambda raw: ({"ok": True, "folder": str(raw)}, _Process(1))
+    page.locator(".start-row").first.wait_for(state="visible", timeout=10_000)
+    page.locator(".start-row").first.click()
+    page.locator("#overlayBox").wait_for(state="visible", timeout=10_000)
+    beta = str(w.projects[1].resolve())
+    msg = page.locator(".start-screen .start-msg")
+    page.wait_for_function("document.querySelector('.start-screen .start-msg') && "
+                           "document.querySelector('.start-screen .start-msg').textContent.includes('could not start')",
+                           timeout=10_000)
+    assert msg.inner_text().strip() == f"agentx could not start in {beta} (exit 1)."
+    assert page.locator("#overlay").is_hidden()
+    assert page.locator(".start-row").first.is_enabled()
+    page.reload()                                           # the screen and the reason survive a reload
+    page.locator(".start-screen .start-row").first.wait_for(state="visible", timeout=10_000)
+    assert page.locator(".start-screen .start-msg").inner_text().strip() == f"agentx could not start in {beta} (exit 1)."
+    assert w.thread.is_alive()                              # this agentx stays
     assert not w.errors, w.errors

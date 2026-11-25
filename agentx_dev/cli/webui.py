@@ -84,6 +84,11 @@ TAKE_OVER_OFF = "taking over the browser is off while remote control is on"
 NO_CONVERSATION_YET = "this conversation has not started yet; try again in a moment"
 PAGE_CHANGED = "the conversation on screen changed, so that was not sent to its page; try again"
 TERMINAL_INPUT_MAX = 64 * 1024      # the most text one line typed into a terminal may have
+NOT_READY = "agentx has not started in this folder yet"
+START_WAITING = "agentx is waiting for a folder to be chosen in its window"
+# while the start screen waits, only these reach the app's front (nothing that reads or runs in the folder)
+START_GETS = {"/events", "/api/state", "/api/start", "/api/sessions", "/api/history", "/api/settings", "/api/keys"}
+START_POSTS = {"/api/start", "/api/answer", "/api/stop", "/api/settings", "/api/keys"}
 
 
 def _browser_problem(browser: Any = None) -> str:
@@ -486,12 +491,13 @@ def open_folder_command(folder: Path, code: str = OPEN_FOLDER_START) -> "tuple[L
 # -- the start screen: agentx --ui started outside a project offers the folders trusted before ---------------------
 
 def wants_start_screen(cwd: Path, home: Path, *, resumed: bool = False, pane: bool = False,
-                       remote: bool = False) -> bool:
+                       remote: bool = False, no_open: bool = False) -> bool:
     """Whether the window opens on the start screen instead of a new conversation: only in a folder that is not a
     project (the home folder, a drive root), and not for a resumed conversation (``--continue``/``--resume``), a side
-    of another window or remote use (the window is not on this computer)."""
+    of another window, remote use or ``--no-open`` (the window may be on another computer, through a tunnel: an
+    agentx started for it in another folder would open its window here, or nowhere)."""
     from agentx_dev.cli.settings import is_project_folder
-    return not (resumed or pane or remote) and not is_project_folder(cwd, home)
+    return not (resumed or pane or remote or no_open) and not is_project_folder(cwd, home)
 
 
 def used_ago(when: Optional[float], now: Optional[float] = None) -> str:
@@ -972,8 +978,11 @@ class WebFront:
         # The start screen (agentx --ui outside a project, see ``wants_start_screen``): offered until a choice is
         # made, so a reload shows it again. Choosing a folder starts agentx there and ends this one a little later.
         self.start_screen = False
-        self._start_chosen = False
-        self._hand_over: Optional[Tuple[float, str]] = None   # (when this agentx ends, the folder it opened)
+        self._start_chosen = False                           # "Chat here anyway"
+        self._start_opening = False                          # a folder is being started (one at a time)
+        self._start_problem = ""                             # why the last folder chosen could not be started
+        self._handed = False
+        self._hand_over: Optional[Tuple[float, str, Any]] = None   # (when this agentx ends, the folder, its process)
         self._start_answer = threading.Event()               # set by a choice, or when agentx closes
 
     # -- what the app prints and asks ----------------------------------------------------------------------------
@@ -1686,31 +1695,36 @@ class WebFront:
 
     def open_folder(self, raw: str) -> Dict[str, Any]:
         """Start agentx in another folder, in a window of its own (``agentx --ui`` there). This one keeps running."""
+        return self._start_agentx_in(raw)[0]
+
+    def _start_agentx_in(self, raw: str) -> "tuple[Dict[str, Any], Any]":
+        """``open_folder``'s work: ``(result, the started process or None)``."""
         text = str(raw or "").strip().strip('"')
         if not text:
-            return {"ok": False, "message": "Type a folder."}
+            return {"ok": False, "message": "Type a folder."}, None
         folder = Path(text).expanduser()
         if not folder.is_absolute():
             folder = self.cwd / folder
         try:
             folder = folder.resolve()
         except OSError:
-            return {"ok": False, "message": f"{text} could not be read."}
+            return {"ok": False, "message": f"{text} could not be read."}, None
         if not folder.is_dir():
-            return {"ok": False, "message": f"{folder} is not a folder."}
+            return {"ok": False, "message": f"{folder} is not a folder."}, None
         if folder == self.cwd.resolve():
-            return {"ok": False, "message": "agentx is already open in this folder."}
+            return {"ok": False, "message": "agentx is already open in this folder."}, None
         command, start_in = open_folder_command(folder)     # it moves into the folder itself, after the imports
         try:
             if os.name == "nt":
-                subprocess.Popen(command, cwd=start_in, creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+                process = subprocess.Popen(command, cwd=start_in,
+                                           creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
             else:
-                subprocess.Popen(command, cwd=start_in, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, start_new_session=True)
+                process = subprocess.Popen(command, cwd=start_in, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.DEVNULL, start_new_session=True)
         except OSError as error:
-            return {"ok": False, "message": f"agentx could not be started there: {error}"}
-        return {"ok": True, "message": f"Opening agentx in {folder}. It asks whether you trust the folder the first time.",
-                "folder": str(folder)}
+            return {"ok": False, "message": f"agentx could not be started there: {error}"}, None
+        return ({"ok": True, "message": f"Opening agentx in {folder}. It asks whether you trust the folder the first "
+                                        "time.", "folder": str(folder)}, process)
 
     # -- the start screen ------------------------------------------------------------------------------------------
 
@@ -1719,7 +1733,7 @@ class WebFront:
         if not self.start_screen or self.host is not None:
             return False
         with self._lock:
-            if self._start_chosen or self._hand_over is not None:
+            if self._start_chosen or self._start_opening or self._hand_over is not None:
                 return False
         history = getattr(getattr(self.app, "session", None), "history", None)
         return not history
@@ -1735,37 +1749,83 @@ class WebFront:
             at_home = False
         why = ("is your home folder, not a project." if at_home else
                "is the top of a drive, not a project." if os.name == "nt" else "is the root folder, not a project.")
+        with self._lock:
+            problem = self._start_problem
         return {"show": True, "folder": _text(str(self.cwd), 2000), "line": _text(f"{self.cwd} {why}", 2100),
-                "recent": recent_folders(self.home)}
+                "recent": recent_folders(self.home), **({"problem": _text(problem, 2200)} if problem else {})}
 
     def start_choice(self, action: str, path: Any = "") -> Dict[str, Any]:
         """The start screen's answer: "here" (a conversation in this folder after all, for this run) or "open"
         (agentx in ``path``, started as "Open another folder" does; this agentx then ends, as when its window is
         closed, ``HAND_OVER_SEC`` later)."""
+        if action not in ("here", "open"):
+            return {"ok": False, "message": "That is not a choice of the start screen."}
         if not self._start_offered():
             return {"ok": False, "message": "The start screen is not open."}
-        if action == "here":
-            with self._lock:
+        with self._lock:                                    # claimed first: two clicks never start two
+            if self._start_chosen or self._start_opening or self._hand_over is not None:
+                return {"ok": False, "message": "The start screen is not open."}
+            if action == "here":
                 self._start_chosen = True
+            else:
+                self._start_opening = True
+                self._start_problem = ""
+        if action == "here":
             self._start_answer.set()
             return {"ok": True}
-        if action != "open":
-            return {"ok": False, "message": "That is not a choice of the start screen."}
-        result = self.open_folder(str(path or ""))
+        try:
+            result, process = self._start_agentx_in(str(path or ""))
+        except BaseException:
+            with self._lock:
+                self._start_opening = False
+            raise
         if not result.get("ok"):
+            with self._lock:
+                self._start_opening = False
             return result
         folder = str(result.get("folder") or "")
         with self._lock:
-            self._start_chosen = True
-            self._hand_over = (time.monotonic() + HAND_OVER_SEC, folder)
+            self._hand_over = (time.monotonic() + HAND_OVER_SEC, folder, process)
+            self._start_opening = False
         self._start_answer.set()
         return {"ok": True, "folder": _text(folder, 2000),
                 "message": _text(f"agentx opened {folder} in a new window. You can close this one.", 2200)}
 
+    def start_refuses(self, method: str, path: str, device: str = "") -> bool:
+        """While the start screen waits, a request that would read or run something in this folder (files, tasks,
+        terminals, the browser, another folder, a message) is refused, and so is every other device's window."""
+        if not self._start_offered():
+            return False
+        device = _device_id(device)
+        if device and self.make_device_app is not None:
+            with self._lock:
+                other = self.main_owner is not None and device != self.main_owner and device not in self.joined
+            if other:
+                return True
+        return path not in (START_GETS if method == "GET" else START_POSTS)
+
     def handed_over(self) -> bool:
-        """True once the start screen opened agentx in another folder and ``HAND_OVER_SEC`` have passed."""
+        """True once the start screen opened agentx in another folder and ``HAND_OVER_SEC`` have passed with it still
+        running. A new agentx that has already ended (it failed to start) cancels the hand-over instead: the start
+        screen comes back, saying so, and this agentx stays."""
         with self._lock:
-            return self._hand_over is not None and time.monotonic() >= self._hand_over[0]
+            if self._handed:
+                return True
+            if self._hand_over is None or time.monotonic() < self._hand_over[0]:
+                return False
+            _, folder, process = self._hand_over
+            try:
+                code = process.poll() if hasattr(process, "poll") else None
+            except Exception:
+                code = None
+            if code is None:
+                self._handed = True
+                return True
+            self._hand_over = None
+            self._start_problem = f"agentx could not start in {folder} (exit {code})."
+            problem = self._start_problem
+        self.bus.emit("start_failed", message=_text(problem, 2200))
+        return False
 
     def wait_for_start(self) -> bool:
         """Before the app is built (on the work thread): with the start screen offered, wait for its answer, so
@@ -1777,7 +1837,7 @@ class WebFront:
             with self._lock:
                 if self._closed:
                     return False
-                if self._hand_over is None and self._start_chosen:
+                if self._hand_over is None and self._start_chosen and not self._start_opening:
                     return True
             if self.handed_over():
                 return False
@@ -2159,12 +2219,9 @@ class WebFront:
         return bool((self.host or self).remote)
 
     def _task_manager(self) -> Any:
-        """The process's ``TaskManager``: the app's (made with the session's permissions), else the shared one."""
-        found = getattr(self.app, "tasks", None)
-        if found is not None:
-            return found
-        from agentx_dev.cli.background import shared
-        return shared(self.home, self.cwd)
+        """The app's ``TaskManager`` (made with the session's permissions), or None before the app exists: the
+        window never makes one itself (a manager made without the permissions would be the one the app gets)."""
+        return getattr(self.app, "tasks", None)
 
     def _owner_titles(self, owners: Sequence[str]) -> Dict[str, str]:
         if not owners:
@@ -2181,7 +2238,10 @@ class WebFront:
 
     def tasks_payload(self) -> Dict[str, Any]:
         """``GET /api/tasks``: every task and terminal of this agentx (all conversations share them)."""
-        tasks = self._task_manager().list()
+        manager = self._task_manager()
+        if manager is None:
+            return {"tasks": [], "terminalsAllowed": False, "error": NOT_READY}
+        tasks = manager.list()
         titles = self._owner_titles(sorted({task.owner for task in tasks if task.owner}))
         rows = [{"id": _text(task.id, 40), "kind": task.kind, "name": _text(task.name, 200),
                  "command": _text(task.command, 2000), "state": task.state, "exitCode": task.exit_code,
@@ -2199,6 +2259,8 @@ class WebFront:
         except (TypeError, ValueError):
             offset = 0
         manager = self._task_manager()
+        if manager is None:
+            return {"text": "", "offset": offset, "state": "", "error": NOT_READY}
         task = manager.get(ident)
         if task is None:
             return {"text": "", "offset": offset, "state": "", "error": f"there is no task {_text(ident, 40)}"}
@@ -2215,6 +2277,8 @@ class WebFront:
         """``POST /api/tasks/stop``: the user's own Stop (not gated); a terminal is not closed while remote control
         is on."""
         manager = self._task_manager()
+        if manager is None:
+            return {"ok": False, "error": NOT_READY}
         task = manager.get(ident)
         if task is None:
             return {"ok": False, "error": f"there is no task {_text(ident, 40)}"}
@@ -2228,11 +2292,16 @@ class WebFront:
 
     def tasks_clear(self) -> Dict[str, Any]:
         """``POST /api/tasks/clear``: Clear finished."""
-        return {"ok": True, "cleared": self._task_manager().clear_finished()}
+        manager = self._task_manager()
+        if manager is None:
+            return {"ok": False, "error": NOT_READY}
+        return {"ok": True, "cleared": manager.clear_finished()}
 
     def _terminal(self, ident: str) -> Tuple[Any, Optional[str]]:
         """``(manager, None)`` when ``ident`` is a terminal the window may use now, else ``(manager, why not)``."""
         manager = self._task_manager()
+        if manager is None:
+            return manager, NOT_READY
         if self._remote_on():
             return manager, TERMINALS_OFF
         task = manager.get(ident)
@@ -2247,8 +2316,11 @@ class WebFront:
         if self._remote_on():
             return {"ok": False, "error": TERMINALS_OFF}
         from agentx_dev.cli.background import TaskLimit
+        manager = self._task_manager()
+        if manager is None:
+            return {"ok": False, "error": NOT_READY}
         try:
-            task = self._task_manager().open_terminal()
+            task = manager.open_terminal()
         except TaskLimit as error:
             return {"ok": False, "error": _text(str(error), 500)}
         if task.state == "failed":
@@ -3041,6 +3113,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json({"error": "forbidden"}, 403)
         device = self._device(query)
         lane = self._lane(query)
+        if self.front.start_refuses("GET", url.path, device):
+            return self._json({"error": START_WAITING}, 409)
         front = self.front.route(device, lane)              # the conversation this window shows
         if url.path == "/events":
             after = self.headers.get("Last-Event-ID") or (query.get("after") or ["0"])[0] or "0"
@@ -3128,6 +3202,8 @@ class _Handler(BaseHTTPRequestHandler):
             claimed = self.front.claim_launch(data.get("code"))
             return self._json(claimed, 200 if "token" in claimed else 403)
         device = self._device(parse_qs(url.query))
+        if self.front.start_refuses("POST", url.path, device):
+            return self._json({"ok": False, "error": START_WAITING, "message": START_WAITING}, 409)
         if url.path == "/api/join":                         # open the main conversation, or go back to its own
             return self._json(self.front.join(device, bool(data.get("live")), str(data.get("then") or "")))
         if url.path == "/api/session":                      # the menu on a conversation in Recent
