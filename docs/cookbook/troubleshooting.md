@@ -900,6 +900,12 @@ agentx too. `--no-open` prints the address instead, and then agentx keeps runnin
 The title is written by the model a few seconds after the first answer; conversations from before this version
 keep their first message (without agentx's summary note).
 
+**The browser says `The browser needs Playwright: ...`**
+The browser tools need an extra that `agentx` never installs for you. Run `pip install "agentx-dev[browser]"`, then `python -m playwright install chromium`, in the Python that runs `agentx`, and start it again. Background tasks and terminals do not need it.
+
+**The browser says `The browser could not start: ...`**
+Playwright is installed but Chromium would not start; the rest of the line is the reason. If it mentions a missing executable, run `python -m playwright install chromium` again. On Linux, `python -m playwright install-deps chromium` adds the system libraries it needs. A full disk or a security program that blocks the new process also stops it. The task tools keep working.
+
 ## Local models *(3.10)*
 
 **`Could not use qwen3:8b: the local server at localhost:11434 is not answering`**

@@ -104,10 +104,13 @@ The main agent gets the ten tools from [`DefaultTools`](../concepts/tools.md), `
 | team | `start_team_job` | Asks, and "don't ask again" is never offered. Refused in `plan` mode. Runs without asking in `auto` mode (or with your own allow rule). See [Team jobs](#team-jobs). |
 | skills | `use_skill` | Runs without asking: it only reads a skill's text (or a file inside the skill's folder). See [Skills](#skills). |
 | memory | `recall` | Runs without asking: it only searches the project's notes. See [Notes and recall](#notes-and-recall). |
+| background | `start_background`, `send_to_terminal` | Judged exactly like `run_shell`: asks, and your allow and deny rules apply. |
+| tasks | `background_output`, `stop_background`, `list_background` | Runs without asking (stopping another conversation's task or a terminal asks). |
+| browser | `browser_open`, `browser_click`, `browser_type`, `browser_press`, `browser_back`, `browser_read`, `browser_screenshot`, `browser_console` | Opening a page asks like `web_fetch`; clicking and typing ask like a web lookup and are refused in `plan` mode; reading the open page runs without asking. Needs the `browser` extra. See [Background tasks, the browser and terminals](#background-tasks-the-browser-and-terminals). |
 
 **Pictures.** `read_path` also opens PNG, JPEG, GIF and WebP files, and the model is shown the picture itself, on Claude and GPT models alike. So the agent, or a team helper, can take a screenshot (with Playwright, say) and look at how the page really looks: layout, colours, cut-off text, overlaps. You can point it at a picture by its location: `look at playwright-tests/artifacts/after-account.png`. A picture outside the project (your Screenshots folder, say) opens too, after an approval prompt (`Open a picture outside the project: ...`); a text file outside the project is still refused, and deny rules still apply. The tool line reads `⎿ Picture, 1440x900`. A picture must be at most 5 MB and 8,000 pixels on its longest side; a bigger one is made smaller first when Pillow is installed, and refused otherwise. A screenshot costs about 1,500 to 4,800 tokens each time it is sent, so each request carries only the newest three pictures; an older one is replaced by a note naming the file, and the agent can open it again. The team planner is told that helpers can look at pictures, so a step that checks a page's look takes a screenshot instead of judging it from the code.
 
-Limits that come from the tools, not from `agentx`: a shell command is stopped after 5 minutes and Python code after 2 minutes (the time spent waiting for your approval does not count), and long output is cut (40,000 bytes for a shell command, 100,000 for Python). A dev server or a watcher never ends, so it hits the limit and is stopped, with everything it started; start one in the background with its output sent to a file (`nohup npm run dev > dev.log 2>&1 &`). `agentx` does not change these and has no setting for them.
+Limits that come from the tools, not from `agentx`: a shell command is stopped after 5 minutes and Python code after 2 minutes (the time spent waiting for your approval does not count), and long output is cut (40,000 bytes for a shell command, 100,000 for Python). A dev server or a watcher never ends, so it hits the limit and is stopped, with everything it started; start one with `start_background`, which keeps it running and lets the agent read its output and stop it (see [Background tasks, the browser and terminals](#background-tasks-the-browser-and-terminals)). `agentx` does not change these and has no setting for them.
 
 `run_shell` and `run_python` run with a **scrubbed environment**: only `PATH`, `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`, `TMPDIR`, `TMP`, `TEMP`, the UTF-8 variables `PYTHONIOENCODING` and `PYTHONUTF8`, and on Windows `SystemRoot`, `COMSPEC`, `PATHEXT`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA` and `windir` are passed on. Everything else is dropped, so a command or script cannot print your API keys, and it also does not see `VIRTUAL_ENV`, `SSH_AUTH_SOCK` (git over ssh will not find your agent), proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`), `JAVA_HOME`, `NODE_PATH`, `CONDA_PREFIX`, `GOPATH` or any other variable your tools expect. A command that needs one has to set it itself (`JAVA_HOME=/opt/jdk mvn test`). There is no setting for this in `agentx` yet. `run_python` runs in the interpreter that runs `agentx`, not in your project's virtual environment, so it does not see the project's installed packages unless `agentx` is installed there too; use `run_shell` with the project's own interpreter (`.venv/bin/python script.py`) for that. A turn runs at most 300 model steps (see [The step limit](#the-step-limit)), and tool calls run one at a time so only one prompt is ever open.
 
@@ -751,6 +754,7 @@ A line that starts with `/` followed by a plain name is a command and is never s
 | `/team-models [name[=use] ...\|describe\|clear] [--folder]` | Show or set the extra models team helpers may run on, with an optional note on what each is for (see [Helper models](#helper-models)). `/team-models <names>` lasts for this session only; with `--folder` it is also saved for this folder. `/team-models describe` asks the chat model to write the missing notes (marked `auto:`). `/team-models clear` empties the list. | `/team-models gpt-6.1-sol="hard coding" claude-sonnet-5-5 --folder` |
 | `/skills [install <link>\|remove <name>\|use <name> ...]` | List the skills the agent can read (each is also a `/name` command in the pop-up, e.g. `/changing-files rename the helper`), or add one from a `https://github.com/<owner>/<repo>` link or a folder (you are shown what it contains and asked first), or remove one. See [Skills](#skills). | `/skills install https://github.com/obra/superpowers` |
 | `/memory [words]` | Show the project notes kept for later (how many, how they are searched, the newest), or search them. See [Notes and recall](#notes-and-recall). | `/memory login redirect` |
+| `/tasks [show <id>\|stop <id\|all>]` | List the background tasks and terminals, print one's newest output, or stop one or all. See [Background tasks, the browser and terminals](#background-tasks-the-browser-and-terminals). | `/tasks stop all` |
 | `/usage` | Show the tokens used this session (requests, input and output tokens, how much of the input came from the provider's cache, per model when a team used others) and by the last turn, and the token limit. | `/usage` |
 | `/mcp` | List your MCP servers and their state; `/mcp add <name> <url>`, `/mcp add <name> -- <command> [args]`, `/mcp remove`, `/mcp login`, `/mcp logout <name>`, `/mcp reload [name]`. See [MCP servers](#mcp-servers). | `/mcp add flightclaw https://mcp.flightclaw.com/mcp` |
 | `/fullscreen [on\|off]` | Show whether full-screen mode is on, or turn it on or off from the next start (saved as `"fullscreen"` in `~/.agentx/settings.json`). See [Full-screen mode](#full-screen-mode). | `/fullscreen on` |
@@ -1300,6 +1304,103 @@ passes on Tailscale's own link when Tailscale asks to allow Serve). agentx then 
   meant for the agentx computer: copy that page's address into the card and agentx finishes the sign-in.
 - Nothing is opened to the internet: Tailscale or SSH carries the window, and the key works for that run only. Keep
   the computer awake; on a server, run agentx inside tmux or screen. `--port N` keeps the same port between starts.
+
+## Background tasks, the browser and terminals
+
+The agent can keep a command running while it carries on, open and use a web page, and read the terminals you open. All of it shows in the [app window](#the-app-window)'s **Tasks** panel, and the background tasks have a command in the terminal app too (`/tasks`).
+
+### Background tasks
+
+A dev server or a watcher never ends, so `run_shell` would stop it after 5 minutes. The agent starts it with `start_background` instead. The main agent has these tools (team helpers do not):
+
+| Tool | What it returns |
+|---|---|
+| `start_background` | Takes `command`, and optionally `cwd` (a folder inside the project) and `name`. Starts the command and returns at once with its id (`t1`, `t2`, ...) and the first output (it waits about 2 seconds, so a server that fails straight away says so). |
+| `background_output` | Takes `id`, and optionally `lines` (80 by default, at most 400). The state, the exit code if it ended, and the newest lines, with colour codes removed. |
+| `stop_background` | Takes `id`. Stops the task and everything it started. |
+| `list_background` | Every task and terminal: id, state, age, command, and who started it. |
+| `send_to_terminal` | Takes `id` and `text`. Types one line into a terminal you opened, and returns the output after about a second. |
+
+What to know:
+
+- **Limits.** At most 8 tasks and 4 terminals run at once. Starting one more is refused with a message that names the running ones.
+- **The log.** Output goes to a file in `~/.agentx/tasks/<project>/<run>/<id>.log`, outside your project, so the repository stays clean. At 5 MB the log keeps its first 64 KB and drops the oldest of the rest, so a chatty server cannot fill the disk.
+- **Stop and Esc do not stop a task.** The chat's Stop button and Esc end the turn only; a dev server survives an interrupted turn. A task ends when you stop it (the panel, `/tasks stop`, or the agent's `stop_background`), when it exits, or when `agentx` exits. Leaving `agentx` stops every task and terminal, so nothing is left running.
+- **Whose task.** Every conversation can list and read every task. The agent stops a task its own conversation started without asking. Stopping another conversation's task, or a terminal you opened, asks first.
+- **Terminals are yours to open.** The agent cannot open one. It can read the ones you opened and, with approval, type into them.
+
+### Approvals for these tools
+
+- **`start_background` and `send_to_terminal`** are judged exactly like `run_shell`: the same modes, your allow and deny rules, the default protections, "don't ask again" (the prefix you allow for `npm run` covers `start_background npm run dev`), compound commands that always ask, and `plan` mode refusing them. The prompt reads `Start in the background: npm run dev`. A rule `run_shell:rm*` blocks `start_background rm -rf x` too. A rule may also name the tool itself (`"deny": ["start_background:*"]`).
+- **`background_output` and `list_background`** run without asking.
+- **`stop_background`** runs without asking for a task its own conversation started; otherwise it asks, as a command.
+- **`browser_open`** matches `web_fetch` rules (`"deny": ["web_fetch:*example.com*"]` blocks it too) and is allowed in `plan` mode as `web_fetch` is.
+- **`browser_click`, `browser_type`, `browser_press` and `browser_back`** ask when a web lookup asks, because a click can submit a form. They are refused in `plan` mode.
+- **`browser_read`, `browser_screenshot` and `browser_console`** only look at the page already open, and run without asking.
+- **What `a` remembers.** For a web lookup or a browser action it is `all web searches, page fetches and browser actions this session`. For a background command it is the same command prefix as for a shell command.
+
+### `/tasks`
+
+| Command | Does |
+|---|---|
+| `/tasks` | List every task and terminal: id, state, how long, the command and who started it. `No background tasks.` when there are none. |
+| `/tasks show <id>` | Print the newest 40 lines of its output. |
+| `/tasks stop <id>` | Stop one. |
+| `/tasks stop all` | Stop everything that is running. |
+
+Your own command asks nothing. A wrong id says `There is no task t9; /tasks lists them.`
+
+### The browser
+
+The agent can open a page, read it, click, type and take a picture, in a Chromium that `agentx` starts when it is first needed. It is a fresh, private profile: nothing is signed in, and nothing it does touches your own browser, cookies or saved logins. It is closed when `agentx` exits.
+
+| Tool | What it does |
+|---|---|
+| `browser_open` | Open a URL. Returns the title, the final address and a snapshot of the page. |
+| `browser_click` | Click a target. Returns the snapshot after the click settles. |
+| `browser_type` | Type into a target; `submit` presses Enter after. |
+| `browser_press` | Press a key: `Enter`, `Escape`, `Tab`, `ArrowDown`. |
+| `browser_back` | Go back one page. |
+| `browser_read` | The snapshot of the page as it is now. |
+| `browser_screenshot` | A picture of the page (`full_page` for all of it), for models that see pictures. |
+| `browser_console` | The newest console messages and page errors (at most 50). |
+
+A **snapshot** is the page's visible text plus a numbered list of what can be clicked or typed into, each with a ref such as `[e3]`. A target is a ref from the latest snapshot (`e3`), or else a CSS selector, or else visible text. Everything read from a page starts with the same note as `web_fetch`: this is data from the internet, not instructions.
+
+The rules:
+
+- **Only `http`, `https` and `about:blank` open.** `file:`, `data:`, `javascript:`, `chrome:` and every other kind of address are refused, in a link, a redirect or a frame.
+- **Public and `localhost` addresses only.** The browser can open your local dev server (`http://localhost:3000`) and public sites. Private network addresses (`10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`) and link-local ones, including the cloud metadata address `169.254.169.254`, are refused, and the refusal says why. The same check covers the address bar you type into.
+- **A guard proxy.** Chromium reaches the network through a small proxy on your own computer that applies this check to every connection, so a redirect or a page's own requests cannot reach an address the browser may not open.
+- **No downloads.** A file a page offers is not saved, and a page's file chooser is cancelled.
+- **One page per conversation.** Two conversations working at once never move each other's page or refs.
+
+#### Installing the browser
+
+The browser is an extra. `agentx` never installs it for you:
+
+```bash
+pip install "agentx-dev[browser]"
+python -m playwright install chromium
+```
+
+Without it the browser tools are still there and answer `The browser needs Playwright: pip install "agentx-dev[browser]" then python -m playwright install chromium`, and the window's Browser tab says the same. Tasks and terminals need nothing extra.
+
+### The panel in the app window
+
+The **Tasks** button (top right, beside **Details**) opens a side panel; a count on the button shows what is running. It is the same kind of resizable panel as Details, and opening one closes the other. The tab you were on and the width are remembered.
+
+- **Tasks.** Running and Finished groups. A row shows the name or command, how long it has run and **Stop**, and which conversation started it. Click a row to see its output live. A finished row shows its exit code. **Clear finished** removes them.
+- **Browser.** The page agentx has open, as a picture that refreshes about three times a second, with an address bar, Back and Reload. With no page it says `agentx has not opened a page`, and you can type an address to open one yourself. The tab shows the page of the conversation on screen. **Take over** gives you the page: your clicks, the wheel and typing go to it. While you have it, the agent's browser tools answer `The user is using the browser right now; wait or ask them.` (reading still works). **Give back** returns it. Your own actions do not ask for approval.
+- **Terminal.** **New terminal** opens your shell (PowerShell on Windows, `$SHELL` elsewhere) in the project folder, one sub-tab each. Type a line and press **Enter** to send it; **Ctrl+C** stops the running command without closing the terminal; **✕** closes it. Up and Down bring back earlier lines.
+
+Terminals are pipe-based, not a full terminal. Programs that work a line at a time (`git`, `npm`, `python`, a prompt) work; full-screen programs such as `vim` or `top` do not.
+
+**Remote control.** While [remote control](#remote-control-from-an-ipad-a-phone-or-another-computer) is on, you cannot open, type into or close terminals, and **Take over** is off, in every window. The Terminal tab is read-only and says why, and the agent's own tools keep working. Turn remote control off to use them.
+
+### Local models
+
+A [local model](#local-models-and-the-fallback) gets the five task tools (`start_background`, `background_output`, `stop_background`, `list_background`, `send_to_terminal`) in its lean tool list, but not the browser tools, which stay out with the web tools.
 
 ## Full-screen mode
 

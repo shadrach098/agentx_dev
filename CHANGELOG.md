@@ -8,6 +8,22 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 
 ### Added
 
+- **Background tasks, a built-in browser and terminals.** The agent keeps commands running, drives a web page
+  and reads your terminals; the app window shows all of it in a **Tasks** panel.
+  - `start_background`, `background_output`, `stop_background`, `list_background` and `send_to_terminal`. A
+    background command and text typed into a terminal are judged exactly like `run_shell` (modes, allow and deny
+    rules, "don't ask again", plan mode). At most 8 tasks and 4 terminals; each log is capped at 5 MB under
+    `~/.agentx/tasks`. Stop and Esc end the turn only; leaving agentx stops everything. `/tasks`,
+    `/tasks show <id>` and `/tasks stop <id|all>` in the terminal app. The old `nohup ... &` advice is gone.
+  - `browser_open`, `browser_click`, `browser_type`, `browser_press`, `browser_back`, `browser_read`,
+    `browser_screenshot` and `browser_console`, in a private Chromium with nothing signed in, one page per
+    conversation. Only http, https and about:blank; public and localhost addresses only (private network and
+    cloud-metadata addresses are refused, checked again by a proxy on 127.0.0.1); no downloads. Opening a page
+    matches `web_fetch` rules; clicking and typing ask like a web lookup and are refused in plan mode.
+    Optional: `pip install "agentx-dev[browser]"` then `python -m playwright install chromium`.
+  - The **Tasks** button opens a panel with **Tasks**, **Browser** (take over and give back the page, an
+    address bar) and **Terminal** (pipe-based: no full-screen programs) tabs. While remote control is on,
+    terminals and taking over the browser are off. Local models get the task tools, not the browser tools.
 - **Local models.** `Local(model=None, base_url="http://localhost:11434/v1", api_key=None, context_window=None)`, a
   `GPT` subclass for Ollama, LM Studio and llama.cpp: chat completions only, no key, never reads `OPENAI_API_KEY`
   (a placeholder is sent; `api_key=` for a server that wants one), an address with no `http://` gets it, `model=None`
