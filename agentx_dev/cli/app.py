@@ -676,9 +676,21 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         self._mode_before_grant = None
 
     def _fresh(self, runner: AgentRunner) -> None:
+        left = self._conversation_id()
         self._new_conversation_state()
         self.session = Session.start(runner)
         self.session_path = new_session_path(self.home, self.cwd, self.session.session_id)
+        self._close_page_of(left)
+
+    def _close_page_of(self, owner: str) -> None:
+        """The conversation ``owner`` ended here (/clear, /resume, or its app closed): its browser page goes too,
+        so its scripts stop running (and a take-over of it ends). Chromium is not started for it."""
+        if not owner:
+            return
+        try:
+            self.browser.close_owner(owner)
+        except Exception:
+            logging.getLogger(__name__).debug("could not close the browser page", exc_info=True)
 
     def _load(self, info: SessionInfo, runner: AgentRunner) -> bool:
         """Load ``info`` into the session. False when the file could not be read: a new conversation was
@@ -691,9 +703,12 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
                        "Starting a new conversation.")
             self._fresh(runner)
             return False
+        left = self._conversation_id()
         self._new_conversation_state()
         self.session, self.session_path = session, info.path
         self._recall_next = False                     # a resumed conversation already has its context
+        if left != self._conversation_id():
+            self._close_page_of(left)
         return True
 
     def start(self, resume: Optional[str] = None) -> int:
@@ -772,6 +787,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
                         self.browser.close()
                     except Exception:
                         logging.getLogger(__name__).debug("could not close the browser", exc_info=True)
+            else:                                 # another device's conversation (a lane, a room) ends: its page
+                self._close_page_of(self._conversation_id())
 
     # -- typing while the agent works ----------------------------------------------------------------------
 

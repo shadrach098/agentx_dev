@@ -276,3 +276,37 @@ def test_a_take_over_that_lands_while_the_call_waits_gives_the_held_answer(tmp_p
                        ("browser_type", {"target": "e1", "text": "x"}), ("browser_press", {"key": "Enter"}),
                        ("browser_back", {})):
         assert tool(app, name).func(**args) == HELD, name
+
+
+def test_clear_and_resume_close_the_page_of_the_conversation_left(tmp_path, monkeypatch):
+    """A conversation that ends (/clear, /resume another) takes its page with it: its scripts stop running."""
+    fake = FakeHost()
+    monkeypatch.setattr(app_module, "shared_browser", lambda: fake)
+    first, _, _, _ = make_app(tmp_path, Lines("hello", "/exit"), MockModel(script=[make_final("saved")]))
+    assert first.start() == 0
+    saved = first.session.session_id
+    fake.calls.clear()
+    seen = []
+    note = lambda: seen.append(app.session.session_id)                 # noqa: E731
+    app, _, _, _ = make_app(tmp_path, Lines(note, "/clear", note, f"/resume {saved[:8]}", note, "/exit"),
+                            MockModel(script=[]))
+    assert app.start() == 0
+    started, cleared, resumed = seen
+    assert resumed == saved and len({started, cleared, resumed}) == 3
+    closes = [owner for what, *rest in fake.calls if what == "close" for owner in rest]
+    assert closes[:2] == [started, cleared]
+
+
+def test_a_conversation_of_another_device_closes_its_page_when_it_ends(tmp_path, monkeypatch):
+    """A lane or a device's room that closes (put away, or unused) ends its app: its page goes, Chromium stays."""
+    fake = FakeHost()
+    monkeypatch.setattr(app_module, "shared_browser", lambda: fake)
+    from tests.test_task_tools import room
+    main, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]))
+    other = app_module.device_app(main, room())
+    other.model = MockModel(script=[])
+    other.read_line = Lines("/exit")
+    assert other.stops_tasks_at_exit is False
+    assert other.start() == 0
+    owner = other._conversation_id()
+    assert owner and ("close", owner) in fake.calls and not fake.closed

@@ -1177,10 +1177,12 @@ class BrowserHost:
             return list(rec.console)
 
     def close_owner(self, owner: str) -> None:
-        """Close the owner's context and page (a conversation that ended)."""
+        """Close the owner's context and page (a conversation that ended: /clear, /resume, its lane or room closed),
+        and end a take-over of it. Queued for the worker and not waited for, so ending a conversation never waits on
+        another one's page load; never starts the browser for an owner that has no page."""
         self._held.discard(owner)
         if owner in self._owners:
-            self._call(self._drop, owner)
+            self._submit(self._drop, owner)
 
     # -- what the window calls ------------------------------------------------------------------------------------
 

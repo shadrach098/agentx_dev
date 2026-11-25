@@ -440,3 +440,31 @@ class TestBrowserBusy:
         got = front.browser_input({"type": "navigate", "url": "http://127.0.0.1:1/"})
         assert got["ok"] is False and "not started" in got["error"]
         assert not front.app.browser.held_by_user("") and front.app.browser._thread is None
+
+
+# -- final review fixes ------------------------------------------------------------------------------------------
+
+class TestPagesEnd:
+    def test_a_lane_that_closes_closes_its_page(self, host):
+        """A lane put away (or a room closed because unused) ends its conversation, and its page goes with it."""
+        h = host(answers("lane"))
+        main = h.front_of(LAPTOP)
+        ready(main)
+        got = h.request(LAPTOP, "POST", "/api/lanes", {})
+        assert got["ok"] is True
+        room = h.front.rooms[f"{LAPTOP}~{got['lane']}"]
+        ready(room)
+        room.app.stops_tasks_at_exit = False                # as device_app makes it: the process's browser stays
+        browser = room.app.browser = main.app.browser = BrowserHost()
+        try:
+            owner = room.conversation_id()
+            fake_page_for(browser, owner)
+            other = main.conversation_id()
+            fake_page_for(browser, other)
+            assert browser.state(owner)["open"] is True
+            room.close()
+            until(lambda: room.ended)
+            until(lambda: browser.state(owner)["open"] is False)
+            assert browser.state(other)["open"] is True        # the main conversation's page stays
+        finally:
+            browser.close()

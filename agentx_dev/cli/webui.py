@@ -2307,6 +2307,15 @@ class WebFront:
                     self.last_session[room.device] = Path(path).name      # find_session takes the file name
         room.ended = True
         room.close()
+        # Its conversation ended (put away, unused, or it stopped): its page goes too. The app closes it as it
+        # ends; this covers an app that never got that far. Chromium is not started for it.
+        owner = room.conversation_id()
+        browser = getattr(room.app, "browser", None)
+        if owner and browser is not None:
+            try:
+                browser.close_owner(owner)
+            except Exception:                           # it goes when agentx exits
+                pass
 
     def _sweep_rooms(self) -> None:
         """A room no window has used for ``ROOM_IDLE_SEC`` and that is not working is closed (its MCP servers and

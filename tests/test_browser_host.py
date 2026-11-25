@@ -326,9 +326,9 @@ def test_each_owner_has_its_own_page(host, site):
     assert host.click("a", _ref(a, 'link "Next page"')).url == site + "/next"
     assert host.snapshot("b").url == site + "/other"
     assert host.state("a")["url"] == site + "/next" and host.state("b")["url"] == site + "/other"
-    host.close_owner("b")
+    host.close_owner("b")                               # queued, not waited for ...
+    assert host.snapshot("a").url == site + "/next"     # ... so done by the time a later call answers
     assert host.state("b")["open"] is False
-    assert host.snapshot("a").url == site + "/next"
 
 
 def test_frame_changes_after_navigation(host, site):
@@ -837,3 +837,23 @@ def test_proxy_keeps_the_upgrade_of_a_websocket_answer(proxy):
         assert head == [b"HTTP/1.1 101 Switching Protocols", b"Upgrade: websocket", b"Connection: Upgrade"]
     finally:
         up.close()
+
+
+def test_close_owner_drops_the_page_without_waiting_or_starting_chromium():
+    h = BrowserHost()
+    try:
+        h.close_owner("nobody")
+        assert h._thread is None                        # nothing to close: no worker, no Chromium
+        h._owners["a"] = browser._Owner(context=None, pages=[object()])
+        h.take("a")
+        release = _busy_worker(h)                        # another conversation's slow load
+        started = time.monotonic()
+        h.close_owner("a")
+        assert time.monotonic() - started < 1 and not h.held_by_user("a")
+        release.set()
+        deadline = time.monotonic() + 5
+        while h.state("a")["open"] and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert h.state("a")["open"] is False and h._browser is None
+    finally:
+        h.close()
