@@ -13,7 +13,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   - `start_background`, `background_output`, `stop_background`, `list_background` and `send_to_terminal`. A
     background command and text typed into a terminal are judged exactly like `run_shell` (modes, allow and deny
     rules, "don't ask again", plan mode). At most 8 tasks and 4 terminals; each log is capped at 5 MB under
-    `~/.agentx/tasks`. Stop and Esc end the turn only; leaving agentx stops everything. `/tasks`,
+    `~/.agentx/tasks`. Stop and Esc end the turn only. Leaving agentx stops every task and terminal and what
+    they started (also a program that wrote its output to a file): on Windows however agentx ends; on macOS and
+    Linux on a normal exit, Ctrl+C, closing the terminal or SIGTERM (a crash or SIGKILL can leave them). `/tasks`,
     `/tasks show <id>` and `/tasks stop <id|all>` in the terminal app. The old `nohup ... &` advice is gone.
   - `browser_open`, `browser_click`, `browser_type`, `browser_press`, `browser_back`, `browser_read`,
     `browser_screenshot` and `browser_console`, in a private Chromium with nothing signed in, one page per
