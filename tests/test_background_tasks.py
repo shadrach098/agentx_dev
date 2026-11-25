@@ -425,7 +425,75 @@ def test_a_stop_that_hangs_does_not_hold_the_signal_forever():
 
 def test_shared_retries_the_signal_handlers_on_each_call(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(background, "_install_signal_handlers", lambda: calls.append(1))
+    monkeypatch.setattr(background, "install_signal_handlers", lambda: calls.append(1))
     first = background.shared(tmp_path / "home", tmp_path)
     second = background.shared(tmp_path / "home", tmp_path)
     assert first is second and len(calls) == 2
+
+
+def test_install_signal_handlers_is_safe_before_any_manager_and_off_the_main_thread(monkeypatch):
+    import threading
+    monkeypatch.setattr(background, "_signals_installed", False)
+    monkeypatch.setattr(background, "_shared", {})              # no manager yet
+    registered = []
+    monkeypatch.setattr(background.signal, "signal", lambda sig, h: registered.append((sig, h)))
+    off_main = []
+    worker = threading.Thread(target=lambda: off_main.append(background.install_signal_handlers()))
+    worker.start()
+    worker.join()
+    assert off_main == [False] and registered == []             # another thread: nothing is touched
+    installed = background.install_signal_handlers()
+    if sys.platform == "win32":
+        assert installed is False and registered == []
+        return
+    import signal
+    assert installed is True and [sig for sig, _ in registered] == [signal.SIGHUP, signal.SIGTERM]
+    assert background.install_signal_handlers() is True and len(registered) == 2      # once
+    background._stop_every_manager()                            # what the handler runs: fine with no manager
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_the_ui_launcher_installs_the_handlers_on_the_main_thread(monkeypatch, tmp_path):
+    import argparse
+    import signal
+    from agentx_dev.cli import app as app_module
+    from agentx_dev.cli import webui
+    monkeypatch.setattr(background, "_signals_installed", False)
+    registered = []
+    monkeypatch.setattr(background.signal, "signal", lambda sig, h: registered.append(sig))
+    monkeypatch.setattr(app_module, "setup_logging", lambda home: None)
+    seen_at_run = []
+
+    class Front:
+        def __init__(self, **kw):
+            self.app = None
+
+        def run(self, start):
+            seen_at_run.append(list(registered))
+            return 0
+    monkeypatch.setattr(webui, "WebFront", Front)
+    args = argparse.Namespace(port=0, no_open=True, remote=False)
+    assert app_module._run_ui(args) == 0
+    assert seen_at_run == [[signal.SIGHUP, signal.SIGTERM]]
+
+
+def test_the_ui_launcher_asks_for_the_handlers_before_the_window_runs(monkeypatch):
+    import argparse
+    import threading
+    from agentx_dev.cli import app as app_module
+    from agentx_dev.cli import webui
+    order = []
+    monkeypatch.setattr(app_module, "install_signal_handlers",
+                        lambda: order.append(("install", threading.current_thread() is threading.main_thread())))
+    monkeypatch.setattr(app_module, "setup_logging", lambda home: None)
+
+    class Front:
+        def __init__(self, **kw):
+            self.app = None
+
+        def run(self, start):
+            order.append(("run", None))
+            return 0
+    monkeypatch.setattr(webui, "WebFront", Front)
+    assert app_module._run_ui(argparse.Namespace(port=0, no_open=True, remote=False)) == 0
+    assert order == [("install", True), ("run", None)]

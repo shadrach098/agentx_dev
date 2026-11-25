@@ -8,7 +8,7 @@ opened, is asked about first (``stop_other_task``, a command). The agent cannot 
 from __future__ import annotations
 
 import time
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Mapping, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -89,8 +89,12 @@ def ended_text(task: Task) -> str:
     return f"{task.id} had already ended (stopped)."
 
 
-def task_line(task: Task, me: str, titles: Callable[[str], str]) -> str:
-    """``t1  running  2m 10s  npm run dev  (started by: <title>)``."""
+# ``titles(owners)``: the titles of those conversations, by id, in one lookup (an id left out has none).
+Titles = Callable[[Sequence[str]], Mapping[str, str]]
+
+
+def task_line(task: Task, me: str, names: Mapping[str, str]) -> str:
+    """``t1  running  2m 10s  npm run dev  (started by: <title>)``; ``names``: conversation titles by id."""
     state = f"exited (code {task.exit_code})" if task.state == "exited" else task.state
     what = _one_line(task.command)
     if task.name:
@@ -100,19 +104,24 @@ def task_line(task: Task, me: str, titles: Callable[[str], str]) -> str:
     if me and task.owner == me:
         by = "this conversation"
     else:
-        try:
-            by = titles(task.owner) if task.owner else ""
-        except Exception:
-            by = ""
-        by = _one_line(by, 80) if by else "another conversation"
+        by = str(names.get(task.owner) or "") if task.owner else ""
+        by = _one_line(by, 80) if by.strip() else "another conversation"
     return f"{task.id}  {state}  {duration(_age(task))}  {what}  (started by: {by})"
 
 
-def list_text(manager: TaskManager, me: str, titles: Callable[[str], str]) -> str:
+def list_text(manager: TaskManager, me: str, titles: Titles) -> str:
+    """One line per task; the other conversations' titles are looked up once for the whole listing."""
     tasks = manager.list()
     if not tasks:
         return "No background tasks."
-    return "\n".join(task_line(task, me, titles) for task in tasks)
+    others = sorted({t.owner for t in tasks if t.kind != "terminal" and t.owner and t.owner != me})
+    names: Mapping[str, str] = {}
+    if others:
+        try:
+            names = dict(titles(others) or {})
+        except Exception:
+            names = {}
+    return "\n".join(task_line(task, me, names) for task in tasks)
 
 
 def stop_text(manager: TaskManager, task: Task) -> str:
@@ -125,7 +134,7 @@ def stop_text(manager: TaskManager, task: Task) -> str:
     return ended_text(stopped)                       # it ended on its own just before
 
 
-def tasks_command(manager: TaskManager, arg: str, me: str, titles: Callable[[str], str]) -> Tuple[str, bool]:
+def tasks_command(manager: TaskManager, arg: str, me: str, titles: Titles) -> Tuple[str, bool]:
     """``/tasks [show <id>|stop <id|all>]``: (the text to show, whether it worked). The user's own command: nothing
     is asked."""
     words = arg.split()
@@ -187,10 +196,10 @@ SEND_DESCRIPTION = ("Type a line into a terminal the user opened; returns the ou
 
 
 def build_task_tools(manager: TaskManager, owner: Callable[[], str], permissions: Permissions, gate: Gate,
-                     titles: Callable[[str], str]) -> List[StructuredTool]:
+                     titles: Titles) -> List[StructuredTool]:
     """``start_background``, ``background_output``, ``stop_background``, ``list_background`` and
     ``send_to_terminal`` over ``manager``, each behind ``gate``. ``owner()`` is the calling conversation's id now (it
-    changes with /clear and /resume); ``titles(owner)`` a conversation's title, "" when unknown."""
+    changes with /clear and /resume); ``titles(owners)`` those conversations' titles by id (see ``Titles``)."""
 
     def me() -> str:
         try:
@@ -223,6 +232,8 @@ def build_task_tools(manager: TaskManager, owner: Callable[[], str], permissions
         lines = [f"Started {task.id} in the background: {command}"]
         if task.state == "failed":
             lines += ["It could not start:", text or "(no output)"]
+        elif task.state == "stopped":                   # stopped elsewhere (/tasks, the panel) during the wait
+            lines += [f"{task.id} was stopped while starting.", text or "(no output)"]
         elif task.state != "running":
             lines += [f"It exited at once with code {task.exit_code}:", text or "(no output)"]
         else:

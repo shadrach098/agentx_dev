@@ -34,7 +34,7 @@ from agentx_dev.cli.models import model_label as label_of
 from agentx_dev.cli.models import larger_window, provider_for
 from agentx_dev.cli.safepaths import safe_location
 from agentx_dev.cli.sessions import (SessionInfo, find_session, latest_session, list_sessions, new_session_path,
-                                     sessions_dir)
+                                     sessions_dir, short_id, titles_by_short_id)
 from agentx_dev.cli.settings import (DEFAULT_MAX_STEPS, DEFAULT_TOKEN_LIMIT, MAX_MAX_STEPS, PLACEHOLDER_MODEL, ensure_project_settings, ensure_user_settings,
                                      is_project_folder, load_settings, project_settings_path, user_settings_path,
                                      read_user_auto_team, read_user_fullscreen, write_user_fullscreen)
@@ -44,7 +44,7 @@ from agentx_dev.cli.ui_text import plain
 from agentx_dev.cli.team_record import TeamRecord
 from agentx_dev.cli.routing import ROUTE_THREAD, Route, routed_request
 from agentx_dev.cli.tools import build_tools, gate_tool, lean_tools, make_permissions
-from agentx_dev.cli.background import shared
+from agentx_dev.cli.background import install_signal_handlers, shared
 from agentx_dev.cli.task_tools import build_task_tools, tasks_command
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker, status_line
@@ -361,7 +361,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         self.tasks = shared(self.home, self.cwd, permissions)
         self.stops_tasks_at_exit = True
         task_tools = build_task_tools(self.tasks, self._conversation_id, permissions, self.gate,
-                                      self._conversation_title)
+                                      self._conversation_titles)
         self.tools = [*self.base_tools, *task_tools,
                       self._within_job_limit(gate_tool(make_team_tool(self._start_team_job), self.gate))]
         self._memory_on = is_project_folder(self.cwd, self.home)    # no log or folder settings for home / a drive root
@@ -578,21 +578,18 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         """This conversation's id now (it changes with /clear and /resume): the owner of the tasks it starts."""
         return str(getattr(self.session, "session_id", "") or "")
 
-    def _conversation_title(self, owner: str) -> str:
-        """The title of the saved conversation ``owner``, "" when there is none."""
-        if not owner:
-            return ""
+    def _conversation_titles(self, owners: Sequence[str]) -> Dict[str, str]:
+        """The titles of the conversations ``owners`` (ids), from the titles the model wrote (``titles.json``): one
+        small read for a whole listing, no session file loaded. A conversation without one is left out."""
         try:
-            for info in list_sessions(self.home, self.cwd):
-                if info.session_id == owner:
-                    return info.title
+            by_short = titles_by_short_id(self.home, self.cwd)
         except Exception:
-            pass
-        return ""
+            return {}
+        return {owner: by_short[short_id(owner)] for owner in owners if short_id(owner) in by_short}
 
     def show_tasks(self, arg: str) -> None:
         """``/tasks``: list, show or stop the background tasks and terminals."""
-        text, ok = tasks_command(self.tasks, arg, self._conversation_id(), self._conversation_title)
+        text, ok = tasks_command(self.tasks, arg, self._conversation_id(), self._conversation_titles)
         (self.notice if ok else self.error)(text)
 
     def cycle_mode(self) -> None:
@@ -750,10 +747,17 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         try:
             return self.loop()
         finally:
-            if getattr(self.progress, "typeahead", None) is not None:
-                self.progress.typeahead.close()
-            if self.mcp is not None:
-                self.mcp.close()
+            # Each step on its own: one that fails (an MCP server that will not close) must not skip the others.
+            try:
+                if getattr(self.progress, "typeahead", None) is not None:
+                    self.progress.typeahead.close()
+            except Exception:
+                logging.getLogger(__name__).debug("could not close the type-ahead reader", exc_info=True)
+            try:
+                if self.mcp is not None:
+                    self.mcp.close()
+            except Exception:
+                logging.getLogger(__name__).debug("could not close the MCP servers", exc_info=True)
             if self.stops_tasks_at_exit:          # agentx is ending: every task and terminal goes with it
                 self.tasks.stop_all()
 
@@ -1951,6 +1955,10 @@ def _run_ui(args: argparse.Namespace) -> int:
         front.pane_started = _time.monotonic()
     front.make_device_app = lambda room: device_app(front.app, room)   # each other device: its own conversation
     holder: List[Any] = []
+    # The app is built on the window's work thread, where signal handlers cannot be set: set them here, on the main
+    # thread (POSIX: SIGHUP / SIGTERM stop the background tasks first). Not ``shared()``: its first call carries the
+    # session's permissions.
+    install_signal_handlers()
     return front.run(lambda: _run(args, home, front.console, front.read, front.read_short, front.select, holder,
                                   front.wire))
 

@@ -55,10 +55,14 @@ def sessions_dir(home: Path, cwd: Path) -> Path:
     return Path(home) / ".agentx" / "sessions" / project_slug(cwd)
 
 
+def short_id(session_id: str) -> str:
+    """The part of ``session_id`` a session file is named after (``<timestamp>-<short id>.json``)."""
+    return re.sub(r"[^A-Za-z0-9_-]", "", str(session_id))[:8] or "session"
+
+
 def new_session_path(home: Path, cwd: Path, session_id: str, now: Optional[datetime] = None) -> Path:
     stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
-    short = re.sub(r"[^A-Za-z0-9_-]", "", str(session_id))[:8] or "session"
-    return sessions_dir(home, cwd) / f"{stamp}-{short}.json"
+    return sessions_dir(home, cwd) / f"{stamp}-{short_id(session_id)}.json"
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,16 @@ def titles_path(home: Path, cwd: Path) -> Path:
 def read_titles(home: Path, cwd: Path) -> dict:
     data = _load(titles_path(home, cwd))
     return {str(k): _printable(v)[:TITLE_CHARS] for k, v in (data or {}).items() if isinstance(v, str) and v.strip()}
+
+
+def titles_by_short_id(home: Path, cwd: Path) -> dict:
+    """The model-written titles (``titles.json``) by the short id in each session file's name: one small file read,
+    no session file opened."""
+    found = {}
+    for name, title in read_titles(home, cwd).items():
+        if _TIMESTAMPED.match(name) and name.endswith(".json"):
+            found[name[_TIMESTAMPED.match(name).end():-len(".json")]] = title
+    return found
 
 
 _TITLES_LOCK = threading.Lock()      # several conversations in one process (remote use) write titles.json

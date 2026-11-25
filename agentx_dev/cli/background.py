@@ -521,14 +521,17 @@ def _chained_handler(previous, stop_all=_stop_every_manager, timeout: float = SI
     return handler
 
 
-def _install_signal_handlers() -> None:
+def install_signal_handlers() -> bool:
     """POSIX: SIGHUP and SIGTERM end the process without ``atexit``, and tasks live in their own sessions, so they
-    would be orphaned. Stop them first. Main thread only (``signal.signal`` refuses elsewhere)."""
+    would be orphaned. Stop them first. Main thread only (``signal.signal`` refuses elsewhere); a no-op on Windows,
+    off the main thread, and once installed. Safe before any manager exists: the handler stops the managers there
+    are when the signal comes. ``agentx --ui`` calls it on the main thread, as its app is built on another one.
+    Whether the handlers are installed now."""
     global _signals_installed
     if _signals_installed or sys.platform == "win32":
-        return
+        return _signals_installed
     if threading.current_thread() is not threading.main_thread():
-        return
+        return False
     try:
         for name in ("SIGHUP", "SIGTERM"):
             sig = getattr(signal, name)
@@ -536,6 +539,7 @@ def _install_signal_handlers() -> None:
         _signals_installed = True
     except (ValueError, OSError):
         pass
+    return _signals_installed
 
 
 def shared(home: Path, cwd: Path, permissions: Optional[Permissions] = None) -> TaskManager:
@@ -553,5 +557,5 @@ def shared(home: Path, cwd: Path, permissions: Optional[Permissions] = None) -> 
             atexit.register(mgr.stop_all)
         # Each call from the main thread tries again (the first one may have come from another thread); once they
         # are installed this returns at once.
-        _install_signal_handlers()
+        install_signal_handlers()
         return mgr

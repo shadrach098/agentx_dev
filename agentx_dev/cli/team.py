@@ -634,12 +634,15 @@ SKILLS_SENTENCE = ("The supervisor has already planned the work: open a skill on
                    "covers exactly this kind of step, not a general one about how to start or plan.")
 NO_TEAM_SENTENCE = ("You cannot start a team job; ignore any instruction above to call start_team_job and do "
                     "your step yourself.")
+# The chat's addendum also tells the model to use start_background / stop_background (main agent only).
+NO_TASKS_SENTENCE = ("You have no background-task tools: do not start servers or watchers; ignore any instruction "
+                     "above to use start_background or stop_background.")
 
 
 def role_prompt(role: Role) -> str:
-    # The chat's own addendum tells the model to use start_team_job, which no helper has.
+    # The chat's own addendum tells the model to use start_team_job and the task tools, which no helper has.
     return (f"\n\n{ROLE_MARK} you are the {role.name} helper on a team led by a supervisor. {role.instructions} "
-            f"{NO_TEAM_SENTENCE} {SKILLS_SENTENCE} Finish with a short report; the supervisor passes it on.")
+            f"{NO_TEAM_SENTENCE} {NO_TASKS_SENTENCE} {SKILLS_SENTENCE} Finish with a short report; the supervisor passes it on.")
 
 
 def _partial_if_out_of_steps(completion: Any) -> Any:

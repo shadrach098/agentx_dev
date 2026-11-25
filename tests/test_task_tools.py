@@ -10,6 +10,7 @@ from rich.console import Console
 
 from agentx_dev.cli import app as app_module
 from agentx_dev.cli import background
+from agentx_dev.cli import task_tools
 from agentx_dev.cli.approval import DECLINED, Answer
 from agentx_dev.cli.commands import command_names, run_command
 from agentx_dev.cli.tools import LEAN_TOOLS, build_tools, lean_tools, make_permissions
@@ -273,3 +274,79 @@ def test_the_app_shares_the_process_manager(tmp_path, monkeypatch):
 def test_the_system_prompt_says_when_to_use_start_background():
     from agentx_dev.cli.context import BASE_PROMPT
     assert "start_background" in BASE_PROMPT and "nohup" in BASE_PROMPT and "stop_background" in BASE_PROMPT
+
+
+def test_a_listing_looks_the_titles_up_once(tmp_path):
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]))
+    try:
+        for owner in ("aaaa1111-x", "bbbb2222-y", "cccc3333-z"):
+            app.tasks.start(sleeper(tmp_path, owner[:4]), owner=owner)
+        app.tasks.start(sleeper(tmp_path, "mine"), owner="me")
+        calls = []
+
+        def titles(owners):
+            calls.append(sorted(owners))
+            return {"aaaa1111-x": "Fix the login bug"}
+        text = task_tools.list_text(app.tasks, "me", titles)
+        assert calls == [["aaaa1111-x", "bbbb2222-y", "cccc3333-z"]]
+        assert "(started by: Fix the login bug)" in text and "(started by: this conversation)" in text
+        assert text.count("(started by: another conversation)") == 2
+
+        calls.clear()
+        task_tools.list_text(background.TaskManager(tmp_path / "h", tmp_path), "me", titles)
+        assert calls == []                                       # nothing listed: nothing looked up
+    finally:
+        app.tasks.stop_all()
+
+
+def test_the_app_reads_the_titles_file_once_and_no_session_file(tmp_path, monkeypatch):
+    from agentx_dev.cli import sessions
+    app, _, cwd, home = make_app(tmp_path, Lines(), MockModel(script=[]))
+    sessions.save_title(home, cwd, "20261124T101500Z-abcd1234.json", "Start the dev server")
+    reads = []
+    real = app_module.titles_by_short_id
+    monkeypatch.setattr(app_module, "titles_by_short_id", lambda h, c: (reads.append(1), real(h, c))[1])
+    monkeypatch.setattr(app_module, "list_sessions", lambda *a: (_ for _ in ()).throw(AssertionError("loaded")))
+    app.session = SimpleNamespace(session_id="mine")
+    try:
+        for owner in ("abcd1234-5678-90ef", "ffff0000-1111", "eeee9999"):
+            app.tasks.start(sleeper(tmp_path, owner[:4]), owner=owner)
+        text = tool(app, "list_background").func()
+        assert reads == [1]
+        assert "(started by: Start the dev server)" in text
+        assert text.count("(started by: another conversation)") == 2
+    finally:
+        app.tasks.stop_all()
+
+
+def test_a_task_stopped_while_starting_says_so(tmp_path):
+    app, _, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]), mode="auto")
+    real = app.tasks.start
+
+    def start_then_stop(*args, **kwargs):
+        task = real(*args, **kwargs)
+        app.tasks.stop(task.id)                                  # someone else stopped it during the wait
+        return task
+    app.tasks.start = start_then_stop
+    try:
+        result = tool(app, "start_background").func(command=sleeper(tmp_path))
+        assert "t1 was stopped while starting." in result and "code None" not in result
+    finally:
+        app.tasks.stop_all()
+
+
+def test_a_failing_cleanup_step_does_not_skip_stopping_the_tasks(tmp_path):
+    class Broken:
+        def close(self):
+            raise RuntimeError("server gone")
+
+    holder = []
+    lines = Lines(lambda: holder[0].tasks.start(sleeper(tmp_path)), "/exit")
+    app, _, _, _ = make_app(tmp_path, lines, MockModel(script=[]))
+    holder.append(app)
+    app._connect_mcp = lambda: setattr(app, "mcp", Broken())
+    try:
+        assert app.start() == 0
+        assert app.tasks.get("t1") is not None and app.tasks.running_count() == 0
+    finally:
+        app.tasks.stop_all()

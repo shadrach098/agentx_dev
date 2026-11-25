@@ -255,6 +255,15 @@ def test_helpers_are_told_they_cannot_start_a_team_although_the_chat_prompt_says
         assert "start_team_job" not in [tool.name for tool in runner.tools], name
 
 
+def test_helpers_are_told_they_have_no_background_task_tools(tmp_path):
+    model = team_model([step("s1", "explorer", "look around")])
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), model)
+    assert "start_background" in app.addendum                   # the chat's prompt tells the model to use it
+    for name, (_, runner) in build_helpers(model, app.base_tools, app.addendum).items():
+        assert "You have no background-task tools" in runner.system_addendum, name
+        assert "start_background" not in [tool.name for tool in runner.tools], name
+
+
 def test_a_job_past_the_limit_is_refused_before_the_user_is_asked_again(tmp_path):
     asked = []
 
