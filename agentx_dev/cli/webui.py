@@ -84,14 +84,17 @@ PAGE_CHANGED = "the conversation on screen changed, so that was not sent to its 
 TERMINAL_INPUT_MAX = 64 * 1024      # the most text one line typed into a terminal may have
 
 
-def _browser_problem() -> str:
-    """``NOT_INSTALLED`` when Playwright cannot be imported, else "" (Chromium is not started to find out)."""
-    from agentx_dev.cli.browser import NOT_INSTALLED
+def _browser_problem(browser: Any = None) -> str:
+    """``NOT_INSTALLED`` when Playwright cannot be imported or its Chromium was never downloaded; else why
+    ``browser`` last failed to start; else "". Chromium is never started to find out."""
+    from agentx_dev.cli.browser import NOT_INSTALLED, chromium_missing
     try:
         import playwright.sync_api  # noqa: F401
     except Exception:
         return NOT_INSTALLED
-    return ""
+    if chromium_missing():
+        return NOT_INSTALLED
+    return str(getattr(browser, "problem", "") or "")
 
 
 def command_like(text: str) -> bool:
@@ -2070,37 +2073,52 @@ class WebFront:
 
     def browser_state(self) -> Dict[str, Any]:
         """``GET /api/browser/state``: the page of the conversation on screen; never starts the browser."""
-        problem = _browser_problem()
+        browser = self._browser()
+        problem = _browser_problem(browser)
         owner = self.conversation_id()
-        state = self._browser().state(owner)
+        browser.watch(owner)                                # a window shows this page: a take-over of it holds
+        state = browser.state(owner)
         return {"available": not problem, "open": bool(state.get("open")), "url": _text(state.get("url"), 2000),
                 "title": _text(state.get("title"), 300), "user": bool(state.get("user")),
                 "frame": int(state.get("frame") or 0), "takeAllowed": not self._remote_on(), "error": problem,
-                "owner": self._owner_token(owner)}
+                "ownerMark": self._owner_token(owner)}
 
     def browser_frame(self) -> Tuple[int, Optional[bytes], str]:
         """``(counter, JPEG or None, owner mark)`` of the page on screen; never starts the browser."""
         browser = self._browser()
         owner = self.conversation_id()
         token = self._owner_token(owner)
+        browser.watch(owner)
         try:
             counter, jpeg = browser.frame(owner)
         except Exception:                                   # frame() gives the last picture itself; this is a guard
             return int(browser.state(owner).get("frame") or 0), None, token
         return int(counter or 0), jpeg, token
 
-    def browser_take(self) -> Dict[str, Any]:
-        """``POST /api/browser/take``: the user has the page; the agent's acting tools wait for Give back."""
+    def browser_take(self, mark: Any = None) -> Dict[str, Any]:
+        """``POST /api/browser/take``: the user has the page; the agent's acting tools wait for Give back. ``mark``,
+        when the window sends it, is the owner mark of the page it shows: another conversation's is refused."""
         if self._remote_on():
             return {"ok": False, "error": TAKE_OVER_OFF}
         owner = self.conversation_id()
         if not owner:                                       # a room whose app is still being made
             return {"ok": False, "error": NO_CONVERSATION_YET}
+        if mark not in (None, "") and mark != self._owner_token(owner):
+            return {"ok": False, "error": PAGE_CHANGED}
         self._browser().take(owner)
         return {"ok": True}
 
-    def browser_give(self) -> Dict[str, Any]:
-        self._browser().give(self.conversation_id())
+    def browser_give(self, mark: Any = None) -> Dict[str, Any]:
+        """``POST /api/browser/give``: Give back. With ``mark`` (the window's owner mark), the page it names is given
+        back, also when the conversation on screen has changed since (the window gives back the page it held before
+        it shows another one); without, the page on screen."""
+        browser = self._browser()
+        if mark in (None, ""):
+            browser.give(self.conversation_id())
+            return {"ok": True}
+        for owner in browser.held():
+            if self._owner_token(owner) == mark:
+                browser.give(owner)
         return {"ok": True}
 
     def browser_input(self, event: Any, mark: Any = None) -> Dict[str, Any]:
@@ -2920,9 +2938,9 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/api/terminals/close":
             return self._json(front.terminal_close(ident))
         if url.path == "/api/browser/take":
-            return self._json(front.browser_take())
+            return self._json(front.browser_take(data.get("owner")))
         if url.path == "/api/browser/give":
-            return self._json(front.browser_give())
+            return self._json(front.browser_give(data.get("owner")))
         if url.path == "/api/browser/input":
             return self._json(front.browser_input(data.get("event"), data.get("owner")))
         return self._json({"error": "not found"}, 404)

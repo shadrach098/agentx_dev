@@ -857,3 +857,21 @@ def test_close_owner_drops_the_page_without_waiting_or_starting_chromium():
         assert h.state("a")["open"] is False and h._browser is None
     finally:
         h.close()
+
+
+def test_a_take_over_no_window_watches_lapses(monkeypatch):
+    """A window that closed or switched away cannot leave a page held forever: the hold lapses once no window has
+    asked for that page's state or picture for ``HOLD_STALE_SEC``."""
+    monkeypatch.setattr(browser, "HOLD_STALE_SEC", 0.3)
+    h = BrowserHost()
+    h.take("a")
+    end = time.monotonic() + 0.9
+    while time.monotonic() < end:                       # a window showing it keeps it
+        h.watch("a")
+        assert h.held_by_user("a")
+        time.sleep(0.05)
+    deadline = time.monotonic() + 5
+    while h.held_by_user("a") and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not h.held_by_user("a") and h.state("a")["user"] is False
+    assert h._thread is None

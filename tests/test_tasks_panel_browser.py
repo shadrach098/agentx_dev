@@ -425,3 +425,41 @@ def test_screenshots(chromium_problem, window, tmp_path, site):
     finally:
         if browser is not None:
             browser.close()
+
+
+def test_the_window_gives_back_a_held_page_before_it_shows_another(window):
+    """A take-over must not outlive what the window shows: a reload (or the window closing, or a lane shown) and a
+    conversation switch give the held page back, by its mark."""
+    import time
+    from agentx_dev.cli.browser import BrowserHost
+    w = window()
+    page = w.page
+    browser = w.main.app.browser = BrowserHost()          # nothing here starts Chromium: the pictures are given
+    first = w.main.conversation_id()
+    _page_for(browser, first, "http://a.test/one", "Page A", b"\xff\xd8" + b"A" * 30, 3)
+    w.open_tab("browser")
+    page.locator("#bwTake").click()
+    page.locator("#bwGive").wait_for(state="visible", timeout=10_000)
+    assert browser.held_by_user(first)
+    assert w.posted("/api/browser/take")[-1] == {"owner": _mark(first)}
+    page.reload()                                      # the page unloads while it holds the page
+    deadline = time.monotonic() + 10
+    while browser.held_by_user(first) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not browser.held_by_user(first)
+    # take it again in the reloaded window, then switch conversations there
+    page.locator("#tasksBtn").wait_for(state="visible")
+    w.open_tab("browser")
+    page.locator("#bwTake").click()
+    page.locator("#bwGive").wait_for(state="visible", timeout=10_000)
+    assert browser.held_by_user(first)
+    gives = len(w.posted("/api/browser/give"))
+    w.h.request(LAPTOP, "POST", "/api/send", {"text": "/clear"})
+    page.wait_for_function("document.getElementById('bwGive').hidden", timeout=10_000)
+    for _ in range(100):
+        if len(w.posted("/api/browser/give")) > gives:
+            break
+        page.wait_for_timeout(50)
+    assert w.posted("/api/browser/give")[gives:][:1] == [{"owner": _mark(first)}]
+    assert not browser.held_by_user(first)
+    assert not w.errors

@@ -32,6 +32,7 @@ import atexit
 import hashlib
 import ipaddress
 import logging
+import os
 import queue
 import re
 import socket
@@ -62,6 +63,7 @@ SETTLE_IDLE_MS = 1_500              # after an action: wait at most this long fo
 MAX_ELEMENTS = 300                  # interactive elements listed in a snapshot
 NAME_MAX = 80                       # characters of an element's name or value shown
 CONSOLE_MAX = 50                    # console lines kept per owner
+HOLD_STALE_SEC = 30.0               # a take-over no window has looked at (state or picture) for this long lapses
 FRAME_CHECK_SEC = 0.3               # frame(): look for a change at most this often (unless an action ran)
 FRAME_QUALITY = 70                  # JPEG quality of the window's frames
 FRAME_CALL_TIMEOUT_SEC = 2.0        # frame(): how long a window's poll waits for a new picture before the last one
@@ -78,6 +80,43 @@ class BrowserUnavailable(RuntimeError):
 
 
 HELD_BY_USER = "The user is using the browser right now; wait or ask them."
+CHROMIUM_RECHECK_SEC = 60.0          # a Chromium found missing is looked for again after this long (installed since?)
+
+_chromium_seen: Tuple[float, Optional[bool]] = (0.0, None)      # (when, whether it was missing); None: not asked
+_chromium_lock = threading.Lock()
+
+
+def _chromium_executable() -> Optional[str]:
+    """Where Playwright's Chromium would be, asked of Playwright without starting it (its driver runs a moment on a
+    thread of its own: the sync API refuses a thread with an event loop). None when it cannot tell."""
+    box: Dict[str, str] = {}
+
+    def look() -> None:
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                box["path"] = str(p.chromium.executable_path or "")
+        except Exception as error:                      # noqa: BLE001 - "cannot tell"
+            log.debug("could not ask Playwright where Chromium is: %s", error)
+    thread = threading.Thread(target=look, name="agentx-chromium-check", daemon=True)
+    thread.start()
+    thread.join(20)
+    return box.get("path") or None
+
+
+def chromium_missing() -> bool:
+    """Whether Playwright is there but its Chromium was never downloaded (``playwright install chromium``), found
+    without launching it. A Chromium found is remembered; a missing one is looked for again after
+    ``CHROMIUM_RECHECK_SEC``. False when it cannot tell (a launch then says what is wrong)."""
+    global _chromium_seen
+    with _chromium_lock:
+        at, missing = _chromium_seen
+        if missing is False or (at and time.monotonic() - at < CHROMIUM_RECHECK_SEC):
+            return bool(missing)
+        path = _chromium_executable()
+        missing = None if path is None else not os.path.exists(path)
+        _chromium_seen = (time.monotonic(), missing)    # None (cannot tell): asked again next time
+        return bool(missing)
 
 
 class HeldByUser(ValueError):
@@ -696,11 +735,13 @@ class BrowserHost:
         self._queue: "queue.Queue" = queue.Queue()
         self._owners: Dict[str, _Owner] = {}
         self._held: Set[str] = set()
+        self._watched: Dict[str, float] = {}          # owner: when a window last asked for its state or picture
         self._pw = None
         self._browser = None
         self._proxy: Optional[_GuardProxy] = None
         self._Error: type = Exception
         self._Timeout: type = Exception
+        self.problem = ""                             # why the browser last failed to start ("" once it starts)
 
     # -- the worker ----------------------------------------------------------------------------------------------
 
@@ -818,8 +859,11 @@ class BrowserHost:
             self._browser = None
             text = str(error)
             if "Executable doesn't exist" in text or "playwright install" in text:   # Chromium was never downloaded
-                raise BrowserUnavailable(NOT_INSTALLED) from None
-            raise BrowserUnavailable(f"The browser could not start: {_first_line(error)}") from None
+                self.problem = NOT_INSTALLED
+            else:
+                self.problem = f"The browser could not start: {_first_line(error)}"
+            raise BrowserUnavailable(self.problem) from None
+        self.problem = ""
         self._pw, self._proxy = pw, proxy
         self._Error, self._Timeout = Error, PlaywrightTimeout
 
@@ -1180,7 +1224,7 @@ class BrowserHost:
         """Close the owner's context and page (a conversation that ended: /clear, /resume, its lane or room closed),
         and end a take-over of it. Queued for the worker and not waited for, so ending a conversation never waits on
         another one's page load; never starts the browser for an owner that has no page."""
-        self._held.discard(owner)
+        self.give(owner)
         if owner in self._owners:
             self._submit(self._drop, owner)
 
@@ -1301,14 +1345,31 @@ class BrowserHost:
         self._call(work, timeout=LOAD_CALL_TIMEOUT_SEC if loads else ACTION_TIMEOUT_SEC)
 
     def take(self, owner: str) -> None:
-        """The user takes the owner's page over: the agent's acting tools wait until ``give``."""
+        """The user takes the owner's page over: the agent's acting tools wait until ``give``, or until no window
+        has looked at the page for ``HOLD_STALE_SEC`` (a window closed or switched away cannot hold it forever)."""
+        self._watched[owner] = time.monotonic()
         self._held.add(owner)
 
     def give(self, owner: str) -> None:
         self._held.discard(owner)
+        self._watched.pop(owner, None)
+
+    def watch(self, owner: str) -> None:
+        """A window asked for the owner's state or picture: it is still showing that page."""
+        if owner in self._held:
+            self._watched[owner] = time.monotonic()
+
+    def held(self) -> List[str]:
+        """The owners whose page the user holds now."""
+        return [owner for owner in list(self._held) if self.held_by_user(owner)]
 
     def held_by_user(self, owner: str) -> bool:
-        return owner in self._held
+        if owner not in self._held:
+            return False
+        if time.monotonic() - self._watched.get(owner, 0.0) > HOLD_STALE_SEC:
+            self.give(owner)                        # no window shows it any more
+            return False
+        return True
 
     def state(self, owner: str) -> dict:
         """What the window shows about the owner's page; never starts the browser."""

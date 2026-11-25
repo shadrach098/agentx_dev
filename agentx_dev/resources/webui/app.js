@@ -48,6 +48,7 @@
   function showLane(lane) {
     try { if (lane) sessionStorage.setItem("agentx-lane", lane); else sessionStorage.removeItem("agentx-lane"); }
     catch (_) { /* no storage: the window shows the device's own conversation */ }
+    giveBackHeld();                                   // the page held here is not on screen after the reload
     location.reload();
   }
 
@@ -1709,14 +1710,28 @@
         let d;
         try { d = await get("/api/browser/state"); } catch (_) { break; }
         if (!d) break;
-        if ((d.owner || "") !== bwOwner) pageChanged(d.owner || "");
+        if ((d.ownerMark || "") !== bwOwner) pageChanged(d.ownerMark || "");
         bw = d;
         drawBrowser();
       } while (bwAgain);
     } finally { bwLoading = false; }
   }
+  // The page you took over goes back to the agent before the window shows another conversation (a switch, a lane,
+  // a reload, the window closing): by its mark, since the conversation on screen may have changed already. keepalive
+  // lets it finish while the page unloads. (Should it never arrive, the hold lapses once no window shows the page.)
+  function giveBackHeld() {
+    if (!bw.user || !bwOwner) return;
+    const body = JSON.stringify({owner: bwOwner});
+    bw = Object.assign({}, bw, {user: false});
+    try {
+      fetch("/api/browser/give", {method: "POST", keepalive: true, body,
+                                  headers: {"Content-Type": "application/json", ...authHeaders()}}).catch(() => {});
+    } catch (_) { /* the hold lapses by itself */ }
+  }
+  window.addEventListener("pagehide", giveBackHeld);
   // the conversation on screen changed (a switch, or it was reloaded): forget the page until the state says whose
   function browserMoved() {
+    giveBackHeld();
     pageChanged(null);
     drawBrowser();
     if (tpShown("browser")) loadBrowser();
@@ -1885,14 +1900,16 @@
   $("bwBack").addEventListener("click", () => bwSend({type: "back"}));
   $("bwReload").addEventListener("click", () => bwSend({type: "reload"}));
   $("bwTake").addEventListener("click", async () => {
-    if (refused(await post("/api/browser/take"), "The page could not be taken over")) return;
+    const owner = bwOwner;                            // the page on screen: refused if the conversation changed
+    if (refused(await post("/api/browser/take", owner ? {owner} : {}), "The page could not be taken over")) return;
+    if (owner !== bwOwner) return;
     bw.user = true;
     drawBrowser();
     $("bwFrame").focus();
     loadBrowser();
   });
   $("bwGive").addEventListener("click", async () => {
-    refused(await post("/api/browser/give"), "The page could not be given back");
+    refused(await post("/api/browser/give", bwOwner ? {owner: bwOwner} : {}), "The page could not be given back");
     bw.user = false;
     drawBrowser();
     $("bwTake").focus();

@@ -250,7 +250,8 @@ class TestBrowser:
         monkeypatch.setitem(sys.modules, "playwright", None)
         monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
         state = h.request(LAPTOP, "GET", "/api/browser/state")
-        assert set(state) == {"available", "open", "url", "title", "user", "frame", "takeAllowed", "error", "owner"}
+        assert set(state) == {"available", "open", "url", "title", "user", "frame", "takeAllowed", "error",
+                              "ownerMark"}
         assert state["available"] is False and state["error"] == NOT_INSTALLED
         assert state["open"] is False and state["takeAllowed"] is True
         status, headers, body = raw(h, LAPTOP, "GET", "/api/browser/frame?since=0")
@@ -421,7 +422,7 @@ class TestBrowserBusy:
                                         frame_no=3, frame_jpeg=b"\xff\xd8a", dirty=False,
                                         frame_at=time.monotonic() + 3600)
         state = h.request(LAPTOP, "GET", "/api/browser/state")
-        assert state["owner"] == mark and owner not in json.dumps(state)
+        assert state["ownerMark"] == mark and owner not in json.dumps(state)
         status, headers, _ = raw(h, LAPTOP, "GET", f"/api/browser/frame?since=3&owner={mark}")
         assert status == 204 and headers["x-frame-owner"] == mark
         status, headers, body = raw(h, LAPTOP, "GET", "/api/browser/frame?since=3&owner=0123456789abcdef")
@@ -466,5 +467,99 @@ class TestPagesEnd:
             until(lambda: room.ended)
             until(lambda: browser.state(owner)["open"] is False)
             assert browser.state(other)["open"] is True        # the main conversation's page stays
+        finally:
+            browser.close()
+
+    def test_the_state_names_the_page_by_owner_mark(self, host):
+        h = host()
+        main = h.front_of(LAPTOP)
+        ready(main)
+        main.app.browser = BrowserHost()
+        state = h.request(LAPTOP, "GET", "/api/browser/state")
+        assert "owner" not in state and state["ownerMark"] == _mark(main.conversation_id())
+
+
+def _mark(owner):
+    import hashlib
+    return hashlib.sha256(owner.encode("utf-8")).hexdigest()[:16]
+
+
+class TestTakeOver:
+    def test_take_with_another_pages_mark_is_refused(self, host):
+        h = host()
+        main = h.front_of(LAPTOP)
+        ready(main)
+        browser = main.app.browser = BrowserHost()
+        owner = main.conversation_id()
+        got = h.request(LAPTOP, "POST", "/api/browser/take", {"owner": "0123456789abcdef"})
+        assert got["ok"] is False and "changed" in got["error"] and not browser.held_by_user(owner)
+        assert h.request(LAPTOP, "POST", "/api/browser/take", {"owner": _mark(owner)}) == {"ok": True}
+        assert browser.held_by_user(owner)
+
+    def test_give_with_a_mark_gives_back_that_page_after_a_switch(self, host):
+        """The window gives back the page it held, by its mark, after the conversation on screen changed."""
+        h = host()
+        main = h.front_of(LAPTOP)
+        ready(main)
+        browser = main.app.browser = BrowserHost()
+        before = "conversation-shown-before"
+        browser.take(before)
+        assert h.request(LAPTOP, "POST", "/api/browser/give", {"owner": _mark(before)}) == {"ok": True}
+        assert not browser.held_by_user(before)
+        owner = main.conversation_id()
+        browser.take(owner)
+        assert h.request(LAPTOP, "POST", "/api/browser/give", {"owner": _mark("someone-else")}) == {"ok": True}
+        assert browser.held_by_user(owner)                  # a mark names one page: not the one on screen
+        assert h.request(LAPTOP, "POST", "/api/browser/give", {}) == {"ok": True}
+        assert not browser.held_by_user(owner)
+
+    def test_a_hold_lapses_once_no_window_polls_it(self, host, monkeypatch):
+        from agentx_dev.cli import browser as browser_module
+        monkeypatch.setattr(browser_module, "HOLD_STALE_SEC", 0.5)
+        h = host()
+        main = h.front_of(LAPTOP)
+        ready(main)
+        browser = main.app.browser = BrowserHost()
+        owner = main.conversation_id()
+        assert h.request(LAPTOP, "POST", "/api/browser/take", {})["ok"]
+        end = time.monotonic() + 1.5
+        while time.monotonic() < end:                       # the Browser tab on screen polls its state
+            assert h.request(LAPTOP, "GET", "/api/browser/state")["user"] is True
+            time.sleep(0.1)
+        until(lambda: not browser.held_by_user(owner), 5)   # the window went away: the agent may act again
+        assert h.request(LAPTOP, "GET", "/api/browser/state")["user"] is False
+
+
+class TestBrowserProblem:
+    def test_a_missing_chromium_is_said_without_starting_one(self, host, monkeypatch, tmp_path):
+        from agentx_dev.cli import browser as browser_module
+        monkeypatch.setattr(browser_module, "_chromium_seen", (0.0, None))
+        monkeypatch.setattr(browser_module, "_chromium_executable", lambda: str(tmp_path / "no" / "chrome.exe"))
+        h = host()
+        main = h.front_of(LAPTOP)
+        ready(main)
+        main.app.browser = BrowserHost()
+        state = h.request(LAPTOP, "GET", "/api/browser/state")
+        assert state["available"] is False and state["error"] == NOT_INSTALLED
+        assert main.app.browser._thread is None
+
+    def test_the_first_launch_failure_is_shown_afterwards(self, host, monkeypatch):
+        from agentx_dev.cli import browser as browser_module
+        monkeypatch.setattr(browser_module, "_chromium_seen", (0.0, None))
+        monkeypatch.setattr(browser_module, "_chromium_executable", lambda: sys.executable)   # "found"
+        h = host()
+        main = h.front_of(LAPTOP)
+        ready(main)
+        browser = main.app.browser = BrowserHost()
+        assert h.request(LAPTOP, "GET", "/api/browser/state")["available"] is True
+
+        def no_proxy():
+            raise OSError("no port free")
+        monkeypatch.setattr(browser_module, "_GuardProxy", no_proxy)
+        try:
+            with pytest.raises(browser_module.BrowserUnavailable):
+                browser.snapshot(main.conversation_id())
+            state = h.request(LAPTOP, "GET", "/api/browser/state")
+            assert state["available"] is False and state["error"] == "The browser could not start: no port free"
         finally:
             browser.close()
