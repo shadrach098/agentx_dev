@@ -486,3 +486,33 @@ def test_while_it_waits_nothing_runs_in_the_folder(tmp_path, home, monkeypatch):
         assert background._shared == before
     finally:
         front.close()
+
+
+def test_waiting_after_a_failed_folder_does_not_spin(tmp_path, home, monkeypatch):
+    project = tmp_path / "Shop"
+    project.mkdir()
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: _Process(1))
+    monkeypatch.setattr(webui, "HAND_OVER_SEC", 0.1)
+    front = _front(tmp_path, home)
+    calls = []
+    real = front.handed_over
+
+    def counted():
+        calls.append(1)
+        return real()
+    front.handed_over = counted
+    thread, box = _waiting(front)
+    try:
+        assert front.start_choice("open", str(project))["ok"] is True
+        time.sleep(0.4)                                    # the hand-over was due and cancelled
+        assert front.start_view()["show"] is True
+        calls.clear()
+        time.sleep(1.0)
+        spins = len(calls)
+        assert spins < 30, spins                           # a few checks a second, not a busy loop
+        assert front.start_choice("here")["ok"] is True    # a choice made now is still seen
+        thread.join(5)
+        assert box == {"go": True}
+    finally:
+        front.close()                                      # a spinning wait ends with the test
+        thread.join(5)

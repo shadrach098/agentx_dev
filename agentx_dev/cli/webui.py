@@ -1834,6 +1834,8 @@ class WebFront:
         if not self.start_screen or self.host is not None:
             return True
         while True:
+            # cleared before the state is read: a choice made after this is seen below, or wakes the wait at once
+            self._start_answer.clear()
             with self._lock:
                 if self._closed:
                     return False
