@@ -262,3 +262,17 @@ def test_the_browser_is_closed_when_agentx_exits(tmp_path, monkeypatch):
     app, _, _, _ = make_app(tmp_path, Lines("/exit"), MockModel(script=[]))
     assert app.start() == 0
     assert fake.closed
+
+
+def test_a_take_over_that_lands_while_the_call_waits_gives_the_held_answer(tmp_path, monkeypatch):
+    """The host checks again on its worker (an action queued behind a slow call): the tool says the user has it."""
+    from agentx_dev.cli.browser import HELD_BY_USER, HeldByUser
+    app, fake = fake_app(tmp_path, monkeypatch, mode="auto")
+
+    def taken(*a, **k):
+        raise HeldByUser(HELD_BY_USER)
+    fake.open = fake.click = fake.type = fake.press = fake.back = taken
+    for name, args in (("browser_open", {"url": "http://example.test/"}), ("browser_click", {"target": "e1"}),
+                       ("browser_type", {"target": "e1", "text": "x"}), ("browser_press", {"key": "Enter"}),
+                       ("browser_back", {})):
+        assert tool(app, name).func(**args) == HELD, name

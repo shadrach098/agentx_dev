@@ -18,10 +18,9 @@ from pydantic import BaseModel, Field
 from agentx_dev.Pictures import picture_result
 from agentx_dev.Tools import StructuredTool
 from agentx_dev.cli.approval import Gate
-from agentx_dev.cli.browser import BrowserHost, BrowserUnavailable
+from agentx_dev.cli.browser import HELD_BY_USER, BrowserHost, BrowserUnavailable, HeldByUser
 from agentx_dev.cli.tools import WEB_CAUTION, gate_tool
 
-HELD_BY_USER = "The user is using the browser right now; wait or ask them."
 NO_CONSOLE = "(no console messages)"
 
 
@@ -87,6 +86,8 @@ def build_browser_tools(host: BrowserHost, owner: Callable[[], str], gate: Gate)
             result = work()
         except BrowserUnavailable as error:
             return WEB_CAUTION + str(error)
+        except HeldByUser:
+            raise
         except ValueError as error:
             return WEB_CAUTION + str(error)
         except Exception as error:
@@ -96,7 +97,10 @@ def build_browser_tools(host: BrowserHost, owner: Callable[[], str], gate: Gate)
     def acting(work: Callable[[], Any]) -> str:
         if held():
             return HELD_BY_USER
-        return safely(lambda: work().render())
+        try:
+            return safely(lambda: work().render())
+        except HeldByUser:                  # taken over while the call waited for the worker: checked there again
+            return HELD_BY_USER
 
     def browser_open(url: str) -> str:
         return acting(lambda: host.open(me(), url))

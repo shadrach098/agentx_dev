@@ -77,6 +77,13 @@ class BrowserUnavailable(RuntimeError):
     ``The browser could not start: <reason>``."""
 
 
+HELD_BY_USER = "The user is using the browser right now; wait or ask them."
+
+
+class HeldByUser(ValueError):
+    """An agent's action reached the worker after the user took the page over; its message is ``HELD_BY_USER``."""
+
+
 class _Refused(Exception):
     """A host the browser may not reach; the message is the reason."""
 
@@ -708,12 +715,30 @@ class BrowserHost:
         return future
 
     def _call(self, fn: Callable, *args, timeout: float = ACTION_TIMEOUT_SEC):
-        """Run ``fn(*args)`` on the worker thread and return its result (or raise its exception)."""
+        """Run ``fn(*args)`` on the worker thread and return its result (or raise its exception).
+
+        A call still queued at ``timeout`` (another conversation's slow page load held the worker) is cancelled, so
+        it never runs later: the caller was told it did not answer and may well try again. One already running
+        cannot be stopped; the error says it may still finish."""
         future = self._submit(fn, *args)
         try:
             return future.result(timeout=timeout)
         except FutureTimeout:
-            raise ValueError(f"ERROR: the browser did not answer within {timeout:.0f} seconds") from None
+            if future.cancel():
+                raise ValueError(f"ERROR: the browser did not answer within {timeout:g} seconds; "
+                                 "nothing was done") from None
+            raise ValueError(f"ERROR: the browser did not answer within {timeout:g} seconds; what was asked "
+                             "is still running and may still finish, so read the page before trying again") from None
+
+    def _agent(self, owner: str, work: Callable) -> Callable:
+        """``work`` for an agent's action on ``owner``'s page: on the worker it first checks the user has not taken
+        the page over since the tool checked (the call may have waited behind another one). Not for the user's own
+        events."""
+        def checked():
+            if self.held_by_user(owner):
+                raise HeldByUser(HELD_BY_USER)
+            return work()
+        return checked
 
     def _run(self, work: "queue.Queue") -> None:
         while True:
@@ -1065,7 +1090,7 @@ class BrowserHost:
             error = self._navigate(owner, url, lambda page: page.goto(url, wait_until="load"))
             self._settle(self._owner(owner), self._page(owner), mark)
             return self._snap(owner, error)
-        return self._call(work, timeout=LOAD_CALL_TIMEOUT_SEC)
+        return self._call(self._agent(owner, work), timeout=LOAD_CALL_TIMEOUT_SEC)
 
     def click(self, owner: str, target: str) -> Snapshot:
         def work():
@@ -1080,7 +1105,7 @@ class BrowserHost:
             except self._Error as error:
                 raise ValueError(f"ERROR: could not click '{target}': {_first_line(error)}") from None
             return self._after_action(owner, mark)
-        return self._call(work)
+        return self._call(self._agent(owner, work))
 
     def type(self, owner: str, target: str, text: str, submit: bool = False) -> Snapshot:
         def work():
@@ -1104,7 +1129,7 @@ class BrowserHost:
             except self._Error as error:
                 raise ValueError(f"ERROR: could not type into '{target}': {_first_line(error)}") from None
             return self._after_action(owner, mark)
-        return self._call(work)
+        return self._call(self._agent(owner, work))
 
     def press(self, owner: str, key: str) -> Snapshot:
         def work():
@@ -1115,7 +1140,7 @@ class BrowserHost:
             except self._Error as error:
                 raise ValueError(f"ERROR: could not press {key!r}: {_first_line(error)}") from None
             return self._after_action(owner, mark)
-        return self._call(work)
+        return self._call(self._agent(owner, work))
 
     def back(self, owner: str) -> Snapshot:
         def work():
@@ -1124,7 +1149,7 @@ class BrowserHost:
             error = self._navigate(owner, page.url, lambda p: p.go_back(wait_until="load"))
             self._settle(self._owner(owner), self._page(owner), mark)
             return self._snap(owner, error)
-        return self._call(work, timeout=LOAD_CALL_TIMEOUT_SEC)
+        return self._call(self._agent(owner, work), timeout=LOAD_CALL_TIMEOUT_SEC)
 
     def snapshot(self, owner: str) -> Snapshot:
         return self._call(lambda: self._snap(owner))

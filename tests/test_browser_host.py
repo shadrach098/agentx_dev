@@ -695,3 +695,118 @@ def test_user_event_fields_must_be_text_and_short():
             h.user_event("o", event)
         assert str(caught.value).startswith("ERROR:"), event
     assert h._thread is None                            # refused before the worker was started
+
+
+# -- final review fixes -------------------------------------------------------------------------------------------
+
+def _busy_worker(h):
+    """Hold ``h``'s worker on another conversation's slow call; returns the event that lets it go."""
+    started, release = threading.Event(), threading.Event()
+    h._submit(lambda: (started.set(), release.wait(20)))
+    assert started.wait(5)
+    return release
+
+
+def test_a_call_that_timed_out_never_runs_later():
+    """A click that "did not answer" because another conversation held the worker must not fire afterwards (the
+    model would retry it: a form sent twice)."""
+    h = BrowserHost()
+    release = _busy_worker(h)
+    ran = []
+    try:
+        with pytest.raises(ValueError) as caught:
+            h._call(lambda: ran.append("late click"), timeout=0.3)
+        assert "did not answer" in str(caught.value) and "may still" not in str(caught.value)
+        release.set()
+        assert h._submit(lambda: "next").result(timeout=5) == "next"   # the worker went past the cancelled call
+        assert ran == []
+    finally:
+        release.set()
+        h.close()
+
+
+def test_a_call_still_running_at_its_timeout_says_it_may_still_finish():
+    h = BrowserHost()
+    release = threading.Event()
+    try:
+        with pytest.raises(ValueError) as caught:
+            h._call(lambda: release.wait(20), timeout=0.3)
+        assert "may still finish" in str(caught.value)
+    finally:
+        release.set()
+        h.close()
+
+
+def test_a_user_event_that_timed_out_never_runs_later(monkeypatch):
+    h = BrowserHost()
+    monkeypatch.setattr(browser, "ACTION_TIMEOUT_SEC", 0.3)
+    release = _busy_worker(h)
+    owned = []
+    monkeypatch.setattr(h, "_owner", lambda owner: owned.append(owner))
+    try:
+        with pytest.raises(ValueError):
+            h.user_event("a", {"type": "click", "x": 1, "y": 1})
+        release.set()
+        assert h._submit(lambda: "next").result(timeout=5) == "next"
+        assert owned == []
+    finally:
+        release.set()
+        h.close()
+
+
+@pytest.mark.parametrize("act", [
+    lambda h: h.open("a", "http://127.0.0.1:9/"),
+    lambda h: h.click("a", "e1"),
+    lambda h: h.type("a", "e1", "x"),
+    lambda h: h.press("a", "Enter"),
+    lambda h: h.back("a"),
+])
+def test_an_agent_action_queued_before_a_take_over_is_refused_when_it_runs(act):
+    """The tools check the take-over before queueing; an action already queued behind a slow call is checked again
+    on the worker, so it never lands on a page the user has taken since."""
+    h = BrowserHost()
+    release = _busy_worker(h)
+    box = {}
+
+    def agent():
+        try:
+            box["result"] = act(h)
+        except Exception as error:                      # noqa: BLE001 - examined below
+            box["error"] = error
+    worker = threading.Thread(target=agent, daemon=True)
+    try:
+        worker.start()
+        deadline = time.monotonic() + 5
+        while h._queue.qsize() < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert h._queue.qsize() == 1
+        h.take("a")
+        release.set()
+        worker.join(10)
+        assert isinstance(box.get("error"), browser.HeldByUser), box
+        assert str(box["error"]) == browser.HELD_BY_USER
+        assert h._browser is None                        # refused before Chromium was even started
+    finally:
+        release.set()
+        h.close()
+
+
+def test_the_users_own_event_is_not_refused_by_their_take_over(monkeypatch):
+    h = BrowserHost()
+    h.take("a")
+    seen = []
+
+    class Page:
+        mouse = type("M", (), {"click": staticmethod(lambda x, y: seen.append((x, y)))})()
+        url = "http://127.0.0.1:1/"
+
+        def wait_for_timeout(self, ms):
+            pass
+    rec = browser._Owner(context=None, pages=[Page()])
+    monkeypatch.setattr(h, "_owner", lambda owner: rec)
+    monkeypatch.setattr(h, "_page", lambda owner: rec.pages[-1])
+    try:
+        h.user_event("a", {"type": "click", "x": 3, "y": 4})
+        assert seen == [(3.0, 4.0)]
+    finally:
+        h.close()
