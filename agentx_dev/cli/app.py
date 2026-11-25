@@ -45,6 +45,8 @@ from agentx_dev.cli.team_record import TeamRecord
 from agentx_dev.cli.routing import ROUTE_THREAD, Route, routed_request
 from agentx_dev.cli.tools import build_tools, gate_tool, lean_tools, make_permissions
 from agentx_dev.cli.background import install_signal_handlers, shared
+from agentx_dev.cli.browser import shared_browser
+from agentx_dev.cli.browser_tools import build_browser_tools
 from agentx_dev.cli.task_tools import build_task_tools, tasks_command
 from agentx_dev.cli.trust import ensure_trusted, is_trusted
 from agentx_dev.cli.ui import Progress, PromptInput, Screen, is_terminal, make_asker, status_line
@@ -362,7 +364,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         self.stops_tasks_at_exit = True
         task_tools = build_task_tools(self.tasks, self._conversation_id, permissions, self.gate,
                                       self._conversation_titles)
-        self.tools = [*self.base_tools, *task_tools,
+        self.browser = shared_browser()         # one Chromium per process, started on the first browser call
+        browser_tools = build_browser_tools(self.browser, self._conversation_id, self.gate)
+        self.tools = [*self.base_tools, *task_tools, *browser_tools,
                       self._within_job_limit(gate_tool(make_team_tool(self._start_team_job), self.gate))]
         self._memory_on = is_project_folder(self.cwd, self.home)    # no log or folder settings for home / a drive root
         # The agent's skills: the user's own folder, and (read-only, untrusted) this project's, when it is a real
@@ -758,8 +762,14 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
                     self.mcp.close()
             except Exception:
                 logging.getLogger(__name__).debug("could not close the MCP servers", exc_info=True)
-            if self.stops_tasks_at_exit:          # agentx is ending: every task and terminal goes with it
-                self.tasks.stop_all()
+            if self.stops_tasks_at_exit:          # agentx is ending: every task, terminal and the browser go with it
+                try:
+                    self.tasks.stop_all()
+                finally:
+                    try:
+                        self.browser.close()
+                    except Exception:
+                        logging.getLogger(__name__).debug("could not close the browser", exc_info=True)
 
     # -- typing while the agent works ----------------------------------------------------------------------
 

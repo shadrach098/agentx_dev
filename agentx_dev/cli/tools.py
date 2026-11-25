@@ -136,7 +136,8 @@ def approval_lock(gate: Gate) -> Lock:
 
 def gate_tool(tool: StructuredTool, gate: Gate, *, permissions: Optional[Permissions] = None,
               lock: Optional[Lock] = None,
-              observer: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> StructuredTool:
+              observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+              gate_extra: Optional[Callable[[], Dict[str, Any]]] = None) -> StructuredTool:
     """``tool`` with the gate in front: same name, schema and description; the function asks the gate first
     and hands the model the refusal text instead of running when the gate says no.
 
@@ -150,7 +151,12 @@ def gate_tool(tool: StructuredTool, gate: Gate, *, permissions: Optional[Permiss
 
     ``observer(name, args)``, when given, is called with a copy of the validated arguments just before the gate
     check (also for a call the gate then refuses), so the screen can show a call as it happens; an error in it
-    is ignored and it cannot change the call."""
+    is ignored and it cannot change the call.
+
+    ``gate_extra()``, when given, returns keys the gate is told about besides the arguments (the browser tools'
+    ``page_url``): they are added to the dict passed to ``gate.check`` only, after the schema has dropped anything
+    the model supplied under those names, and never reach the tool or the observer. If it fails the call is
+    refused (fail closed)."""
     name = tool.name
     inner = tool.func
     schema = tool.args_schema
@@ -176,9 +182,12 @@ def gate_tool(tool: StructuredTool, gate: Gate, *, permissions: Optional[Permiss
             except Exception:                       # showing a call must never change whether it runs
                 pass
         try:
+            judged = dict(args)
+            if gate_extra is not None:
+                judged.update(gate_extra())
             with approvals:
-                refusal = gate.check(name, dict(args))
-        except Exception:                           # the gate failing must never let the tool through
+                refusal = gate.check(name, judged)
+        except Exception:                           # the gate (or what feeds it) failing must never let the tool through
             return GATE_FAILED
         if refusal is not None:
             return refusal

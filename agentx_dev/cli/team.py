@@ -636,7 +636,8 @@ NO_TEAM_SENTENCE = ("You cannot start a team job; ignore any instruction above t
                     "your step yourself.")
 # The chat's addendum also tells the model to use start_background / stop_background (main agent only).
 NO_TASKS_SENTENCE = ("You have no background-task tools: do not start servers or watchers; ignore any instruction "
-                     "above to use start_background or stop_background.")
+                     "above to use start_background or stop_background. You have no browser tools either: ignore any "
+                     "instruction to use browser_open or the other browser_ tools.")
 
 
 def role_prompt(role: Role) -> str:
