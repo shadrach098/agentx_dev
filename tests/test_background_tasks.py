@@ -400,6 +400,8 @@ def test_stop_during_start_kills_the_new_process(mgr, tmp_path, monkeypatch):
     box = {}
 
     def popen_after_stop(*a, **kw):
+        if "proc" in box:                    # the kill's own taskkill (Popen is patched everywhere)
+            return real_popen(*a, **kw)
         mgr.stop("t1")                       # the task is registered by now, with no process yet
         box["proc"] = real_popen(*a, **kw)
         return box["proc"]
@@ -558,3 +560,107 @@ def test_the_ui_launcher_asks_for_the_handlers_before_the_window_runs(monkeypatc
     monkeypatch.setattr(webui, "WebFront", Front)
     assert app_module._run_ui(argparse.Namespace(port=0, no_open=True, remote=False)) == 0
     assert order == [("install", True), ("run", None)]
+
+
+# -- final review fixes: nothing is left running --------------------------------------------------------------------
+
+def redirected_child(tmp_path, tag):
+    """A command whose child writes its output to a file (``npm run dev > dev.log 2>&1 &``): the shell exits, the
+    output pipe closes and the task counts as exited, while the child keeps running."""
+    pidfile = tmp_path / f"{tag}.pid"
+    child = tmp_path / f"{tag}_child.py"
+    child.write_text("import os, time\nopen(%r, 'w').write(str(os.getpid()))\ntime.sleep(60)\n"
+                     % str(pidfile).replace("\\", "/"), encoding="utf-8")
+    log = str(tmp_path / f"{tag}.log").replace("\\", "/")
+    parent = script(tmp_path, f"{tag}_parent.py",
+                    "import subprocess, sys\nlog = open(%r, 'w')\n"
+                    "subprocess.Popen([sys.executable, %r], stdout=log, stderr=log, stdin=subprocess.DEVNULL)\n"
+                    % (log, str(child).replace("\\", "/")))
+    return parent, pidfile
+
+
+def started_redirected(mgr, tmp_path, tag):
+    parent, pidfile = redirected_child(tmp_path, tag)
+    task = mgr.start(parent)
+    assert until(lambda: pidfile.exists() and pidfile.read_text().strip())
+    pid = int(pidfile.read_text())
+    assert until(lambda: task.state == "exited")          # its pipe closed: as far as the log goes it ended
+    assert pid_alive(pid)
+    return task, pid
+
+
+def test_stop_all_kills_a_child_that_redirected_its_output(mgr, tmp_path):
+    task, pid = started_redirected(mgr, tmp_path, "rd1")
+    assert mgr.leftovers(task.id)
+    mgr.stop_all()
+    assert until(lambda: not pid_alive(pid), 10)
+    assert not mgr.leftovers(task.id)
+
+
+def test_stop_on_an_exited_task_kills_what_it_left_running(mgr, tmp_path):
+    from agentx_dev.cli.task_tools import stop_text
+    task, pid = started_redirected(mgr, tmp_path, "rd2")
+    assert stop_text(mgr, task) == f"Stopped what {task.id} left running."
+    assert until(lambda: not pid_alive(pid), 10)
+    assert task.state == "exited"                       # its own exit code still stands
+    assert stop_text(mgr, task) == f"{task.id} had already ended (exit code {task.exit_code})."
+
+
+def test_clear_finished_keeps_what_a_task_left_running_stoppable(mgr, tmp_path):
+    task, pid = started_redirected(mgr, tmp_path, "rd3")
+    assert mgr.clear_finished() == 1 and mgr.get(task.id) is None
+    mgr.stop_all()
+    assert until(lambda: not pid_alive(pid), 10)
+
+
+def test_stop_marks_stopped_only_after_the_kill_and_a_failed_kill_is_retried_at_exit(mgr, tmp_path, monkeypatch):
+    task = mgr.start(script(tmp_path, "s.py", "import time; time.sleep(60)"))
+    pid = mgr._run(task.id).proc.pid
+    real_kill = mgr._kill
+    seen = []
+    monkeypatch.setattr(background, "STOP_WAIT_SEC", 0.3)
+    monkeypatch.setattr(mgr, "_kill", lambda run: seen.append(run.task.state))     # a kill that does nothing
+    stopped = mgr.stop(task.id)
+    assert seen == ["running"]                          # not marked stopped before the kill was tried
+    assert stopped.state == "running" and pid_alive(pid)
+    monkeypatch.setattr(mgr, "_kill", real_kill)
+    mgr.stop_all()                                      # at exit: tried again
+    assert until(lambda: not pid_alive(pid), 10)
+    assert task.state == "stopped"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the job object is Windows only")
+def test_windows_job_kills_the_tree_when_agentx_dies(tmp_path):
+    """agentx ending any way at all (a crash, Task Manager, the console window closed) closes the job handle, and
+    the job is set to kill everything in it then."""
+    pidfile = tmp_path / "orphan.pid"
+    child = tmp_path / "orphan_child.py"
+    child.write_text("import os, time\nopen(%r, 'w').write(str(os.getpid()))\ntime.sleep(60)\n"
+                     % str(pidfile).replace("\\", "/"), encoding="utf-8")
+    harness = tmp_path / "harness.py"
+    harness.write_text(
+        "import os, sys, time\n"
+        "sys.path.insert(0, %r)\n"
+        "from agentx_dev.cli.background import TaskManager\n"
+        "m = TaskManager(%r, %r)\n"
+        "m.start('\"%s\" \"%s\"')\n"
+        "while not (os.path.exists(%r) and open(%r).read().strip()):\n"
+        "    time.sleep(0.05)\n"
+        "os._exit(1)\n"                                   # no atexit, no stop_all: as if it crashed
+        % (str(Path(background.__file__).parents[2]), str(tmp_path / "home"), str(tmp_path),
+           PY, str(child).replace("\\", "/"), str(pidfile), str(pidfile)), encoding="utf-8")
+    done = subprocess.run([sys.executable, str(harness)], timeout=60)
+    assert done.returncode == 1
+    pid = int(pidfile.read_text())
+    try:
+        assert until(lambda: not pid_alive(pid), 10)
+    finally:
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the job object is Windows only")
+def test_windows_job_is_set_to_kill_on_close(mgr, tmp_path):
+    task = mgr.start(script(tmp_path, "s.py", "import time; time.sleep(60)"))
+    job = mgr._run(task.id).job
+    assert job is not None and background._job_kills_on_close(job)
+    mgr.stop(task.id)

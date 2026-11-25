@@ -124,13 +124,29 @@ def list_text(manager: TaskManager, me: str, titles: Titles) -> str:
     return "\n".join(task_line(task, me, names) for task in tasks)
 
 
+def left_running(manager: TaskManager, task: Task) -> bool:
+    """Whether ``task`` ended but left a program running (one that wrote its output to a file, say)."""
+    try:
+        return task.state != "running" and manager.leftovers(task.id)
+    except KeyError:
+        return False
+
+
 def stop_text(manager: TaskManager, task: Task) -> str:
-    """Stop ``task`` (no question asked: the caller has decided) and say what happened."""
+    """Stop ``task`` (no question asked: the caller has decided) and say what happened. A task that ended but left
+    a program running has that program killed."""
     if task.state != "running":
-        return ended_text(task)
+        if not left_running(manager, task):
+            return ended_text(task)
+        manager.stop(task.id)
+        if left_running(manager, task):
+            return f"Could not stop what {task.id} left running; agentx tries again when it exits."
+        return f"Stopped what {task.id} left running."
     stopped = manager.stop(task.id)
     if stopped.state == "stopped":
         return f"Stopped {task.id} ({task.command})."
+    if stopped.state == "running":
+        return f"Could not stop {task.id}; it is still running, and agentx tries again when it exits."
     return ended_text(stopped)                       # it ended on its own just before
 
 
@@ -143,10 +159,13 @@ def tasks_command(manager: TaskManager, arg: str, me: str, titles: Titles) -> Tu
     sub = words[0].lower()
     if sub == "stop" and len(words) == 2 and words[1].lower() == "all":
         running = [task.id for task in manager.list() if task.state == "running"]
-        if not running:
+        left = [task.id for task in manager.list() if left_running(manager, task)]
+        if not running and not left:
             return "Nothing is running.", True
         manager.stop_all()
-        return f"Stopped {', '.join(running)}.", True
+        said = [f"Stopped {', '.join(running)}."] if running else []
+        said += [f"Stopped what {', '.join(left)} left running."] if left else []
+        return " ".join(said), True
     if sub in ("show", "stop") and len(words) == 2:
         task = manager.get(words[1])
         if task is None:
@@ -254,7 +273,7 @@ def build_task_tools(manager: TaskManager, owner: Callable[[], str], permissions
         task = manager.get(id)
         if task is None:
             return unknown(id)
-        if task.state != "running":
+        if task.state != "running" and not left_running(manager, task):
             return ended_text(task)
         mine = me()
         if task.kind == "terminal" or not mine or task.owner != mine:

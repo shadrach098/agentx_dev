@@ -29,6 +29,7 @@ LOG_HEAD_BYTES = 64 * 1024           # ... it keeps its first 64 KB and drops th
 MAX_TASKS = 8
 MAX_TERMINALS = 4
 IDLE_RELEASE_SEC = 0.2               # read_from(release_idle=True): an unfinished line this quiet is handed out
+STOP_WAIT_SEC = 5.0                  # stop() waits this long for the tree to be gone after killing it
 
 if sys.platform == "win32":
     TERMINAL_ARGV = ["powershell", "-NoLogo", "-NoProfile", "-Command", "-"]
@@ -135,23 +136,79 @@ def _releasable(pending: bytes) -> bytes:
     return head[:_utf8_end(head)]
 
 
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+_JOB_BASIC_ACCOUNTING = 1                     # JobObjectBasicAccountingInformation
+_JOB_EXTENDED_LIMITS = 9                      # JobObjectExtendedLimitInformation
+
+
+def _kernel32():
+    """kernel32 with the job-object calls typed (Windows only)."""
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateJobObjectW.restype = wintypes.HANDLE
+    k.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    k.AssignProcessToJobObject.restype = wintypes.BOOL
+    k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    k.SetInformationJobObject.restype = wintypes.BOOL
+    k.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    k.QueryInformationJobObject.restype = wintypes.BOOL
+    k.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                            ctypes.c_void_p]
+    k.TerminateJobObject.restype = wintypes.BOOL
+    k.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+    return k
+
+
+def _job_structs():
+    import ctypes
+    from ctypes import wintypes
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount", "ReadTransferCount",
+            "WriteTransferCount", "OtherTransferCount")]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", BasicLimits), ("IoInfo", IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    class Accounting(ctypes.Structure):
+        _fields_ = [("TotalUserTime", ctypes.c_int64), ("TotalKernelTime", ctypes.c_int64),
+                    ("ThisPeriodTotalUserTime", ctypes.c_int64), ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+                    ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
+                    ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD)]
+    return ExtendedLimits, Accounting
+
+
 def _new_job(proc: "subprocess.Popen"):
     """Windows: a job object holding ``proc`` and everything it starts, so the tree stays reachable after the shell
-    itself has exited (``taskkill /T`` needs the parent alive). ``None`` elsewhere or when it cannot be made."""
+    itself has exited (``taskkill /T`` needs the parent alive). It is set to kill everything in it when its last
+    handle closes, and agentx keeps that handle until it exits: however agentx ends (a crash, Task Manager, the
+    console window closed), Windows closes the handle and the tree goes with it. ``None`` elsewhere or when it
+    cannot be made."""
     if sys.platform != "win32":
         return None
     try:
         import ctypes
         from ctypes import wintypes
-        k = ctypes.WinDLL("kernel32", use_last_error=True)
-        k.CreateJobObjectW.restype = wintypes.HANDLE
-        k.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
-        k.AssignProcessToJobObject.restype = wintypes.BOOL
-        k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        k = _kernel32()
         job = k.CreateJobObjectW(None, None)
         if not job:
             return None
+        ExtendedLimits, _ = _job_structs()
+        limits = ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        k.SetInformationJobObject(job, _JOB_EXTENDED_LIMITS, ctypes.byref(limits), ctypes.sizeof(limits))
         if not k.AssignProcessToJobObject(job, wintypes.HANDLE(int(proc._handle))):
             k.CloseHandle(job)
             return None
@@ -160,26 +217,57 @@ def _new_job(proc: "subprocess.Popen"):
         return None
 
 
-def _job_terminate(job) -> None:
+def _job_kills_on_close(job) -> bool:
+    """Whether ``job`` is set to kill its processes when its last handle closes."""
     try:
         import ctypes
-        from ctypes import wintypes
-        k = ctypes.WinDLL("kernel32", use_last_error=True)
-        k.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
-        k.TerminateJobObject(job, 1)
+        ExtendedLimits, _ = _job_structs()
+        limits = ExtendedLimits()
+        if not _kernel32().QueryInformationJobObject(job, _JOB_EXTENDED_LIMITS, ctypes.byref(limits),
+                                                     ctypes.sizeof(limits), None):
+            return False
+        return bool(limits.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+    except Exception:
+        return False
+
+
+def _job_active(job) -> int:
+    """How many processes of ``job`` are alive (0 when it cannot be read)."""
+    try:
+        import ctypes
+        _, Accounting = _job_structs()
+        info = Accounting()
+        if not _kernel32().QueryInformationJobObject(job, _JOB_BASIC_ACCOUNTING, ctypes.byref(info),
+                                                     ctypes.sizeof(info), None):
+            return 0
+        return int(info.ActiveProcesses)
+    except Exception:
+        return 0
+
+
+def _job_terminate(job) -> None:
+    try:
+        _kernel32().TerminateJobObject(job, 1)
     except Exception:
         pass
 
 
 def _job_close(job) -> None:
     try:
-        import ctypes
-        from ctypes import wintypes
-        k = ctypes.WinDLL("kernel32", use_last_error=True)
-        k.CloseHandle.argtypes = [wintypes.HANDLE]
-        k.CloseHandle(job)
+        _kernel32().CloseHandle(job)
     except Exception:
         pass
+
+
+def _group_alive(pgid: int) -> bool:
+    """POSIX: whether a process group ``pgid`` exists that this account may signal."""
+    try:
+        os.killpg(pgid, 0)
+    except PermissionError:                   # someone else's group: never one of ours
+        return False
+    except OSError:
+        return False
+    return True
 
 
 class _Run:
@@ -194,7 +282,8 @@ class _Run:
         self.head_len: Optional[int] = None   # set once the log has been trimmed: bytes of the kept head
         self.marker_len = 0           # bytes of the "dropped" marker line between head and tail
         self.stopping = False
-        self.job = None               # Windows job object holding the whole tree
+        self.job = None               # Windows job object holding the whole tree (kept open until agentx exits)
+        self.pgid: Optional[int] = None   # POSIX: the process group this run started (its own session)
         self.kill_lock = threading.Lock()
         self.eof = threading.Event()  # the output pipe has closed: nothing more will be written
         self.reader: Optional[threading.Thread] = None
@@ -212,6 +301,7 @@ class TaskManager:
         self._env = env
         self._permissions = permissions
         self._runs: Dict[str, _Run] = {}
+        self._retired: List[_Run] = []       # cleared from the list, but something of them may still run
         self._lock = threading.Lock()
         self._counters = {"task": 0, "terminal": 0}
         self.run_id = time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:4]
@@ -281,6 +371,8 @@ class TaskManager:
         with run.lock:
             run.proc = proc
             run.job = _new_job(proc)
+            if sys.platform != "win32":
+                run.pgid = proc.pid          # start_new_session: the shell leads a group of its own
             stopped_already = run.stopping
         if stopped_already:                  # stop() ran between the registration and the spawn
             self._kill(run)
@@ -317,33 +409,63 @@ class TaskManager:
             if run.task.ended_at is None:
                 run.task.ended_at = time.time()
             if run.task.state == "running":
-                run.task.state = "exited"
+                run.task.state = "stopped" if run.stopping else "exited"
         try:
             if run.proc.stdin:
                 run.proc.stdin.close()
         except Exception:
             pass
-        with run.kill_lock:
-            if run.job is not None:
-                _job_close(run.job)
-                run.job = None
+        # The job (Windows) stays open: a program that wrote its output elsewhere (``npm run dev > dev.log &``)
+        # held no pipe and may still run; stop() and stop_all() reach it through the job.
         with run.lock:
             if run.fh is not None:
                 run.fh.close()
                 run.fh = None
 
     def _kill(self, run: _Run) -> None:
-        """Kill the whole tree. POSIX: the process group (still there while any member lives, even if the shell has
-        exited). Windows: the job object; without one (``start`` can detach a program beyond any job, and
-        ``taskkill /T`` needs the shell alive) only a still-running shell's tree can be reached."""
+        """Kill the whole tree, whether or not the shell is still there. Windows: the job object (and ``taskkill
+        /T`` while the shell runs, for a tree that has no job). POSIX: the shell's process group, while the shell
+        runs or, once it has exited, while that group still exists (see ``_alive``)."""
         proc = run.proc
         if proc is None:
             return
         with run.kill_lock:
             if run.job is not None:
                 _job_terminate(run.job)
-            if sys.platform != "win32" or proc.poll() is None:
+            if proc.poll() is None:
                 _kill_tree(proc)
+            elif sys.platform != "win32" and run.pgid and _group_alive(run.pgid):
+                try:
+                    os.killpg(run.pgid, signal.SIGKILL)
+                except OSError:
+                    pass
+
+    def _alive(self, run: _Run) -> bool:
+        """Whether anything of ``run``'s tree still runs: the shell, or (Windows) a process in its job, or (POSIX) a
+        member of the group the shell led.
+
+        POSIX residual risk: once the shell has exited and been reaped, its id stays reserved only while its group
+        has members. If the whole group is gone and the id was reused by an unrelated program that leads a group of
+        its own, that group would be taken for this one. Only groups this manager started in this run are looked
+        at, and only until agentx exits, so the window is small; it is accepted."""
+        proc = run.proc
+        if proc is None:
+            return False
+        if proc.poll() is None:
+            return True
+        if run.job is not None:
+            return _job_active(run.job) > 0
+        if sys.platform != "win32" and run.pgid:
+            return _group_alive(run.pgid)
+        return False
+
+    def _kill_and_wait(self, run: _Run) -> bool:
+        """Kill ``run``'s tree and wait up to ``STOP_WAIT_SEC`` for it to be gone; whether it is."""
+        self._kill(run)
+        deadline = time.monotonic() + STOP_WAIT_SEC
+        while self._alive(run) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return not self._alive(run)
 
     def _append(self, run: _Run, data: bytes) -> None:
         with run.lock:
@@ -494,31 +616,53 @@ class TaskManager:
         except Exception:
             pass
 
+    def leftovers(self, id: str) -> bool:
+        """Whether a task that is no longer running left something running (a program that wrote its output to a
+        file, so no pipe kept the task open). ``KeyError`` for an unknown id."""
+        run = self._run(id)
+        return run.task.state != "running" and self._alive(run)
+
     def stop(self, id: str) -> Task:
+        """Stop ``id``'s whole tree. A running task is marked ``stopped`` once the kill worked; a kill that failed
+        leaves it ``running`` (and ``stop_all`` tries again at exit). A task that already ended keeps its state, and
+        what it left running is killed."""
         run = self._run(id)
         with run.lock:
-            if run.task.state != "running":
+            running = run.task.state == "running"
+            if running:
+                run.stopping = True
+            if running and run.proc is None:            # not spawned yet: _launch kills it as soon as it is
+                run.task.state = "stopped"
+                run.task.ended_at = time.time()
                 return run.task
-            run.task.state = "stopped"
-            run.task.ended_at = time.time()
-            run.stopping = True
-        if run.proc is not None:
-            self._kill(run)
-            try:
-                run.proc.wait(timeout=5)
-            except Exception:
-                pass
-            if run.reader:
-                run.reader.join(timeout=2)
-            with run.lock:
-                if run.task.exit_code is None and run.proc.returncode is not None:
-                    run.task.exit_code = run.proc.returncode
+        if not running:
+            if self._alive(run):
+                self._kill_and_wait(run)
+            return run.task
+        gone = self._kill_and_wait(run)
+        if gone and run.reader:
+            run.reader.join(timeout=2)
+        with run.lock:
+            if run.task.exit_code is None and run.proc.returncode is not None:
+                run.task.exit_code = run.proc.returncode
+            if gone:
+                if run.task.state == "running":
+                    run.task.state = "stopped"
+                if run.task.ended_at is None:
+                    run.task.ended_at = time.time()
+            elif run.task.state == "running":
+                run.stopping = False                    # it did not stop; if it ends by itself it "exited"
         return run.task
 
     def stop_all(self) -> None:
-        for tid in list(self._runs):
+        """Stop every task and terminal, and kill whatever any of them left running, whatever its state (at exit,
+        and ``/tasks stop all``)."""
+        for run in list(self._runs.values()) + list(self._retired):
             try:
-                self.stop(tid)
+                if run.task.state == "running" and self._runs.get(run.task.id) is run:
+                    self.stop(run.task.id)
+                elif self._alive(run):
+                    self._kill_and_wait(run)
             except Exception:
                 pass
 
@@ -532,12 +676,20 @@ class TaskManager:
         return [r.task for r in list(self._runs.values())]
 
     def clear_finished(self) -> int:
+        """Drop the tasks that are not running from the list. One that left something running is kept aside, so
+        ``stop_all`` still reaches it."""
         n = 0
         with self._lock:
             for tid, run in list(self._runs.items()):
                 if run.task.state != "running":
                     del self._runs[tid]
                     n += 1
+                    if self._alive(run):
+                        self._retired.append(run)
+                    elif run.job is not None:
+                        with run.kill_lock:
+                            _job_close(run.job)
+                            run.job = None
         return n
 
     def running_count(self) -> int:

@@ -370,3 +370,31 @@ def test_a_failing_cleanup_step_does_not_skip_stopping_the_tasks(tmp_path):
         assert app.tasks.get("t1") is not None and app.tasks.running_count() == 0
     finally:
         app.tasks.stop_all()
+
+
+# -- final review fixes ------------------------------------------------------------------------------------------
+
+def test_stopping_an_ended_task_that_left_a_program_running(tmp_path):
+    """``npm run dev > dev.log 2>&1 &``: the task ended (its pipe closed) but its server runs on; stop_background
+    and /tasks stop reach it, asking for another conversation's as for a running one."""
+    from tests.test_background_tasks import pid_alive, started_redirected
+    a, out, _, _ = make_app(tmp_path, Lines(), MockModel(script=[]))
+    a.session = SimpleNamespace(session_id="conversation-a")
+    asked = []
+    a.gate.ask = lambda request: (asked.append(request), Answer("y"))[1]
+    try:
+        mine, pid = started_redirected(a.tasks, tmp_path, "tt1")
+        a.tasks._run(mine.id).task.owner = "conversation-a"
+        assert tool(a, "stop_background").func(id=mine.id) == f"Stopped what {mine.id} left running."
+        assert until(lambda: not pid_alive(pid), 10) and asked == []    # its own: nothing asked...
+        other, pid2 = started_redirected(a.tasks, tmp_path, "tt2")
+        a.tasks._run(other.id).task.owner = "conversation-b"
+        assert tool(a, "stop_background").func(id=other.id) == f"Stopped what {other.id} left running."
+        assert [r.tool for r in asked] == ["stop_other_task"]          # ...this one is another conversation's
+        assert until(lambda: not pid_alive(pid2), 10)
+        third, pid3 = started_redirected(a.tasks, tmp_path, "tt3")
+        run_command(a, "/tasks stop all")
+        assert f"Stopped what {third.id} left running." in out.getvalue()
+        assert until(lambda: not pid_alive(pid3), 10)
+    finally:
+        a.tasks.stop_all()
