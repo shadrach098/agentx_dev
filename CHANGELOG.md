@@ -121,7 +121,9 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
   replaced shows skipped. Click a row for its details (its model, its last calls, its counts, the fallback note);
   click again to close them. A big team stops growing at about ten rows and scrolls inside the block, keeping the
   running steps in view. After the job the block stays as its record, in its final form, also in a reloaded window
-  and in a conversation opened again (the final form is kept with the saved conversation). The terminal is unchanged.
+  and in a conversation opened again (the final form is kept with the saved conversation); a turn Esc or Ctrl+C
+  stopped keeps its job's block too, above the note the turn left. Two team calls in one parallel batch run one after
+  the other. The terminal is unchanged.
 - **agentx decides by itself when a job needs a team.** You no longer need `/team` for a big job: before the agent
   starts on a message, agentx asks the chat model one short question, without tools, whether it is a large,
   multi-part job, and shows the answer (`Handing this to a team: it spans the whole project.` or `Working on this

@@ -2038,6 +2038,9 @@ class WebFront:
                                       "look": name in HELPER_LOOKS})
                         team_block(name, f"@{at}")
                 elif text.strip():
+                    stopped = placed.get(f"@{at}")           # the note a stopped turn left: the jobs it ran first
+                    if stopped is not None and stopped.get("stopped"):
+                        items.append(self._team_block(stopped))
                     items.append({"type": "final", "text": _text(text, 200_000)})
             elif role == "tool":
                 name = calls.get(str(message.get("tool_call_id")), str(message.get("name") or ""))

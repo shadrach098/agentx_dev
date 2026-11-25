@@ -216,9 +216,10 @@ class TeamCommands:
             # words can name the model its planner must not learn)
             self.error(f"The team job failed: {self._safe(data.get('text') or 'no reason given', 500)}")
 
-    def _keep_team_block(self, task: str) -> None:
+    def _keep_team_block(self, task: str, call: Optional[str] = None) -> None:
         """Keep the job that just ended, in its final form, with the conversation (its metadata, saved with it): the
-        app window draws it again in a reloaded window or a reopened conversation."""
+        app window draws it again in a reloaded window or a reopened conversation. ``call``: the id of the call that
+        ran it (none in text mode: the record is pinned to its call when the turn ends, see _settle_team_blocks)."""
         panel, session = getattr(self, "_team_panel", None), getattr(self, "session", None)
         if panel is None or session is None or not panel.rows:
             return
@@ -226,8 +227,7 @@ class TeamCommands:
             kept = session.metadata.get(TEAM_BLOCKS)
             kept = kept if isinstance(kept, list) else []
             record = panel.record(task)
-            call = getattr(self, "_team_call", None)
-            if call:                                # the call that ran it (none in text mode)
+            if call:
                 record["call"] = str(call)
             # the conversation's length as this turn began: its messages are added when it ends
             record["turnAt"] = len(session.history or [])
@@ -235,6 +235,27 @@ class TeamCommands:
             session.metadata[TEAM_BLOCKS] = kept[-MAX_TEAM_BLOCKS:]
         except Exception:                           # the record is for the screen only: never fail the job for it
             pass
+
+    def _settle_team_blocks(self, start: int, stopped_at: Optional[int] = None) -> None:
+        """The turn that began at message ``start`` ended and its messages are in the conversation: pin its text-mode
+        jobs to their calls; ``stopped_at``: it stopped and left only a note there, which its jobs go under."""
+        session = getattr(self, "session", None)
+        kept = (getattr(session, "metadata", None) or {}).get(TEAM_BLOCKS) if session is not None else None
+        if not isinstance(kept, list):
+            return
+        from agentx_dev.cli.team_panel import settle_team_blocks
+        try:
+            settle_team_blocks(session.history, kept, start, stopped_at)
+        except Exception:                           # for the screen only: never fail the turn for it
+            pass
+
+    def _rebase_team_blocks(self, cut: int, shift: int) -> None:
+        """A summary replaced the messages before ``cut`` and moved the rest ``shift`` places forward."""
+        session = getattr(self, "session", None)
+        kept = (getattr(session, "metadata", None) or {}).get(TEAM_BLOCKS) if session is not None else None
+        if isinstance(kept, list):
+            from agentx_dev.cli.team_panel import rebase_team_blocks
+            session.metadata[TEAM_BLOCKS] = rebase_team_blocks(kept, cut, shift)
 
     def _prune_team_blocks(self, upto: Optional[int] = None) -> None:
         """Drop the kept jobs whose call is no longer in the conversation (an edit went back before it, a summary
@@ -245,8 +266,9 @@ class TeamCommands:
             return
         from agentx_dev.cli.team_panel import prune_team_blocks
         if upto is not None:                        # a record of the cut turn or a later one (its turn began at the
-            kept = [r for r in kept if not isinstance(r, dict) or r.get("call")      # cut message, or just before
-                    or int(r.get("turnAt") or 0) < upto - 1]                         # it in a first turn)
+            kept = [r for r in kept if not isinstance(r, dict) or (                   # cut message, or just before
+                (r.get("call") or int(r.get("turnAt") or 0) < upto - 1)               # it in a first turn), or one
+                and not (isinstance(r.get("at"), int) and r["at"] >= upto))]          # pinned past the cut
         session.metadata[TEAM_BLOCKS] = prune_team_blocks(session.history, kept)
 
     def _team_question(self, question: str) -> Optional[str]:

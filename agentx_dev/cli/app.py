@@ -411,6 +411,9 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         self._stopped_at_step_limit = False        # the last turn ended at the step limit (see CARRY_ON_NOTE)
         self._stopped_turn = False                 # the last turn stopped early and was kept (_keep_stopped_turn)
         self._limit_lock = threading.Lock()
+        # one team job at a time, also for two start_team_job calls in one parallel batch: a job's live block, its
+        # rows and the per-message counters are the app's, not the call's
+        self._team_job_lock = threading.RLock()
         self._turn_start: Optional[int] = None    # tokens used before the running turn; None outside a turn
         self._turn_start_sent = 0                  # the same, every input token counted in full
         self._turn_allowed = 0                    # tokens the running turn may use before the next question
@@ -1196,12 +1199,15 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         except Exception:                  # the switched runner still works: it stays on the fallback
             logging.getLogger(__name__).warning("could not rebuild the runner on the fallback", exc_info=True)
 
-    def _keep_stopped_turn(self, title: str, text: str, events: List[dict], reason: str, last_said: str) -> None:
+    def _keep_stopped_turn(self, title: str, text: str, events: List[dict], reason: str, last_said: str,
+                           begun: Optional[int] = None) -> None:
         """A turn that stopped before it finished (an error, Ctrl+C, the token limit): your message and a short
         record of what it did go into the conversation and the work log, so "continue" (on this model or after
-        /model) picks up from there instead of starting over."""
+        /model) picks up from there instead of starting over. ``begun``: the conversation's length as the turn began;
+        the team jobs it ran are drawn under the note (their calls are not kept)."""
         if self.session is None:
             return
+        from agentx_dev.cli.team_panel import STOPPED_NOTE
         record = record_from_events(title, events)
         calls = []
         for event in events:
@@ -1212,7 +1218,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
                 calls.append(" ".join(f"{event.get('name')} {subject}".split())[:120])
         record.ran_on = self._fallback_mark()
         ran_on = f" {record.ran_on}" if record.ran_on else ""
-        lines = [f"[agentx] This turn stopped before it finished{ran_on}: {reason}. What it did before it stopped:"]
+        lines = [f"{STOPPED_NOTE}{ran_on}: {reason}. What it did before it stopped:"]
         if record.changed:
             lines.append("- Files changed: " + ", ".join(record.changed[:20]))
         if record.ran:
@@ -1229,6 +1235,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         self.session.history = [*(self.session.history or []), {"role": "user", "content": text},
                                 {"role": "assistant", "content": note}]
         self._stopped_turn = True
+        if begun is not None:
+            self._settle_team_blocks(begun, stopped_at=len(self.session.history) - 1)
         record.answer = f"Stopped before it finished ({reason})." + (
             f" Last: {' '.join(last_said.split())[:200]}" if last_said.strip() else "")
         if self._memory_on:
@@ -1251,6 +1259,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         finished = False
         stopped = ""                                   # why the turn stopped before it finished, if it did
         last_said = ""
+        begun: Optional[int] = None                    # the conversation's length as the turn began (after a summary)
         usage_before = self._usage_totals()
         completions_before = len(self.session.completions_meta)
         with self._limit_lock:
@@ -1262,6 +1271,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
             self.gate.closed = None
         try:
             self._maybe_compact()
+            begun = len(self.session.history or [])
             self.progress.start("Thinking")
             sent = text
             if self._stopped_at_step_limit and _is_carry_on(text):
@@ -1349,9 +1359,11 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
             if stopped:
                 try:
                     self._keep_stopped_turn(text if log_title is None else log_title, text, events, stopped,
-                                            last_said)
+                                            last_said, begun)
                 except Exception:              # keeping it is a help: a failure here must not end the app
                     logging.getLogger(__name__).warning("could not keep the stopped turn", exc_info=True)
+            elif begun is not None:
+                self._settle_team_blocks(begun)        # the turn's messages are in: its text-mode jobs to their calls
             self._mark_completions(completions_before)
             self._after_fallback()
             self.save()
@@ -1751,8 +1763,13 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         return added
 
     def _start_team_job(self, task: str, why: str) -> str:
-        """The ``start_team_job`` tool: run the team and hand the result text back to the main agent."""
-        self._team_call = current_tool_call_id()   # the call this job runs for: its record is kept under it
+        """The ``start_team_job`` tool: run the team and hand the result text back to the main agent. Jobs run one
+        at a time: a second call in the same parallel batch waits, then is checked against the limits as usual."""
+        call = current_tool_call_id()              # the call this job runs for: its record is kept under it
+        with self._team_job_lock:
+            return self._run_team_job(task, call)
+
+    def _run_team_job(self, task: str, call: Optional[str]) -> str:
         refusal = self._team_refusal()
         if refusal:
             return refusal
@@ -1796,7 +1813,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
             raise
         finally:
             self._team_panel.finish()                # any step still open: how it ended is not known
-            self._keep_team_block(task)               # the job's final form, for the window to draw again
+            self._keep_team_block(task, call)         # the job's final form, for the window to draw again
             self._team_running = []
             self._team_rows = {}
             self.progress.stop()

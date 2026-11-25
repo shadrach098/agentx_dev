@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 from agentx_dev.ChatModel import _is_timeout
-from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, THRESHOLD_CHARS, compact, needs_compaction
+from agentx_dev.cli.compact import RETRY_AFTER_MESSAGES, THRESHOLD_CHARS, _leading_system, compact, needs_compaction
 from agentx_dev.Runner.Trim import TrimPolicy, trim_tool_results
 from agentx_dev.cli.memory import summary_entry_text
 from agentx_dev.cli.settings import write_user_token_limit
@@ -163,7 +163,11 @@ class UsageCommands:
             self.progress.stop()
         if result.status == "done":
             self.session.history = result.history
-            self._prune_team_blocks()           # a team job whose call was summarised away is not drawn again
+            # the kept team jobs' message indices move with the conversation (the messages from the cut on are
+            # kept as they were, after the summary), and a job whose call was summarised away is not drawn again
+            cut = len(history) - max(0, len(result.history) - _leading_system(history) - 2)   # see apply_summary
+            self._rebase_team_blocks(cut, len(history) - len(result.history))
+            self._prune_team_blocks()
             self._forget_skill_reads()          # the skill texts went into the summary: they may be read again
             self.notice(f"Summarised {result.replaced} earlier messages to keep the conversation short.")
             self._append_log(summary_entry_text(result.summary, datetime.now(), self._hide))
