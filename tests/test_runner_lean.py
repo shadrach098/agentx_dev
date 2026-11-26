@@ -117,7 +117,8 @@ def test_at_the_switch_the_fallback_gets_its_own_tools_and_a_compact_prompt(tmp_
     texts = " ".join(str(m.get("content")) for m in messages)
     assert "[earlier step] called web with " in texts and "[earlier result] web did b" in texts
     # the fallback cannot run the tool it was not given
-    assert ("web", "again") not in seen and seen == [("core", "a"), ("web", "b")]
+    # (the primary's two calls of one step run side by side: either may be seen first)
+    assert ("web", "again") not in seen and sorted(seen) == [("core", "a"), ("web", "b")]
     # the primary's request was the full one
     primary_system = str(primary.tool_calls_made[0][0]["content"])
     assert "Long description" in primary_system and "more skills are not listed" not in primary_system

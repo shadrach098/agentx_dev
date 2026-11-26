@@ -545,6 +545,23 @@ class TestBrowserProblem:
 
     def test_the_first_launch_failure_is_shown_afterwards(self, host, monkeypatch):
         from agentx_dev.cli import browser as browser_module
+        try:
+            import playwright.sync_api  # noqa: F401
+        except ImportError:
+            # Not installed (it is no test dependency): a stand-in with the names the start imports. The start
+            # fails at the proxy, before any of them is used.
+            import types
+            fake = types.ModuleType("playwright.sync_api")
+            fake.Error = type("Error", (Exception,), {})
+            fake.TimeoutError = type("TimeoutError", (fake.Error,), {})
+
+            def sync_playwright():
+                raise AssertionError("never reached: the proxy fails first")
+            fake.sync_playwright = sync_playwright
+            package = types.ModuleType("playwright")
+            package.sync_api = fake
+            monkeypatch.setitem(sys.modules, "playwright", package)
+            monkeypatch.setitem(sys.modules, "playwright.sync_api", fake)
         monkeypatch.setattr(browser_module, "_chromium_seen", (0.0, None))
         monkeypatch.setattr(browser_module, "_chromium_executable", lambda: sys.executable)   # "found"
         h = host()
