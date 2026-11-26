@@ -42,6 +42,28 @@ def lean_tools(tools: Sequence[Any]) -> List[Any]:
     return [tool for tool in tools if tool.name in LEAN_TOOLS and not getattr(tool, "mcp_server", None)]
 
 
+def left_out_note(tools: Sequence[Any]) -> str:
+    """The line a lean request adds to the instructions: which of ``tools`` it leaves out (the browser tools by kind,
+    the MCP tools by server) and how the user turns them on, so a request for one is answered instead of improvised.
+    "" when ``lean_tools`` keeps them all."""
+    kept = {id(tool) for tool in lean_tools(tools)}
+    left = [tool for tool in tools if id(tool) not in kept]
+    servers = sorted({str(tool.mcp_server) for tool in left if getattr(tool, "mcp_server", None)})
+    own = [tool.name for tool in left if not getattr(tool, "mcp_server", None)]
+    parts = [name for name in own if not name.startswith("browser_")]
+    if any(name.startswith("browser_") for name in own):
+        parts.append("the browser tools")
+    if servers:
+        listed = servers[0] if len(servers) == 1 else ", ".join(servers[:-1]) + " and " + servers[-1]
+        parts.append(f"the tools of the MCP server{'s' if len(servers) > 1 else ''} {listed}")
+    if not parts:
+        return ""
+    return ("\n- On this local model these tools are left out to keep each request small: " + ", ".join(parts) + ". "
+            "When the user asks for one of them (for example to use MCP or search the web), say it is not available "
+            "on this local model instead of trying it another way, and that Settings > Local models > Tools on a "
+            'local model > All (or "localTools": "all" in their settings file) turns it on from the next start.')
+
+
 def _reroot(value: str, permissions: Permissions) -> str:
     """``value`` as the project-relative text the tool will treat it as, when the tool re-roots it.
 

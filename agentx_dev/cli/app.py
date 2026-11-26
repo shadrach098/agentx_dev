@@ -44,7 +44,7 @@ from agentx_dev.cli.typeahead import TypeAhead
 from agentx_dev.cli.ui_text import plain
 from agentx_dev.cli.team_record import TeamRecord
 from agentx_dev.cli.routing import ROUTE_THREAD, Route, routed_request
-from agentx_dev.cli.tools import build_tools, gate_tool, lean_tools, make_permissions
+from agentx_dev.cli.tools import build_tools, gate_tool, lean_tools, left_out_note, make_permissions
 from agentx_dev.cli.background import install_signal_handlers, shared
 from agentx_dev.cli.browser import shared_browser
 from agentx_dev.cli.browser_tools import build_browser_tools
@@ -651,10 +651,10 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         tools = [self._route_guarded(t) for t in self.tools]
         runner = AgentRunner(model=model, agent=AgentType.ReAct,
                              tools=lean_tools(tools) if self._lean_for(model) else tools,
-                             system_addendum=self.addendum,
+                             system_addendum=self.addendum + self._left_out_for(model),
                              max_iterations=self.max_steps, auto_cache=False, verbose=False, parallel_tool_workers=1,
                              skills=self.skills, trim_results=True, strict_tool_dispatch=True,
-                             fallback_model=self._fallback_for(model), fallback_addendum=self._fitted_addendum,
+                             fallback_model=self._fallback_for(model), fallback_addendum=self._fallback_addendum,
                              compact_prompt=self._lean_for,
                              fallback_tools=lambda fallback: lean_tools(tools) if self._lean_for(fallback) else None)
         # The skills THIS conversation's agent can open (what /<skill> and the `/` pop-up offer): taken from the
@@ -1654,6 +1654,15 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
                 limits["shortened_note"] = f"(shortened to fit {whose} {window:,}-token window)"
         return (build_addendum(self.cwd, self.home, log_text=self._addendum_log, browser=self._browser_for(model),
                                **limits), fitted)
+
+    def _fallback_addendum(self, fallback: Any) -> str:
+        """What a runner switching to ``fallback`` is given: the addendum fitted to it, and the left-out line."""
+        return self._fitted_addendum(fallback) + self._left_out_for(fallback)
+
+    def _left_out_for(self, model: Any) -> str:
+        """The line naming what a lean request on ``model`` leaves out (web, browser and MCP tools: ``left_out_note``),
+        else "". Built with each runner, so it names the MCP servers connected now."""
+        return left_out_note(self.tools) if self._lean_for(model) else ""
 
     def _browser_for(self, model: Any) -> bool:
         """Whether requests on ``model`` carry the browser tools (a lean request does not): only then does the

@@ -238,3 +238,58 @@ def test_a_cloud_chat_keeps_the_browser_line(tmp_path):
     app, _, _, _ = make_app(tmp_path, Lines("/exit"), lambda name, env: model, model_name="claude-opus-5-5")
     assert app.start() == 0
     assert BROWSER_LINE in app._make_runner(model)._system_prompt("")
+
+
+# -- the lean request names what it leaves out -----------------------------------------------------------------------
+
+def test_left_out_note_names_the_web_and_browser_tools_and_each_mcp_server(tmp_path):
+    from agentx_dev.cli.tools import left_out_note
+    other = mcp_tool()
+    other.name, other.mcp_server = "mcp__github__issues", "github"
+    note = left_out_note([*build_tools(tmp_path, [], Gate(cwd=tmp_path)), mcp_tool(), other, mcp_tool()])
+    assert "web_fetch, web_search" in note
+    assert "the tools of the MCP servers github and srv" in note
+    assert '"localTools": "all"' in note and "Settings" in note
+    assert "browser_open" not in note                     # a lean prompt never names a browser tool
+
+
+def test_left_out_note_is_empty_when_nothing_is_left_out(tmp_path):
+    from agentx_dev.cli.tools import left_out_note
+    core = [tool for tool in build_tools(tmp_path, [], Gate(cwd=tmp_path)) if tool.name in LEAN_TOOLS]
+    assert left_out_note(core) == ""
+
+
+def test_left_out_note_with_one_mcp_server_and_no_web_tools(tmp_path):
+    from agentx_dev.cli.tools import left_out_note
+    note = left_out_note([mcp_tool()])
+    assert "the tools of the MCP server srv" in note and "web_search" not in note
+
+
+def test_a_local_chat_is_told_what_it_is_not_given(tmp_path):
+    model = local_mock(window=32768)
+    model.prefers_native_tools = True
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), lambda name, env: model, model_name="qwen3:8b")
+    assert app.start() == 0
+    app.tools.append(mcp_tool())
+    system = app._make_runner(model)._system_prompt("")
+    assert "the tools of the MCP server srv" in system and "web_search" in system
+    app.local_tools = "all"
+    assert "MCP server srv" not in app._make_runner(model)._system_prompt("")
+
+
+def test_a_cloud_chat_is_not_told_of_left_out_tools(tmp_path):
+    model = MockModel(script=[])
+    model.prefers_native_tools = True
+    app, _, _, _ = make_app(tmp_path, Lines("/exit"), lambda name, env: model, model_name="claude-opus-5-5")
+    assert app.start() == 0
+    app.tools.append(mcp_tool())
+    assert "MCP server srv" not in app._make_runner(model)._system_prompt("")
+
+
+def test_the_switch_to_the_fallback_tells_it_what_it_is_not_given(tmp_path):
+    primary = paid("claude-opus-5-5", OutOfCredit())
+    fallback = Recording("qwen3:8b", respond("Done on the fallback."))
+    app, _, _, _ = started_on_claude(tmp_path, Lines("hello", "/exit"), primary, fallback)
+    assert app.start() == 0
+    system = str(fallback.tool_calls_made[0][0]["content"])
+    assert '"localTools": "all"' in system and "web_fetch, web_search" in system

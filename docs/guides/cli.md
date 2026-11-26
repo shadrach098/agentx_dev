@@ -631,6 +631,10 @@ MCP tools or any conversation. So a request to a local model is lean (`localTool
   not (and still only the ones you approved); a name it does not know gets the list of all of them.
 - **The tools named once:** the instructions name the tools; their descriptions come with the tool definitions, not
   a second time in the instructions.
+- **What is left out, said:** the instructions also name the tools the model is not given (`web_search`,
+  `web_fetch`, the browser tools, and your MCP servers by name), so asked to "use MCP" or to search the web it says
+  they are not available on this model and that `"localTools": "all"` turns them on, instead of trying something
+  else.
 
 With 13 built-in tools and 52 skills that is about 17,500 characters instead of 29,600 (19,400 instead of 32,600
 with the team tool and `recall`), about a third of a 16,384-token window instead of over half. It applies to a chat on a local model, from the turn that moves to the
