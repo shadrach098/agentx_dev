@@ -29,3 +29,6 @@ data/
 
 # benchmark run logs (the JSON results are kept)
 bench/results/*/
+
+# design documents and plans: kept local, never committed
+docs/superpowers/

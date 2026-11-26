@@ -1,7 +1,5 @@
 """Persistent runs: keep an agent working through errors, inside a budget.
 
-Design: docs/superpowers/specs/2026-10-04-persistent-agents-design.md
-
 Everything here is opt-in. ``AgentRunner(persistence=Persistence(...))`` and
 ``Supervisor(persistence=Persistence(...))`` switch it on; with
 ``persistence=None`` (the default) none of this code runs.
