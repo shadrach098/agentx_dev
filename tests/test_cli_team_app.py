@@ -261,6 +261,7 @@ def test_helpers_are_told_they_have_no_background_task_tools(tmp_path):
     assert "start_background" in app.addendum                   # the chat's prompt tells the model to use it
     for name, (_, runner) in build_helpers(model, app.base_tools, app.addendum).items():
         assert "You have no background-task tools" in runner.system_addendum, name
+        assert "send_to_terminal" in runner.system_addendum.split("You have no background-task tools")[1], name
         assert "start_background" not in [tool.name for tool in runner.tools], name
 
 

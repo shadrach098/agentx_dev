@@ -367,3 +367,10 @@ def test_the_base_prompt_asks_to_check_skills_before_choosing_tools(tmp_path):
     text = build_addendum(tmp_path, tmp_path / "home", system="X")
     assert "use_skill" in text and "before you choose your tools" in text
     assert "installed skill" in text
+
+
+def test_the_prompt_says_how_to_find_and_read_the_users_terminals(tmp_path):
+    for browser in (False, True):                       # a lean local request has these tools too
+        text = build_addendum(tmp_path, tmp_path / "home", system="X", browser=browser)
+        line = next(part for part in text.splitlines() if "terminals" in part)
+        assert "list_background" in line and "background_output" in line and "send_to_terminal" in line

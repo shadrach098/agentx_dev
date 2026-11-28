@@ -1380,7 +1380,7 @@ What to know:
 - **What is stopped.** Stopping a task stops everything it started. A command whose program writes its output to a file (`npm run dev > dev.log 2>&1 &`) shows as exited once its shell ends, but the program is still reached: stopping that task (the panel, `/tasks stop`, `stop_background`) says `Stopped what t1 left running.`
 - **When agentx ends.** Leaving `agentx` stops every task and terminal and what they started. On Windows that holds however `agentx` ends (a crash, Task Manager, closing its console window): each task runs in a job that Windows ends with it. On macOS and Linux a normal exit, Ctrl+C, closing the terminal and SIGTERM stop them; a crash or SIGKILL can leave them running.
 - **Whose task.** Every conversation can list and read every task. The agent stops a task its own conversation started without asking. Stopping another conversation's task, or a terminal you opened, asks first (in `auto` mode it runs without asking).
-- **Terminals are yours to open.** The agent cannot open one. It can read the ones you opened and, with approval, type into them.
+- **Terminals are yours to open.** The agent cannot open one. It can read the ones you opened and, with approval, type into them. Its instructions say so: when you mention a terminal ("the error in my terminal"), it finds it with `list_background`, reads it with `background_output`, and types into it only when you ask. Team helpers are told they have none of these tools.
 
 ### Approvals for these tools
 
