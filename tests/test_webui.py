@@ -879,6 +879,33 @@ class TestLocalModelsAndTheFallback:
         script = (RESOURCES / "app.js").read_text(encoding="utf-8")
         assert 'name="localTools"' in script and "values.localTools" in script
 
+    def test_local_mcp_servers_lists_your_servers_and_is_saved_in_your_own_file_only(self, window):
+        w = window(MockModel())
+        w.ready()
+        (w.home / ".agentx").mkdir(exist_ok=True)
+        (w.home / ".agentx" / "mcp.json").write_text(json.dumps({"servers": {
+            "github": {"url": "https://example.test/mcp"}, "flights": {"url": "https://example.test/f"}}}),
+            encoding="utf-8")
+        view = w.request("GET", "/api/settings")[1]
+        assert view["mcpServers"] == ["flights", "github"]
+        assert view["effective"]["localMcpServers"] is None and view["user"]["values"]["localMcpServers"] is None
+        saved = w.request("POST", "/api/settings", {"scope": "user", "values": {"localMcpServers": ["flights"]}})[1]
+        assert saved["ok"] is True, saved
+        user_file = w.home / ".agentx" / "settings.json"
+        assert json.loads(user_file.read_text(encoding="utf-8"))["localMcpServers"] == ["flights"]
+        assert saved["view"]["effective"]["localMcpServers"] == ["flights"]
+        saved = w.request("POST", "/api/settings", {"scope": "user", "values": {"localMcpServers": []}})[1]
+        assert json.loads(user_file.read_text(encoding="utf-8"))["localMcpServers"] == []     # none: kept as []
+        saved = w.request("POST", "/api/settings", {"scope": "user", "values": {"localMcpServers": None}})[1]
+        assert saved["ok"] is True and "localMcpServers" not in json.loads(user_file.read_text(encoding="utf-8"))
+        refused = w.request("POST", "/api/settings", {"scope": "user", "values": {"localMcpServers": "flights"}})[1]
+        assert refused == {"ok": False, "message": "localMcpServers must be a list of MCP server names."}
+        refused = w.request("POST", "/api/settings", {"scope": "folder", "values": {"localMcpServers": []}})[1]
+        assert refused["ok"] is False and "localMcpServers" in refused["message"]
+        from agentx_dev.cli.webui import RESOURCES
+        script = (RESOURCES / "app.js").read_text(encoding="utf-8")
+        assert 'name="localMcpServers"' in script and "values.localMcpServers" in script
+
     def test_save_settings_refuses_paid_fallback(self, window):
         w = window(MockModel())
         w.ready()

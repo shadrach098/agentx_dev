@@ -42,12 +42,24 @@ def lean_tools(tools: Sequence[Any]) -> List[Any]:
     return [tool for tool in tools if tool.name in LEAN_TOOLS and not getattr(tool, "mcp_server", None)]
 
 
-def left_out_note(tools: Sequence[Any]) -> str:
-    """The line a lean request adds to the instructions: which of ``tools`` it leaves out (the browser tools by kind,
-    the MCP tools by server) and how the user turns them on, so a request for one is answered instead of improvised.
-    "" when ``lean_tools`` keeps them all."""
-    kept = {id(tool) for tool in lean_tools(tools)}
-    left = [tool for tool in tools if id(tool) not in kept]
+def local_tools(tools: Sequence[Any], lean: bool, servers: Optional[Sequence[str]] = None) -> List[Any]:
+    """The tools of ``tools`` a local model gets, in their order: the built-in ones ``lean`` keeps (``LEAN_TOOLS``) or
+    all of them, and the MCP tools of ``servers`` (``localMcpServers``). ``servers`` None follows ``lean``: no MCP
+    tools when lean, every server's otherwise."""
+    if servers is None:
+        return lean_tools(tools) if lean else list(tools)
+    chosen = {str(server) for server in servers}
+    return [tool for tool in tools
+            if (str(tool.mcp_server) in chosen if getattr(tool, "mcp_server", None)
+                else not lean or tool.name in LEAN_TOOLS)]
+
+
+def left_out_note(tools: Sequence[Any], kept: Optional[Sequence[Any]] = None) -> str:
+    """The line a local model's request adds to the instructions: which of ``tools`` it leaves out (``kept`` is what
+    it has; by default the lean tools), the browser tools by kind and the MCP tools by server, and how the user turns
+    them on, so a request for one is answered instead of improvised. "" when nothing is left out."""
+    have = {id(tool) for tool in (lean_tools(tools) if kept is None else kept)}
+    left = [tool for tool in tools if id(tool) not in have]
     servers = sorted({str(tool.mcp_server) for tool in left if getattr(tool, "mcp_server", None)})
     own = [tool.name for tool in left if not getattr(tool, "mcp_server", None)]
     parts = [name for name in own if not name.startswith("browser_")]
@@ -58,10 +70,15 @@ def left_out_note(tools: Sequence[Any]) -> str:
         parts.append(f"the tools of the MCP server{'s' if len(servers) > 1 else ''} {listed}")
     if not parts:
         return ""
+    turn_on = []
+    if own:
+        turn_on.append('Tools on a local model > All (or "localTools": "all" in their settings file)')
+    if servers:
+        turn_on.append('MCP servers on a local model (or "localMcpServers" in their settings file)')
     return ("\n- On this local model these tools are left out to keep each request small: " + ", ".join(parts) + ". "
             "When the user asks for one of them (for example to use MCP or search the web), say it is not available "
-            "on this local model instead of trying it another way, and that Settings > Local models > Tools on a "
-            'local model > All (or "localTools": "all" in their settings file) turns it on from the next start.')
+            "on this local model instead of trying it another way, and that Settings > Local models > "
+            + " or ".join(turn_on) + " turns it on from the next start.")
 
 
 def _reroot(value: str, permissions: Permissions) -> str:

@@ -32,7 +32,7 @@ from agentx_dev.Runner.AgentRun import CHARS_PER_TOKEN, REQUEST_SHARE, _FRAMEWOR
 from agentx_dev.Runner.Fallback import FallbackFailed, fails_for_good
 from agentx_dev.cli.models import HelperModel, model_label, provider_for, without_auto_prefix
 from agentx_dev.cli.blind_models import BlindModelRoster
-from agentx_dev.cli.tools import lean_tools
+from agentx_dev.cli.tools import local_tools
 from agentx_dev.cli.ui import summarize_result
 from agentx_dev.Runner.Trim import TrimPolicy, cut_text
 from agentx_dev._supervisor.steps import _format_results_block
@@ -778,11 +778,13 @@ def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
             describe_error: Callable[[BaseException], str], skills: Any = None,
             name: str = "", every_mcp_tool: bool = True, fallback_model: Any = None,
             addendum_for: Optional[Callable[[Any], str]] = None,
-            lean_for: Optional[Callable[[Any], bool]] = None) -> AgentRunner:
+            lean_for: Optional[Callable[[Any], bool]] = None,
+            mcp_servers: Optional[Sequence[str]] = None) -> AgentRunner:
     """One helper. ``addendum_for(model)`` (when given) is the chat's addendum fitted to a local model's window: a
     helper on a local model gets it, and so does a helper that moves to the fallback. ``lean_for(model)`` says when a
     model gets the lean request (the core tools only, the short skill index: see ``lean_tools``): a helper on such a
-    model, and a helper that moves to such a fallback."""
+    model, and a helper that moves to such a fallback. ``mcp_servers`` (``localMcpServers``) are the MCP servers a
+    helper on a local model gets (None: as ``lean_for`` says)."""
     chosen = [by_name[tool] for tool in role.tools if tool in by_name]
     if every_mcp_tool:
         # The user's MCP tools go to every built-in helper: what they do is up to the server, and each asks first.
@@ -797,8 +799,11 @@ def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
         except Exception:                           # the whole request, as before
             return False
 
+    def trims(candidate: Any) -> bool:              # a local model that gets fewer tools (see local_tools)
+        return is_lean(candidate) or (bool(getattr(candidate, "is_local", False)) and mcp_servers is not None)
+
     def tools_for(candidate: Any) -> List[Any]:
-        return lean_tools(chosen) if is_lean(candidate) else chosen
+        return local_tools(chosen, is_lean(candidate), mcp_servers) if trims(candidate) else chosen
 
     own = addendum
     if local and addendum_for is not None:
@@ -811,9 +816,9 @@ def _helper(role: Role, model: Any, by_name: Dict[str, Any], addendum: str,
         def on_fallback(fallback: Any) -> str:
             return (addendum_for(fallback) or "") + role_prompt(role) + _without_web_note(role, tools_for(fallback))
     fallback_tools = None
-    if lean_for is not None and not local and fallback_model is not None:
+    if (lean_for is not None or mcp_servers is not None) and not local and fallback_model is not None:
         def fallback_tools(fallback: Any) -> Optional[List[Any]]:
-            return lean_tools(chosen) if is_lean(fallback) else None
+            return tools_for(fallback) if trims(fallback) else None
     tools = tools_for(model)
     return _HelperRunner(model=model, agent=AgentType.ReAct, tools=tools,
                          system_addendum=(own or "") + role_prompt(role) + _without_web_note(role, tools),
@@ -830,7 +835,8 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
                   skills: Any = None, roster: Optional[BlindModelRoster] = None,
                   fallback_model: Any = None,
                   addendum_for: Optional[Callable[[Any], str]] = None,
-                  lean_for: Optional[Callable[[Any], bool]] = None) -> Dict[str, Tuple[str, AgentRunner]]:
+                  lean_for: Optional[Callable[[Any], bool]] = None,
+                  mcp_servers: Optional[Sequence[str]] = None) -> Dict[str, Tuple[str, AgentRunner]]:
     """One ``AgentRunner`` per role. Without ``extra_models`` they run on ``model`` and are named ``explorer``,
     ``coder``, ``runner`` with the roles' own descriptions. With extra models every copy names its model, the
     chat's own included (``coder@<model>``), and every description says the same thing apart from the model and
@@ -853,7 +859,7 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
                 name = f"{role.name}@{model_id}" if extras else role.name
                 runner = _helper(role, roster.resolve(model_id), by_name, addendum,
                                  describe_error, skills, name, fallback_model=fallback_model,
-                                 addendum_for=addendum_for, lean_for=lean_for)
+                                 addendum_for=addendum_for, lean_for=lean_for, mcp_servers=mcp_servers)
                 runner._blind_errors = True
                 runner.model_id = model_id
                 helpers[name] = (role.description + note, runner)
@@ -863,7 +869,7 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
             helpers[role.name] = (role.description,
                                   _helper(role, model, by_name, addendum, describe_error, skills, role.name,
                                           fallback_model=fallback_model, addendum_for=addendum_for,
-                                          lean_for=lean_for))
+                                          lean_for=lean_for, mcp_servers=mcp_servers))
         return helpers
     for helper_model in [HelperModel(model_label(model), model, chat_use), *extras]:
         note = MODEL_NOTE.format(model=helper_model.name,
@@ -873,7 +879,7 @@ def build_helpers(model: Any, tools: Sequence[Any], addendum: str,
             name = f"{role.name}@{helper_model.name}"
             helpers[name] = (role.description + note,
                              _helper(role, helper_model.model, by_name, addendum, describe_error, skills, name,
-                                     fallback_model=fallback_model, addendum_for=addendum_for, lean_for=lean_for))
+                                     fallback_model=fallback_model, addendum_for=addendum_for, lean_for=lean_for, mcp_servers=mcp_servers))
     return helpers
 
 
@@ -1592,7 +1598,8 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
                  step_tokens: int = 0, closed: Optional[Callable[[], Any]] = None, record: Any = None,
                  lane: Optional[TeamLane] = None, fallback_model: Any = None,
                  addendum_for: Optional[Callable[[Any], str]] = None,
-                 lean_for: Optional[Callable[[Any], bool]] = None) -> str:
+                 lean_for: Optional[Callable[[Any], bool]] = None,
+                 mcp_servers: Optional[Sequence[str]] = None) -> str:
     """Plan ``task``, run the helpers (read-only steps side by side, any other step alone) and return the result
     text. Progress goes to ``notify`` and questions to ``ask_user``, both on the calling thread. ``extra_models``
     adds the roles on other models (see ``build_helpers``); the planner stays on ``model``. ``step_tokens`` is each
@@ -1651,7 +1658,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
         roster = BlindModelRoster(model, extra_models, chat_use=chat_use)
         helpers = build_helpers(model, tools, addendum, describe_error, extra_models=extra_models,
                                 chat_use=chat_use, skills=skills, roster=roster, fallback_model=fallback_model,
-                                addendum_for=addendum_for, lean_for=lean_for)
+                                addendum_for=addendum_for, lean_for=lean_for, mcp_servers=mcp_servers)
         for _, runner in helpers.values():
             runner.job = job
         by_name = {tool.name: tool for tool in tools}
@@ -1664,7 +1671,7 @@ def run_team_job(task: str, *, model: Any, tools: Sequence[Any], addendum: str, 
             shown = f"{name}@{model_label(chosen)}" if extra_models and model_name else name
             runner = _helper(role, chosen, by_name, addendum, describe_error, skills, shown,
                              every_mcp_tool=False, fallback_model=fallback_model, addendum_for=addendum_for,
-                             lean_for=lean_for)
+                             lean_for=lean_for, mcp_servers=mcp_servers)
             runner._blind_errors = True
             runner.model_id = model_name
             runner.job = job

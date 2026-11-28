@@ -343,10 +343,10 @@ def _fallback_from(app: Any) -> Optional[Dict[str, str]]:
 def _local_changes(scope: str, values: Mapping[str, Any]) -> "tuple[Dict[str, Any], str]":
     """The Settings panel's local model keys as changes for the user's file, or the reason they are refused (a
     folder's file may not set them; a Claude or GPT name is not a fallback). A blank address, window or
-    ``localTools`` removes the key (the default applies); a blank fallback is ``""``, which turns it off and stops
-    the offer."""
+    ``localTools`` removes the key (the default applies), and so does a ``localMcpServers`` of None; a blank fallback is
+    ``""``, which turns it off and stops the offer."""
     from agentx_dev.cli.models import is_local_name
-    from agentx_dev.cli.settings import LOCAL_SETTING_KEYS, LOCAL_TOOLS_CHOICES, local_server_address
+    from agentx_dev.cli.settings import LOCAL_SETTING_KEYS, LOCAL_TOOLS_CHOICES, local_server_address, mcp_server_names
 
     given = [key for key in LOCAL_SETTING_KEYS if key in values]
     if given and scope != "user":
@@ -379,6 +379,12 @@ def _local_changes(scope: str, values: Mapping[str, Any]) -> "tuple[Dict[str, An
         if chosen and chosen not in LOCAL_TOOLS_CHOICES:
             return {}, 'localTools must be "lean" or "all".'
         changes["localTools"] = chosen or None
+    if "localMcpServers" in values:                  # None: not set (as localTools says); a list, [] too: those servers
+        raw = values.get("localMcpServers")
+        names = None if raw is None else mcp_server_names(raw)
+        if raw is not None and names is None:
+            return {}, "localMcpServers must be a list of MCP server names."
+        changes["localMcpServers"] = names
     return changes, ""
 
 
@@ -1568,6 +1574,7 @@ class WebFront:
     def settings_view(self) -> Dict[str, Any]:
         from agentx_dev.cli.settings import (LOCAL_SETTING_KEYS, is_project_folder, load_settings,
                                              project_settings_path, user_settings_path)
+        from agentx_dev.cli.mcp import names_in_file
 
         def read(path: Path, own: bool = False) -> Dict[str, Any]:
             entry: Dict[str, Any] = {"path": str(path), "exists": path.is_file(), "values": {}, "error": ""}
@@ -1597,8 +1604,9 @@ class WebFront:
                               "deny": effective.deny, "maxSteps": effective.max_steps,
                               "tokenLimit": effective.token_limit, "localServer": effective.local_server,
                               "fallbackModel": effective.fallback_model, "localContext": effective.local_context,
-                              "localTools": effective.local_tools},
-                "localModels": _local_models(self.app),
+                              "localTools": effective.local_tools,
+                              "localMcpServers": effective.local_mcp_servers},
+                "localModels": _local_models(self.app), "mcpServers": sorted(names_in_file(self.home) or []),
                 "problems": [_text(p, 300) for p in effective.problems], "modes": list(MODES_SHOWN)}
 
     def save_settings(self, scope: str, values: Any) -> Dict[str, Any]:

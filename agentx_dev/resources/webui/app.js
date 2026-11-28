@@ -2247,9 +2247,31 @@
           <option value="all"${v.localTools === "all" ? " selected" : ""}>All: the web and MCP tools and every skill too</option>
         </select>
         <span class="s-hint">Lean leaves room in a small window for the conversation; <code>use_skill</code> still opens every skill.</span></label>
+      ${localMcpFields(v)}
       <datalist id="localModelList">${(settingsData.localModels || []).map((m) => `<option value="${esc(m)}">`).join("")}</datalist>
     </fieldset>`;
   }
+  // Which MCP servers a local model gets ("localMcpServers"): not set follows the tools choice above (Lean: none,
+  // All: every server); ticked servers come on top of it. A server's tools take room in every request.
+  function localMcpFields(v) {
+    const chosen = Array.isArray(v.localMcpServers) ? v.localMcpServers : null;
+    const names = [...new Set([...(settingsData.mcpServers || []), ...(chosen || [])])];
+    const boxes = names.length
+      ? `<div class="s-modes">${names.map((n) => `<label class="s-mode"><input type="checkbox" name="localMcpServers" value="${esc(n)}"${chosen && chosen.includes(n) ? " checked" : ""}><b>${esc(n)}</b></label>`).join("")}</div>`
+      : `<span class="s-hint">No MCP servers are set up yet: <code>/mcp add</code> adds one.</span>`;
+    return `<div class="s-field"><label class="s-field"><span class="s-sub">MCP servers on a local model</span>
+        <select name="localMcpMode">
+          <option value=""${chosen ? "" : " selected"}>Follow the choice above (Lean: none, All: every server)</option>
+          <option value="pick"${chosen ? " selected" : ""}>Only the servers ticked below</option>
+        </select></label>
+      ${boxes}
+      <span class="s-hint">Each server's tools take room in every request, and a small model picks worse among many tools. Claude and GPT always get every server.</span></div>`;
+  }
+  $("settingsForm").addEventListener("change", (e) => {
+    if (e.target.name !== "localMcpServers") return;
+    const mode = $("settingsForm").querySelector('select[name="localMcpMode"]');
+    if (mode) mode.value = "pick";                 // ticking a server means choosing them
+  });
   // API keys: kept encrypted by the system's credential store; the page only ever sees the last four characters
   let keysData = null;
   async function drawKeys() {
@@ -2300,6 +2322,7 @@
       values.localServer = String(f.get("localServer") || "").trim();
       values.localContext = f.get("localContext") || "";
       values.localTools = f.get("localTools") || "";
+      values.localMcpServers = f.get("localMcpMode") === "pick" ? f.getAll("localMcpServers") : null;
       // an empty field turns the fallback off, which also ends the offer: sent only when it was changed
       const before = settingsData.user.values.fallbackModel, now = String(f.get("fallbackModel") || "").trim();
       if (now !== (typeof before === "string" ? before : "")) values.fallbackModel = now;

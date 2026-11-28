@@ -178,18 +178,31 @@ class ModelCommands:
         without repeating their descriptions (see ``AgentRunner(compact_prompt=)``)."""
         return bool(getattr(model, "is_local", False)) and getattr(self, "local_tools", "lean") != "all"
 
+    def _trims(self, model: Any) -> bool:
+        """Whether ``model`` gets fewer tools than the chat has: a local model on the lean request, or one that
+        ``localMcpServers`` gives only some MCP servers."""
+        return self._lean_for(model) or (bool(getattr(model, "is_local", False))
+                                         and getattr(self, "local_mcp_servers", None) is not None)
+
+    def _tools_for(self, model: Any, tools: Sequence[Any]) -> List[Any]:
+        """The tools of ``tools`` requests on ``model`` carry: all of them for Claude or GPT; for a local model what
+        ``localTools`` and ``localMcpServers`` give it (``local_tools``)."""
+        from agentx_dev.cli.tools import local_tools
+        if not getattr(model, "is_local", False):
+            return list(tools)
+        return local_tools(tools, self._lean_for(model), getattr(self, "local_mcp_servers", None))
+
     def _fixed_chars(self, model: Any) -> int:
         """The characters each request on ``model`` would carry before the conversation: agentx's base prompt (no
         AGENTX.md or work log), the runner's own prompt for the binding mode ``model`` gets, the skill index, and the
         tools' specs; the lean request's when ``model`` gets one."""
         from agentx_dev import AgentRunner, AgentType
         from agentx_dev.cli.context import build_addendum
-        from agentx_dev.cli.tools import lean_tools
         lean = self._lean_for(model)
         base = build_addendum(self.cwd, self.home, max_context_chars=0, max_log_chars=0,
                               browser=self._browser_for(model))
         runner = AgentRunner(model=model, agent=AgentType.ReAct,
-                             tools=lean_tools(self.tools) if lean else list(self.tools), system_addendum=base,
+                             tools=self._tools_for(model, self.tools), system_addendum=base,
                              skills=self.skills, verbose=False, auto_cache=False, strict_tool_dispatch=True,
                              compact_prompt=lean)
         return runner.fixed_request_chars()

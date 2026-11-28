@@ -265,7 +265,7 @@ Two optional files, both JSON:
   folder `agentx` writes it for you with the model in use, and `/model <name> --folder` changes it (see
   [Project memory](#project-memory)).
 
-**Local models.** `localServer`, `fallbackModel`, `localContext` and `localTools` live in your own file only; see [Local models and the fallback](#local-models-and-the-fallback).
+**Local models.** `localServer`, `fallbackModel`, `localContext`, `localTools` and `localMcpServers` live in your own file only; see [Local models and the fallback](#local-models-and-the-fallback).
 
 **Switching providers.** If the saved model's key is gone but the other provider's key is set (you moved from GPT
 to Claude, say), `agentx` does not just stop: it lists that provider's models (for Claude: `claude-opus-5-5`,
@@ -313,7 +313,7 @@ A repository you just cloned can contain `.agentx/settings.json`. So:
 
 - A project `mode` of `accept-edits` or `auto` is **ignored, with a warning**. Set it in your own settings or with `--mode`. `plan` and `default` from the project are honoured.
 - A project `addDirs` entry that resolves outside the project folder is **ignored, with a warning**. Your own file and `--add-dir` are not restricted.
-- A project `localServer`, `fallbackModel`, `localContext` or `localTools` is **ignored, with a warning** (`localServer in <path> is ignored: only your own settings file can set it.`): it could send your conversation, files included, to a server the project chooses. A project may name a local model as its `model`; a name is harmless.
+- A project `localServer`, `fallbackModel`, `localContext`, `localTools` or `localMcpServers` is **ignored, with a warning** (`localServer in <path> is ignored: only your own settings file can set it.`): it could send your conversation, files included, to a server the project chooses. A project may name a local model as its `model`; a name is harmless.
 - A project `teamModels` list is **announced at startup**, with any notes on what each model is for (`This project's settings let team helpers also use: gpt-5.5 (fast reading), ...`), with no question: it lets team jobs send work to another model or provider. `/team-models clear` turns it off for the session. See [Helper models](#helper-models).
 - Allow rules that come from the project are **listed at startup and you are asked once**: `Honour these project rules? [y/N]`. Only `y` or `yes` keeps them. Bare Enter, Ctrl+D, Ctrl+C or an answer that stays unrecognised after one more try drops them for this session. A yes is remembered for that folder in `~/.agentx/trusted.json` (your own file, which the project cannot write): the next start uses the same rules without asking (`Using this project's allow rules you accepted before (...)`), and a rule the project adds later is asked about again, marked `(new)`. A no is not remembered. A repository's `"allow": ["write_file", "edit_file"]` is `accept-edits` under another name, and `"allow": ["run_shell"]` runs every command that is not compound, so they are not taken on trust. Your own allow rules are never affected. The project's **deny** rules are always kept: they only restrict.
 
@@ -460,6 +460,7 @@ models**, in the all-folders settings):
 | `fallbackModel` | none | The local model to carry on with when Claude or GPT fails for good. Empty turns it off. |
 | `localContext` | what the server says | The local model's context window in tokens, for a server that does not say (see [The context window](#the-context-window-of-a-local-model)). |
 | `localTools` | `"lean"` | What a request to a local model carries: `"lean"`, the core tools and a short skill list (see [A lean request](#a-lean-request-on-a-local-model)), or `"all"`, the whole request Claude and GPT get. |
+| `localMcpServers` | not set | The MCP servers whose tools a local model gets, on top of what `localTools` gives: `["flightclaw"]`, or `[]` for none. Not set, it follows `localTools` (`"lean"`: none, `"all"`: every server). Claude and GPT always get every server. See [Choosing the MCP servers](#choosing-the-mcp-servers-of-a-local-model). |
 
 ```json
 {
@@ -480,7 +481,8 @@ models**, in the all-folders settings):
   be a local model; gpt-6.1-sol is not.`) and refused by `/fallback` (`The fallback must be a local model; ... is
   not.`).
 - `localServer` that is not a web address, a `localContext` that is not a positive whole number, and a
-  `localTools` that is not `"lean"` or `"all"`, are ignored with a warning.
+  `localTools` that is not `"lean"` or `"all"`, and a `localMcpServers` that is not a list of server names, are
+  ignored with a warning.
 
 ### The fallback
 
@@ -644,6 +646,25 @@ told the web tools are not there). Claude and GPT get the whole request, exactly
 a local model every tool and the whole skill list, web and MCP tools included (each tool still described once); it is
 saved in Settings and used from the next start. A small model picks worse among many tools: with 70 tools an 8B model
 can answer with instructions where it should have run a command.
+
+### Choosing the MCP servers of a local model
+
+One MCP server can add dozens of tools (GitHub's adds 46), and each takes room in every request. `localMcpServers`
+(Settings > Local models > MCP servers on a local model) picks the servers a local model gets, on top of what
+`localTools` gives:
+
+```json
+{ "localTools": "all", "localMcpServers": ["flightclaw"] }
+```
+
+- `"all"` with `["flightclaw"]`: the web and browser tools, every skill, and flightclaw's tools; not GitHub's.
+- `"lean"` with `["flightclaw"]`: the core tools and flightclaw's.
+- `[]`: no MCP tools. Not set: as `localTools` says (`"lean"` none, `"all"` every server).
+
+It applies wherever a local model runs: the chat, the turn that moves to the fallback, and team helpers. The model is
+told which servers it does not have, so asked for one it says so and names this setting. A name in the list that is
+not set up in `mcp.json` (yet) is simply not there. In the Settings panel, ticking a server switches the choice to
+"Only the servers ticked below". It is kept in your own file only and used from the next start.
 
 ## MCP servers
 

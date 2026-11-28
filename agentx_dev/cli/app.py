@@ -44,7 +44,7 @@ from agentx_dev.cli.typeahead import TypeAhead
 from agentx_dev.cli.ui_text import plain
 from agentx_dev.cli.team_record import TeamRecord
 from agentx_dev.cli.routing import ROUTE_THREAD, Route, routed_request
-from agentx_dev.cli.tools import build_tools, gate_tool, lean_tools, left_out_note, make_permissions
+from agentx_dev.cli.tools import build_tools, gate_tool, left_out_note, make_permissions
 from agentx_dev.cli.background import install_signal_handlers, shared
 from agentx_dev.cli.browser import shared_browser
 from agentx_dev.cli.browser_tools import build_browser_tools
@@ -286,7 +286,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
                  token_limit: int = DEFAULT_TOKEN_LIMIT, max_steps: int = DEFAULT_MAX_STEPS,
                  auto_team: Optional[bool] = None, local_server: Optional[str] = None,
                  fallback_model: Optional[str] = None, local_context: Optional[int] = None,
-                 local_tools: str = "lean") -> None:
+                 local_tools: str = "lean", local_mcp_servers: Optional[List[str]] = None) -> None:
         self.cwd = Path(cwd).resolve()
         self.select = select                  # an arrow-key menu, or None (then answers are typed)
         self.home = Path(home)
@@ -447,6 +447,8 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         self._fallback_window_reader: Optional[threading.Thread] = None   # asks the server the fallback's window
         self.local_context = local_context              # "localContext": the window the user gave local models
         self.local_tools = local_tools                  # "localTools": "lean" (the core tools only) or "all"
+        # "localMcpServers": the MCP servers a local model gets (None: as localTools says)
+        self.local_mcp_servers = None if local_mcp_servers is None else list(local_mcp_servers)
         # Set while the conversation runs on the fallback: {"model": the one that failed, "reason"}.
         self.fallback_from: Optional[Dict[str, str]] = None
         self._rebuild_after_turn = False         # the running turn moved to the fallback: a new runner after it
@@ -650,13 +652,14 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
             self._build_instructions(model)
         tools = [self._route_guarded(t) for t in self.tools]
         runner = AgentRunner(model=model, agent=AgentType.ReAct,
-                             tools=lean_tools(tools) if self._lean_for(model) else tools,
+                             tools=self._tools_for(model, tools),
                              system_addendum=self.addendum + self._left_out_for(model),
                              max_iterations=self.max_steps, auto_cache=False, verbose=False, parallel_tool_workers=1,
                              skills=self.skills, trim_results=True, strict_tool_dispatch=True,
                              fallback_model=self._fallback_for(model), fallback_addendum=self._fallback_addendum,
                              compact_prompt=self._lean_for,
-                             fallback_tools=lambda fallback: lean_tools(tools) if self._lean_for(fallback) else None)
+                             fallback_tools=lambda fallback: (self._tools_for(fallback, tools)
+                                                              if self._trims(fallback) else None))
         # The skills THIS conversation's agent can open (what /<skill> and the `/` pop-up offer): taken from the
         # runner itself, so it is exactly what use_skill can read, and it follows /clear, /resume and a new model.
         tool = next((t for t in runner.tools if t.name == "use_skill"), None)
@@ -1662,12 +1665,12 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
     def _left_out_for(self, model: Any) -> str:
         """The line naming what a lean request on ``model`` leaves out (web, browser and MCP tools: ``left_out_note``),
         else "". Built with each runner, so it names the MCP servers connected now."""
-        return left_out_note(self.tools) if self._lean_for(model) else ""
+        return left_out_note(self.tools, self._tools_for(model, self.tools)) if self._trims(model) else ""
 
     def _browser_for(self, model: Any) -> bool:
         """Whether requests on ``model`` carry the browser tools (a lean request does not): only then does the
         prompt say when to use them."""
-        tools = lean_tools(self.tools) if self._lean_for(model) else self.tools
+        tools = self._tools_for(model, self.tools)
         return any(getattr(tool, "name", "") == "browser_open" for tool in tools)
 
     def _fitted_addendum(self, model: Any) -> str:
@@ -1810,7 +1813,7 @@ class ChatApp(McpCommands, ModelCommands, UsageCommands, SkillCommands, TeamComm
         self.progress.start("Planning the team job")
         try:
             text = run_team_job(task, model=self.model, tools=[*self.base_tools, *self._mcp_tools],
-                                addendum=self.addendum, lean_for=self._lean_for,
+                                addendum=self.addendum, lean_for=self._lean_for, mcp_servers=self.local_mcp_servers,
                                 notify=self._team_notify, ask_user=self._team_question,
                                 describe_error=self._safe, extra_models=extras,
                                 chat_use=self._use_of(self.model_label), skills=self.skills,
@@ -2000,7 +2003,7 @@ def device_app(template: "ChatApp", room: Any) -> "ChatApp":
                   token_limit=settings.token_limit, max_steps=settings.max_steps,
                   model_factory=template.model_factory, env=getattr(template, "_given_env", None),
                   fallback_model=template.fallback_name, local_context=template.local_context,
-                  local_tools=template.local_tools)
+                  local_tools=template.local_tools, local_mcp_servers=template.local_mcp_servers)
     app.auto_titles = bool(getattr(template, "auto_titles", False))
     app.local_models = template.local_models               # one list, filled by the main conversation's search
     app.stops_tasks_at_exit = False                        # its tasks are the process's: they outlive this window
@@ -2073,7 +2076,8 @@ def _run(args: argparse.Namespace, home: Path, console: Console, read: Callable[
                       model_factory=functools.partial(choose_model, local_server=settings.local_server,
                                                       local_context=settings.local_context),
                       local_server=settings.local_server, fallback_model=settings.fallback_model,
-                      local_context=settings.local_context, local_tools=settings.local_tools)
+                      local_context=settings.local_context, local_tools=settings.local_tools,
+                      local_mcp_servers=settings.local_mcp_servers)
         app.auto_titles = True                         # a real run: conversations get a short title from the model
         app.remote_at_start = bool(getattr(args, "remote", False)) and not getattr(args, "ui", False)
         if wire is not None:

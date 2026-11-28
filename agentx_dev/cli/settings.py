@@ -42,6 +42,7 @@ class Settings:
     fallback_model: Optional[str] = None                   # "fallbackModel": None = never set, "" = set to off
     local_context: Optional[int] = None                    # "localContext": the local model's window in tokens
     local_tools: str = "lean"                              # "localTools": "lean" or "all" (what a local model gets)
+    local_mcp_servers: Optional[List[str]] = None          # "localMcpServers": the MCP servers a local model gets
 
 
 def user_settings_path(home: Path) -> Path:
@@ -355,7 +356,7 @@ def _read_token_limit(value: Any, path: Path, is_project: bool, settings: Settin
     settings.token_limit = value
 
 
-LOCAL_SETTING_KEYS = ("localServer", "fallbackModel", "localContext", "localTools")
+LOCAL_SETTING_KEYS = ("localServer", "fallbackModel", "localContext", "localTools", "localMcpServers")
 LOCAL_TOOLS_CHOICES = ("lean", "all")
 _LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
 
@@ -373,8 +374,8 @@ def local_server_address(value: str) -> Optional[str]:
 
 
 def _read_local_settings(data: dict, path: Path, is_project: bool, settings: Settings) -> None:
-    """``localServer``, ``fallbackModel``, ``localContext`` and ``localTools``: read from the user's own file only,
-    so a cloned project cannot send the conversation to another server."""
+    """``localServer``, ``fallbackModel``, ``localContext``, ``localTools`` and ``localMcpServers``: read from the
+    user's own file only, so a cloned project cannot send the conversation to another server or choose the tools."""
     for key in LOCAL_SETTING_KEYS:
         if key in data and is_project:
             settings.problems.append(f"{key} in {path} is ignored: only your own settings file can set it.")
@@ -414,6 +415,27 @@ def _read_local_settings(data: dict, path: Path, is_project: bool, settings: Set
             settings.problems.append(f"settings file {path}: 'localTools' must be \"lean\" or \"all\"; ignored")
         else:
             settings.local_tools = value
+    if "localMcpServers" in data:
+        names = mcp_server_names(data["localMcpServers"])
+        if names is None:
+            settings.problems.append(f"settings file {path}: 'localMcpServers' must be a list of MCP server names; "
+                                     "ignored")
+        else:
+            settings.local_mcp_servers = names
+
+
+def mcp_server_names(value: Any) -> Optional[List[str]]:
+    """``localMcpServers`` as a list of names (trimmed, each once, in order), or None when it is not a list of
+    non-empty names."""
+    if not isinstance(value, list) or len(value) > 200:
+        return None
+    names: List[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip() or len(item.strip()) > 100:
+            return None
+        if item.strip() not in names:
+            names.append(item.strip())
+    return names
 
 
 def load_settings(cwd: Path, home: Path) -> Settings:

@@ -181,7 +181,7 @@ def test_settings_field_order_ends_with_problems_then_project_allow():
     names = [f.name for f in dataclasses.fields(Settings)]
     assert names == ["model", "mode", "add_dirs", "allow", "deny", "problems", "project_allow", "model_source",
                      "team_models", "team_models_source", "team_model_uses", "token_limit", "max_steps",
-                     "local_server", "fallback_model", "local_context", "local_tools"]
+                     "local_server", "fallback_model", "local_context", "local_tools", "local_mcp_servers"]
     assert Settings(None, None, [], [], [], ["p"]).project_allow == []
 
 
