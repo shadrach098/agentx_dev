@@ -1995,6 +1995,12 @@ class WebFront:
                         args = json.loads(function.get("arguments") or "{}")
                     except ValueError:
                         args = {}
+                    if name == "respond":                          # a natively bound model's answer
+                        answer = args.get("answer", "") if isinstance(args, dict) else args
+                        items.append({"type": "final", "text": _text(
+                            answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False), 200_000)})
+                        calls[str(call.get("id"))] = _ANSWERED
+                        continue
                     if name in _FORMAT_NAMES and isinstance(args, dict) and isinstance(args.get("action"), str):
                         # the response format called as a function (React_): the step it carries, as the runner
                         # ran it; its result is filed under the format's name, so the call id leads to the tool

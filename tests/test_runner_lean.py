@@ -119,9 +119,20 @@ def test_at_the_switch_the_fallback_gets_its_own_tools_and_a_compact_prompt(tmp_
     # the fallback cannot run the tool it was not given
     # (the primary's two calls of one step run side by side: either may be seen first)
     assert ("web", "again") not in seen and sorted(seen) == [("core", "a"), ("web", "b")]
-    # the primary's request was the full one
+    # the primary's request was the full one: the whole skill index (natively bound, its tools are named only)
     primary_system = str(primary.tool_calls_made[0][0]["content"])
-    assert "Long description" in primary_system and "more skills are not listed" not in primary_system
+    assert "more skills are not listed" not in primary_system
+
+
+def test_a_natively_bound_request_names_its_tools_once():
+    """The specs a natively bound request sends carry each tool's description; the system prompt names the tools
+    without repeating them, compact or not."""
+    model = Local([respond("done")])
+    AgentRunner(model=model, agent=AgentType.ReAct, tools=[tool("core"), tool("web")], verbose=False,
+                auto_cache=False).invoke("go")
+    system = str(model.tool_calls_made[0][0]["content"])
+    assert "Long description" not in system and "core, web" in system
+    assert any("Long description" in spec.get("description", "") for spec in model.tools_seen[0])
 
 
 def test_without_the_new_settings_a_runner_sends_exactly_what_it_did(tmp_path):

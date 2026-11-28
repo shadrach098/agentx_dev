@@ -630,7 +630,8 @@ MCP tools or any conversation. So a request to a local model is lean (`localTool
   description, and a last line saying how many more there are. `use_skill` still opens every skill by name, listed or
   not (and still only the ones you approved); a name it does not know gets the list of all of them.
 - **The tools named once:** the instructions name the tools; their descriptions come with the tool definitions, not
-  a second time in the instructions.
+  a second time in the instructions. This holds for `"all"` too: with an MCP server's tools, repeating them doubled
+  the request.
 - **What is left out, said:** the instructions also name the tools the model is not given (`web_search`,
   `web_fetch`, the browser tools, and your MCP servers by name), so asked to "use MCP" or to search the web it says
   they are not available on this model and that `"localTools": "all"` turns them on, instead of trying something
@@ -640,8 +641,9 @@ With 13 built-in tools and 52 skills that is about 17,500 characters instead of 
 with the team tool and `recall`), about a third of a 16,384-token window instead of over half. It applies to a chat on a local model, from the turn that moves to the
 fallback on, and to team helpers on a local model or moving to the fallback (a helper whose role searches the web is
 told the web tools are not there). Claude and GPT get the whole request, exactly as before. `"localTools": "all"` gives
-a local model the whole request too, web and MCP tools included; it is saved in Settings and used from the next
-start.
+a local model every tool and the whole skill list, web and MCP tools included (each tool still described once); it is
+saved in Settings and used from the next start. A small model picks worse among many tools: with 70 tools an 8B model
+can answer with instructions where it should have run a command.
 
 ## MCP servers
 

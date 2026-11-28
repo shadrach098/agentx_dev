@@ -746,6 +746,26 @@ def test_a_saved_step_wrapped_in_the_response_format_reads_as_its_tool(tmp_path)
     assert "React" not in repr(items)
 
 
+def test_a_saved_native_respond_call_reads_as_the_answer(tmp_path):
+    """A local model bound natively ends its turn by calling ``respond``. A conversation opened again shows the
+    answer, not a "Respond" row and "(final answer delivered)"."""
+    import json as _json
+    from types import SimpleNamespace
+    from agentx_dev.cli.webui import WebFront
+
+    history = [
+        {"role": "user", "content": "how big is it"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "r1", "type": "function", "function": {
+            "name": "respond", "arguments": _json.dumps({"answer": "About 16 GB."})}}]},
+        {"role": "tool", "tool_call_id": "r1", "name": "respond", "content": "(final answer delivered)"},
+    ]
+    front = WebFront(cwd=tmp_path, home=tmp_path, open_it=False)
+    front.app = SimpleNamespace(session=SimpleNamespace(history=history))
+    items = front.history()
+    assert [i["type"] for i in items] == ["user", "final"]
+    assert items[1] == {"type": "final", "text": "About 16 GB."}
+
+
 def test_an_mcp_sign_in_shows_as_a_card_and_the_orb_waits_for_you():
     """``/mcp login`` prints the sign-in sentence and the address (as one notice or two); the window shows a card
     with a link instead of the whole address, and the orb folds into its cube with "Waiting for you to sign in to

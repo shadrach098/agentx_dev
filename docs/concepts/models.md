@@ -392,8 +392,8 @@ or a function that gets the fallback model and returns one (None: the same tools
 replaced, the skill index is made again for them, and calls in the history to a tool the fallback does not have
 become text (`[earlier step] called web_fetch with ...`). `compact_prompt=` builds requests for a small window: the
 skill index lists at most 20 skills, one line of about 60 characters each, and says how many more there are
-(`use_skill` still opens every one); with native binding the system prompt names the tools without repeating their
-descriptions, which their specs carry. It is `True`, `False` (the default: requests as they always were) or a
+(`use_skill` still opens every one). With native binding the system prompt always names the tools without repeating
+their descriptions, which their specs carry, compact or not. It is `True`, `False` (the default: requests as they always were) or a
 function that gets a model and says whether, asked for the runner's model when it is built and for the fallback at
 a switch:
 

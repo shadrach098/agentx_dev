@@ -374,3 +374,9 @@ def test_the_prompt_says_how_to_find_and_read_the_users_terminals(tmp_path):
         text = build_addendum(tmp_path, tmp_path / "home", system="X", browser=browser)
         line = next(part for part in text.splitlines() if "terminals" in part)
         assert "list_background" in line and "background_output" in line and "send_to_terminal" in line
+
+
+def test_the_prompt_says_to_do_the_work_rather_than_hand_over_the_commands(tmp_path):
+    text = build_addendum(tmp_path, tmp_path / "home", system="X")
+    line = next(part for part in text.splitlines() if "install" in part and "run_shell" in part)
+    assert "approval" in line and "commands" in line

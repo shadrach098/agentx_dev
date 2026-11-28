@@ -2459,9 +2459,10 @@ class AgentRunner(PersistenceMixin):
             # "emit action/action_input JSON" scaffolding would fight the
             # native tool interface, and models often produce a garbled
             # mix of both. Use a minimal system prompt instead: brief
-            # role, tool list for context, and the caller's addendum.
-            # A compact request (compact_prompt=) names the tools only: their specs carry the descriptions.
-            listed = self._tool_names_block if self._compact else self._tool_prompt_block
+            # role, the tools' names, and the caller's addendum. The names only: the specs sent with the request
+            # carry each tool's description, and repeating them here doubled the request (about 22,000 characters
+            # with an MCP server's tools), which a small local model's window cannot spare.
+            listed = self._tool_names_block
             system_prompt = (
                 "You are an autonomous assistant. You have the following "
                 "tools available (called via the platform's native tool "

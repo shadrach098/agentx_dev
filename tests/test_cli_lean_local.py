@@ -95,7 +95,8 @@ def test_local_tools_all_sends_the_whole_request(tmp_path):
     app.tools.append(mcp_tool())
     runner = app._make_runner(model)
     assert WEB <= names(runner) and "mcp__srv__lookup" in names(runner)
-    assert "Search FILE CONTENTS" in runner._system_prompt("")
+    assert "When one fits" not in runner._system_prompt("")                 # the whole skill index, not the short one
+    assert "Search FILE CONTENTS" in json.dumps(runner._native_specs())      # each description, once: in the specs
 
 
 def test_a_cloud_chat_is_the_same_whatever_local_tools_says(tmp_path):
@@ -113,7 +114,7 @@ def test_a_cloud_chat_is_the_same_whatever_local_tools_says(tmp_path):
 
     lean, full = request("lean"), request("all")
     assert lean == full
-    assert WEB <= lean[0] and "Search FILE CONTENTS" in lean[1]
+    assert WEB <= lean[0] and "When one fits" not in lean[1] and "Search FILE CONTENTS" in lean[2]
 
 
 def test_the_switch_to_the_fallback_brings_the_lean_tools(tmp_path):

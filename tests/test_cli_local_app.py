@@ -114,19 +114,36 @@ def test_switch_to_local_runs_check_and_switches(tmp_path, monkeypatch):
     assert "Model: qwen3:8b" in out.getvalue()
 
 
+def mcp_tools(count):
+    from agentx_dev.Tools import StructuredTool
+    from pydantic import BaseModel
+
+    class Args(BaseModel):
+        q: str = ""
+
+    tools = []
+    for i in range(count):
+        tool = StructuredTool(func=lambda q="": "hi", args_schema=Args, name=f"mcp__srv__tool{i}",
+                              description="A tool an MCP server added. " + "Long. " * 80)
+        tool.mcp_server, tool.mcp_remote = "srv", f"tool{i}"
+        tools.append(tool)
+    return tools
+
+
 SMALL_WINDOW = ("qwen3:8b's 8,192-token window leaves almost no room for the conversation; a variant with a larger "
                 "window fixes it: a Modelfile with FROM qwen3:8b and PARAMETER num_ctx 16384, then ollama create "
                 "qwen3-16k -f Modelfile.")
 
 
 def test_a_local_model_whose_window_leaves_no_room_is_warned_about_once(tmp_path, monkeypatch):
-    stub_check(monkeypatch, window=8192)
+    stub_check(monkeypatch, window=10240)
     cloud = MockModel(script=[make_final("hi")])
     app, out, _, _ = make_app(tmp_path, Lines("/model qwen3:8b", "/exit"), cloud_then_local(cloud),
                               model_name="first", local_tools="all")
+    app.tools.extend(mcp_tools(20))                                              # an MCP server's tools, as "all" sends
     assert app.start() == 0
     text = out.getvalue()
-    assert text.count(SMALL_WINDOW) == 1
+    assert text.count(SMALL_WINDOW.replace("8,192", "10,240")) == 1
     assert isinstance(app.model, Local) and app.model.model == "qwen3:8b"       # still allowed
     # the lean request (the default) leaves room in the same window
     (tmp_path / "lean").mkdir()
